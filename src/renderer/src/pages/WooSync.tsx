@@ -53,6 +53,18 @@ export default function WooSync() {
     setMsg(null)
   }
 
+  const askManagerPassword = (reason: string): string | null => {
+    const pass = window.prompt(`${reason}
+رمز مدیر را وارد کنید:`)
+    if (pass == null) return null
+    if (!pass.trim()) {
+      setErr('برای این تصمیم، رمز مدیر لازم است.')
+      setMsg(null)
+      return null
+    }
+    return pass
+  }
+
   const load = async () => {
     const [s, l] = await Promise.all([call<WooStatusView>(CH.wooStatus), call<WooLinkRow[]>(CH.wooLinks)])
     setStatus(s)
@@ -112,6 +124,8 @@ export default function WooSync() {
 
   const createLink = async () => {
     if (!selectedVariantId || !selectedCatalog) return setErr('یک کالای فروشگاه و یک محصول سایت انتخاب کنید.')
+    const managerPassword = decision === WooResumeDecision.WOO_WINS ? askManagerPassword('سایت قرار است مرجع موجودی MAHAK شود.') : null
+    if (decision === WooResumeDecision.WOO_WINS && managerPassword == null) return
     setBusy(true)
     try {
       await call(CH.wooLinkCreate, {
@@ -123,7 +137,8 @@ export default function WooSync() {
         remoteName: selectedCatalog.name,
         manageStock: selectedCatalog.manageStock,
         wooQty: selectedCatalog.stockQuantity,
-        decision
+        decision,
+        managerPassword
       })
       await load()
       flash('اتصال کالا ثبت شد. از این به بعد فقط عدد موجودی بین فروشگاه و سایت همگام می‌شود.')
@@ -176,17 +191,22 @@ export default function WooSync() {
 
   const applyResumeDecision = async (decision: string) => {
     if (!resumePreview) return
-    if (decision === WooResumeDecision.VERIFY_ONLY || decision === WooResumeDecision.NOOP) {
-      setResumePreview(null)
-      flash('فقط بررسی انجام شد؛ اتصال همچنان قطع موقت ماند و هیچ موجودی تغییر نکرد.')
-      return
-    }
+    const managerPassword = askManagerPassword('وصل دوباره/حل اختلاف موجودی سایت')
+    if (managerPassword == null) return
     setBusy(true)
     try {
-      await call(CH.wooLinksResumeApply, { linkId: resumePreview.linkId, decision })
+      await call(CH.wooLinksResumeApply, {
+        linkId: resumePreview.linkId,
+        decision,
+        managerPassword,
+        expectedMahakStock: resumePreview.mahakStock,
+        expectedWooQty: resumePreview.wooQty,
+        expectedLastSeq: resumePreview.lastSeq,
+        expectedPausedEventCount: resumePreview.pausedEvents.length
+      })
       setResumePreview(null)
       await load()
-      flash('اتصال دوباره با تصمیم انتخاب‌شده فعال شد؛ هیچ overwrite کورکورانه‌ای انجام نشد.')
+      flash(decision === WooResumeDecision.VERIFY_ONLY ? 'فقط بررسی تأیید شد؛ لینک با همین مبنا فعال شد و هیچ موجودی جابه‌جا نشد.' : 'اتصال دوباره با تصمیم انتخاب‌شده ثبت شد؛ اگر نیاز به نوشتن سایت باشد، بعد از ارسال موفق فعال می‌شود.')
     } catch (e) {
       fail(e)
     } finally {
@@ -311,12 +331,12 @@ export default function WooSync() {
             <div className="kbd">ویرایش‌های سایت که اعمال نمی‌شوند: {faDigits(resumePreview.nonOrderEvents)} / تغییر {faDigits(resumePreview.nonOrderDelta)}</div>
             <div className="kbd">آخرین seq سایت: {faDigits(resumePreview.lastSeq ?? 0)}</div>
           </div>
-          <p className="text-xs text-amber-900">گزینه «فروشگاه + سفارش‌های سایت» فقط رویدادهایی را اعمال می‌کند که افزونه با source=order ثبت کرده باشد؛ ویرایش دستی ادمین سایت park می‌شود و هیچ‌وقت خودکار روی MAHAK نمی‌نشیند.</p>
+          <p className="text-xs text-amber-900">گزینه «فروشگاه + سفارش‌های سایت» فقط رویدادهایی را اعمال می‌کند که افزونه با source=order ثبت کرده باشد؛ ویرایش دستی ادمین سایت در همین Reconcile کنار گذاشته می‌شود و هیچ‌وقت خودکار روی MAHAK نمی‌نشیند.</p>
           <div className="flex flex-wrap gap-2">
             <button className="btn btn-primary" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.MAHAK_WINS)}>فروشگاه مرجع؛ سایت به MAHAK برسد</button>
             <button className="btn" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.WOO_WINS)}>سایت مرجع؛ MAHAK به سایت برسد</button>
             <button className="btn" disabled={busy || resumePreview.orderEvents === 0} onClick={() => applyResumeDecision(WooResumeDecision.MAHAK_PLUS_ORDERS)}>MAHAK + سفارش‌های سایت زمان قطع</button>
-            <button className="btn" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.VERIFY_ONLY)}>فقط بررسی، فعلاً وصل نکن</button>
+            <button className="btn" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.VERIFY_ONLY)}>فقط بررسی؛ فعال کن بدون تغییر موجودی</button>
           </div>
         </div>
       )}

@@ -529,7 +529,7 @@ async function restoreFromReturn(m: {
   if (left > 0) await restoreFifoFallback(m.variantId, left, m.id, m.createdAt)
 }
 
-async function restoreFifoFallback(variantId: number, qty: number, movementId: number, at?: Date | null) {
+async function restoreFifoFallback(variantId: number, qty: number, movementId: number, at?: Date | null, kind = 'RETURN') {
   let left = Math.max(0, Math.round(qty))
   const lots = await Y().purchaseLot.findMany({
     where: { variantId },
@@ -537,7 +537,7 @@ async function restoreFifoFallback(variantId: number, qty: number, movementId: n
   })
   for (const lot of lots) {
     if (left <= 0) break
-    const take = await restoreLot(lot.id, left, movementId, null)
+    const take = await restoreLot(lot.id, left, movementId, null, kind)
     left -= take
   }
   if (left > 0) {
@@ -558,6 +558,47 @@ async function restoreFifoFallback(variantId: number, qty: number, movementId: n
     })
   }
 }
+
+async function restoreExternalSync(m: { id: number; variantId: number; delta: number; refId: number | null; createdAt?: Date }) {
+  let left = Math.max(0, Number(m.delta))
+  if (left <= 0) return
+  const event = m.refId ? await Y().wooInboundEvent.findUnique({ where: { id: Number(m.refId) } }).catch(() => null) : null
+  const orderId = event?.orderId ? String(event.orderId) : ''
+  if (!event || !orderId) {
+    await restoreFifoFallback(m.variantId, left, m.id, m.createdAt, 'EXTERNAL_SYNC')
+    return
+  }
+  const orderItemId = event.orderItemId ? String(event.orderItemId) : null
+  const whereKey: any = { variantId: m.variantId, orderId, movementId: { not: null } }
+  if (orderItemId) whereKey.orderItemId = orderItemId
+  const [outs, ins] = await Promise.all([
+    Y().wooInboundEvent.findMany({ where: { ...whereKey, delta: { lt: 0 } }, select: { movementId: true }, orderBy: { id: 'asc' } }),
+    Y().wooInboundEvent.findMany({ where: { ...whereKey, delta: { gt: 0 }, id: { not: event.id } }, select: { movementId: true } })
+  ])
+  const outMovementIds = outs.map((x: any) => Number(x.movementId)).filter((x: number) => Number.isFinite(x) && x > 0)
+  if (!outMovementIds.length) {
+    await restoreFifoFallback(m.variantId, left, m.id, m.createdAt, 'EXTERNAL_SYNC')
+    return
+  }
+  const inMovementIds = ins.map((x: any) => Number(x.movementId)).filter((x: number) => Number.isFinite(x) && x > 0)
+  const [consumed, restoredRows] = await Promise.all([
+    Y().costConsumption.findMany({ where: { movementId: { in: outMovementIds }, kind: 'EXTERNAL_SYNC' }, orderBy: { id: 'asc' } }),
+    inMovementIds.length ? Y().costConsumption.findMany({ where: { movementId: { in: inMovementIds }, kind: 'EXTERNAL_SYNC' }, select: { lotId: true, qty: true } }) : Promise.resolve([])
+  ])
+  const already = new Map<number, number>()
+  for (const r of restoredRows as any[]) already.set(Number(r.lotId), (already.get(Number(r.lotId)) ?? 0) + Number(r.qty || 0))
+  for (const c of consumed) {
+    if (left <= 0) break
+    const lotId = Number(c.lotId)
+    const avail = Math.max(0, Number(c.qty || 0) - (already.get(lotId) ?? 0))
+    if (avail <= 0) continue
+    const take = await restoreLot(lotId, Math.min(left, avail), m.id, null, 'EXTERNAL_SYNC')
+    already.set(lotId, (already.get(lotId) ?? 0) + take)
+    left -= take
+  }
+  if (left > 0) await restoreFifoFallback(m.variantId, left, m.id, m.createdAt, 'EXTERNAL_SYNC')
+}
+
 
 async function restoreFromSaleInvoice(m: {
   id: number
@@ -1452,8 +1493,12 @@ async function applyOne(m: {
 
   if (delta > 0) {
     /** WooCommerce فقط موجودی را هم‌تراز می‌کند؛ ورود مثبت سایت از قیمت/مبلغ سایت فی نمی‌گیرد. */
-    if (reason === 'WOO_SYNC_IN' || reason === 'WOO_SYNC_ADJUST') {
-      await applyPurchase({ ...m, refId: null })
+    if (reason === 'WOO_SYNC_IN') {
+      await restoreExternalSync(m)
+      return
+    }
+    if (reason === 'WOO_SYNC_ADJUST') {
+      await restoreFifoFallback(m.variantId, delta, m.id, m.createdAt, 'EXTERNAL_SYNC')
       return
     }
     if (reason === 'PURCHASE' || reason === 'PURCHASE_EDIT' || reason === 'INITIAL') {

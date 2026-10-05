@@ -621,6 +621,12 @@ export const productService = {
           where: { id: { in: chunk } },
           data: { isActive: false, deletedAt }
         })
+        try {
+          const { markWooLinksBrokenLocal } = await import('./WooSyncService')
+          await markWooLinksBrokenLocal(chunk, tx as any)
+        } catch (e) {
+          console.error('[wooSync] mark deleted variants failed', e)
+        }
         count += r.count
       }
       return { before, count }

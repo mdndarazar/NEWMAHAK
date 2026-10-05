@@ -352,6 +352,17 @@ class LocalInventoryService implements IInventoryService {
           )
         } catch (e) {
           console.error('[wooSync] enqueue movement failed', e)
+          try {
+            await (client as any).wooSyncLog.create({
+              data: {
+                level: 'ERROR',
+                action: 'OUTBOX_ENQUEUE_FAILED',
+                variantId: c.variantId,
+                message: String((e as any)?.message ?? e),
+                payloadJson: JSON.stringify({ movementId: movement.id, reason: ctx.reason })
+              }
+            })
+          } catch {}
         }
       }
       /**

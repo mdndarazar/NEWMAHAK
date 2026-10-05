@@ -12,11 +12,13 @@ final class Mahak_Stock_Sync_Plugin {
   const VERSION = '1.0.0';
   const OPTION_TOKEN = 'mahak_stock_sync_token';
   const OPTION_LAST_SECRET_HINT = 'mahak_stock_sync_secret_hint';
+  const TRANSIENT_TOKEN_PREFIX = 'mahak_stock_sync_token_';
   const TABLE = 'mahak_stock_journal';
   private static $suppress = false;
   private static $request_id = null;
   private static $before = array();
   private static $order_id = null;
+  private static $order_source = 'order';
 
   public static function init() {
     add_action('rest_api_init', array(__CLASS__, 'routes'));
@@ -25,15 +27,17 @@ final class Mahak_Stock_Sync_Plugin {
 
     add_action('woocommerce_product_before_set_stock', array(__CLASS__, 'before_stock'), 10, 1);
     add_action('woocommerce_variation_before_set_stock', array(__CLASS__, 'before_stock'), 10, 1);
+    add_action('pre_post_update', array(__CLASS__, 'before_post_update'), 10, 1);
     add_action('woocommerce_product_set_stock', array(__CLASS__, 'after_stock'), 10, 1);
     add_action('woocommerce_variation_set_stock', array(__CLASS__, 'after_stock'), 10, 1);
 
     // هنگام کم/زیاد شدن موجودی به‌خاطر سفارش، همان hook عمومی stock را با source=order ثبت می‌کنیم؛
     // event جداگانه‌ی order نمی‌سازیم تا موجودی در MAHAK دوبار اعمال نشود.
-    add_filter('woocommerce_can_reduce_order_stock', array(__CLASS__, 'mark_order_context'), 999, 2);
+    add_filter('woocommerce_can_reduce_order_stock', array(__CLASS__, 'mark_reduce_order_context'), 999, 2);
     add_action('woocommerce_reduce_order_stock', array(__CLASS__, 'clear_order_context'), 999, 1);
-    add_filter('woocommerce_can_restore_order_stock', array(__CLASS__, 'mark_order_context'), 999, 2);
+    add_filter('woocommerce_can_restore_order_stock', array(__CLASS__, 'mark_restore_order_context'), 999, 2);
     add_action('woocommerce_restore_order_stock', array(__CLASS__, 'clear_order_context'), 999, 1);
+    add_action('woocommerce_restock_refunded_item', array(__CLASS__, 'mark_refund_context'), 1, 5);
   }
 
   public static function activate() {
@@ -109,13 +113,30 @@ final class Mahak_Stock_Sync_Plugin {
     ));
   }
 
-  public static function mark_order_context($can, $order) {
-    if ($can && $order && is_object($order) && method_exists($order, 'get_id')) self::$order_id = (string)$order->get_id();
+  private static function set_order_context($order, $source) {
+    if ($order && is_object($order) && method_exists($order, 'get_id')) {
+      self::$order_id = (string)$order->get_id();
+      self::$order_source = sanitize_key($source ?: 'order');
+    }
+  }
+
+  public static function mark_reduce_order_context($can, $order) {
+    if ($can) self::set_order_context($order, 'order_reduce');
     return $can;
+  }
+
+  public static function mark_restore_order_context($can, $order) {
+    if ($can) self::set_order_context($order, 'order_restore');
+    return $can;
+  }
+
+  public static function mark_refund_context($product_id = null, $old_stock = null, $new_stock = null, $order = null, $product = null) {
+    self::set_order_context($order, 'refund_restock');
   }
 
   public static function clear_order_context($order = null) {
     self::$order_id = null;
+    self::$order_source = 'order';
   }
 
   private static function holder_key($product_id, $variation_id = null) {
@@ -144,11 +165,34 @@ final class Mahak_Stock_Sync_Plugin {
     return array($product, $product_id, $variation_id ?: null, self::holder_key($product_id, $variation_id));
   }
 
+  private static function remember_qty($product, $qty = null) {
+    if (!$product) return;
+    $id = $product->get_id();
+    $q = $qty === null ? (int)$product->get_stock_quantity() : intval($qty);
+    update_post_meta($id, '_mahak_stock_last_qty', $q);
+  }
+
+  private static function previous_record_for_request($request_id, $holder_key) {
+    if (!$request_id) return null;
+    global $wpdb;
+    $row = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . self::table() . ' WHERE request_id = %s AND holder_key = %s ORDER BY seq DESC LIMIT 1', $request_id, $holder_key), ARRAY_A);
+    if (!$row) return null;
+    return array(
+      'ok' => true,
+      'idempotent' => true,
+      'seq' => (int)$row['seq'],
+      'old_qty' => $row['old_qty'] === null ? null : (int)$row['old_qty'],
+      'new_qty' => (int)$row['new_qty'],
+      'holder_key' => $row['holder_key']
+    );
+  }
+
   private static function item($product) {
     if (!$product) return null;
     $is_variation = $product->is_type('variation');
     $product_id = $is_variation ? $product->get_parent_id() : $product->get_id();
     $variation_id = $is_variation ? $product->get_id() : null;
+    self::remember_qty($product);
     return array(
       'holder_key' => self::holder_key($product_id, $variation_id),
       'product_id' => (int)$product_id,
@@ -208,16 +252,22 @@ final class Mahak_Stock_Sync_Plugin {
     list($product, $pid, $vid, $key) = $found;
     if (!$product->managing_stock()) return new WP_Error('mahak_manage_stock_off', 'manage_stock is disabled for this holder.', array('status' => 409));
     $expected = isset($body['expected']) ? intval($body['expected']) : null;
-    $target = intval($body['target']);
+    $target = max(0, intval($body['target']));
+    $request_id = sanitize_text_field((string)($body['request_id'] ?? wp_generate_uuid4()));
+    $previous = self::previous_record_for_request($request_id, $key);
+    if ($previous) return $previous;
     $current = (int)$product->get_stock_quantity();
     if ($expected !== null && $current !== $expected) {
       return new WP_REST_Response(array('ok' => false, 'conflict' => true, 'current' => $current, 'expected' => $expected, 'message' => 'Stock changed on WooCommerce before MAHAK apply.'), 409);
     }
-    $request_id = sanitize_text_field((string)($body['request_id'] ?? wp_generate_uuid4()));
-    if ($current === $target) return array('ok' => true, 'old_qty' => $current, 'new_qty' => $target, 'holder_key' => $key, 'noop' => true);
+    if ($current === $target) {
+      self::remember_qty($product, $target);
+      return array('ok' => true, 'old_qty' => $current, 'new_qty' => $target, 'holder_key' => $key, 'noop' => true);
+    }
     self::$suppress = true;
     self::$request_id = $request_id;
     wc_update_product_stock($product, $target, 'set', true);
+    self::remember_qty($product, $target);
     self::$suppress = false;
     self::record($pid, $vid, $current, $target, 'mahak_apply', null, null, $request_id, array('target' => $target));
     self::$request_id = null;
@@ -242,6 +292,14 @@ final class Mahak_Stock_Sync_Plugin {
     return array('ok' => true, 'events' => $events);
   }
 
+  public static function before_post_update($post_id) {
+    if (self::$suppress) return;
+    $type = get_post_type($post_id);
+    if ($type !== 'product' && $type !== 'product_variation') return;
+    $product = function_exists('wc_get_product') ? wc_get_product($post_id) : false;
+    if ($product) self::$before[$product->get_id()] = (int)$product->get_stock_quantity();
+  }
+
   public static function before_stock($product) {
     if (!$product || self::$suppress) return;
     self::$before[$product->get_id()] = (int)$product->get_stock_quantity();
@@ -260,8 +318,9 @@ final class Mahak_Stock_Sync_Plugin {
     if ($old === $new) return;
     $pid = $product->is_type('variation') ? $product->get_parent_id() : $product->get_id();
     $vid = $product->is_type('variation') ? $product->get_id() : null;
-    $source = self::$order_id ? 'order' : 'woocommerce';
+    $source = self::$order_id ? self::$order_source : (is_admin() ? 'admin_edit' : ((defined('REST_REQUEST') && REST_REQUEST) ? 'rest_other' : 'woocommerce'));
     self::record($pid, $vid, $old, $new, $source, self::$order_id, null, self::$request_id, null);
+    if ($source === 'refund_restock') self::clear_order_context();
   }
 
   private static function record($product_id, $variation_id, $old, $new, $source, $order_id = null, $order_item_id = null, $request_id = null, $payload = null) {
@@ -293,7 +352,9 @@ final class Mahak_Stock_Sync_Plugin {
 
   public static function settings_page() {
     if (!current_user_can('manage_woocommerce')) return;
-    $new = isset($_GET['mahak_new_token']) ? sanitize_text_field(wp_unslash($_GET['mahak_new_token'])) : '';
+    $notice = isset($_GET['mahak_token_notice']) ? sanitize_key(wp_unslash($_GET['mahak_token_notice'])) : '';
+    $new = $notice ? (string)get_transient(self::TRANSIENT_TOKEN_PREFIX . $notice) : '';
+    if ($notice) delete_transient(self::TRANSIENT_TOKEN_PREFIX . $notice);
     echo '<div class="wrap"><h1>MAHAK Stock Sync</h1>';
     echo '<p>این افزونه فقط stock_quantity ووکامرس را برای برنامه محک می‌خواند/می‌نویسد. هیچ قیمت، مشتری، مبلغ سفارش یا آدرس از این API خارج نمی‌شود.</p>';
     if ($new) echo '<div class="notice notice-success"><p><strong>کلید جدید:</strong> <code style="font-size:16px">' . esc_html($new) . '</code><br>این کلید فقط همین حالا نمایش داده می‌شود؛ آن را در برنامه محک وارد کنید.</p></div>';
@@ -314,7 +375,9 @@ final class Mahak_Stock_Sync_Plugin {
       $token = wp_generate_password(48, false, false);
       update_option(self::OPTION_TOKEN, wp_hash_password($token), false);
       update_option(self::OPTION_LAST_SECRET_HINT, 'آخرین کلید در ' . current_time('mysql') . ' ساخته شد.', false);
-      wp_safe_redirect(add_query_arg(array('page' => 'mahak-stock-sync', 'mahak_new_token' => rawurlencode($token)), admin_url('admin.php')));
+      $notice = wp_generate_password(20, false, false);
+      set_transient(self::TRANSIENT_TOKEN_PREFIX . $notice, $token, 5 * MINUTE_IN_SECONDS);
+      wp_safe_redirect(add_query_arg(array('page' => 'mahak-stock-sync', 'mahak_token_notice' => rawurlencode($notice)), admin_url('admin.php')));
       exit;
     }
     wp_safe_redirect(add_query_arg(array('page' => 'mahak-stock-sync'), admin_url('admin.php')));

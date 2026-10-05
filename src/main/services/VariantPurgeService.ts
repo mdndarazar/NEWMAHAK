@@ -388,7 +388,18 @@ export const variantPurgeService = {
           snapshots += a.count + b.count + c.count
         }
 
-        // ۳) حذف واقعی رکورد کالا؛ دفتر گردش مرحله‌ی قبل عمداً دست‌نخورده ماند
+        // ۳) لینک‌های WooCommerce قبل از حذف واقعی جدا می‌شوند تا FK قدیمی جلوی Purge را نگیرد.
+        for (const chunk of targetChunks) {
+          const wooLinks = await (tx as any).wooProductLink.findMany({ where: { variantId: { in: chunk } }, select: { id: true } }).catch(() => [])
+          const wooLinkIds = wooLinks.map((x: any) => Number(x.id)).filter((x: number) => Number.isFinite(x))
+          if (wooLinkIds.length) {
+            await (tx as any).wooSyncOutbox.deleteMany({ where: { linkId: { in: wooLinkIds } } }).catch(() => null)
+            await (tx as any).wooInboundEvent.updateMany({ where: { linkId: { in: wooLinkIds } }, data: { linkId: null } }).catch(() => null)
+            await (tx as any).wooProductLink.deleteMany({ where: { id: { in: wooLinkIds } } }).catch(() => null)
+          }
+        }
+
+        // ۴) حذف واقعی رکورد کالا؛ دفتر گردش مرحله‌ی قبل عمداً دست‌نخورده ماند
         const deleted = { count: 0 }
         for (const chunk of targetChunks)
           deleted.count += (await tx.productVariant.deleteMany({ where: { id: { in: chunk } } })).count
