@@ -2,7 +2,6 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
-import { isUnknownPrintMessage } from '../lib/printErrors'
 import { useHotkeys } from '../hooks/useHotkeys'
 import { useBarcodeScanner } from '../hooks/useBarcodeScanner'
 import { useCharges } from '../hooks/useCharges'
@@ -224,6 +223,7 @@ export default function SalesInvoice() {
    */
   const [overpayFlow, setOverpayFlow] = useState<OverpayFlowState | null>(null)
   const [issuedCredit, setIssuedCredit] = useState<(OverpayCreditLike & { id?: number }) | null>(null)
+  const issuedCreditOpenRef = useRef(false)
   const [overpayCreditPrinting, setOverpayCreditPrinting] = useState(false)
   const [overpayCreditPrintProblem, setOverpayCreditPrintProblem] = useState<OverpayCreditPrintProblem>(null)
   /**
@@ -265,7 +265,10 @@ export default function SalesInvoice() {
     setOverpayCreditPrintProblem(null)
     try {
       const problem = await printOverpayCredit(credit)
-      if (problem) setOverpayCreditPrintProblem({ kind: isUnknownPrintMessage(problem) ? 'unknown' : 'failed', msg: problem })
+      if (problem) {
+        if (issuedCreditOpenRef.current) setOverpayCreditPrintProblem(problem)
+        else setErr(problem.msg)
+      }
     } finally {
       setOverpayCreditPrinting(false)
     }
@@ -784,6 +787,7 @@ export default function SalesInvoice() {
           if (editId) void reloadList()
           if (inv.overpayCredit?.code) {
             // مرحله ۳ بند ۴-۳۵: کد اعتبار نمایش و خودکار چاپ می‌شود (چاپ دوباره از همان پنجره)
+            issuedCreditOpenRef.current = true
             setIssuedCredit(inv.overpayCredit)
             await printIssuedOverpayCredit(inv.overpayCredit)
           }
@@ -1891,6 +1895,7 @@ export default function SalesInvoice() {
         onSubmit={(req) => void save(req)}
         issuedCredit={issuedCredit}
         onCloseIssued={() => {
+          issuedCreditOpenRef.current = false
           setIssuedCredit(null)
           setOverpayCreditPrintProblem(null)
         }}

@@ -46,6 +46,14 @@ export interface PrintDocRouteResult {
 /** آیا این قالب باید خام چاپ شود؟ (فقط مقدار صریح `RAW`) */
 export const isRawMethod = (method: unknown): boolean => method === 'RAW'
 
+/** RAW مسیر دیالوگ ویندوز Electron ندارد؛ نباید silent:false را بی‌صدا نادیده بگیرد. */
+export function assertRawNotDialog(silent: unknown): void {
+  if (silent === false)
+    throw new BusinessError(
+      'چاپ خام (RAW) با دیالوگ ویندوز سازگار نیست؛ هیچ برگه‌ای چاپ نشد. برای انتخاب چاپگر، دیالوگ داخلی برنامه را استفاده کنید یا روش چاپ را روی Chromium بگذارید.'
+    )
+}
+
 export async function printMaybeRaw(input: PrintDocRouteInput): Promise<PrintDocRouteResult> {
   if (!isRawMethod(input.method)) {
     await printHtml(input.html, {
@@ -56,10 +64,7 @@ export async function printMaybeRaw(input: PrintDocRouteInput): Promise<PrintDoc
     })
     return { engine: 'CHROMIUM' }
   }
-  if (input.silent === false)
-    throw new BusinessError(
-      'چاپ خام (RAW) با دیالوگ ویندوز سازگار نیست؛ هیچ برگه‌ای چاپ نشد. برای انتخاب چاپگر، دیالوگ داخلی برنامه را استفاده کنید یا روش چاپ را روی Chromium بگذارید.'
-    )
+  assertRawNotDialog(input.silent)
   const result = await printEscPosDoc({
     html: input.html,
     printerName: input.deviceName,

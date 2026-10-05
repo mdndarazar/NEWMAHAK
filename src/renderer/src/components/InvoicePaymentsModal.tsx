@@ -128,6 +128,7 @@ export default function InvoicePaymentsModal({
   const [pwTarget, setPwTarget] = useState<'payment' | 'issue'>('payment')
   /** آخرین کد اعتبار صادرشده از مبلغ اضافه (برای نمایش و چاپ دوباره) */
   const [issuedCredit, setIssuedCredit] = useState<(OverpayCreditLike & { id?: number }) | null>(null)
+  const issuedCreditOpenRef = useRef(false)
   const [creditPrinting, setCreditPrinting] = useState(false)
   const [creditPrintProblem, setCreditPrintProblem] = useState<OverpayCreditPrintProblem>(null)
   /**
@@ -181,7 +182,10 @@ export default function InvoicePaymentsModal({
   }, [invoiceId])
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      issuedCreditOpenRef.current = false
+      return
+    }
     setKind('CASH')
     setNote('')
     setChequeNo('')
@@ -201,6 +205,7 @@ export default function InvoicePaymentsModal({
     setClearDest(null)
     setClearWarn(null)
     setFlow(null)
+    issuedCreditOpenRef.current = false
     setIssuedCredit(null)
     setCreditPrinting(false)
     setCreditPrintProblem(null)
@@ -257,7 +262,13 @@ export default function InvoicePaymentsModal({
     setCreditPrintProblem(null)
     try {
       const problem = await printOverpayCredit(credit)
-      if (problem) setCreditPrintProblem({ kind: isUnknownPrintMessage(problem) ? 'unknown' : 'failed', msg: problem })
+      if (problem) {
+        if (issuedCreditOpenRef.current) setCreditPrintProblem(problem)
+        else {
+          setErr(problem.msg)
+          onChanged?.(problem.msg)
+        }
+      }
     } finally {
       setCreditPrinting(false)
     }
@@ -265,6 +276,7 @@ export default function InvoicePaymentsModal({
 
   const onCreditIssued = async (credit: (OverpayCreditLike & { id?: number }) | null | undefined) => {
     if (!credit?.code) return
+    issuedCreditOpenRef.current = true
     setIssuedCredit(credit)
     // مرحله ۳ بند ۴-۳۵: «اگر بله، کد اعتباری چاپ شود»
     await printIssuedCredit(credit)
@@ -996,6 +1008,7 @@ export default function InvoicePaymentsModal({
             onPassword={pwTarget === 'issue' ? (p) => void issueFromOverpay(p) : undefined}
             issuedCredit={issuedCredit}
             onCloseIssued={() => {
+              issuedCreditOpenRef.current = false
               setIssuedCredit(null)
               setCreditPrintProblem(null)
             }}

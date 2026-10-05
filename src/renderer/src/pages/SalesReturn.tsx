@@ -196,6 +196,7 @@ export default function SalesReturn() {
   const [overpayFlow, setOverpayFlow] = useState<OverpayFlowState | null>(null)
   const [overpayReq, setOverpayReq] = useState<OverpayRequest>({})
   const [issuedOverpayCredit, setIssuedOverpayCredit] = useState<any | null>(null)
+  const issuedOverpayCreditOpenRef = useRef(false)
   const [overpayCreditPrinting, setOverpayCreditPrinting] = useState(false)
   const [overpayCreditPrintProblem, setOverpayCreditPrintProblem] = useState<OverpayCreditPrintProblem>(null)
   /**
@@ -274,7 +275,10 @@ export default function SalesReturn() {
     setOverpayCreditPrintProblem(null)
     try {
       const problem = await printOverpayCredit(credit)
-      if (problem) setOverpayCreditPrintProblem({ kind: isUnknownPrintMessage(problem) ? 'unknown' : 'failed', msg: problem })
+      if (problem) {
+        if (issuedOverpayCreditOpenRef.current) setOverpayCreditPrintProblem(problem)
+        else setErr(problem.msg)
+      }
     } finally {
       setOverpayCreditPrinting(false)
     }
@@ -530,6 +534,7 @@ export default function SalesReturn() {
                 : '')
         )
         if (res.overpayCredit?.code) {
+          issuedOverpayCreditOpenRef.current = true
           setIssuedOverpayCredit(res.overpayCredit)
           await printIssuedOverpayCredit(res.overpayCredit)
         }
@@ -1766,6 +1771,7 @@ export default function SalesReturn() {
         onSubmit={(req) => void doSubmit(false, req)}
         issuedCredit={issuedOverpayCredit}
         onCloseIssued={() => {
+          issuedOverpayCreditOpenRef.current = false
           setIssuedOverpayCredit(null)
           setOverpayCreditPrintProblem(null)
         }}

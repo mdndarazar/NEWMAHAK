@@ -132,6 +132,14 @@ async function receiptTargetDevice(input: {
   return deviceName
 }
 
+function printMarkWarning(scope: string): string {
+  return `چاپ انجام شد، اما ثبت شمارنده/سابقه‌ی چاپ ${scope} کامل نشد؛ برای بررسی Audit Log و جلوگیری از نسخه‌ی تکراری با مدیر هماهنگ کنید.`
+}
+
+function logCreditMarkFailure(scope: string, err: unknown): void {
+  console.error(`[print-credit] ${scope} markPrinted failed`, err)
+}
+
 export const printService = {
   /** داده‌ی رسید یک فاکتور ثبت‌شده، مستقیم از دیتابیس. */
   async receiptDataFor(invoiceId: number): Promise<ReceiptData> {
@@ -821,6 +829,7 @@ export const printService = {
     })
     const docs = plan.map((copy) => ({ ...data, printCount: copy.printCount, reprint: copy.reprint }))
     const html = docs.length === 1 ? creditDocHtml(docs[0], tpl, paper) : creditBatchHtml(docs, tpl, paper, 1)
+    const warnings: string[] = []
     try {
       await printHtml(html, {
         silent: input.silent ?? false,
@@ -831,17 +840,35 @@ export const printService = {
        * ممیزی AUDIT-S129-01 — نتیجه‌ی نامعلوم (پنجره بسته/crash یا مهلت) یعنی شاید کاغذ
        * بیرون آمده باشد. برای job چندصفحه‌ای همه‌ی نسخه‌های داخل همان job را
        * احتیاطاً uncertain می‌شماریم؛ لغو/رد قطعی شمرده نمی‌شود.
+       *
+       * اگر خودِ ثبت شمارنده خطا بدهد نباید خطای اصلیِ outcome نامعلوم را بپوشاند؛
+       * renderer باید همچنان `PRINT_OUTCOME_UNKNOWN` را ببیند.
        */
       if (isPrintOutcomeUnknown(err) && creditShouldMarkPrinted(input.markPrinted)) {
-        for (let i = 0; i < plan.length; i++) await storeCreditService.markPrinted({ id, userId: input.userId ?? null, uncertain: true })
+        for (let i = 0; i < plan.length; i++) {
+          try {
+            await storeCreditService.markPrinted({ id, userId: input.userId ?? null, uncertain: true })
+          } catch (markErr) {
+            logCreditMarkFailure('single unknown', markErr)
+          }
+        }
       }
       throw err
     }
     // بعد از موفقیت job، به تعداد صفحه‌های واقعی شمارنده و AuditLog بالا می‌رود.
     if (creditShouldMarkPrinted(input.markPrinted)) {
-      for (let i = 0; i < plan.length; i++) await storeCreditService.markPrinted({ id, userId: input.userId ?? null })
+      let markFailed = false
+      for (let i = 0; i < plan.length; i++) {
+        try {
+          await storeCreditService.markPrinted({ id, userId: input.userId ?? null })
+        } catch (markErr) {
+          markFailed = true
+          logCreditMarkFailure('single success', markErr)
+        }
+      }
+      if (markFailed) warnings.push(printMarkWarning('اعتبار'))
     }
-    return { copies: plan.length, id }
+    return { copies: plan.length, id, markFailed: warnings.length > 0, warnings }
   },
 
   /**
@@ -955,30 +982,42 @@ export const printService = {
       requestedDeviceName: input.deviceName,
       savedName: ''
     })
+    const warnings: string[] = []
     try {
       await printHtml(html, { silent: input.silent ?? false, deviceName })
     } catch (err) {
       // ممیزی AUDIT-S129-01 — همان قاعده‌ی چاپ تکی: نتیجه‌ی نامعلوم احتیاطاً شمرده می‌شود
-      if (isPrintOutcomeUnknown(err) && creditShouldMarkPrinted(input.markPrinted))
-        await storeCreditService.markPrintedMany({
-          ids,
-          userId: input.userId ?? null,
-          batchId: input.batchId ?? null,
-          channel: 'PRINT',
-          uncertain: true
-        })
+      if (isPrintOutcomeUnknown(err) && creditShouldMarkPrinted(input.markPrinted)) {
+        try {
+          await storeCreditService.markPrintedMany({
+            ids,
+            userId: input.userId ?? null,
+            batchId: input.batchId ?? null,
+            channel: 'PRINT',
+            uncertain: true
+          })
+        } catch (markErr) {
+          logCreditMarkFailure('batch unknown', markErr)
+        }
+      }
       throw err
     }
-    const marked = creditShouldMarkPrinted(input.markPrinted)
-      ? await storeCreditService.markPrintedMany({
+    let marked = { ...CREDIT_MARK_PRINTED_NONE }
+    if (creditShouldMarkPrinted(input.markPrinted)) {
+      try {
+        marked = await storeCreditService.markPrintedMany({
           ids,
           userId: input.userId ?? null,
           batchId: input.batchId ?? null,
           channel: 'PRINT'
         })
-      : { ...CREDIT_MARK_PRINTED_NONE }
+      } catch (markErr) {
+        logCreditMarkFailure('batch success', markErr)
+        warnings.push(printMarkWarning('اعتبارهای گروهی'))
+      }
+    }
     /** بخش ۹.۳ — شکلِ خروجی (و رسیدنِ `capped` تا خودِ UI) یک تصمیم مشترک است. */
-    return creditPrintBatchResult({ ids, total, capped, marked })
+    return { ...creditPrintBatchResult({ ids, total, capped, marked }), markFailed: warnings.length > 0, warnings }
   },
 
   /**

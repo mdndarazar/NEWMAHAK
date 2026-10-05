@@ -35,7 +35,7 @@ import { settingsService } from '../services/SettingsService'
 import { printHtml } from './printer'
 import { resolvePrintTargetName, type PrintProfileKind } from './target'
 // نشست ۲۲۲ · فاز ۵ — چاپ آزمایشی «دقیق (RAW)»: همان برگه، از مسیر خام
-import { isRawMethod } from './raw/route'
+import { assertRawNotDialog, isRawMethod } from './raw/route'
 import { markRawTrialOk } from './raw/gate'
 import { mmToPrinterDots, printEscPosDoc, printTsplRow } from './raw'
 
@@ -367,6 +367,7 @@ export async function runPrintTestPage(input: TestPageInput = {}): Promise<TestP
   const silent = input.silent == null ? !useSystemDialog : input.silent !== false
 
   if (method === 'RAW') {
+    assertRawNotDialog(silent)
     /**
      * برگه‌ی آزمایشی RAW (بخش ۸.۳). برای لیبل هر **ردیف** یک کار TSPL و برای رسید
      * یک کار ESC/POS فرستاده می‌شود. ⚠️ عرض `SIZE` روی لیبل، عرض کل ردیف گرفته

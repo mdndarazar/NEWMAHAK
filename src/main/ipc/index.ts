@@ -38,7 +38,7 @@ import { runPrintDiagnose } from '../print/diagnose'
 import { assertRawMethodAllowed } from '../print/raw/gate'
 import { runPrintTestPage } from '../print/testPage'
 // نشست ۲۲۲ · فاز ۵ — مسیر خام (RAW): TSPL برای لیبل، ESC/POS برای رسید
-import { isRawMethod, printMaybeRaw } from '../print/raw/route'
+import { assertRawNotDialog, isRawMethod, printMaybeRaw } from '../print/raw/route'
 import { mmToPrinterDots, printTsplRows } from '../print/raw'
 // نشست ۲۲۲ · فاز ۳ — resolver مشترک چاپگر (بخش ۶.۲ طرح)
 import { listPrintersDetailed, printerNotFoundMessage, resolvePrintTargetName } from '../print/target'
@@ -846,6 +846,7 @@ export function registerIpcHandlers(): void {
      * Chromium امروز دست‌نخورده است.
      */
     if (isRawMethod(tpl.printMethod)) {
+      assertRawNotDialog(p?.silent)
       const startColumn = Number(p?.startColumn ?? 1)
       const rows = labelRows(labels, tpl.columns, startColumn)
       /**
