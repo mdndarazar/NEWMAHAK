@@ -126,7 +126,11 @@ export async function printWith(
    * خطا داد، تنظیمات کاربر بی‌دلیل عوض نمی‌شود.
    */
   if (choice.saveAsDefault) {
-    await call(CH.printSetDefault, { profile: kind, printerName: choice.deviceName })
+    try {
+      await call(CH.printSetDefault, { profile: kind, printerName: choice.deviceName })
+    } catch (e) {
+      console.warn('چاپ انجام شد، اما ذخیره‌ی چاپگر پیش‌فرض ناموفق بود.', e)
+    }
   }
   return 'DONE'
 }

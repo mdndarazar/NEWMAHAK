@@ -1,4 +1,11 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
+
+/**
+ * Stack سراسری modalها: چون همه‌ی modalها روی window و در capture به Esc گوش
+ * می‌دهند، صرفاً stopPropagation کافی نیست. فقط آخرین modal بازشده حق بستن با
+ * Esc را دارد تا Esc در picker، modal زیرین (لیبل/پرداختی‌ها) را هم نبندد.
+ */
+const modalStack: symbol[] = []
 
 /**
  * modal پایه‌ی پروژه. RTL، بستن با Esc یا کلیک روی بک‌دراپ.
@@ -24,18 +31,33 @@ export default function Modal({
   /** بعضی modalهای سراسری (مثل انتخاب چاپگر) باید روی modalهای صفحه بنشینند. */
   zIndexClass?: string
 }) {
+  const modalId = useRef(Symbol('modal'))
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
   useEffect(() => {
     if (!open) return
+    const id = modalId.current
+    modalStack.push(id)
+    const removeFromStack = () => {
+      const idx = modalStack.lastIndexOf(id)
+      if (idx >= 0) modalStack.splice(idx, 1)
+    }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        e.stopPropagation()
-        onClose()
-      }
+      if (e.key !== 'Escape') return
+      // فقط modal بالایی Esc را مصرف می‌کند؛ modalهای زیرین هیچ کاری نمی‌کنند.
+      if (modalStack[modalStack.length - 1] !== id) return
+      e.preventDefault()
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+      onCloseRef.current()
     }
     window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [open, onClose])
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      removeFromStack()
+    }
+  }, [open])
 
   if (!open) return null
 

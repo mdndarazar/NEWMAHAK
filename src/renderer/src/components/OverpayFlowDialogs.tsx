@@ -31,6 +31,11 @@ import {
  * ===========================================================================
  */
 
+const isUnknownPrintMessage = (e: unknown): boolean =>
+  /معلوم نیست|نامعلوم|ممکن است|پاسخی نداد/.test(String((e as any)?.message ?? e ?? ''))
+
+const isPrintCancelMessage = (e: unknown): boolean => /لغو شد|cancel/i.test(String((e as any)?.message ?? e ?? ''))
+
 /** چاپ کد اعتبار از همان کانال چاپ اسناد اعتبار؛ خطا ⇒ متن فارسی (سند صادرشده دست نمی‌خورد). */
 export async function printOverpayCredit(credit: { id?: number | null } | null | undefined): Promise<string | null> {
   const req = creditPrintOpRequest('print', { id: credit?.id ?? 0, copies: 1 })
@@ -39,6 +44,9 @@ export async function printOverpayCredit(credit: { id?: number | null } | null |
     await call(CH[req.channel as keyof typeof CH], req.payload)
     return null
   } catch (e: any) {
+    if (isPrintCancelMessage(e)) return null
+    if (isUnknownPrintMessage(e))
+      return `کد اعتبار صادر شد، اما معلوم نیست چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
     return `کد اعتبار صادر شده ولی چاپ نشد: ${e.message} · از «چاپ دوباره‌ی کد» استفاده کنید.`
   }
 }

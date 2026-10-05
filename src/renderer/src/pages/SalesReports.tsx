@@ -1241,6 +1241,9 @@ export default function SalesReports() {
   ]
 
   const printA4 = async () => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       const output = await prepareOutputSnapshot()
       if (tab === 'summary') {
@@ -1458,10 +1461,16 @@ export default function SalesReports() {
       flash('گزارش برای چاپ A4 فرستاده شد')
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
   const printThermal = async () => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       await call(CH.printThermalSummary, {
         title: 'سرجمع فروش',
@@ -1495,6 +1504,9 @@ export default function SalesReports() {
       flash('گزارش حرارتی چاپ شد')
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
@@ -2597,11 +2609,11 @@ export default function SalesReports() {
         <span className="text-xs text-slate-500">
           {outputScope === 'all' ? 'پیش‌فرض: کل خروجی فیلترشده' : 'خروجی محدود به صفحه‌ی جاری است'}
         </span>
-        <button className="btn" onClick={() => void printThermal()} disabled={busy || outputDirty || tab !== 'summary' || !report.rows.length}>
-          چاپ حرارتی
+        <button className="btn" onClick={() => void printThermal()} disabled={busy || printBusy || outputDirty || tab !== 'summary' || !report.rows.length}>
+          {printBusy ? 'در حال چاپ…' : 'چاپ حرارتی'}
         </button>
-        <button className="btn" onClick={() => void printA4()} disabled={busy || outputDirty}>
-          چاپ A4
+        <button className="btn" onClick={() => void printA4()} disabled={busy || printBusy || outputDirty}>
+          {printBusy ? 'در حال چاپ…' : 'چاپ A4'}
         </button>
         <button className="btn" onClick={() => void exportCsvNow()} disabled={busy || outputDirty}>
           خروجی اکسل

@@ -819,26 +819,27 @@ export const printService = {
       requestedDeviceName: input.deviceName,
       savedName: ''
     })
-    for (const copy of plan) {
-      const html = creditDocHtml({ ...data, printCount: copy.printCount, reprint: copy.reprint }, tpl, paper)
-      try {
-        await printHtml(html, {
-          silent: input.silent ?? false,
-          deviceName
-        })
-      } catch (err) {
-        /**
-         * ممیزی AUDIT-S129-01 — نتیجه‌ی نامعلوم (پنجره بسته/crash یا مهلت) یعنی شاید کاغذ
-         * بیرون آمده باشد. احتیاطاً شمرده می‌شود تا کاغذ بعدی «نسخه‌ی مجدد» بخورد، نه
-         * «اصل» دوم؛ Audit صریحاً «نتیجه‌ی نامعلوم» را می‌گوید. لغو/رد قطعی شمرده نمی‌شود.
-         */
-        if (isPrintOutcomeUnknown(err) && creditShouldMarkPrinted(input.markPrinted))
-          await storeCreditService.markPrinted({ id, userId: input.userId ?? null, uncertain: true })
-        throw err
+    const docs = plan.map((copy) => ({ ...data, printCount: copy.printCount, reprint: copy.reprint }))
+    const html = docs.length === 1 ? creditDocHtml(docs[0], tpl, paper) : creditBatchHtml(docs, tpl, paper, 1)
+    try {
+      await printHtml(html, {
+        silent: input.silent ?? false,
+        deviceName
+      })
+    } catch (err) {
+      /**
+       * ممیزی AUDIT-S129-01 — نتیجه‌ی نامعلوم (پنجره بسته/crash یا مهلت) یعنی شاید کاغذ
+       * بیرون آمده باشد. برای job چندصفحه‌ای همه‌ی نسخه‌های داخل همان job را
+       * احتیاطاً uncertain می‌شماریم؛ لغو/رد قطعی شمرده نمی‌شود.
+       */
+      if (isPrintOutcomeUnknown(err) && creditShouldMarkPrinted(input.markPrinted)) {
+        for (let i = 0; i < plan.length; i++) await storeCreditService.markPrinted({ id, userId: input.userId ?? null, uncertain: true })
       }
-      // بعدِ *هر* کاغذ، تا شمارنده و AuditLog تعداد واقعی کاغذها را بدانند.
-      // «پیش‌فرض روشن» یک قاعده است (بخش ۹.۳ · §۲۴)، نه یک `!== false`ِ محلی.
-      if (creditShouldMarkPrinted(input.markPrinted)) await storeCreditService.markPrinted({ id, userId: input.userId ?? null })
+      throw err
+    }
+    // بعد از موفقیت job، به تعداد صفحه‌های واقعی شمارنده و AuditLog بالا می‌رود.
+    if (creditShouldMarkPrinted(input.markPrinted)) {
+      for (let i = 0; i < plan.length; i++) await storeCreditService.markPrinted({ id, userId: input.userId ?? null })
     }
     return { copies: plan.length, id }
   },

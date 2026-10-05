@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 import { exportTable } from '../lib/exportCsv'
@@ -124,6 +124,8 @@ export default function CashClose() {
   const [mvDesc, setMvDesc] = useState('')
   const [mvBusy, setMvBusy] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [printBusy, setPrintBusy] = useState(false)
+  const printBusyRef = useRef(false)
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [confirmClose, setConfirmClose] = useState(false)
@@ -463,6 +465,9 @@ export default function CashClose() {
     : ''
 
   const printA4 = async () => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       await call(CH.printA4, {
         title: 'گزارش بستن صندوق',
@@ -494,10 +499,16 @@ export default function CashClose() {
       flash('گزارش صندوق برای چاپ A4 فرستاده شد')
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
   const printThermal = async () => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       await call(CH.printThermalSummary, {
         title: 'بستن صندوق',
@@ -590,6 +601,9 @@ export default function CashClose() {
       flash('گزارش حرارتی صندوق چاپ شد')
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
@@ -1130,11 +1144,11 @@ export default function CashClose() {
             onChange={(e) => setNote(e.target.value)}
           />
         </label>
-        <button className="btn" onClick={() => void printThermal()} disabled={!report}>
-          چاپ حرارتی
+        <button className="btn" onClick={() => void printThermal()} disabled={!report || printBusy}>
+          {printBusy ? 'در حال چاپ…' : 'چاپ حرارتی'}
         </button>
-        <button className="btn" onClick={() => void printA4()} disabled={!report}>
-          چاپ A4
+        <button className="btn" onClick={() => void printA4()} disabled={!report || printBusy}>
+          {printBusy ? 'در حال چاپ…' : 'چاپ A4'}
         </button>
         <button
           className="btn"

@@ -147,6 +147,8 @@ export default function CreditManagement() {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [busy, setBusy] = useState(false)
+  const [printing, setPrinting] = useState(false)
+  const printingRef = useRef(false)
   /**
    * نشست ۱۵۴ (S151-b) — گیت main ذخیره‌ی تنظیمات اعتبار: رمز همراه همان درخواست
    * فرستاده می‌شود و سرور می‌سنجد. تا وضعیت قفل خوانده نشده، رمز لازم فرض می‌شود (fail-closed).
@@ -346,8 +348,11 @@ export default function CreditManagement() {
    * دستی نوشته می‌شدند و بندهای ۱۷/۲۲/۲۳ هارنس ۲۵ فقط رشته‌هایشان را می‌دیدند.
    */
   const printOne = async (id: number, copies = 1) => {
+    if (printingRef.current) return
     const req = creditPrintOpRequest('print', { id, copies })
     if (!req) return
+    printingRef.current = true
+    setPrinting(true)
     try {
       const res = await call<CreditPrintOutcome>(CH[req.channel as keyof typeof CH], req.payload)
       flash(creditPrintFlash('print', { ...(res ?? {}), copies: res?.copies ?? copies }, faDigits))
@@ -355,18 +360,27 @@ export default function CreditManagement() {
       else void load()
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
     }
   }
 
   const printBatch = async (target: CreditPrintTarget) => {
+    if (printingRef.current) return
     const req = creditPrintOpRequest('batch', target)
     if (!req) return
+    printingRef.current = true
+    setPrinting(true)
     try {
       const res = await call<CreditPrintOutcome>(CH[req.channel as keyof typeof CH], req.payload)
       flash(creditPrintFlash('batch', res, faDigits))
       void load()
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
     }
   }
 
@@ -563,8 +577,8 @@ export default function CreditManagement() {
               <button className="btn" onClick={() => void doExport('list', rows)}>
                 خروجی اکسل
               </button>
-              <button className="btn" disabled={!selected.length} onClick={() => void printBatch({ ids: selected })}>
-                چاپ گروهی انتخاب‌شده‌ها
+              <button className="btn" disabled={!selected.length || printing} onClick={() => void printBatch({ ids: selected })}>
+                {printing ? 'در حال چاپ…' : 'چاپ گروهی انتخاب‌شده‌ها'}
               </button>
               <button className="btn" disabled={!selected.length} onClick={() => void savePdf({ ids: selected })}>
                 PDF انتخاب‌شده‌ها
@@ -627,8 +641,8 @@ export default function CreditManagement() {
                         <button className="text-brand font-bold" onClick={() => void openDetail(r.id)}>
                           جزئیات
                         </button>
-                        <button className="text-brand" title="چاپ سند" onClick={() => void printOne(r.id)}>
-                          چاپ
+                        <button className="text-brand" title="چاپ سند" onClick={() => void printOne(r.id)} disabled={printing}>
+                          {printing ? 'در حال چاپ…' : 'چاپ'}
                         </button>
                         <button className="text-brand" title="پیش‌نمایش و PDF" onClick={() => void openPreview(r.id)}>
                           پیش‌نمایش
@@ -657,6 +671,7 @@ export default function CreditManagement() {
             }}
             onBack={() => setView('list')}
             onPrint={(copies: number) => void printOne(detail.credit.id, copies)}
+            printing={printing}
             onPreview={() => void openPreview(detail.credit.id)}
             onPdf={() => void savePdf({ id: detail.credit.id })}
             onPage={(kind, skip) => void openDetailPage(kind, skip)}
@@ -844,8 +859,9 @@ export default function CreditManagement() {
                           className="text-brand font-bold"
                           title="یک سند PDF/چاپی چندصفحه‌ای برای کل دسته"
                           onClick={() => void printBatch({ batchId: b.id })}
+                          disabled={printing}
                         >
-                          چاپ دسته‌ای
+                          {printing ? 'در حال چاپ…' : 'چاپ دسته‌ای'}
                         </button>
                         <button className="text-brand" onClick={() => void savePdf({ batchId: b.id })}>
                           PDF دسته
@@ -964,8 +980,8 @@ export default function CreditManagement() {
               <button className="btn" onClick={closePreview}>
                 بستن
               </button>
-              <button className="btn" onClick={() => previewId && void printOne(previewId)}>
-                چاپ سند
+              <button className="btn" onClick={() => previewId && void printOne(previewId)} disabled={printing}>
+                {printing ? 'در حال چاپ…' : 'چاپ سند'}
               </button>
               <button className="btn btn-primary" onClick={() => previewId && void savePdf({ id: previewId })}>
                 ذخیره‌ی PDF

@@ -54,6 +54,9 @@ interface Method {
   kind: string
 }
 
+const isUnknownPrintMessage = (e: unknown): boolean =>
+  /معلوم نیست|نامعلوم|ممکن است|پاسخی نداد/.test(String((e as any)?.message ?? e ?? ''))
+
 /**
  * ===========================================================================
  * مورد ۳ — سرستون‌های جدول اقلام پنل فروش، با «تغییر اندازه‌ی ستون مثل اکسل».
@@ -88,7 +91,8 @@ interface LastInvoice {
   returnCode: string | null
   grandTotal: number
   methodLabel: string
-  printed: boolean
+  /** true = چاپ قطعی، false = چاپ نشده، UNKNOWN = نتیجه نامعلوم و نباید کاربر را به چاپ دوباره هل بدهیم. */
+  printed: boolean | 'UNKNOWN'
   /** مهلت برگشت همین فاکتور (عادی یا «مشتری راه دور») */
   returnCodeDays?: number
   /** بخش ۶: «بارکد اعتبار» مصرف‌شده روی همین فاکتور (پول نقد نیست) */
@@ -737,7 +741,11 @@ export default function Pos() {
         setLast((p) => (p && p.id === invoiceId ? { ...p, printed: true } : p))
         notify('رسید فاکتور چاپ شد')
       } catch (e: any) {
-        setErr(`چاپ انجام نشد: ${e.message}`)
+        setErr(
+          isUnknownPrintMessage(e)
+            ? `معلوم نیست رسید چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
+            : `چاپ انجام نشد: ${e.message}`
+        )
       } finally {
         printingRef.current = false
         setPrinting(false)
@@ -975,7 +983,7 @@ export default function Pos() {
          * می‌شود و در گزارشات فروش می‌آید.
          */
         let printNote = ''
-        let printed = false
+        let printed: LastInvoice['printed'] = false
         if (!printEnabled) printNote = ' (چاپ فاکتور خاموش است؛ فاکتور ثبت شد و در گزارشات فروش هست)'
         else if (settings.receipt.autoPrint) {
           printingRef.current = true
@@ -993,7 +1001,8 @@ export default function Pos() {
             else printNote = ' (چاپ انجام نشد؛ فاکتور ثبت شد و در گزارشات فروش هست)'
           } catch (e: any) {
             const raw = String(e?.message ?? e)
-            const unknown = /معلوم نیست|نامعلوم|ممکن است|پاسخی نداد/.test(raw)
+            const unknown = isUnknownPrintMessage(e)
+            if (unknown) printed = 'UNKNOWN'
             printNote = unknown
               ? ' (معلوم نیست فاکتور چاپ شده باشد؛ قبل از چاپ دوباره خروجی چاپگر را نگاه کنید)'
               : ` (چاپ خودکار انجام نشد: ${raw})`
@@ -1534,8 +1543,14 @@ export default function Pos() {
               برگشت از فروش با همین کد
             </button>
             <span className="kbd">
-              {!printEnabled ? 'چاپ خاموش' : last.printed ? 'رسید چاپ شد' : 'رسید هنوز چاپ نشده است'} · مهلت برگشت این
-              فاکتور{' '}
+              {!printEnabled
+                ? 'چاپ خاموش'
+                : last.printed === 'UNKNOWN'
+                  ? 'معلوم نیست رسید چاپ شده؛ اول خروجی چاپگر را ببینید'
+                  : last.printed
+                    ? 'رسید چاپ شد'
+                    : 'رسید هنوز چاپ نشده است'}{' '}
+              · مهلت برگشت این فاکتور{' '}
               {faDigits(last.returnCodeDays ?? settings.sale.returnCodeDays)} روز است
             </span>
             <button className="btn ms-auto" onClick={() => setLast(null)}>

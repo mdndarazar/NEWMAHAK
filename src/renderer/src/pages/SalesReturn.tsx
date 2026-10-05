@@ -161,6 +161,9 @@ const returnValueFor = (i: ReturnLookupItem, q: number) => returnValueOf(i.netLi
 
 const canReturn = (i: ReturnLookupItem) => i.stockState !== 'MISSING' && i.remainingQty > 0
 
+const isUnknownPrintMessage = (e: unknown): boolean =>
+  /معلوم نیست|نامعلوم|ممکن است|پاسخی نداد/.test(String((e as any)?.message ?? e ?? ''))
+
 export default function SalesReturn() {
   const nav = useNavigate()
   const [code, setCode] = useState('')
@@ -683,7 +686,11 @@ export default function SalesReturn() {
       if (res === 'CANCELLED') return
       flash('رسید برگشت از فروش برای چاپ فرستاده شد')
     } catch (e: any) {
-      setErr(`چاپ رسید برگشت انجام نشد: ${e.message}`)
+      setErr(
+        isUnknownPrintMessage(e)
+          ? `معلوم نیست رسید برگشت چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
+          : `چاپ رسید برگشت انجام نشد: ${e.message}`
+      )
     } finally {
       printingRef.current = false
       setPrinting(false)
@@ -703,7 +710,11 @@ export default function SalesReturn() {
       if (res === 'CANCELLED') return
       flash('سند تعویض برای چاپ فرستاده شد')
     } catch (e: any) {
-      setErr(`چاپ سند تعویض انجام نشد: ${e.message}`)
+      setErr(
+        isUnknownPrintMessage(e)
+          ? `معلوم نیست سند تعویض چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
+          : `چاپ سند تعویض انجام نشد: ${e.message}`
+      )
     } finally {
       printingRef.current = false
       setPrinting(false)
@@ -721,7 +732,11 @@ export default function SalesReturn() {
       )
       if (res !== 'CANCELLED') flash('رسید فاکتور برای چاپ فرستاده شد')
     } catch (e: any) {
-      setErr(e.message)
+      setErr(
+        isUnknownPrintMessage(e)
+          ? `معلوم نیست رسید فاکتور چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
+          : e.message
+      )
     } finally {
       printingRef.current = false
       setPrinting(false)
