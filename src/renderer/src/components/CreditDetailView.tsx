@@ -146,8 +146,8 @@ export default function CreditDetailView({
         <button className="btn" onClick={onPreview}>
           پیش‌نمایش / چاپ PDF
         </button>
-        <button className="btn" onClick={onPdf}>
-          ذخیره‌ی PDF
+        <button className="btn" onClick={onPdf} disabled={printing}>
+          {printing ? 'در حال آماده‌سازی…' : 'ذخیره‌ی PDF'}
         </button>
         {/* جلسه ۳۴ — «چاپ بعدی نسخه‌ی مجدد است» تا دیروز یک مقایسه‌ی دستی با عددِ
             آستانه بود، درست همان چیزی که بخش ۹.۲ یکی‌اش کرده بود. حالا از

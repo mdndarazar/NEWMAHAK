@@ -1,11 +1,37 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 
 /**
- * Stack سراسری modalها: چون همه‌ی modalها روی window و در capture به Esc گوش
- * می‌دهند، صرفاً stopPropagation کافی نیست. فقط آخرین modal بازشده حق بستن با
- * Esc را دارد تا Esc در picker، modal زیرین (لیبل/پرداختی‌ها) را هم نبندد.
+ * Stack سراسری modalها: چون همه‌ی modalها روی window و در capture به کلیدها گوش
+ * می‌دهند، صرفاً stopPropagation کافی نیست. فقط آخرین دیالوگ بازشده حق واکنش به
+ * Esc/Enter را دارد تا picker یا ConfirmDialog، modal زیرین را اشتباهی نبندد.
  */
 const modalStack: symbol[] = []
+
+/** ثبت یک پنجره در stack مشترک و اجرای handler فقط برای topmost. */
+export function useTopmostModalKey(open: boolean, handler: (e: KeyboardEvent) => void): void {
+  const modalId = useRef(Symbol('modal'))
+  const handlerRef = useRef(handler)
+  handlerRef.current = handler
+
+  useEffect(() => {
+    if (!open) return
+    const id = modalId.current
+    modalStack.push(id)
+    const removeFromStack = () => {
+      const idx = modalStack.lastIndexOf(id)
+      if (idx >= 0) modalStack.splice(idx, 1)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (modalStack[modalStack.length - 1] !== id) return
+      handlerRef.current(e)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      removeFromStack()
+    }
+  }, [open])
+}
 
 /**
  * modal پایه‌ی پروژه. RTL، بستن با Esc یا کلیک روی بک‌دراپ.
@@ -31,33 +57,13 @@ export default function Modal({
   /** بعضی modalهای سراسری (مثل انتخاب چاپگر) باید روی modalهای صفحه بنشینند. */
   zIndexClass?: string
 }) {
-  const modalId = useRef(Symbol('modal'))
-  const onCloseRef = useRef(onClose)
-  onCloseRef.current = onClose
-
-  useEffect(() => {
-    if (!open) return
-    const id = modalId.current
-    modalStack.push(id)
-    const removeFromStack = () => {
-      const idx = modalStack.lastIndexOf(id)
-      if (idx >= 0) modalStack.splice(idx, 1)
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      // فقط modal بالایی Esc را مصرف می‌کند؛ modalهای زیرین هیچ کاری نمی‌کنند.
-      if (modalStack[modalStack.length - 1] !== id) return
-      e.preventDefault()
-      e.stopPropagation()
-      e.stopImmediatePropagation()
-      onCloseRef.current()
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => {
-      window.removeEventListener('keydown', onKey, true)
-      removeFromStack()
-    }
-  }, [open])
+  useTopmostModalKey(open, (e) => {
+    if (e.key !== 'Escape') return
+    e.preventDefault()
+    e.stopPropagation()
+    e.stopImmediatePropagation()
+    onClose()
+  })
 
   if (!open) return null
 

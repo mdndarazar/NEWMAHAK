@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
+import { isPrintCancelledError } from '../lib/printErrors'
 import ManagerGate from '../components/ManagerGate'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -359,7 +360,7 @@ export default function CreditManagement() {
       if (detail?.credit.id === id) await openDetail(id)
       else void load()
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
     } finally {
       printingRef.current = false
       setPrinting(false)
@@ -377,7 +378,7 @@ export default function CreditManagement() {
       flash(creditPrintFlash('batch', res, faDigits))
       void load()
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
     } finally {
       printingRef.current = false
       setPrinting(false)
@@ -385,8 +386,11 @@ export default function CreditManagement() {
   }
 
   const savePdf = async (target: CreditPrintTarget) => {
+    if (printingRef.current) return
     const req = creditPrintOpRequest('pdf', target)
     if (!req) return
+    printingRef.current = true
+    setPrinting(true)
     try {
       const res = await call<CreditPrintOutcome>(CH[req.channel as keyof typeof CH], req.payload)
       flash(creditPrintFlash('pdf', res, faDigits))
@@ -394,7 +398,10 @@ export default function CreditManagement() {
       if (id && detail?.credit.id === id) await openDetail(id)
       else void load()
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
     }
   }
 
@@ -580,8 +587,8 @@ export default function CreditManagement() {
               <button className="btn" disabled={!selected.length || printing} onClick={() => void printBatch({ ids: selected })}>
                 {printing ? 'در حال چاپ…' : 'چاپ گروهی انتخاب‌شده‌ها'}
               </button>
-              <button className="btn" disabled={!selected.length} onClick={() => void savePdf({ ids: selected })}>
-                PDF انتخاب‌شده‌ها
+              <button className="btn" disabled={!selected.length || printing} onClick={() => void savePdf({ ids: selected })}>
+                {printing ? 'در حال آماده‌سازی…' : 'PDF انتخاب‌شده‌ها'}
               </button>
               {!!selected.length && (
                 <button className="btn" onClick={() => setSelected([])}>
@@ -863,8 +870,8 @@ export default function CreditManagement() {
                         >
                           {printing ? 'در حال چاپ…' : 'چاپ دسته‌ای'}
                         </button>
-                        <button className="text-brand" onClick={() => void savePdf({ batchId: b.id })}>
-                          PDF دسته
+                        <button className="text-brand" onClick={() => void savePdf({ batchId: b.id })} disabled={printing}>
+                          {printing ? 'در حال آماده‌سازی…' : 'PDF دسته'}
                         </button>
                       </div>
                     </Cell>
@@ -983,8 +990,8 @@ export default function CreditManagement() {
               <button className="btn" onClick={() => previewId && void printOne(previewId)} disabled={printing}>
                 {printing ? 'در حال چاپ…' : 'چاپ سند'}
               </button>
-              <button className="btn btn-primary" onClick={() => previewId && void savePdf({ id: previewId })}>
-                ذخیره‌ی PDF
+              <button className="btn btn-primary" onClick={() => previewId && void savePdf({ id: previewId })} disabled={printing}>
+                {printing ? 'در حال آماده‌سازی…' : 'ذخیره‌ی PDF'}
               </button>
             </>
           }

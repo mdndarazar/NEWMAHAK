@@ -237,11 +237,14 @@ console.log('\n— ۳) فاکتور عمده‌ی جدا (wholesaleSeparate)')
   ], ['Axiom Thermal 80', 80000])
 }
 
-console.log('\n— ۴) اعتبار: فقط نام چاپگر از resolver؛ silent و شمارنده دست‌نخورده')
+console.log('\n— ۴) اعتبار: چاپگر پیش‌فرض ویندوز/نام صریح، silent و شمارنده دست‌نخورده')
 {
   const svc = readSrc('src/main/services/PrintService.ts')
   const creditBody = bodyOf(svc, 'async printCredit(')
-  check('چاپ اعتبار نام را از receiptTargetDevice می‌گیرد', /receiptTargetDevice\(/.test(creditBody), true)
+  check('چاپ اعتبار به چاپگر رسید گره نمی‌خورد و با savedName خالی resolve می‌شود', [
+    /resolvePrintTargetName\(\{[\s\S]{0,120}?savedName: ''/.test(creditBody),
+    /receiptTargetDevice\(/.test(creditBody)
+  ], [true, false])
   check('و دیگر نام جعلی/خام از renderer مستقیم نمی‌رود', /deviceName: input\.deviceName \|\| tpl\.printerName/.test(svc), false)
   check('سیاست دیالوگ اعتبار عوض نشده', /silent: input\.silent \?\? false/.test(creditBody), true)
   check('شمارنده‌ی چاپ اعتبار (markPrinted) و ممیزی نتیجه‌ی نامعلوم دست‌نخورده', [
@@ -249,10 +252,11 @@ console.log('\n— ۴) اعتبار: فقط نام چاپگر از resolver؛ si
     /isPrintOutcomeUnknown\(err\)/.test(creditBody)
   ], [true, true])
   const batchBody = bodyOf(svc, 'async printCreditBatch(')
-  check('چاپ دسته‌ای هم همان resolver + همان silent', [
+  check('چاپ دسته‌ای اعتبار هم savedName خالی + همان silent', [
+    /resolvePrintTargetName\(\{[\s\S]{0,120}?savedName: ''/.test(batchBody),
     /receiptTargetDevice\(/.test(batchBody),
     /silent: input\.silent \?\? false/.test(batchBody)
-  ], [true, true])
+  ], [true, false, true])
 }
 
 console.log('\n— ۵) همه‌ی نقاط چاپ renderer از printWith رد می‌شوند (جدول ۲.۲)')

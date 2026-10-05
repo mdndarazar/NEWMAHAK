@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
+import { isUnknownPrintMessage } from '../lib/printErrors'
 import { useBarcodeScanner, useFieldScanDetector } from '../hooks/useBarcodeScanner'
 import ConfirmDialog from '../components/ConfirmDialog'
 import OverpayFlowDialogs, { printOverpayCredit } from '../components/OverpayFlowDialogs'
@@ -161,9 +162,6 @@ const returnValueFor = (i: ReturnLookupItem, q: number) => returnValueOf(i.netLi
 
 const canReturn = (i: ReturnLookupItem) => i.stockState !== 'MISSING' && i.remainingQty > 0
 
-const isUnknownPrintMessage = (e: unknown): boolean =>
-  /معلوم نیست|نامعلوم|ممکن است|پاسخی نداد/.test(String((e as any)?.message ?? e ?? ''))
-
 export default function SalesReturn() {
   const nav = useNavigate()
   const [code, setCode] = useState('')
@@ -198,6 +196,7 @@ export default function SalesReturn() {
   const [overpayFlow, setOverpayFlow] = useState<OverpayFlowState | null>(null)
   const [overpayReq, setOverpayReq] = useState<OverpayRequest>({})
   const [issuedOverpayCredit, setIssuedOverpayCredit] = useState<any | null>(null)
+  const [overpayCreditPrinting, setOverpayCreditPrinting] = useState(false)
   /**
    * بند ۱۲ — تسویه‌ی مابه‌التفاوت *منفی* تعویض؛ بدون پیش‌فرض ضمنی.
    * جلسه ۱۷ · بند ۱ — گزینه‌ی چهارم «کارت‌به‌کارت توسط مدیر» هم اضافه شد و
@@ -266,6 +265,17 @@ export default function SalesReturn() {
     setMsg(m)
     setErr(null)
     window.setTimeout(() => setMsg((c) => (c === m ? null : c)), 10000)
+  }
+
+  const printIssuedOverpayCredit = async (credit: any | null) => {
+    if (overpayCreditPrinting) return
+    setOverpayCreditPrinting(true)
+    try {
+      const problem = await printOverpayCredit(credit)
+      if (problem) setErr(problem)
+    } finally {
+      setOverpayCreditPrinting(false)
+    }
   }
 
   /** پیدا کردن فاکتور با کد (تایپ‌شده یا اسکن‌شده). */
@@ -519,8 +529,7 @@ export default function SalesReturn() {
         )
         if (res.overpayCredit?.code) {
           setIssuedOverpayCredit(res.overpayCredit)
-          const problem = await printOverpayCredit(res.overpayCredit)
-          if (problem) setErr(problem)
+          await printIssuedOverpayCredit(res.overpayCredit)
         }
         await lookupCode(lookup.returnCode)
         await loadHistory()
@@ -1755,11 +1764,8 @@ export default function SalesReturn() {
         onSubmit={(req) => void doSubmit(false, req)}
         issuedCredit={issuedOverpayCredit}
         onCloseIssued={() => setIssuedOverpayCredit(null)}
-        onReprint={() =>
-          void printOverpayCredit(issuedOverpayCredit).then((problem) => {
-            if (problem) setErr(problem)
-          })
-        }
+        onReprint={() => void printIssuedOverpayCredit(issuedOverpayCredit)}
+        creditPrinting={overpayCreditPrinting}
       />
 
       {/* ---------------- ویرایش یک برگشت ثبت‌شده ---------------- */}

@@ -22,6 +22,7 @@
  * ===========================================================================
  */
 import { call, CH } from './api'
+import { isPrintCancelledError } from './printErrors'
 import type { LabelTemplate, ReceiptTemplate } from '@shared/receipt'
 
 /** پروفایل چاپ در سمت renderer — همان نام‌گذاری main (بخش ۵.۵ طرح). */
@@ -59,6 +60,8 @@ export interface PrintProfileFlags {
   askEachTime: boolean
   useSystemDialog: boolean
   savedName: string
+  /** پروفایلی که «ذخیره به‌عنوان پیش‌فرض» باید واقعاً در آن نوشته شود. */
+  defaultProfile: PrintFlowKind
 }
 
 /**
@@ -71,14 +74,15 @@ export async function printProfileFlags(kind: PrintFlowKind): Promise<PrintProfi
   const bundle = await call<{ receipt: ReceiptTemplate; label: LabelTemplate }>(CH.settingsBundle)
   if (kind === 'LABEL') {
     const t = bundle.label
-    return { askEachTime: t.askEachTime !== false, useSystemDialog: t.useSystemDialog === true, savedName: t.printerName }
+    return { askEachTime: t.askEachTime !== false, useSystemDialog: t.useSystemDialog === true, savedName: t.printerName, defaultProfile: 'LABEL' }
   }
   const t = bundle.receipt
   const wholesale = kind === 'WHOLESALE' && t.wholesaleSeparate === true
   return {
     askEachTime: t.askEachTime !== false,
     useSystemDialog: t.useSystemDialog === true,
-    savedName: wholesale ? t.wholesalePrinterName : t.printerName
+    savedName: wholesale ? t.wholesalePrinterName : t.printerName,
+    defaultProfile: wholesale ? 'WHOLESALE' : 'INVOICE'
   }
 }
 
@@ -95,14 +99,21 @@ export async function printWith(
   doPrint: (deviceName?: string, opts?: { silent?: boolean }) => Promise<unknown>
 ): Promise<PrintFlowResult> {
   const flags = await printProfileFlags(kind)
+  const runPrint = async (deviceName?: string, opts?: { silent?: boolean }): Promise<PrintFlowResult> => {
+    try {
+      await doPrint(deviceName, opts)
+      return 'DONE'
+    } catch (e) {
+      if (isPrintCancelledError(e)) return 'CANCELLED'
+      throw e
+    }
+  }
   if (!flags.askEachTime) {
-    await doPrint(undefined)
-    return 'DONE'
+    return runPrint(undefined)
   }
   if (flags.useSystemDialog) {
     // دیالوگ خود ویندوز؛ انتخاب چاپگر کار کاربر در همان دیالوگ است.
-    await doPrint(undefined, { silent: false })
-    return 'DONE'
+    return runPrint(undefined, { silent: false })
   }
   if (!opener) {
     // اگر میزبان پنجره mount نشده باشد (مثلاً تست واحد)، به رفتار «بی‌پرس»
@@ -120,14 +131,15 @@ export async function printWith(
    * چیزی انتخاب نکرده، پس هیچ چاپی نباید انجام شود.
    */
   if (!choice || !choice.deviceName) return 'CANCELLED'
-  await doPrint(choice.deviceName)
+  const printed = await runPrint(choice.deviceName)
+  if (printed === 'CANCELLED') return 'CANCELLED'
   /**
    * «ذخیره به‌عنوان پیش‌فرض» فقط **بعد از موفقیت چاپ** ذخیره می‌شود؛ اگر چاپ
    * خطا داد، تنظیمات کاربر بی‌دلیل عوض نمی‌شود.
    */
   if (choice.saveAsDefault) {
     try {
-      await call(CH.printSetDefault, { profile: kind, printerName: choice.deviceName })
+      await call(CH.printSetDefault, { profile: flags.defaultProfile, printerName: choice.deviceName })
     } catch (e) {
       console.warn('چاپ انجام شد، اما ذخیره‌ی چاپگر پیش‌فرض ناموفق بود.', e)
     }

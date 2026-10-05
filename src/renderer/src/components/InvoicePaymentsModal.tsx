@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Modal from './Modal'
 import ConfirmDialog from './ConfirmDialog'
 import JalaliDateInput from './JalaliDateInput'
@@ -7,6 +7,7 @@ import PasswordField from './PasswordField'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
+import { isPrintCancelledError, isUnknownPrintMessage, printErrorMessage } from '../lib/printErrors'
 import { faDigits, money, jalaliToday, toClock } from '@shared/jalali'
 import { paymentMomentFields } from '@shared/paymentDateUi'
 import {
@@ -84,8 +85,10 @@ export default function InvoicePaymentsModal({
     | null
     | { paymentId: number; state: 'printing' }
     | { paymentId: number; state: 'done' }
+    | { paymentId: number; state: 'unknown'; msg: string }
     | { paymentId: number; state: 'failed'; msg: string }
   >(null)
+  const receiptPrintingRef = useRef(false)
 
   // ---- فرم پرداختی جدید ----
   const [kind, setKind] = useState<'CASH' | 'CHEQUE'>('CASH')
@@ -125,6 +128,7 @@ export default function InvoicePaymentsModal({
   const [pwTarget, setPwTarget] = useState<'payment' | 'issue'>('payment')
   /** آخرین کد اعتبار صادرشده از مبلغ اضافه (برای نمایش و چاپ دوباره) */
   const [issuedCredit, setIssuedCredit] = useState<(OverpayCreditLike & { id?: number }) | null>(null)
+  const [creditPrinting, setCreditPrinting] = useState(false)
   /**
    * ---------------- کار الف — «مقصد پول» (بدون پیش‌فرض) ----------------
    * دو حالت جدا دارد و عمداً دو state جدا:
@@ -197,6 +201,7 @@ export default function InvoicePaymentsModal({
     setClearWarn(null)
     setFlow(null)
     setIssuedCredit(null)
+    setCreditPrinting(false)
     setMethodId((cur) => cur ?? methods[0]?.id ?? null)
     void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -209,7 +214,8 @@ export default function InvoicePaymentsModal({
   }
 
   const printDebtReceipt = async (paymentId: number, reprint = false) => {
-    if (!debtReceiptPrint || !paymentId) return
+    if (!debtReceiptPrint || !paymentId || receiptPrintingRef.current) return
+    receiptPrintingRef.current = true
     setReceipt({ paymentId, state: 'printing' })
     try {
       /**
@@ -221,15 +227,21 @@ export default function InvoicePaymentsModal({
       )
       setReceipt(res === 'CANCELLED' ? null : { paymentId, state: 'done' })
     } catch (e: any) {
-      const raw = String(e?.message ?? e)
-      const unknown = /معلوم نیست|نامعلوم/.test(raw)
+      if (isPrintCancelledError(e)) {
+        setReceipt(null)
+        return
+      }
+      const raw = printErrorMessage(e)
+      const unknown = isUnknownPrintMessage(e)
       setReceipt({
         paymentId,
-        state: 'failed',
+        state: unknown ? 'unknown' : 'failed',
         msg: unknown
-          ? 'پرداخت ثبت شده است. معلوم نیست فیش چاپ شده باشد؛ کاغذ را نگاه کنید.'
+          ? 'پرداخت ثبت شده است. معلوم نیست فیش چاپ شده باشد؛ قبل از تلاش دوباره کاغذ و صف چاپگر را نگاه کنید.'
           : `پرداخت ثبت شده است؛ فیش چاپ نشد: ${raw}`
       })
+    } finally {
+      receiptPrintingRef.current = false
     }
   }
 
@@ -238,8 +250,14 @@ export default function InvoicePaymentsModal({
 
   /** چاپ کد اعتبار از همان کانال چاپ اسناد اعتبار (بدون ساخت مسیر چاپ جدید) */
   const printIssuedCredit = async (credit: { id?: number } | null) => {
-    const problem = await printOverpayCredit(credit)
-    if (problem) setErr(problem)
+    if (creditPrinting) return
+    setCreditPrinting(true)
+    try {
+      const problem = await printOverpayCredit(credit)
+      if (problem) setErr(problem)
+    } finally {
+      setCreditPrinting(false)
+    }
   }
 
   const onCreditIssued = async (credit: (OverpayCreditLike & { id?: number }) | null | undefined) => {
@@ -839,17 +857,17 @@ export default function InvoicePaymentsModal({
           {debtReceiptPrint && receipt && (
             <div
               className={`rounded px-3 py-2 border whitespace-pre-line ${
-                receipt.state === 'failed'
+                receipt.state === 'failed' || receipt.state === 'unknown'
                   ? 'bg-amber-100 border-amber-300'
                   : 'bg-emerald-50 border-emerald-300'
               }`}
             >
               {receipt.state === 'printing' && 'در حال چاپ فیش پرداخت…'}
               {receipt.state === 'done' && 'پرداخت ثبت شد · فیش چاپ شد'}
-              {receipt.state === 'failed' && receipt.msg}
+              {(receipt.state === 'failed' || receipt.state === 'unknown') && receipt.msg}
               <div className="mt-1 flex gap-2">
                 {receipt.state === 'failed' && (
-                  <button className="btn" onClick={() => void printDebtReceipt(receipt.paymentId, true)}>
+                  <button className="btn" onClick={() => void printDebtReceipt(receipt.paymentId, true)} disabled={receiptPrintingRef.current}>
                     تلاش دوباره
                   </button>
                 )}
@@ -976,6 +994,7 @@ export default function InvoicePaymentsModal({
             issuedCredit={issuedCredit}
             onCloseIssued={() => setIssuedCredit(null)}
             onReprint={() => void printIssuedCredit(issuedCredit)}
+            creditPrinting={creditPrinting}
           />
         </>
       )}

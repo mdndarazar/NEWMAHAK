@@ -223,6 +223,7 @@ export default function SalesInvoice() {
    */
   const [overpayFlow, setOverpayFlow] = useState<OverpayFlowState | null>(null)
   const [issuedCredit, setIssuedCredit] = useState<(OverpayCreditLike & { id?: number }) | null>(null)
+  const [overpayCreditPrinting, setOverpayCreditPrinting] = useState(false)
   /**
    * برنامه‌ی «مبدأ کسر» که کاربر همین الان تأیید کرده بود: ارسال دوباره‌ی همان
    * فاکتور بعد از «بله ثبت کن» نباید پنجره‌ی مبدأ کسر را دوباره بپرسد. اگر
@@ -254,6 +255,17 @@ export default function SalesInvoice() {
     setMsg(m)
     setErr(null)
     window.setTimeout(() => setMsg((cur) => (cur === m ? null : cur)), 8000)
+  }
+
+  const printIssuedOverpayCredit = async (credit: (OverpayCreditLike & { id?: number }) | null) => {
+    if (overpayCreditPrinting) return
+    setOverpayCreditPrinting(true)
+    try {
+      const problem = await printOverpayCredit(credit)
+      if (problem) setErr(problem)
+    } finally {
+      setOverpayCreditPrinting(false)
+    }
   }
 
   useEffect(() => {
@@ -770,8 +782,7 @@ export default function SalesInvoice() {
           if (inv.overpayCredit?.code) {
             // مرحله ۳ بند ۴-۳۵: کد اعتبار نمایش و خودکار چاپ می‌شود (چاپ دوباره از همان پنجره)
             setIssuedCredit(inv.overpayCredit)
-            const problem = await printOverpayCredit(inv.overpayCredit)
-            if (problem) setErr(problem)
+            await printIssuedOverpayCredit(inv.overpayCredit)
           }
           return
         } catch (e: any) {
@@ -1877,11 +1888,8 @@ export default function SalesInvoice() {
         onSubmit={(req) => void save(req)}
         issuedCredit={issuedCredit}
         onCloseIssued={() => setIssuedCredit(null)}
-        onReprint={() =>
-          void printOverpayCredit(issuedCredit).then((problem) => {
-            if (problem) setErr(problem)
-          })
-        }
+        onReprint={() => void printIssuedOverpayCredit(issuedCredit)}
+        creditPrinting={overpayCreditPrinting}
       />
 
       <StockSourceModal

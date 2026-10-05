@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
+import { isPrintCancelledError } from '../lib/printErrors'
 import { exportTable } from '../lib/exportCsv'
 import ReportFilterBar, { todayFilters, toServiceFilter, type ReportFilters } from '../components/ReportFilterBar'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -498,7 +499,7 @@ export default function CashClose() {
       })
       flash('گزارش صندوق برای چاپ A4 فرستاده شد')
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
     } finally {
       printBusyRef.current = false
       setPrintBusy(false)
@@ -600,7 +601,7 @@ export default function CashClose() {
       })
       flash('گزارش حرارتی صندوق چاپ شد')
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
     } finally {
       printBusyRef.current = false
       setPrintBusy(false)

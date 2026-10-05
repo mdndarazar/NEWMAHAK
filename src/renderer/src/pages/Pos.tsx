@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
+import { isUnknownPrintMessage } from '../lib/printErrors'
 import { useBarcodeScanner } from '../hooks/useBarcodeScanner'
 import { useHotkeys } from '../hooks/useHotkeys'
 import { broadcastSettingsChanged, useSettings } from '../hooks/useSettings'
@@ -53,9 +54,6 @@ interface Method {
   label: string
   kind: string
 }
-
-const isUnknownPrintMessage = (e: unknown): boolean =>
-  /معلوم نیست|نامعلوم|ممکن است|پاسخی نداد/.test(String((e as any)?.message ?? e ?? ''))
 
 /**
  * ===========================================================================
@@ -741,8 +739,10 @@ export default function Pos() {
         setLast((p) => (p && p.id === invoiceId ? { ...p, printed: true } : p))
         notify('رسید فاکتور چاپ شد')
       } catch (e: any) {
+        const unknown = isUnknownPrintMessage(e)
+        if (unknown) setLast((p) => (p && p.id === invoiceId ? { ...p, printed: 'UNKNOWN' } : p))
         setErr(
-          isUnknownPrintMessage(e)
+          unknown
             ? `معلوم نیست رسید چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
             : `چاپ انجام نشد: ${e.message}`
         )

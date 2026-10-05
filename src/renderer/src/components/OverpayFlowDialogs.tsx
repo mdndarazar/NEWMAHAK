@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import Modal from './Modal'
 import ConfirmDialog from './ConfirmDialog'
 import { call, CH } from '../lib/api'
+import { isPrintCancelledError, isUnknownPrintMessage } from '../lib/printErrors'
 import { faDigits, money } from '@shared/jalali'
 import { creditPrintOpRequest } from '@shared/creditUi'
 import {
@@ -31,23 +32,24 @@ import {
  * ===========================================================================
  */
 
-const isUnknownPrintMessage = (e: unknown): boolean =>
-  /معلوم نیست|نامعلوم|ممکن است|پاسخی نداد/.test(String((e as any)?.message ?? e ?? ''))
-
-const isPrintCancelMessage = (e: unknown): boolean => /لغو شد|cancel/i.test(String((e as any)?.message ?? e ?? ''))
+let overpayCreditPrintInFlight = false
 
 /** چاپ کد اعتبار از همان کانال چاپ اسناد اعتبار؛ خطا ⇒ متن فارسی (سند صادرشده دست نمی‌خورد). */
 export async function printOverpayCredit(credit: { id?: number | null } | null | undefined): Promise<string | null> {
   const req = creditPrintOpRequest('print', { id: credit?.id ?? 0, copies: 1 })
   if (!req) return 'شناسه‌ی اعتبار برای چاپ در دسترس نیست؛ از «مدیریت اعتبار خرید» چاپ کنید.'
+  if (overpayCreditPrintInFlight) return 'چاپ کد اعتبار در حال انجام است؛ تا پایان دیالوگ چاپ صبر کنید.'
+  overpayCreditPrintInFlight = true
   try {
     await call(CH[req.channel as keyof typeof CH], req.payload)
     return null
   } catch (e: any) {
-    if (isPrintCancelMessage(e)) return null
+    if (isPrintCancelledError(e)) return null
     if (isUnknownPrintMessage(e))
       return `کد اعتبار صادر شد، اما معلوم نیست چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
     return `کد اعتبار صادر شده ولی چاپ نشد: ${e.message} · از «چاپ دوباره‌ی کد» استفاده کنید.`
+  } finally {
+    overpayCreditPrintInFlight = false
   }
 }
 
@@ -59,7 +61,8 @@ export default function OverpayFlowDialogs({
   onPassword,
   issuedCredit,
   onCloseIssued,
-  onReprint
+  onReprint,
+  creditPrinting = false
 }: {
   flow: OverpayFlowState | null
   busy: boolean
@@ -71,6 +74,8 @@ export default function OverpayFlowDialogs({
   issuedCredit: (OverpayCreditLike & { id?: number }) | null
   onCloseIssued: () => void
   onReprint: () => void
+  /** چاپ خودکار/دوباره‌ی همین کد در جریان است؛ برای جلوگیری از چند دیالوگ پشت‌سرهم. */
+  creditPrinting?: boolean
 }) {
   const [pw, setPw] = useState('')
   useEffect(() => {
@@ -181,8 +186,8 @@ export default function OverpayFlowDialogs({
         onClose={onCloseIssued}
         footer={
           <>
-            <button className="btn" onClick={onReprint}>
-              چاپ دوباره‌ی کد
+            <button className="btn" onClick={onReprint} disabled={busy || creditPrinting}>
+              {creditPrinting ? 'در حال چاپ…' : 'چاپ دوباره‌ی کد'}
             </button>
             <button className="btn btn-primary" onClick={onCloseIssued}>
               بستن

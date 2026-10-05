@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
+import { isPrintCancelledError } from '../lib/printErrors'
 import { exportTable } from '../lib/exportCsv'
 import { pageOfOutput, readAllReportPages, type ReadAllPagedResult } from '../lib/reportOutput'
 import ReportFilterBar, { channelsLabel, makeFilters, toServiceFilter, type ReportFilters } from '../components/ReportFilterBar'
@@ -1460,7 +1461,7 @@ export default function SalesReports() {
       }
       flash('گزارش برای چاپ A4 فرستاده شد')
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
     } finally {
       printBusyRef.current = false
       setPrintBusy(false)
@@ -1503,7 +1504,7 @@ export default function SalesReports() {
       })
       flash('گزارش حرارتی چاپ شد')
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
     } finally {
       printBusyRef.current = false
       setPrintBusy(false)
