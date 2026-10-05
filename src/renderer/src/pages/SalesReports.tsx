@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
@@ -637,6 +637,8 @@ export default function SalesReports() {
   const [loadedReportKey, setLoadedReportKey] = useState<string | null>(null)
   const [byShift, setByShift] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [printBusy, setPrintBusy] = useState(false)
+  const printBusyRef = useRef(false)
   /** خروجی پیش‌فرض کل فیلتر اجراشده است؛ صفحه‌ی جاری فقط با تیک صریح صادر می‌شود. */
   const [outputScope, setOutputScope] = useState<OutputScope>('all')
   const [err, setErr] = useState<string | null>(null)
@@ -1825,24 +1827,40 @@ export default function SalesReports() {
 
   /** چاپ «سند تعویض» یک ردیف تب تعویض کالا (کانال print:exchange). */
   const printExchangeDoc = async (returnId: number) => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       /** فاز ۳ — چاپ سند تعویض از مسیر مشترک (پروفایل رسید/فاکتور). */
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printExchange, { returnId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printExchange, { returnId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('سند تعویض برای چاپ فرستاده شد')
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
   const reprint = async (invoiceId: number) => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       /** فاز ۳ — از مسیر مشترک چاپ؛ انصراف ⇒ لغو قطعی و بی‌صدا. */
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printInvoice, { invoiceId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printInvoice, { invoiceId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('رسید فاکتور دوباره چاپ شد')
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 

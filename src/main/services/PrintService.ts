@@ -294,8 +294,20 @@ export const printService = {
     /** فاز ۳ — نام چاپگر از resolver (بدون fallback)؛ صفحه‌ی عمده نام خودش را دارد. */
     const deviceName = await receiptTargetDevice({ requestedDeviceName: input.deviceName, tpl, profile })
     const copies = Math.min(Math.max(Math.round(input.copies ?? tpl.copies ?? 1), 1), 5)
-    for (let i = 0; i < copies; i++) {
-      await printMaybeRaw({ method: tpl.printMethod, html, deviceName, silent: input.silent ?? true, pageSize })
+    const singleDialogJob = input.silent === false && tpl.printMethod !== 'RAW' && copies > 1
+    const jobs = singleDialogJob ? 1 : copies
+    for (let i = 0; i < jobs; i++) {
+      await printMaybeRaw({
+        method: tpl.printMethod,
+        html,
+        deviceName,
+        silent: input.silent ?? true,
+        copies: singleDialogJob ? copies : 1,
+        pageSize,
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
+      })
     }
     return { copies }
   },
@@ -401,13 +413,19 @@ export const printService = {
     /** فاز ۳ — نام چاپگر از resolver (بدون fallback خودکار). */
     const deviceName = await receiptTargetDevice({ requestedDeviceName: input.deviceName, tpl, profile: 'RETAIL' })
     const copies = Math.min(Math.max(Math.round(input.copies ?? tpl.copies ?? 1), 1), 5)
-    for (let i = 0; i < copies; i++) {
+    const singleDialogJob = input.silent === false && tpl.printMethod !== 'RAW' && copies > 1
+    const jobs = singleDialogJob ? 1 : copies
+    for (let i = 0; i < jobs; i++) {
       await printMaybeRaw({
         method: tpl.printMethod,
         html,
         deviceName,
         silent: input.silent ?? true,
-        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+        copies: singleDialogJob ? copies : 1,
+        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
       })
     }
     return { copies, returnId }
@@ -511,13 +529,19 @@ export const printService = {
     /** فاز ۳ — نام چاپگر از resolver (بدون fallback خودکار). */
     const deviceName = await receiptTargetDevice({ requestedDeviceName: input.deviceName, tpl, profile: 'RETAIL' })
     const copies = Math.min(Math.max(Math.round(input.copies ?? tpl.copies ?? 1), 1), 5)
-    for (let i = 0; i < copies; i++) {
+    const singleDialogJob = input.silent === false && tpl.printMethod !== 'RAW' && copies > 1
+    const jobs = singleDialogJob ? 1 : copies
+    for (let i = 0; i < jobs; i++) {
       await printMaybeRaw({
         method: tpl.printMethod,
         html,
         deviceName,
         silent: input.silent ?? true,
-        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+        copies: singleDialogJob ? copies : 1,
+        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
       })
     }
     return { copies, returnId }
@@ -599,7 +623,7 @@ export const printService = {
     return debtPaymentReceiptHtml({ ...data, reprint: opts?.reprint === true }, tpl)
   },
 
-  async printDebtPayment(input: { paymentId?: number; reprint?: boolean; deviceName?: string }) {
+  async printDebtPayment(input: { paymentId?: number; reprint?: boolean; silent?: boolean; deviceName?: string }) {
     const paymentId = Number(input?.paymentId ?? 0)
     if (!paymentId) throw new BusinessError('پرداختی برای چاپ فیش مشخص نشده است.')
     const tpl = await settingsService.receiptTemplate()
@@ -612,8 +636,11 @@ export const printService = {
       method: tpl.printMethod,
       html,
       deviceName,
-      silent: true,
-      pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+      silent: input.silent ?? true,
+      pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+      rawDpi: tpl.rawDpi,
+      rawInvert: tpl.rawInvert,
+      cutMode: tpl.cutMode
     })
     return { paymentId }
   },
@@ -783,14 +810,14 @@ export const printService = {
      */
     const plan = creditCopyPlan(data.printCount - 1, input.copies)
     /**
-     * نشست ۲۲۲ · فاز ۶ (بخش ۱۰) — فقط نام چاپگر: از resolver مشترک و با فهرست
-     * زنده (بدون fallback خودکار). سیاست دیالوگ (`silent`) و شمارنده‌ی چاپ
-     * (`markPrinted`) **دست‌نخورده** است.
+     * چاپ اعتبار کاغذ A6/A5/A4 خودش را دارد و نباید به چاپگر حرارتی رسید گره
+     * بخورد. نام صریح renderer همچنان اعتبارسنجی می‌شود؛ اگر نامی نیامده باشد
+     * رفتار امن/قدیمی یعنی چاپگر پیش‌فرض ویندوز انتخاب می‌شود (بدون fallback به
+     * چاپگر اول).
      */
-    const deviceName = await receiptTargetDevice({
+    const { deviceName } = await resolvePrintTargetName({
       requestedDeviceName: input.deviceName,
-      tpl,
-      profile: 'RETAIL'
+      savedName: ''
     })
     for (const copy of plan) {
       const html = creditDocHtml({ ...data, printCount: copy.printCount, reprint: copy.reprint }, tpl, paper)
@@ -919,11 +946,13 @@ export const printService = {
   }) {
     const tpl = await settingsService.receiptTemplate()
     const { html, ids, total, capped } = await this.creditBatchRender(input)
-    /** فاز ۶ — فقط نام چاپگر از resolver؛ `silent` و شمارنده‌ی دسته دست‌نخورده. */
-    const deviceName = await receiptTargetDevice({
+    /**
+     * چاپ گروهی اعتبار هم مثل چاپ تکی اعتبار به چاپگر رسید وابسته نیست؛ نام صریح
+     * renderer معتبر می‌شود و در نبود آن چاپگر پیش‌فرض ویندوز استفاده می‌شود.
+     */
+    const { deviceName } = await resolvePrintTargetName({
       requestedDeviceName: input.deviceName,
-      tpl,
-      profile: 'RETAIL'
+      savedName: ''
     })
     try {
       await printHtml(html, { silent: input.silent ?? false, deviceName })

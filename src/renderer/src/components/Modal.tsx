@@ -12,7 +12,8 @@ export default function Modal({
   onClose,
   children,
   footer,
-  width = 'max-w-4xl'
+  width = 'max-w-4xl',
+  zIndexClass = 'z-50'
 }: {
   open: boolean
   title: string
@@ -20,6 +21,8 @@ export default function Modal({
   children: ReactNode
   footer?: ReactNode
   width?: string
+  /** بعضی modalهای سراسری (مثل انتخاب چاپگر) باید روی modalهای صفحه بنشینند. */
+  zIndexClass?: string
 }) {
   useEffect(() => {
     if (!open) return
@@ -38,7 +41,7 @@ export default function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/40 overflow-auto p-4 flex items-start justify-center"
+      className={`fixed inset-0 ${zIndexClass} bg-black/40 overflow-auto p-4 flex items-start justify-center`}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}

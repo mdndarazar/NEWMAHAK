@@ -216,8 +216,8 @@ export default function InvoicePaymentsModal({
        * فاز ۳ — فیش پرداختی هم از مسیر مشترک چاپ می‌گذرد. انصراف از پنجره‌ی
        * انتخاب چاپگر یعنی هیچ چاپی انجام نشد؛ پیام خطا هم نمی‌آید (لغو قطعی).
        */
-      const res = await printWith('INVOICE', (deviceName) =>
-        call(CH.printDebtPayment, { paymentId, reprint, deviceName })
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printDebtPayment, { paymentId, reprint, deviceName, silent: opts?.silent })
       )
       setReceipt(res === 'CANCELLED' ? null : { paymentId, state: 'done' })
     } catch (e: any) {

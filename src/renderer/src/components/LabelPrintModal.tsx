@@ -145,12 +145,13 @@ export default function LabelPrintModal({
        * فاز ۳ — چاپ لیبل هم از همان نقطه‌ی مشترک می‌گذرد تا سیاست «هر بار بپرس»
        * و انتخاب چاپگر یک‌جا و یک‌شکل باشد. انصراف ⇒ هیچ پیامی، هیچ چاپی.
        */
-      const res = await printWith('LABEL', (deviceName) =>
+      const res = await printWith('LABEL', (deviceName, opts) =>
         call<number>(CH.printLabels, {
           labels: expanded,
           template: { showName: mode !== 'NONE' },
           startColumn,
-          deviceName
+          deviceName,
+          silent: opts?.silent
         })
       )
       if (res === 'CANCELLED') return

@@ -216,6 +216,8 @@ export default function Pos() {
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [printing, setPrinting] = useState(false)
+  const printingRef = useRef(false)
   const [modalOpen, setModalOpen] = useState(false)
   /**
    * ---------------- بخش ۶: «بارکد اعتبار خرید بعدی» ----------------
@@ -721,16 +723,24 @@ export default function Pos() {
         return setErr(
           'چاپ فاکتور در این پنل خاموش است، پس هیچ فاکتوری چاپ نمی‌شود. برای چاپ، چک‌باکس «چاپ فاکتور» را روشن کنید.'
         )
+      if (printingRef.current) return
+      printingRef.current = true
+      setPrinting(true)
       try {
         /**
          * فاز ۳ — از مسیر مشترک `printWith` (انصراف = لغو قطعی و بی‌صدا).
          */
-        const res = await printWith('INVOICE', (deviceName) => call(CH.printInvoice, { invoiceId, deviceName }))
+        const res = await printWith('INVOICE', (deviceName, opts) =>
+          call(CH.printInvoice, { invoiceId, deviceName, silent: opts?.silent })
+        )
         if (res === 'CANCELLED') return
         setLast((p) => (p && p.id === invoiceId ? { ...p, printed: true } : p))
         notify('رسید فاکتور چاپ شد')
       } catch (e: any) {
         setErr(`چاپ انجام نشد: ${e.message}`)
+      } finally {
+        printingRef.current = false
+        setPrinting(false)
       }
     },
     [printEnabled]
@@ -968,19 +978,28 @@ export default function Pos() {
         let printed = false
         if (!printEnabled) printNote = ' (چاپ فاکتور خاموش است؛ فاکتور ثبت شد و در گزارشات فروش هست)'
         else if (settings.receipt.autoPrint) {
+          printingRef.current = true
+          setPrinting(true)
           try {
             /**
              * فاز ۳ — چاپ خودکار هم از `printWith` می‌گذرد: اگر «هر بار بپرس»
              * روشن باشد پنجره‌ی انتخاب چاپگر می‌آید (خواست مالک) و انصراف یعنی
              * هیچ چاپی انجام نمی‌شود — بدون خطا و بدون خراب‌کردن فاکتور.
              */
-            const res = await printWith('INVOICE', (deviceName) =>
-              call(CH.printInvoice, { invoiceId: inv.id, deviceName })
+            const res = await printWith('INVOICE', (deviceName, opts) =>
+              call(CH.printInvoice, { invoiceId: inv.id, deviceName, silent: opts?.silent })
             )
             if (res === 'DONE') printed = true
             else printNote = ' (چاپ انجام نشد؛ فاکتور ثبت شد و در گزارشات فروش هست)'
-          } catch {
-            printNote = ' (چاپ خودکار انجام نشد؛ با دکمه‌ی «چاپ فاکتور» دوباره تلاش کنید)'
+          } catch (e: any) {
+            const raw = String(e?.message ?? e)
+            const unknown = /معلوم نیست|نامعلوم|ممکن است|پاسخی نداد/.test(raw)
+            printNote = unknown
+              ? ' (معلوم نیست فاکتور چاپ شده باشد؛ قبل از چاپ دوباره خروجی چاپگر را نگاه کنید)'
+              : ` (چاپ خودکار انجام نشد: ${raw})`
+          } finally {
+            printingRef.current = false
+            setPrinting(false)
           }
         }
 
@@ -1094,7 +1113,7 @@ export default function Pos() {
       [settle, clearCart, printInvoice, last]
     ),
     // جلسه ۵۲: تا پنجره‌ی «از کدام انبار کسر شود؟» باز است، F3/F8 دوباره ثبت نزنند
-    !modalOpen && stockChain == null
+    !modalOpen && stockChain == null && !printing
   )
 
   /**
@@ -1505,8 +1524,8 @@ export default function Pos() {
               </span>
             )}
             {printEnabled ? (
-              <button className="btn btn-primary" onClick={() => void printInvoice(last.id)}>
-                چاپ فاکتور <span className="keycap">F6</span>
+              <button className="btn btn-primary" onClick={() => void printInvoice(last.id)} disabled={printing}>
+                {printing ? 'در حال چاپ…' : 'چاپ فاکتور'} <span className="keycap">F6</span>
               </button>
             ) : (
               <span className="kbd">چاپ فاکتور خاموش است</span>
@@ -1948,8 +1967,8 @@ export default function Pos() {
         </div>
 
         {last && printEnabled && (
-          <button className="btn" onClick={() => void printInvoice(last.id)}>
-            چاپ فاکتور آخر <span className="keycap">F6</span>
+          <button className="btn" onClick={() => void printInvoice(last.id)} disabled={printing}>
+            {printing ? 'در حال چاپ…' : 'چاپ فاکتور آخر'} <span className="keycap">F6</span>
           </button>
         )}
 

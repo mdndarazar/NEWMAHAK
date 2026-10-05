@@ -323,6 +323,8 @@ export interface PrintHtmlOptions {
   deviceName?: string
   landscape?: boolean
   timeoutMs?: number
+  /** تعداد نسخه در یک job (به‌ویژه برای دیالوگ ویندوز تا چند پنجره پشت‌سرهم باز نشود). */
+  copies?: number
   /** اندازه‌ی صفحه‌ی ارسالی به چاپگر (میکرون). نبود ⇒ رفتار قبلی */
   pageSize?: PrintPageSizeOption
 }
@@ -362,6 +364,7 @@ export async function printHtml(html: string, opts: PrintHtmlOptions = {}): Prom
   try {
     doc = await loadPrintDocument(win, html)
     const pageSize = await resolvePrintPageSize(win, opts.pageSize, opts.timeoutMs)
+    const copies = Math.min(99, Math.max(1, Math.round(Number(opts.copies ?? 1)) || 1))
     await runPrintJob(
       win,
       {
@@ -370,6 +373,7 @@ export async function printHtml(html: string, opts: PrintHtmlOptions = {}): Prom
         deviceName: opts.deviceName,
         landscape: opts.landscape ?? false,
         margins: { marginType: 'none' },
+        ...(copies > 1 ? { copies } : {}),
         ...(pageSize ? { pageSize } : {})
       },
       opts.deviceName,

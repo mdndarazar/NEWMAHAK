@@ -39,7 +39,7 @@ import { assertRawMethodAllowed } from '../print/raw/gate'
 import { runPrintTestPage } from '../print/testPage'
 // نشست ۲۲۲ · فاز ۵ — مسیر خام (RAW): TSPL برای لیبل، ESC/POS برای رسید
 import { isRawMethod, printMaybeRaw } from '../print/raw/route'
-import { printTsplRow } from '../print/raw'
+import { mmToPrinterDots, printTsplRows } from '../print/raw'
 // نشست ۲۲۲ · فاز ۳ — resolver مشترک چاپگر (بخش ۶.۲ طرح)
 import { listPrintersDetailed, printerNotFoundMessage, resolvePrintTargetName } from '../print/target'
 // نشست ۲۲۲ · فاز ۱ طرح چاپ — اندازه‌ی کاغذ فاکتور (همان منبع حقیقت main/renderer)
@@ -755,7 +755,10 @@ export function registerIpcHandlers(): void {
         html: receiptHtml(data, tpl),
         deviceName,
         silent: p.silent ?? true,
-        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
       })
       return true
     }
@@ -835,36 +838,58 @@ export function registerIpcHandlers(): void {
       savedName: tpl.printerName
     })
     /**
-     * نشست ۲۲۲ · فاز ۵ (بخش ۸.۲/۸.۳ طرح) — لیبل روی «دقیق (RAW)»: هر **ردیف** یک
-     * کار TSPL جدا می‌شود (یک تصویر ۱-بیتی + PRINT). برای هر ردیف همان `labelHtml`
-     * با همان ردیف صدا زده می‌شود، پس ظاهر لیبل با مسیر Chromium مو‌به‌مو یکی است؛
-     * `startColumn` همان تهی‌های ابتدای ردیف را بازتولید می‌کند.
-     * وگرنه مسیر امروز دست‌نخورده است.
+     * نشست ۲۲۲ · فاز ۵ (بخش ۸.۲/۸.۳ طرح) — لیبل روی «دقیق (RAW)»: برای هر ردیف
+     * همان `labelHtml` ردیف‌محور رستر می‌شود، ولی همه‌ی ردیف‌ها در **یک کار RAW**
+     * به spooler فرستاده می‌شوند تا هزینه‌ی PowerShell و خطای وسط دسته کمتر شود.
+     * `startColumn` همان تهی‌های ابتدای ردیف را بازتولید می‌کند؛ وگرنه مسیر
+     * Chromium امروز دست‌نخورده است.
      */
     if (isRawMethod(tpl.printMethod)) {
       const startColumn = Number(p?.startColumn ?? 1)
       const rows = labelRows(labels, tpl.columns, startColumn)
+      /**
+       * offset در مسیر RAW دو بخش دارد:
+       *   • مقدار مثبت با TSPL `REFERENCE` اعمال می‌شود تا تصویر روی رول جابه‌جا شود.
+       *   • مقدار منفی را چون `REFERENCE` منفی نمی‌پذیرد، مثل Chromium داخل CSS نگه می‌داریم.
+       * این کار جلوی دوبار اعمال‌شدن offset مثبت را می‌گیرد و همچنان امکان اصلاح
+       * جزئی به چپ/بالا را حفظ می‌کند.
+       */
+      const rawTpl = {
+        ...tpl,
+        offsetXMm: Math.min(0, Number(tpl.offsetXMm) || 0),
+        offsetYMm: Math.min(0, Number(tpl.offsetYMm) || 0)
+      }
+      const htmlRows: string[] = []
       for (const row of rows) {
         const items = row.filter((i): i is (typeof labels)[number] => i !== null)
         if (!items.length) continue
         const firstFilled = row.findIndex((i) => i !== null) + 1
-        await printTsplRow({
-          html: labelHtml(items, tpl, { startColumn: firstFilled }),
-          printerName: deviceName,
-          widthMm: rowWidthMm,
-          heightMm: rowHeightMm,
-          dpi: tpl.rawDpi,
-          gapMm: tpl.gapYMm,
-          sensorType: tpl.sensorType,
-          direction: tpl.direction,
-          density: tpl.density,
-          speed: tpl.speed
-        })
+        htmlRows.push(labelHtml(items, rawTpl, { startColumn: firstFilled }))
       }
+      await printTsplRows({
+        htmlRows,
+        printerName: deviceName,
+        widthMm: rowWidthMm,
+        heightMm: rowHeightMm,
+        dpi: tpl.rawDpi,
+        gapMm: tpl.gapYMm,
+        sensorType: tpl.sensorType,
+        direction: tpl.direction,
+        density: tpl.density,
+        speed: tpl.speed,
+        referenceX: mmToPrinterDots(tpl.offsetXMm, tpl.rawDpi),
+        referenceY: mmToPrinterDots(tpl.offsetYMm, tpl.rawDpi),
+        invertBits: tpl.rawInvert
+      })
       return labels.length
     }
     await printHtml(labelHtml(labels, tpl, { startColumn: Number(p?.startColumn ?? 1) }), {
-      silent: tpl.askEachTime !== true,
+      /**
+       * بازبینی چاپ: اگر پنجره‌ی انتخاب چاپگرِ خود برنامه قبلاً انتخاب را گرفته
+       * باشد، renderer مقدار `silent` نمی‌فرستد و اینجا باید بی‌صدا چاپ شود؛
+       * فقط حالت «دیالوگ ویندوز» صریحاً `silent:false` می‌فرستد.
+       */
+      silent: p?.silent ?? true,
       deviceName,
       pageSize: { widthMm: rowWidthMm, heightMm: rowHeightMm }
     })

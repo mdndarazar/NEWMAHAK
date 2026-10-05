@@ -169,6 +169,8 @@ export default function SalesReturn() {
   const [allowRemoved, setAllowRemoved] = useState(false)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const [printing, setPrinting] = useState(false)
+  const printingRef = useRef(false)
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [confirmForce, setConfirmForce] = useState<string | null>(null)
@@ -670,25 +672,59 @@ export default function SalesReturn() {
    * قالب تنظیمات رسید تبعیت می‌کند.
    */
   const printReturn = useCallback(async (returnId: number) => {
+    if (printingRef.current) return
+    printingRef.current = true
+    setPrinting(true)
     try {
       /** فاز ۳ — مسیر مشترک چاپ؛ انصراف = لغو قطعی و بی‌صدا. */
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printReturn, { returnId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printReturn, { returnId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('رسید برگشت از فروش برای چاپ فرستاده شد')
     } catch (e: any) {
       setErr(`چاپ رسید برگشت انجام نشد: ${e.message}`)
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   /** چاپ «سند تعویض» (قالب exchangeReceiptHtml سمت main). */
   const printExchange = useCallback(async (returnId: number) => {
+    if (printingRef.current) return
+    printingRef.current = true
+    setPrinting(true)
     try {
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printExchange, { returnId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printExchange, { returnId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('سند تعویض برای چاپ فرستاده شد')
     } catch (e: any) {
       setErr(`چاپ سند تعویض انجام نشد: ${e.message}`)
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const printSourceInvoice = useCallback(async (invoiceId: number) => {
+    if (printingRef.current) return
+    printingRef.current = true
+    setPrinting(true)
+    try {
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printInvoice, { invoiceId, deviceName, silent: opts?.silent })
+      )
+      if (res !== 'CANCELLED') flash('رسید فاکتور برای چاپ فرستاده شد')
+    } catch (e: any) {
+      setErr(e.message)
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -882,8 +918,8 @@ export default function SalesReturn() {
               {money(retResult.cardTransfer.amount)} ریال · در انتظار پرداخت مدیر
             </span>
           )}
-          <button className="btn btn-primary" onClick={() => void printReturn(retResult.id)}>
-            چاپ رسید برگشت
+          <button className="btn btn-primary" onClick={() => void printReturn(retResult.id)} disabled={printing}>
+            {printing ? 'در حال چاپ…' : 'چاپ رسید برگشت'}
           </button>
           <button className="btn ms-auto" onClick={() => setRetResult(null)}>
             بستن
@@ -941,8 +977,8 @@ export default function SalesReturn() {
                 : ''}
             </span>
           )}
-          <button className="btn btn-primary" onClick={() => void printExchange(exResult.returnId)}>
-            چاپ سند تعویض
+          <button className="btn btn-primary" onClick={() => void printExchange(exResult.returnId)} disabled={printing}>
+            {printing ? 'در حال چاپ…' : 'چاپ سند تعویض'}
           </button>
           <button className="btn ms-auto" onClick={() => setExResult(null)}>
             بستن
@@ -1545,14 +1581,10 @@ export default function SalesReturn() {
             )}
             <button
               className="btn"
-              onClick={() =>
-                void printWith('INVOICE', (deviceName) =>
-                  call(CH.printInvoice, { invoiceId: lookup.invoiceId, deviceName })
-                ).catch((e: any) => setErr(e.message))
-              }
-              disabled={busy}
+              onClick={() => void printSourceInvoice(lookup.invoiceId)}
+              disabled={busy || printing}
             >
-              چاپ رسید فاکتور
+              {printing ? 'در حال چاپ…' : 'چاپ رسید فاکتور'}
             </button>
             <div className="kbd">
               {exchangeMode
@@ -1657,7 +1689,7 @@ export default function SalesReturn() {
                     <button
                       className="text-brand"
                       onClick={() => void printReturn(r.id)}
-                      disabled={rowBusy}
+                      disabled={rowBusy || printing}
                       title="چاپ رسید مستقل همین برگشت (بند ۱۳)"
                     >
                       چاپ
