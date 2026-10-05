@@ -285,6 +285,7 @@ export default function WooSync() {
                   <td className="space-x-1 space-x-reverse whitespace-nowrap">
                     {l.status === 'ACTIVE' ? <button className="btn btn-xs" disabled={busy} onClick={() => pause(l.id)}>قطع موقت</button> : null}
                     {l.status === 'PAUSED' ? <button className="btn btn-xs" disabled={busy} onClick={() => previewResume(l.id)}>پیش‌نمایش وصل</button> : null}
+                    {l.status === 'CONFLICT' ? <button className="btn btn-xs" disabled={busy} onClick={() => previewResume(l.id)}>حل اختلاف</button> : null}
                     <button className="btn btn-xs" disabled={busy} onClick={() => unlink(l.id)}>قطع دائم</button>
                   </td>
                 </tr>

@@ -51,9 +51,9 @@ check('Pull ژورنال سایت فقط StockMovement با WOO_SYNC_* می‌س
 check('گزارش سود/زیان سایت را فروش یا کسری حساب نمی‌کند؛ CostEngine kind جدا دارد', [
   /WOO_SYNC_OUT', 'WOO_SYNC_IN', 'WOO_SYNC_ADJUST/.test(profit), /kind: 'EXTERNAL_SYNC'/.test(cost), /WOO_SYNC_OUT/.test(cost)
 ], [true, true, true])
-check('وصل دوباره کورکورانه نیست؛ فقط سفارش‌های source=order اعمال و admin editها PARK می‌شوند', [
-  /isWooOrderPausedEvent/.test(svc), /source.*order/.test(svc), /status: WooInboundStatus\.PARKED/.test(svc), /LINK_RESUME_PREVIEW_ONLY/.test(svc)
-], [true, true, true, true])
+check('وصل دوباره/حل اختلاف کورکورانه نیست؛ فقط سفارش‌های source=order اعمال و admin editها PARK می‌شوند', [
+  /isWooOrderPausedEvent/.test(svc), /source.*order/.test(svc), /status: WooInboundStatus\.PARKED/.test(svc), /LINK_RESUME_PREVIEW_ONLY/.test(svc), /row\.expectedWooQty \?\? link\.lastWooQty/.test(svc), /حل اختلاف/.test(page)
+], [true, true, true, true, true, true])
 
 console.log('\n— UI و Plugin')
 check('صفحه UI صریحاً می‌گوید فقط موجودی sync می‌شود', [/فقط موجودی/.test(page), /قیمت، سفارش، مشتری/.test(page), /wooLinkCreate/.test(page)], [true, true, true])

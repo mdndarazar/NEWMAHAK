@@ -207,7 +207,7 @@ async function createOutbox(input: {
 }) {
   const client = input.client ?? db()
   await client.wooSyncOutbox.updateMany({
-    where: { linkId: input.link.id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED] } },
+    where: { linkId: input.link.id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED, WooOutboxStatus.CONFLICT] } },
     data: { status: WooOutboxStatus.SUPERSEDED, lastError: 'NEWER_STOCK_TARGET' }
   })
   return client.wooSyncOutbox.create({
@@ -461,7 +461,7 @@ export const wooSyncService = {
         const link = await (tx as any).wooProductLink.findUnique({ where: { id } })
         if (!link || link.status === WooLinkStatus.UNLINKED) continue
         await (tx as any).wooSyncOutbox.updateMany({
-          where: { linkId: id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED, WooOutboxStatus.DEAD] } },
+          where: { linkId: id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED, WooOutboxStatus.CONFLICT, WooOutboxStatus.DEAD] } },
           data: { status: WooOutboxStatus.SUPERSEDED, lastError: 'LINK_PAUSED' }
         })
         await (tx as any).wooProductLink.update({
@@ -541,7 +541,11 @@ export const wooSyncService = {
     const relinkId = randomUUID()
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const fresh = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
-      if (!fresh || fresh.status !== WooLinkStatus.PAUSED) throw new BusinessError('این اتصال دیگر در وضعیت قطع موقت نیست؛ فهرست را تازه کنید.')
+      if (!fresh || ![WooLinkStatus.PAUSED, WooLinkStatus.CONFLICT].includes(fresh.status)) throw new BusinessError('این اتصال دیگر در وضعیت قطع موقت/اختلاف نیست؛ فهرست را تازه کنید.')
+      await (tx as any).wooSyncOutbox.updateMany({
+        where: { linkId: link.id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED, WooOutboxStatus.CONFLICT, WooOutboxStatus.DEAD] } },
+        data: { status: WooOutboxStatus.SUPERSEDED, lastError: 'LINK_RECONCILED', updatedAt: new Date() }
+      })
       if (decision === WooResumeDecision.WOO_WINS) {
         const delta = Number(preview.wooQty) - finalStock
         const r = await applyWooDelta({ variantId: link.variantId, delta, reason: StockReason.WOO_SYNC_ADJUST, note: 'وصل دوباره سایت: سایت مرجع موجودی شد', tx })
@@ -605,7 +609,7 @@ export const wooSyncService = {
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const link = await (tx as any).wooProductLink.findUnique({ where: { id } })
       if (!link) return
-      await (tx as any).wooSyncOutbox.updateMany({ where: { linkId: id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED] } }, data: { status: WooOutboxStatus.SUPERSEDED, lastError: 'LINK_UNLINKED' } })
+      await (tx as any).wooSyncOutbox.updateMany({ where: { linkId: id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED, WooOutboxStatus.CONFLICT, WooOutboxStatus.DEAD] } }, data: { status: WooOutboxStatus.SUPERSEDED, lastError: 'LINK_UNLINKED' } })
       await (tx as any).wooProductLink.update({ where: { id }, data: { status: WooLinkStatus.UNLINKED } })
       await audit(tx, { action: AuditAction.WOO_LINK_UNLINK, entity: 'WooProductLink', entityId: id, userId: input.userId ?? null, before: json(link), note: 'قطع دائم اتصال موجودی سایت' })
     })
@@ -645,7 +649,7 @@ export const wooSyncService = {
         continue
       }
       try {
-        const expected = Number(link.lastWooQty ?? row.expectedWooQty ?? 0)
+        const expected = Number(row.expectedWooQty ?? link.lastWooQty ?? 0)
         const target = Number(row.targetQty)
         const res = await wooRequest<any>('/stock/apply', {
           method: 'POST',
