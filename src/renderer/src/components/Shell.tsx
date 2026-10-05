@@ -9,6 +9,7 @@ import { ShiftSessionChip } from './ShiftSessionModal'
 import { DebtReminderBanner } from './DebtReminderBanner'
 // نشست ۲۲۲ · فاز ۳ — میزبان پنجره‌ی «با کدام چاپگر چاپ شود؟» (یک بار در ریشه mount می‌شود)
 import PrinterPickerHost from './PrinterPickerModal'
+import { isAnyModalOpen } from './Modal'
 
 /** پنل‌های پرکاربرد در نوار بالا (همان ترتیب کار روزانه‌ی فروشگاه). */
 const NAV = [
@@ -44,7 +45,23 @@ export default function Shell() {
 
   // میان‌برهای سراسری محک: F2..F11
   const map = useMemo(
-    () => Object.fromEntries(Object.entries(ROUTE_BY_SHORTCUT).map(([k, r]) => [k, () => nav(r)])),
+    () =>
+      Object.fromEntries(
+        Object.entries(ROUTE_BY_SHORTCUT).map(([k, r]) => [
+          k,
+          () => {
+            /**
+             * وقتی modal باز است (به‌خصوص دیالوگ چاپ اعتبار با Windows dialog)،
+             * جابه‌جایی صفحه با F2/F3/F8/F9/F10/F11 نتیجه‌ی چاپ را روی کامپوننت
+             * unmount‌شده گم می‌کند. وضعیت stack لحظه‌ی keydown خوانده می‌شود،
+             * نه فقط زمان render Shell، چون باز/بسته‌شدن modal لزوماً Shell را
+             * دوباره render نمی‌کند.
+             */
+            if (isAnyModalOpen()) return
+            nav(r)
+          }
+        ])
+      ),
     [nav]
   )
   useHotkeys(map)

@@ -7,6 +7,11 @@ import { useEffect, useRef, type ReactNode } from 'react'
  */
 const modalStack: symbol[] = []
 
+/** آیا هر نوع modal/confirm روی صفحه باز است؟ برای قفل میان‌برهای سراسری Shell. */
+export function isAnyModalOpen(): boolean {
+  return modalStack.length > 0
+}
+
 /** ثبت یک پنجره در stack مشترک و اجرای handler فقط برای topmost. */
 export function useTopmostModalKey(open: boolean, handler: (e: KeyboardEvent) => void): void {
   const modalId = useRef(Symbol('modal'))
