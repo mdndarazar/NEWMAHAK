@@ -1,0 +1,507 @@
+diff -ruN pristine/src/main/services/FraudService.ts mahak/src/main/services/FraudService.ts
+--- pristine/src/main/services/FraudService.ts	2026-09-27 07:48:53.471788298 +0000
++++ mahak/src/main/services/FraudService.ts	2026-09-27 07:52:50.130697672 +0000
+@@ -511,6 +511,8 @@
+             AuditAction.CLOSED_PERIOD_OVERRIDE,
+             AuditAction.EXCHANGE_PRICE_OVERRIDE,
+             AuditAction.SALE_PRICE_OVERRIDE,
++            // نشست ۱۵۶ (S151-c2) — عوارض/حق سرویس دستی فاکتور عمده
++            AuditAction.SALE_CHARGE_OVERRIDE,
+             AuditAction.STORE_CREDIT_OVER_LIMIT
+           ]
+         },
+diff -ruN pristine/src/main/services/SalesService.ts mahak/src/main/services/SalesService.ts
+--- pristine/src/main/services/SalesService.ts	2026-09-27 07:48:53.471788298 +0000
++++ mahak/src/main/services/SalesService.ts	2026-09-27 07:55:05.556362544 +0000
+@@ -98,6 +98,7 @@
+ } from '@shared/jalali'
+ import { SETTING_KEYS, parseSaleDefaults } from '@shared/receipt'
+ import { discountCeilingFor, fixedDiscountFor } from '@shared/priceAdjust'
++import { computeCharges } from '@shared/charges'
+ import type {
+   CreateSaleInput,
+   ReturnSaleInput,
+@@ -1601,6 +1602,166 @@
+   })
+ }
+ 
++/**
++ * ===========================================================================
++ * نشست ۱۵۶ (S151-c2، Y8، بند ۴-۴۵) — بازمحاسبه‌ی عوارض/حق سرویس در main.
++ *
++ * قبلاً tax ردیف‌ها، invoiceTax و serviceCharge همان‌طور که رندرر فرستاده بود ثبت می‌شد
++ * (عوارض ۰ برای کالای ۱۰٪ یا categoryId جعلی = مسیر دوم کم‌ثبتی). حالا مبلغ خودکار با
++ * همان تابع مشترک `computeCharges` و از روی تنظیمات همین اسکوپ + دسته‌ی واقعی کالا در
++ * دیتابیس حساب و با عدد رندرر مقایسه می‌شود:
++ *   - مبنای درصد = مبلغ ردیف بعد از تخفیف ردیف و سهم نسبی تخفیف کل فاکتور (همان فرمول
++ *     Pos.tsx و SalesInvoice.tsx)؛ تحمل گرد = ۱ ریال برای هر ردیف (S156-D3).
++ *   - خرده (pos): عوارض فقط روی ردیف‌ها، invoiceTax = ۰، هر ردیف و حق سرویس باید با
++ *     مبلغ خودکار بخواند؛ UI راه دستی ندارد ⇒ هر اختلاف رد کامل، با رمز مدیر هم باز نمی‌شود.
++ *   - عمده (wholesale): عوارض فقط در سطح فاکتور (tax ردیف = ۰). مبلغ دستیِ کمتر از خودکار
++ *     = کم‌ثبتی ⇒ رمز مدیر؛ بیشتر ⇒ بی‌رمز؛ هر دو با Audit SALE_CHARGE_OVERRIDE.
++ *   - ویرایش: اگر عوارض و حق سرویس دقیقاً همان مقدار ذخیره‌شده‌ی خودِ فاکتور باشد، سند
++ *     تاریخی با نرخ روز بازمحاسبه نمی‌شود (S156-D4).
++ * بیرون از تراکنش (رمز مدیر روی AuthLockout می‌نویسد).
++ * ===========================================================================
++ */
++interface SaleChargeCheck {
++  managerApproved: boolean
++  override: null | { autoTax: number; autoService: number; tax: number; service: number; scope: 'pos' | 'wholesale' }
++}
++
++async function preverifySaleCharges(
++  input: CreateSaleInput,
++  ctx: {
++    orderType: string
++    existing?: { taxTotal: number; serviceCharge: number } | null
++    alreadyVerified?: boolean
++  }
++): Promise<SaleChargeCheck> {
++  const scope: 'pos' | 'wholesale' = ctx.orderType === OrderType.WHOLESALE ? 'wholesale' : 'pos'
++  const lines = input.lines ?? []
++  const lineTaxes = lines.map((l) => Math.round(Number(l.tax ?? 0)))
++  const invoiceTax = Math.round(Number(input.invoiceTax ?? 0))
++  const service = Math.round(Number(input.serviceCharge ?? 0))
++  const tax = lineTaxes.reduce((s, n) => s + n, 0) + invoiceTax
++
++  // ---------- مبلغ خودکار از تنظیمات و دسته‌ی واقعی کالا ----------
++  const [taxCfg, serviceCfg] = await Promise.all([
++    settingsService.charge('tax', scope),
++    settingsService.charge('service', scope)
++  ])
++  const categories = (await prisma.category.findMany({ select: { id: true, parentId: true } } as any)).map((c: any) => ({
++    id: Number(c.id),
++    parentId: c.parentId == null ? null : Number(c.parentId)
++  }))
++  const variantRows = await loadProductVariantsByIds(prisma, new Set(lines.map((l) => l.variantId)), {
++    id: true,
++    productId: true
++  })
++  const productIds = [...new Set(variantRows.map((v) => Number(v.productId)).filter(Boolean))]
++  const catOfProduct = new Map<number, number | null>()
++  for (const chunk of reportIdChunks(productIds))
++    for (const p of await prisma.product.findMany({ where: { id: { in: chunk } }, select: { id: true, categoryId: true } } as any))
++      catOfProduct.set(Number((p as any).id), (p as any).categoryId == null ? null : Number((p as any).categoryId))
++  const catOfVariant = new Map<number, number | null>()
++  for (const v of variantRows) catOfVariant.set(Number(v.id), catOfProduct.get(Number(v.productId)) ?? null)
++
++  const afterLine = lines.map((l) => l.unitPrice * l.qty - l.discount)
++  const base = afterLine.reduce((s, n) => s + Math.max(0, n), 0)
++  const invDisc = Math.max(0, Math.round(Number(input.invoiceDiscount ?? 0)))
++  const share = base > 0 ? Math.min(1, invDisc / base) : 0
++  const auto = computeCharges(
++    taxCfg,
++    serviceCfg,
++    categories,
++    lines.map((l, i) => ({
++      categoryId: catOfVariant.get(l.variantId) ?? null,
++      lineNet: Math.max(0, Math.round(afterLine[i] * (1 - share))),
++      qty: l.qty
++    }))
++  )
++  const tol = Math.max(1, lines.length)
++  const near = (a: number, b: number, t: number) => Math.abs(a - b) <= t
++
++  // ---------- ویرایش بدون تغییر عوارض ⇒ سند تاریخی دست‌نخورده ----------
++  if (
++    ctx.existing &&
++    tax === Math.round(Number(ctx.existing.taxTotal ?? 0)) &&
++    service === Math.round(Number(ctx.existing.serviceCharge ?? 0))
++  )
++    return { managerApproved: false, override: null }
++
++  const who = scope === 'pos' ? 'پنل فروش (خرده)' : 'فاکتور فروش عمده'
++  const tail =
++    ' مبلغ عوارض و حق سرویس را برنامه از «تنظیمات عوارض/حق سرویس» همین پنل و دسته‌ی کالا حساب می‌کند؛' +
++    ' صفحه را تازه کنید تا تنظیمات جدید خوانده شود و دوباره ثبت کنید.'
++
++  if (scope === 'pos') {
++    if (invoiceTax !== 0)
++      throw new BusinessError(
++        `در ${who} عوارض فقط روی ردیف کالا ثبت می‌شود؛ عوارض سطح فاکتور ${money(invoiceTax)} ریال پذیرفته نیست.` + tail
++      )
++    lines.forEach((l, i) => {
++      if (!near(lineTaxes[i], auto.taxPerLine[i], 1))
++        throw new BusinessError(
++          `عوارض و مالیات کالای «${l.name || l.code || faDigits(l.variantId)}» باید ${money(auto.taxPerLine[i])} ریال باشد، ` +
++            `نه ${money(lineTaxes[i])} ریال. در ${who} عوارض دستی ممکن نیست و با رمز مدیر هم باز نمی‌شود.` + tail
++        )
++    })
++    if (!near(service, auto.serviceTotal, tol))
++      throw new BusinessError(
++        `حق سرویس این فاکتور باید ${money(auto.serviceTotal)} ریال باشد، نه ${money(service)} ریال. ` +
++          `در ${who} حق سرویس دستی ممکن نیست و با رمز مدیر هم باز نمی‌شود.` + tail
++      )
++    return { managerApproved: false, override: null }
++  }
++
++  // ---------- عمده ----------
++  const lineTaxSum = lineTaxes.reduce((s, n) => s + n, 0)
++  if (lineTaxSum !== 0)
++    throw new BusinessError(
++      `در ${who} عوارض فقط در سطح فاکتور ثبت می‌شود؛ عوارض روی ردیف کالا (${money(lineTaxSum)} ریال) پذیرفته نیست.` + tail
++    )
++  const taxOk = near(tax, auto.taxTotal, tol)
++  const serviceOk = near(service, auto.serviceTotal, tol)
++  if (taxOk && serviceOk) return { managerApproved: false, override: null }
++  const decreases: string[] = []
++  if (!taxOk && tax < auto.taxTotal) decreases.push(`عوارض و مالیات ${money(tax)} ریال به‌جای ${money(auto.taxTotal)} ریال`)
++  if (!serviceOk && service < auto.serviceTotal)
++    decreases.push(`حق سرویس ${money(service)} ریال به‌جای ${money(auto.serviceTotal)} ریال`)
++  let managerApproved = false
++  if (decreases.length && !ctx.alreadyVerified) {
++    await assertManagerPassword(
++      (input as any).managerPassword ?? null,
++      `کمتر از مبلغ خودکار در ${who} (${decreases.join(' · ')})`
++    )
++    managerApproved = true
++  }
++  return {
++    managerApproved,
++    override: { autoTax: auto.taxTotal, autoService: auto.serviceTotal, tax, service, scope }
++  }
++}
++
++/** Audit SALE_CHARGE_OVERRIDE داخل همان تراکنش ثبت/ویرایش فاکتور عمده. */
++async function writeSaleChargeOverrideAudit(
++  tx: Prisma.TransactionClient,
++  input: { invoiceId: number; receiptNo: number; userId: number | null; what: string; check: SaleChargeCheck; approved: boolean }
++): Promise<void> {
++  const o = input.check.override
++  if (!o) return
++  const mode = (entered: number, autoV: number) =>
++    entered > autoV ? 'افزایش، بدون رمز' : entered < autoV ? (input.approved ? 'کاهش با تایید رمز مدیر' : 'کاهش') : 'بدون تغییر'
++  await audit(tx, {
++    action: AuditAction.SALE_CHARGE_OVERRIDE,
++    entity: 'SaleInvoice',
++    entityId: input.invoiceId,
++    userId: input.userId,
++    before: JSON.stringify({ tax: o.autoTax, service: o.autoService, source: 'AUTO', scope: o.scope }),
++    after: JSON.stringify({ tax: o.tax, service: o.service }),
++    note:
++      `عوارض/حق سرویس دستی در ${input.what} فیش ${faDigits(input.receiptNo)}: ` +
++      `عوارض خودکار ${money(o.autoTax)} ← واردشده ${money(o.tax)} ریال (${mode(o.tax, o.autoTax)}) · ` +
++      `حق سرویس خودکار ${money(o.autoService)} ← واردشده ${money(o.service)} ریال (${mode(o.service, o.autoService)})`
++  })
++}
++
+ export interface OverpayCreditResult {
+   id: number
+   code: string
+@@ -2721,17 +2882,20 @@
+     /**
+      * نشست ۶۳ (S63-2) — رمز مدیرِ «دوره‌ی بسته» هم قبل از تراکنش (همان دلیل بالا).
+      */
++    /** نشست ۱۵۶ (S151-c2، Y8) — عوارض/حق سرویس با تنظیمات main؛ رمز مدیر همین درخواست یک بار */
++    const chargeCheck = await preverifySaleCharges(input, { orderType, alreadyVerified: pricing.managerApproved })
++    const chargeApproved = pricing.managerApproved || chargeCheck.managerApproved
+     const periodApproved = await periodLockService.preverify({
+       at: issuedAt,
+       what: 'ثبت فاکتور فروش',
+       managerPassword: (input as any).managerPassword ?? null,
+       overrideReason: (input as any).overrideReason ?? null,
+-      alreadyVerified: pricing.managerApproved
++      alreadyVerified: chargeApproved
+     })
+     const overpayManagerApproved =
+       input.overpayAsCredit === true
+         ? periodApproved ||
+-          pricing.managerApproved ||
++          chargeApproved ||
+           (await preverifyOverpayManager(input, 'صدور اعتبار از اضافه‌دریافت فروش (بالاتر از سقف اعتبار)'))
+         : false
+ 
+@@ -2855,7 +3019,18 @@
+ 
+       // شیفت جاری (خودکار). فروش عمده هم به شیفت روز گره می‌خورد تا گزارش
+       // «سرجمع فروش» هیچ فاکتوری را بی‌شیفت جا نگذارد.
+-      const shiftId = input.shiftId ?? (await shiftService.currentId(tx, input.userId ?? null))
++      /**
++       * نشست ۱۵۶ (Y12، بند ۴-۲، S156-D7) — شیفت فاکتور فقط شیفت باز لحظه‌ی ثبت است. قبلاً
++       * shiftId ارسالی رندرر/IPC بی‌سنجش پذیرفته می‌شد و فروش امروز به شیفت دیگری (مثلاً شیفت
++       * بسته‌ی همکار) نسبت داده می‌شد. UI هرگز shiftId نمی‌فرستد؛ عدد متفاوت ⇒ رد، نه نادیده‌گرفتن بی‌صدا.
++       */
++      const shiftId = await shiftService.currentId(tx, input.userId ?? null)
++      if (input.shiftId != null && Number(input.shiftId) !== shiftId)
++        throw new BusinessError(
++          `شیفت ارسالی (شماره‌ی داخلی ${faDigits(Number(input.shiftId))}) با شیفت باز لحظه‌ی ثبت ` +
++            `(${shiftId == null ? 'بدون شیفت باز' : 'شماره‌ی داخلی ' + faDigits(shiftId)}) فرق دارد؛ ` +
++            'فروش همیشه به شیفت بازِ همین لحظه نسبت داده می‌شود. صفحه را تازه کنید و دوباره ثبت کنید.'
++        )
+ 
+       /**
+        * -------------------------------------------------------------------
+@@ -2941,6 +3116,14 @@
+         what: 'ثبت فاکتور فروش',
+         check: pricing
+       })
++      await writeSaleChargeOverrideAudit(tx, {
++        invoiceId: invoice.id,
++        receiptNo: invoice.receiptNo,
++        userId: input.userId ?? null,
++        what: 'ثبت فاکتور فروش',
++        check: chargeCheck,
++        approved: chargeApproved
++      })
+ 
+       /**
+        * کسر انبار فقط وقتی فاکتور «با کسر از موجودی» است.
+@@ -3154,6 +3337,9 @@
+         issuedAt: true,
+         receiptNo: true,
+         orderType: true,
++        // نشست ۱۵۶ (S151-c2) — عوارض/حق سرویس ذخیره‌شده برای «ویرایش بدون تغییر عوارض»
++        taxTotal: true,
++        serviceCharge: true,
+         items: { select: { variantId: true, unitPrice: true } }
+       }
+     })
+@@ -3167,17 +3353,24 @@
+       orderType: input.orderType ?? pre.orderType,
+       originalItems: pre.items
+     })
++    /** نشست ۱۵۶ (S151-c2، Y8) — عوارض/حق سرویس؛ همان مقدار ذخیره‌شده ⇒ بدون بازمحاسبه با نرخ روز */
++    const chargeCheck = await preverifySaleCharges(input, {
++      orderType: input.orderType ?? pre.orderType,
++      existing: { taxTotal: Number((pre as any).taxTotal ?? 0), serviceCharge: Number((pre as any).serviceCharge ?? 0) },
++      alreadyVerified: pricing.managerApproved
++    })
++    const chargeApproved = pricing.managerApproved || chargeCheck.managerApproved
+     const periodApproved = await periodLockService.preverify({
+       at: pre.issuedAt,
+       what: `ویرایش فاکتور ${faDigits(pre.receiptNo)}`,
+       managerPassword: (input as any).managerPassword ?? null,
+       overrideReason: (input as any).overrideReason ?? null,
+-      alreadyVerified: pricing.managerApproved
++      alreadyVerified: chargeApproved
+     })
+     const overpayManagerApproved =
+       input.overpayAsCredit === true
+         ? periodApproved ||
+-          pricing.managerApproved ||
++          chargeApproved ||
+           (await preverifyOverpayManager(input, 'صدور اعتبار از اضافه‌دریافت ویرایش فاکتور (بالاتر از سقف اعتبار)'))
+         : false
+ 
+@@ -3421,6 +3614,14 @@
+         what: 'ویرایش فاکتور',
+         check: pricing
+       })
++      await writeSaleChargeOverrideAudit(tx, {
++        invoiceId: invoice.id,
++        receiptNo: current.receiptNo,
++        userId: input.userId ?? null,
++        what: 'ویرایش فاکتور',
++        check: chargeCheck,
++        approved: chargeApproved
++      })
+ 
+       /**
+        * جلسه ۴۷ — دفتر مبدأ تازه، روی اقلامِ تازه‌ی همین فاکتور. اینجا هم دوباره
+diff -ruN pristine/src/main/services/SettingsService.ts mahak/src/main/services/SettingsService.ts
+--- pristine/src/main/services/SettingsService.ts	2026-09-27 07:48:53.471788298 +0000
++++ mahak/src/main/services/SettingsService.ts	2026-09-27 07:51:44.469890459 +0000
+@@ -145,10 +145,13 @@
+ /** مقایسه‌ی «تغییر» بر پایه‌ی مقدار نرمال‌شده (نه متن خام) تا ارسال همان مقدار قبلی رمز نخواهد. */
+ const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
+ 
+-/** مقدارهای صفر ذخیره نمی‌شوند: «صفر کردن» همان «خاموش کردن همان دسته» است. */
++/**
++ * نشست ۱۵۶ (S151-c2، بند ۴-۴۵) — قانون value=0 ذخیره می‌ماند: یعنی «عمداً صفر» و از
++ * والد ارث نمی‌برد. «تنظیم‌نشده» = نبودِ قانون. (قبلاً صفرها حذف می‌شدند ⇒ ارث بی‌صدا از والد.)
++ * مقدار پیش‌فرض صفر همان «بدون پیش‌فرض» است (هر دو مبلغ صفر می‌دهند).
++ */
+ function cleanCharge(config: unknown): CategoryChargeConfig {
+   const clean = parseCategoryCharge(config)
+-  clean.rules = clean.rules.filter((r) => r.value > 0)
+   if (clean.fallback && clean.fallback.value <= 0) clean.fallback = null
+   return clean
+ }
+diff -ruN pristine/src/renderer/src/pages/CategoryCharges.tsx mahak/src/renderer/src/pages/CategoryCharges.tsx
+--- pristine/src/renderer/src/pages/CategoryCharges.tsx	2026-09-27 07:48:53.475788348 +0000
++++ mahak/src/renderer/src/pages/CategoryCharges.tsx	2026-09-27 07:52:05.082143864 +0000
+@@ -45,7 +45,9 @@
+  * دسته‌به‌دسته وارد کنید. همین‌جا هم بود که تنظیم قدیمیِ «درصد سراسری» به آن
+  * مهاجرت داده شد.
+  *
+- * صفر گذاشتن مقدار = خاموش شدن همان دسته. تغییر فقط روی فاکتورهای *بعدی* اثر
++ * نشست ۱۵۶ (S151-c2، بند ۴-۴۵): «۰» دقیقاً صفر است و از دسته‌ی بالاتر ارث نمی‌برد.
++ * «تنظیم‌نشده» (ردیف بدون مقدار، دکمه‌ی «حذف مقدار») ⇒ ارث از والد/پیش‌فرض؛
++ * «عمداً صفر» (دکمه‌ی «عمداً صفر» یا تایپ ۰) ⇒ همین دسته مبلغ صفر. تغییر فقط روی فاکتورهای *بعدی* اثر
+  * دارد و فاکتورهای ثبت‌شده دست‌نخورده می‌مانند.
+  *
+  * IPC: category:tree · charges:get · charges:save
+@@ -71,8 +73,8 @@
+   enabled,
+   fallback: fallback && fallback.value > 0 ? fallback : null,
+   rules: Object.entries(draft)
++    // نشست ۱۵۶ (بند ۴-۴۵): ردیف با مقدار ۰ = «عمداً صفر» و حذف نمی‌شود؛ «تنظیم‌نشده» = نبودِ ردیف
+     .map(([id, v]) => ({ categoryId: Number(id), mode: v.mode, value: v.value }) as CategoryChargeRule)
+-    .filter((r) => r.value > 0)
+ })
+ 
+ /** مسیر هر زیرپنل در روتر (main.tsx) */
+@@ -144,7 +146,7 @@
+     setDraft({})
+     setFallback(null)
+     setDirty(true)
+-    flash(`همه‌ی مقدارهای «${label}» صفر شد؛ برای اعمال، «ذخیره» را بزنید.`)
++    flash(`همه‌ی مقدارهای «${label}» پاک شد (هیچ دسته‌ای مقدار ندارد)؛ برای اعمال، «ذخیره» را بزنید.`)
+   }
+ 
+   /** نشست ۱۵۵ (S151-c1) — سرور رمز پنل همین نوع/اسکوپ را می‌سنجد (قفل خاموش ⇒ بی‌رمز)؛ بعد از هر تلاش پاک می‌شود */
+@@ -171,7 +173,8 @@
+   const effectiveOf = (categoryId: number) => {
+     const rule = resolveChargeRule(config, categoryId, cats)
+     const amount = !rule ? 0 : rule.mode === 'FIXED' ? rule.value : Math.round((sample * rule.value) / 100)
+-    const own = !!draft[categoryId] && draft[categoryId].value > 0
++    // نشست ۱۵۶: ردیف صفر هم «مقدار خودِ دسته» است (عمداً صفر)
++    const own = !!draft[categoryId]
+     const inherited = !!rule && !own && rule.categoryId !== 0
+     const fromFallback = !!rule && rule.categoryId === 0
+     return { rule, amount, own, inherited, fromFallback }
+@@ -343,19 +346,22 @@
+                         min={0}
+                         max={row?.mode === 'PERCENT' ? 100 : undefined}
+                         className="inp py-0.5"
+-                        value={row?.value ?? 0}
++                        value={row ? row.value : ''}
++                        placeholder="ارث"
+                         onChange={(e) => setRow(c.id, { value: +e.target.value || 0 })}
+                       />
+                       <span className="font-bold whitespace-nowrap">{row?.mode === 'PERCENT' ? '٪' : 'ریال'}</span>
+                     </div>
+                   </td>
+                   <td>
+-                    {row && row.value > 0 ? (
+-                      <button className="text-red-500" onClick={() => clearRow(c.id)}>
+-                        صفر کن
++                    {row ? (
++                      <button className="text-red-500" onClick={() => clearRow(c.id)} title="این دسته دوباره از دسته‌ی بالاتر یا مقدار پیش‌فرض ارث می‌برد">
++                        حذف مقدار (ارث)
+                       </button>
+                     ) : (
+-                      <span className="kbd">—</span>
++                      <button className="text-slate-600" onClick={() => setRow(c.id, { value: 0 })} title="این دسته دقیقاً صفر می‌شود و از دسته‌ی بالاتر ارث نمی‌برد">
++                        عمداً صفر
++                      </button>
+                     )}
+                   </td>
+                   <td
+diff -ruN pristine/src/renderer/src/pages/SalesInvoice.tsx mahak/src/renderer/src/pages/SalesInvoice.tsx
+--- pristine/src/renderer/src/pages/SalesInvoice.tsx	2026-09-27 07:48:53.475788348 +0000
++++ mahak/src/renderer/src/pages/SalesInvoice.tsx	2026-09-27 07:54:05.495624173 +0000
+@@ -10,6 +10,7 @@
+ import { useSaleStockSources } from '../hooks/useSaleStockSources'
+ import Modal from '../components/Modal'
+ import ManagerGate from '../components/ManagerGate'
++import PasswordField from '../components/PasswordField'
+ import InvoicePaymentsModal from '../components/InvoicePaymentsModal'
+ // نشست ۶۳ · بند ۴-۳۵ — همان فلوی چهارمرحله‌ای اضافه‌دریافت پنجره‌ی پرداخت‌ها (جزء مشترک)
+ import OverpayFlowDialogs, { printOverpayCredit } from '../components/OverpayFlowDialogs'
+@@ -168,6 +169,11 @@
+   /** override دستی عوارض/حق سرویس برای همین فاکتور (null = خودکار از تنظیمات) */
+   const [taxOverride, setTaxOverride] = useState<number | null>(null)
+   const [serviceOverride, setServiceOverride] = useState<number | null>(null)
++  /**
++   * نشست ۱۵۶ (S151-c2، Y8) — سرور عوارض/حق سرویس را از تنظیمات بازمحاسبه می‌کند؛ مبلغ دستیِ
++   * کمتر از خودکار فقط با رمز مدیر پذیرفته می‌شود (Audit SALE_CHARGE_OVERRIDE). بعد از هر تلاش پاک می‌شود.
++   */
++  const [chargePw, setChargePw] = useState('')
+   const [deductInventory, setDeductInventory] = useState(true)
+   /**
+    * «مشتری راه دور» (مورد ۷) — همان چک‌باکس پنل فروش تکی، برای فاکتور عمده.
+@@ -685,7 +691,9 @@
+           autoCentralWithdraw: stockPlan ? false : autoCentral,
+           ...(stockPlan ? { stockPlan } : {}),
+           // نشست ۶۳ — confirmOverpay / overpayAsCredit / managerPassword فقط از ماشین حالت فلو
+-          ...overpayReq
++          ...overpayReq,
++          // نشست ۱۵۶ — رمز عوارض دستی کمتر از خودکار (رمز مدیرِ فلو اضافه‌دریافت اولویت دارد)
++          managerPassword: overpayReq.managerPassword ?? (chargePw.trim() || undefined)
+         }
+         try {
+           /**
+@@ -698,6 +706,8 @@
+             : await call<any>(CH.saleCreate, payload)
+           overpayPlanRef.current = null
+           setLastSaved({ id: inv.id, receiptNo: inv.receiptNo, paid: Math.max(0, Math.round(paid)) })
++          // نشست ۱۵۶ — رمز عوارض دستی بعد از ثبت موفق پاک می‌شود (در فلو اضافه‌دریافت برای تلاش دوم می‌ماند)
++          setChargePw('')
+           // همان کادر زرد پنل فروش تکی، عیناً روی همین پنل (مورد ۷)
+           setWarn(inv.stockWarnings?.length ? inv.stockWarnings.join('\n') : null)
+           /** خلاصه‌ی مبدأ کسر (`summarizePlan` سمت سرور) — `null` = مثل قبل، همه از انبار فروشگاه. */
+@@ -811,6 +821,7 @@
+     editId,
+     autoCentral,
+     remoteCustomer,
++    chargePw,
+     // جلسه ۵۱ — مبدأ کسر
+     planPathActive,
+     resolveStockPlan,
+@@ -1487,6 +1498,13 @@
+               override={taxOverride}
+               onOverride={setTaxOverride}
+             />
++            {((taxOverride != null && taxOverride < totals.autoTax) ||
++              (serviceOverride != null && serviceOverride < totals.autoService)) && (
++              <label className="col-span-2" title="عوارض/حق سرویس دستیِ کمتر از مبلغ خودکار فقط با رمز مدیر ثبت می‌شود">
++                <div className="mb-1">رمز مدیر (عوارض/حق سرویس کمتر از خودکار)</div>
++                <PasswordField value={chargePw} placeholder="رمز مدیر" onChange={(e) => setChargePw(e.target.value)} />
++              </label>
++            )}
+             <label className="col-span-2">
+               <div className="mb-1">مبلغ قابل پرداخت</div>
+               <div className="inp bg-emerald-50 border-emerald-300 font-bold text-emerald-800 text-base">
+diff -ruN pristine/src/shared/charges.ts mahak/src/shared/charges.ts
+--- pristine/src/shared/charges.ts	2026-09-27 07:48:53.475788348 +0000
++++ mahak/src/shared/charges.ts	2026-09-27 07:51:44.469890459 +0000
+@@ -20,7 +20,13 @@
+  *
+  * قاعده‌ی ارث‌بری: مقدار روی «مردانه» به‌طور خودکار برای زیردسته‌ی «شلوار
+  * نیم‌بگ مردانه» هم اعمال می‌شود، مگر این‌که خودِ زیردسته مقدار جدا داشته باشد
+- * (نزدیک‌ترین دسته‌ی دارای مقدار برنده است). صفر گذاشتن = خاموش کردن همان دسته.
++ * (نزدیک‌ترین دسته‌ی دارای مقدار برنده است).
++ *
++ * نشست ۱۵۶ (S151-c2، بند ۴-۴۵): «۰» دقیقاً صفر است و از والد/پیش‌فرض ارث نمی‌برد.
++ *   - «تنظیم‌نشده» = هیچ قانونی برای آن دسته در `rules` نیست ⇒ ارث از والد، بعد `fallback`.
++ *   - «عمداً صفر» = قانونی با value=0 ⇒ همان‌جا توقف، مبلغ صفر.
++ * قبلاً قانون صفر هنگام ذخیره حذف و در جست‌وجو نادیده گرفته می‌شد ⇒ «۰٪» زیردسته
++ * بی‌صدا ۱۰٪ والد را می‌گرفت.
+  *
+  * `fallback` (مقدار پیش‌فرض همه‌ی کالاها): برای کالایی که نه خودش و نه هیچ‌کدام
+  * از دسته‌های بالاسرش مقدار ندارند (یا اصلاً دسته‌بندی ندارد) استفاده می‌شود.
+@@ -160,7 +166,8 @@
+     while (current && !seen.has(current)) {
+       seen.add(current)
+       const rule = ruleOf.get(current)
+-      if (rule && rule.value > 0) return rule
++      // نشست ۱۵۶ (بند ۴-۴۵): قانون صفر = «عمداً صفر» ⇒ توقف، نه ادامه به والد/پیش‌فرض
++      if (rule) return rule
+       current = byId.get(current)?.parentId ?? null
+     }
+   }
+@@ -234,6 +241,7 @@
+ 
+ /** متن خوانا برای نمایش یک مقدار (پنل‌ها و ستون‌های راهنما). */
+ export function describeChargeRule(rule: CategoryChargeRule | null): string {
+-  if (!rule || rule.value <= 0) return '—'
++  if (!rule) return '—'
++  if (rule.value <= 0) return 'عمداً صفر (از دسته‌ی بالاتر ارث نمی‌برد)'
+   return rule.mode === 'PERCENT' ? rule.value + '٪' : rule.value + ' ریال (هر عدد)'
+ }
+diff -ruN pristine/src/shared/enums.ts mahak/src/shared/enums.ts
+--- pristine/src/shared/enums.ts	2026-09-27 07:48:53.475788348 +0000
++++ mahak/src/shared/enums.ts	2026-09-27 07:52:50.130697672 +0000
+@@ -638,6 +638,11 @@
+    * (کاهش با تایید مدیر یا گیت خاموش، افزایش بی‌رمز)؛ before = مرجع، after = واردشده.
+    */
+   SALE_PRICE_OVERRIDE: 'SALE_PRICE_OVERRIDE',
++  /**
++   * نشست ۱۵۶ (S151-c2، Y8، بند ۴-۴۵) — عوارض/حق سرویس دستیِ فاکتور عمده متفاوت با مبلغ خودکار
++   * تنظیمات (کاهش فقط با رمز مدیر، افزایش بی‌رمز)؛ before = خودکار، after = واردشده.
++   */
++  SALE_CHARGE_OVERRIDE: 'SALE_CHARGE_OVERRIDE',
+   /** بند ۱۸ — صدور اعتبار بالاتر از سقف تنظیمات (با گیت مدیر) */
+   STORE_CREDIT_OVER_LIMIT: 'STORE_CREDIT_OVER_LIMIT',
+   /** بند ۱۷ — ثبت/ویرایش/حذف در دوره‌ی بسته‌شده (تجمیع یا بستن صندوق) */

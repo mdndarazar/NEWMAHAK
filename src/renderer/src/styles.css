@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* فونت فارسی: فایل woff2 را در resources/fonts بگذارید */
+@font-face {
+  font-family: 'Vazirmatn';
+  src: url('/fonts/Vazirmatn-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Vazirmatn';
+  src: url('/fonts/Vazirmatn-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-display: swap;
+}
+
+html, body, #root { height: 100%; }
+body { @apply bg-slate-100 text-slate-800 text-[13px] select-none; }
+
+/* جدول‌های چگال شبیه محک */
+.tbl { @apply w-full text-right border-collapse; }
+.tbl th { @apply bg-slate-200 border border-slate-300 px-2 py-1 font-bold whitespace-nowrap; }
+.tbl td { @apply border border-slate-200 px-2 py-1 whitespace-nowrap; }
+.tbl tbody tr:hover { @apply bg-brand/10; }
+.tbl tr.sel { @apply bg-brand/20; }
+
+/* ------- تغییر اندازه‌ی ستون‌ها با ماوس (پنل گزارشات فروش) -------
+   وقتی کاربر عرض ستونی را دستی تغییر داده باشد، جدول به چیدمان «عرض ثابت»
+   می‌رود تا عرض‌ها عیناً اعمال شوند؛ تا آن لحظه چیدمان همان حالت خودکار قبلی
+   است و ظاهر جدول‌ها تغییری نمی‌کند. */
+.tbl.tbl-fixed { table-layout: fixed; }
+.tbl.tbl-fixed th, .tbl.tbl-fixed td { overflow: hidden; text-overflow: ellipsis; }
+.tbl th.th-resizable { position: relative; }
+.tbl th.th-resizable .th-text { display: block; overflow: hidden; text-overflow: ellipsis; }
+.tbl th.th-resizable .col-grip {
+  position: absolute; top: 0; bottom: 0; left: -3px; width: 7px;
+  cursor: col-resize; user-select: none; z-index: 5;
+}
+.tbl th.th-resizable .col-grip:hover { @apply bg-brand/60; }
+body.col-resizing { cursor: col-resize; }
+
+/* ------- مورد ۲: تغییر ارتفاع ردیف‌ها با ماوس (همه‌ی جدول‌ها) -------
+   منطقش در src/renderer/src/lib/rowResize.ts است و روی هر table.tbl کار
+   می‌کند: مرز پایین ردیف را بگیرید و بکشید. Shift = همه‌ی ردیف‌های جدول. */
+body.row-resizing-hot, body.row-resizing-hot * { cursor: row-resize !important; }
+body.row-resizing, body.row-resizing * { cursor: row-resize !important; user-select: none !important; }
+.tbl tr[data-row-h] > td, .tbl tr[data-row-h] > th { overflow: hidden; }
+body.col-resizing * { cursor: col-resize !important; }
+
+/* ------- مورد ۳: همان تغییر عرض ستون، ولی روی *همه‌ی* جدول‌های برنامه -------
+   منطقش در src/renderer/src/lib/colResize.ts است: نشانگر را روی مرز دو سرستون
+   بگذارید و بکشید. دوبار کلیک = عرض خودکار همان ستون · Shift + دوبار کلیک =
+   بازگشت کل جدول به چیدمان اول. جدول‌هایی که هوک React را دارند (گزارشات فروش،
+   اقلام پنل فروش) دست‌نخورده می‌مانند و همان دستگیره‌ی خودشان را دارند. */
+body.col-resizing-hot, body.col-resizing-hot * { cursor: col-resize !important; }
+/* سرستونِ جدولی که عرض دستی دارد، متن بلندش را با «…» کوتاه می‌کند (نه شکستن) */
+.tbl[data-colw] th { overflow: hidden; text-overflow: ellipsis; }
+
+/* ===========================================================================
+   بند ۵ — «جدول گزارش کامل، با اسکرول ماوس»
+
+   مشکل قبلی: هر صفحه‌ی گزارش `h-full` بود و جدولش داخل یک کادر
+   `flex-1 overflow-auto` زندانی می‌شد. نتیجه: جدول به قدِ پنجره فشرده می‌شد،
+   ردیف‌ها و بخش‌های پایینی به‌سختی دیده می‌شدند، و چرخ ماوس گاهی اسکرولِ صفحه
+   را می‌چرخاند و گاهی اسکرولِ داخلی جدول را (اسکرول تودرتو).
+
+   قاعده‌ی جدید و بدون استثنا برای صفحه‌های گزارش:
+     • `.page`      روی ریشه‌ی صفحه، به‌جای `h-full`. صفحه دیگر قدِ پنجره نیست و
+                    به قدِ محتوایش بلند می‌شود.
+     • `.tbl-card`  روی کادر هر جدول، به‌جای `flex-1 overflow-auto`. هیچ
+                    `overflow` ای ندارد، پس جدول **کامل** باز می‌شود و برای دیدن
+                    ادامه‌اش، *صفحه* با چرخ ماوس اسکرول می‌شود.
+
+   دو نکته‌ی عمدی:
+     ۱) `w-max min-w-full` — جدول‌های پرستون از عرض پنجره پهن‌ترند؛ این دو با هم
+        باعث می‌شوند کادر سفید همیشه *تا انتهای* جدول کشیده شود (وگرنه جدول از
+        کادر سفید بیرون می‌زد) و اسکرول افقی روی ناحیه‌ی اصلی برنامه بیفتد.
+     ۲) چون کادر جدول خودش scroll container نیست، `thead` با کلاس
+        `sticky top-0` همچنان — و این بار نسبت به *کل صفحه* — بالای دید
+        می‌چسبد. پس جدول هزار ردیفی هم سرستون دارد.
+
+   ناحیه‌های «کاری» (سبد پنل فروش، سبد برگشت از فروش، سبد فاکتور عمده) عمداً
+   دست‌نخورده مانده‌اند: آن‌ها گزارش نیستند و باید کنار فرم پرداخت در یک صفحه
+   جا شوند.
+   =========================================================================== */
+.page { @apply flex flex-col gap-2 pb-10; }
+.tbl-card { @apply bg-white rounded shadow w-max min-w-full; }
+
+/* بند ۵ (ادامه) — جدول‌های داخل پنل «تنظیمات».
+   این جدول‌ها داخل یک ستون شبکه‌اند و نمی‌توانند مثل `.tbl-card` پهن‌تر از ستون
+   شوند، پس فقط اسکرول *افقی* دارند و هیچ سقف ارتفاعی ندارند: جدول کامل باز
+   می‌شود و برای دیدن ادامه‌اش، خودِ صفحه با چرخ ماوس اسکرول می‌شود. قبلاً
+   `max-h-[45vh..60vh] overflow-auto` بودند و همان «اسکرول تودرتو»ی آزاردهنده‌ای
+   را می‌ساختند که بند ۵ برای حذفش نوشته شد. */
+.tbl-wrap { @apply border border-slate-200 rounded overflow-x-auto; }
+/* کادر جدولی که هنوز باید داخل خودش اسکرول شود (ناحیه‌های کاری) */
+.tbl-card-scroll { @apply bg-white rounded shadow overflow-auto; }
+
+.btn { @apply px-3 py-2 rounded border border-slate-300 bg-white hover:bg-slate-50 active:scale-[.98] transition; }
+.btn-primary { @apply bg-brand text-white border-brand hover:bg-brand-dark; }
+.btn-danger { @apply bg-red-500 text-white border-red-500 hover:bg-red-600; }
+.inp { @apply w-full px-2 py-2 rounded border border-slate-300 outline-none focus:border-brand bg-white; }
+/* ------- مورد ۹: متن راهنمای ریز خاکستری، با فونت فارسی برنامه -------
+   قبلاً همین کلاس `font-mono` داشت و جمله‌های کامل فارسی (توضیح زیر جدول‌ها،
+   راهنمای تنظیمات، ...) با فونت مونوسپیس لاتین رندر می‌شدند و بدخوان بودند.
+   حالا:
+     .kbd    = متن راهنمای فارسی (فونت پایه‌ی برنامه، Vazirmatn) — بدون mono
+     .keycap = برچسب کلید میان‌بر (F2, Ctrl+S, Esc): کوتاه، لاتین، mono */
+.kbd { @apply text-[11px] leading-5 opacity-70 font-sans; }
+.keycap {
+  @apply text-[10px] opacity-80 font-mono px-1 py-px rounded border border-slate-300 bg-slate-50 align-middle;
+  direction: ltr;
+  unicode-bidi: isolate;
+}

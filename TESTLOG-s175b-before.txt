@@ -1,0 +1,28 @@
+(node:6227) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6227) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) ابطال بازه‌ی امروز با ۵۲۱ فاکتور، ۵۱۰ برگشت دارای اعتبار، ۵۱۰ مصرف اعتبار
+  ✗ ابطال بی‌خطا — انتظار null، دریافت "HARNESS: سقف IN برابر ۵۰۰ است"
+  ✗ فاکتورهای باطل‌شده = ۵۲۱ — انتظار 521، دریافت 0
+  ✗ پرداخت‌های باطل‌شده = ۵۲۱ — انتظار 521، دریافت 0
+  ✗ برگشت‌های باطل‌شده = ۵۱۰ — انتظار 510، دریافت 0
+  ✗ اعتبارهای برگشت CANCELED = ۵۱۰ — انتظار 510، دریافت 0
+  ✗ مصرف‌های اعتبار برگشت‌خورده = ۵۱۰ — انتظار 510، دریافت 0
+  ✗ usedAmount اعتبار چندبارمصرف به ۰ برگشت — انتظار 0، دریافت 51000
+  ✓ اعتبار چندبارمصرف خودش باطل نشد = null
+  ✗ Audit: invoiceCount = ۵۲۱ — انتظار 521، دریافت null
+  ✗ Audit: returnCount = ۵۱۰ — انتظار 510، دریافت null
+  ✗ هیچ in/notIn بالای ۵۰۰ نبود (بازه) — انتظار true، دریافت false
+
+۲) ابطال انتخابی ۵۲۱ فاکتور (id in picked) با بازگشت موجودی
+  ✗ ابطال انتخابی بی‌خطا — انتظار null، دریافت "HARNESS: سقف IN برابر ۵۰۰ است"
+  ✗ فاکتورهای انتخابی باطل‌شده = ۵۲۱ — انتظار 521، دریافت 0
+  ✗ پرداخت‌های انتخابی باطل‌شده = ۵۲۱ — انتظار 521، دریافت 0
+  ✗ موجودی به اندازه‌ی ۵۲۱ قلم برگشت — انتظار 521، دریافت 0
+  ✗ هیچ in/notIn بالای ۵۰۰ نبود (انتخابی) — انتظار true، دریافت false
+
+نتیجه: 1 موفق · 15 ناموفق

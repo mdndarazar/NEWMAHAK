@@ -1,0 +1,511 @@
+--- a/PROGRESS.md
++++ b/PROGRESS.md
+@@ -264,3 +264,14 @@
+ - ⚠️ خوشه H نیمه‌کاره است: `settingsSet` allowlist و گیت `sale:purge` هنوز رفع نشده‌اند. خوشه J نیمه‌کاره است: ردیف جمع تعویض، `pick()`، شاخه‌ی چاپ اختصاصی هر تب و سه ستون چاپ برگشت باقی‌اند. خوشه I نیمه‌کاره است: فرمول نرخ برگشت، بازه‌ی «امروز» کارمند، outOfShift و ستون تعویض باقی‌اند.
+ - رگرسیون کامل: **۳۲ فایل PASS · ۰ فایل FAIL**، جمعاً **۶۲۷ علامت ✓** (شمارش با `grep -c ✓` روی خروجی هر فایل).
+ - فایل‌های src تغییریافته: `src/main/services/FraudService.ts`، `src/main/services/xlsx.ts`، `src/main/index.ts`.
++
++## نشست ۸۵
++- ✅ خوشه H / مسیر خام `settings:set`: کلیدهای ناشناس fail-closed رد می‌شوند؛ کلیدهای حساس فقط با `assertManagerPassword` پذیرفته می‌شوند؛ actor از نشست واقعی خوانده و تغییر در `AuditLog` ثبت می‌شود. کلیدهای رمز مدیر/پنل عمداً از این مسیر خام قابل نوشتن نیستند.
++- ✅ خوشه H / پاک‌سازی گزارش فروش: IPC اکنون نشست باز و رمز مدیر می‌خواهد؛ `SalesService.purge` قفل دوره را بیرون و داخل تراکنش می‌سنجد و اسناد فروش، پرداخت، برگشت و اعتبار صادرشده را با مهر void نگه می‌دارد؛ `deleteMany/delete` روی بدنه‌ی purge حذف شد. اعتبار برگشتِ قبلاً مصرف‌شده باعث rollback و ارجاع به رسیدگی مدیر می‌شود.
++- ✅ UI تنظیمات: رمز مدیر و دلیل پاک‌سازی به main فرستاده می‌شوند و نتیجه به‌جای «حذف» با عنوان «ابطال» نمایش داده می‌شود.
++- تست قبل از رفع `fix-s85-security-gates.mjs` روی zip خام نشست ۸۴: **۲ موفق · ۱۱ ناموفق**؛ purge فیزیکی حذف می‌کرد و هیچ گیت رمز/قفل دوره‌ای نداشت، و settings:set مسیر آزاد داشت.
++- تست بعد از رفع `tests/audit-fixes/fix-s85-security-gates.mjs`: **۱۳ موفق · ۰ ناموفق**؛ تست ایستا است.
++- رگرسیون کامل `tests/audit-fixes/*.mjs`: **۳۳ فایل PASS · ۰ فایل FAIL**؛ هیچ تست هارنس شکست نخورد.
++- گام صفر همچنان ناقص است: `npm install`، `npx prisma generate` و `npm run typecheck` به‌دلیل نبود npm/npx اجرا نشدند. اجرای واقعی Electron/Prisma و migration داده‌ی تاریخی هنوز اثبات نشده‌اند.
++- فایل‌های src تغییریافته: `src/main/ipc/index.ts`، `src/main/services/SalesService.ts`، `src/renderer/src/pages/Settings.tsx`؛ تست تازه: `tests/audit-fixes/fix-s85-security-gates.mjs`.
++- ⚠️ خوشه H هنوز کامل نیست: پنجره‌های پنهان چاپ/بکاپ با Electron واقعی بررسی نشده‌اند. خوشه‌های I/J و C طبق وضعیت قبل باقی‌اند و خوشه C همچنان نباید تکه‌تکه شود.
+--- a/DECISIONS.md
++++ b/DECISIONS.md
+@@ -239,3 +239,9 @@
+ S84-2 — سؤال: کاراکتر NUL در regex چطور نوشته شود؟ گزینه‌ها: شکل «بک‌اسلش + u + چهار صفر» یا `\x00`. انتخاب من: `\x00`. دلیل: در زنجیره‌ی انتقال متن، رشته‌ی «بک‌اسلش + u + چهار صفر» حذف می‌شد (ریشه‌ی احتمالی خود باگ)؛ `\x00` هم‌معنی و مقاوم است. کلاس کامل: `[\x00-\x08\x0b\x0c\x0e-\x1f]` (تب، LF و CR مجاز می‌مانند).
+ S84-3 — سؤال: منوی build نهایی کاملاً null شود یا منوی سفارشی؟ انتخاب من: منوی سفارشی فقط با undo/redo/cut/copy/paste/selectAll. دلیل: بند ۴-۳۶ «منوی سفارشی بدون DevTools» خواسته؛ حذف کامل منو روی macOS میان‌برهای کپی/چسباندن را در فیلدها می‌کشد. در حالت توسعه (`!app.isPackaged`) رفتار قبلی حفظ شد.
+ S84-4 — سؤال: پنجره‌های پنهان چاپ (`PrintService`/`printer.ts`/`ExportService`/`BackupService`) هم devTools:false بگیرند؟ انتخاب من: فعلاً دست نخورد. دلیل: این پنجره‌ها پنهان‌اند و فوکوس کاربر ندارند، و با منوی سفارشی میان‌بر DevTools در دسترس نیست؛ تغییر آن‌ها بدون اجرای واقعی چاپ ریسک خراب کردن چاپ دارد. در نشست دارای Electron واقعی بررسی شود.
++
++### نشست ۸۵
++S85-1 — سؤال: `settings:set` خام برای کلید ناشناس یا حساس چه کند؟ انتخاب من: کلید ناشناس fail-closed رد شود؛ کلیدهای حساس فقط با رمز مدیر پذیرفته شوند؛ کلیدهای manager/panel auth اصلاً از این مسیر قابل نوشتن نباشند. دلیل: مسیر عمومی IPC قابل دورزدن پنل‌های رسمی است و نوشتن خامِ رمز/هش می‌تواند قفل مدیر را خراب یا دور بزند؛ خطای سخت‌گیرانه امن‌تر از allow پیش‌فرض است.
++S85-2 — سؤال: actor تغییر خام تنظیمات و purge از payload بیاید یا نشست؟ انتخاب من: فقط `shiftService.currentStaffId()`؛ payload نادیده گرفته شود. دلیل: renderer قابل جعل است و بند ۴-۳۰ ثبت actor واقعی را می‌خواهد؛ اگر نشست باز نباشد purge اصلاً اجرا نشود و تنظیم خام فقط با actor تهی، بدون جعل، ثبت شود.
++S85-3 — سؤال: پاک‌سازی گزارش فروش فیزیکی حذف کند یا void؟ انتخاب من: void اتمیک روی SaleInvoice/SaleReturn/Payment/StoreCredit؛ اقلام، تخصیص مبدأ، شماره فیش و دفتر انبار بمانند. اگر اعتبار صادرشده از برگشت قبلاً مصرف شده باشد عملیات rollback و نیازمند رسیدگی مدیر است. دلیل: بند ۴-۲۲ حذف مدرک مالی را ممنوع کرده و پاک‌کردن اعتبار مصرف‌شده تعهد مشتری را پنهان می‌کند.
++S85-4 — سؤال: قفل دوره برای purge فقط بیرون transaction سنجیده شود یا داخل هم تکرار شود؟ انتخاب من: `preverify` بیرون و `assertOpen` داخل transaction، با گیت رمز مدیر پیش از هر دو. دلیل: lockout نباید وسط transaction نوشته شود و وضعیت دوره می‌تواند بین دو مرحله عوض شود؛ fail-closed از تغییر بی‌ردپا جلوگیری می‌کند.
+--- a/TESTLOG.md
++++ b/TESTLOG.md
+@@ -633,3 +633,24 @@
+ - دستور: `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done`
+ - نتیجه: **۳۲ فایل PASS · ۰ فایل FAIL**، **۶۲۷ علامت ✓**.
+ - typecheck کامل TypeScript: اجرا نشد، دلیل: npm/tsc در محیط نیست.
++
++## نشست ۸۵
++گام ۰:
++- `npm install` ⇒ اجرا نشد، دلیل: `npm: command not found`.
++- `npx prisma generate` ⇒ اجرا نشد، دلیل: `npx: command not found`.
++- `npm run typecheck` ⇒ اجرا نشد، دلیل: `npm: command not found`.
++- `node --version` ⇒ `v22.23.1`.
++
++قبل از رفع:
++- دستور: `MAHAK_ROOT=<zip خام نشست ۸۴> node --import ./test/harness/register.mjs tests/audit-fixes/fix-s85-security-gates.mjs`
++- نتیجه: **۲ موفق · ۱۱ ناموفق**.
++- شکست‌های اصلی: مسیر خام `settings:set` allowlist/گیت مدیر/Audit نداشت؛ `sale:purge` رمز مدیر و قفل دوره نداشت؛ بدنه‌ی purge حذف فیزیکی انجام می‌داد؛ UI رمز و دلیل را نمی‌فرستاد.
++
++بعد از رفع:
++- دستور: `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s85-security-gates.mjs`
++- نتیجه: **۱۳ موفق · ۰ ناموفق**؛ تست ایستا.
++- دستور رگرسیون: `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done`
++- نتیجه: **۳۳ فایل PASS · ۰ فایل FAIL**.
++
++محدودیت اثبات:
++- تست جدید رفتار IPC را ایستا می‌سنجد؛ اجرای واقعی Electron، Prisma Client تولیدی، typecheck کامل، migration روی داده‌ی تاریخی، race دو پردازه‌ی Electron و crash وسط transaction در این محیط اجرا نشدند.
+--- a/HANDOFF-PROMPT-next.txt
++++ b/HANDOFF-PROMPT-next.txt
+@@ -216,37 +216,41 @@
+ ۱۰) وضعیت فعلی زنجیره و نقطه‌ی دقیق شروع (تنها بخشی که هر نشست به‌روز می‌کند)
+ 
+ ۱۰-۱) محیط و روش اجرای تست
+-در نشست ۸۴ هم گام ۰ کامل نشد: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه با `command not found` اجرا نشدند؛ شبکه در محیط نبود. `node --version` برابر `v22.23.1` است. همه‌ی تست‌ها فقط با resolver رسمی هارنس معتبرند: `node --import ./test/harness/register.mjs <فایل>`. هیچ ادعایی درباره‌ی Prisma Client تولیدی، typecheck کامل، Electron واقعی یا migration روی دیتابیس تاریخی وجود ندارد.
++در نشست ۸۵ هم گام ۰ کامل نشد: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه به‌دلیل `command not found` اجرا نشدند؛ شبکه در محیط نبود. `node --version` برابر `v22.23.1` است. همه‌ی تست‌ها فقط با resolver رسمی هارنس معتبرند: `node --import ./test/harness/register.mjs <فایل>`. هیچ ادعایی درباره‌ی Prisma Client تولیدی، typecheck کامل، Electron واقعی یا migration روی دیتابیس تاریخی وجود ندارد.
+ 
+-۱۰-۲) نتیجه‌ی نشست ۸۴
+-چون خوشه A بدون محیط Prisma/Electron واقعی جلو نمی‌رود و خوشه C نباید تکه‌تکه شود، سه باگ مستقل و بی‌گره مالی رفع شد (DECISIONS S84-1):
+-- خوشه I: `FraudService.review` روی `AuditLog` با ستون ناموجود `createdAt` فیلتر می‌کرد و کل تب ضدتقلب throw می‌کرد؛ به ستون واقعی `at` اصلاح شد. تست `tests/audit-fixes/fix-s84-fraud-audit-column.mjs`: قبل ۲ موفق · ۳ ناموفق، بعد ۵ موفق · ۰ ناموفق.
+-- خوشه J: regex `xmlEscape` در `src/main/services/xlsx.ts` هر خط‌تیره را فاصله می‌کرد و کنترلی‌ها را حذف نمی‌کرد؛ به `[\x00-\x08\x0b\x0c\x0e-\x1f]` اصلاح شد (هشدار: NUL را به شکل «بک‌اسلش + u + چهار صفر» ننویس، این رشته در انتقال متن حذف می‌شود؛ همیشه شکل x00 را بنویس؛ S84-2). تست `tests/audit-fixes/fix-s84-xlsx-dash.mjs`: قبل ۱ موفق · ۵ ناموفق، بعد ۶ موفق · ۰ ناموفق.
+-- خوشه H (فقط DevTools، بند ۴-۳۶): در `src/main/index.ts` پرچم `DEVTOOLS_ALLOWED = !app.isPackaged`، `devTools: DEVTOOLS_ALLOWED` روی پنجره‌ی اصلی و منوی سفارشی فارسی فقط با نقش‌های ویرایش در build نهایی. تست ایستای `tests/audit-fixes/fix-s84-devtools-lock.mjs`: قبل ۲ موفق · ۵ ناموفق، بعد ۷ موفق · ۰ ناموفق. اجرای واقعی Electron: اجرا نشد.
++۱۰-۲) نتیجه‌ی نشست ۸۵
++- ✅ خوشه H / مسیر خام `settings:set`: allowlist سخت‌گیرانه اضافه شد؛ کلیدهای ناشناس رد می‌شوند؛ کلیدهای حساس فقط با `assertManagerPassword` پذیرفته می‌شوند؛ actor از نشست واقعی خوانده و تغییر با `AuditAction.SETTINGS_UPDATE` ثبت می‌شود؛ کلیدهای رمز مدیر و رمز پنل از این مسیر خام قابل نوشتن نیستند.
++- ✅ خوشه H / `sale:purge`: IPC اکنون نشست باز و رمز مدیر می‌خواهد؛ `SalesService.purge` قفل دوره را با `preverify` بیرون تراکنش و `assertOpen` داخل تراکنش می‌سنجد؛ SaleInvoice/SaleReturn/Payment/StoreCredit با مهر void نگه داشته می‌شوند و delete فیزیکی در بدنه‌ی purge حذف شد؛ اعتبار برگشتیِ قبلاً مصرف‌شده باعث rollback و ارجاع به رسیدگی مدیر می‌شود.
++- ✅ UI تنظیمات: رمز مدیر و دلیل purge به main فرستاده می‌شوند و نتیجه‌ی عملیات با برچسب «ابطال» نمایش داده می‌شود.
++- تست قبل از رفع `fix-s85-security-gates.mjs` روی zip خام نشست ۸۴: **۲ موفق · ۱۱ ناموفق**.
++- تست بعد از رفع `tests/audit-fixes/fix-s85-security-gates.mjs`: **۱۳ موفق · ۰ ناموفق**؛ تست ایستا است.
+ 
+ ۱۰-۳) رگرسیون کامل
+ دستور: `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done`
+-نتیجه: **۳۲ فایل PASS · ۰ فایل FAIL**، جمعاً **۶۲۷ علامت ✓** (شمارش با `grep -c ✓`). فهرست تست‌ها: fix-s57-returns، fix-s58-remaining، fix-s59-bridge-exchange، fix-s60-exchange-debt، fix-s61-overpay-credit، fix-s62-overpay-flow، fix-s63-edit-overpay-lock، fix-s64-return-void، fix-s65-exchange-void، fix-s66-payment-void، fix-s67-payment-actor، fix-s68-payment-provenance، fix-s69-cash-close-atomic، fix-s69-cheque-history، fix-s69-consolidation-retry، fix-s69-day-boundary، fix-s70-event-scope، fix-s71-event-owner، fix-s72-shift-number، fix-s73-full-refund، fix-s74-cluster-a، fix-s75-shift-atomic، fix-s76-card-transfer-day-boundary، fix-s77-cash-close-repeat، fix-s78-open-session-gate، fix-s79-cash-close-race، fix-s80-open-session-idempotency، fix-s81-cash-close-two-connections، fix-s82-open-session-two-connections، fix-s84-fraud-audit-column، fix-s84-xlsx-dash، fix-s84-devtools-lock (همه در `tests/audit-fixes/`).
++نتیجه: **۳۳ فایل PASS · ۰ فایل FAIL**. تست تازه‌ی `fix-s85-security-gates.mjs` هم در همین مجموعه است. رگرسیون فقط منطق/SQLite هارنس را اثبات می‌کند، نه Prisma/Electron تولیدی.
+ 
+-۱۰-۴) فایل‌های تغییرکرده در نشست ۸۴
+-- `src/main/services/FraudService.ts`: فیلتر زمان AuditLog از `createdAt` به `at`.
+-- `src/main/services/xlsx.ts`: کلاس کاراکتر کنترلی درست در `xmlEscape`؛ خط‌تیره‌ی متنی دیگر خراب نمی‌شود.
+-- `src/main/index.ts`: قفل DevTools و منوی سفارشی در build نهایی.
+-- سه تست تازه در `tests/audit-fixes/`، و به‌روزرسانی `PROGRESS.md`، `DECISIONS.md`، `TESTLOG.md` و همین پرامپت.
++۱۰-۴) فایل‌های تغییرکرده در نشست ۸۵
++- `src/main/ipc/index.ts`: allowlist و Audit برای settings:set؛ گیت نشست/رمز مدیر برای sale:purge.
++- `src/main/services/SalesService.ts`: گیت قفل دوره و تبدیل purge از حذف فیزیکی به void اتمیکِ اسناد؛ حفظ دفترها و رد اعتبار مصرف‌شده.
++- `src/renderer/src/pages/Settings.tsx`: ارسال رمز مدیر/دلیل purge و نمایش نتیجه به‌عنوان ابطال.
++- `tests/audit-fixes/fix-s85-security-gates.mjs`: تست ایستای قبل/بعد گیت‌ها و عدم حذف فیزیکی.
++- `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md`: ثبت نشست ۸۵.
+ 
+ ۱۰-۵) محدودیت‌های باز
+-race واقعی دو پردازه‌ی Electron/Prisma، `npm install`، `prisma generate`، `typecheck` کامل، crash/قطع برق وسط transaction، render واقعی Electron/React، timezone غیر Asia/Tehran، حجم ۵۰٬۰۰۰+ ردیف با Prisma واقعی و migration روی داده‌ی تاریخی واقعی اجرا نشدند؛ دلیل: npm/npx/Electron و شبکه در محیط نبودند. پذیرش تاریخی `test/acceptance-db-session36.mjs` طبق وضعیت قبلی **۱۳۱ موفق · ۷ ناموفق** است (هر ۷ مربوط به `destination=null` و سبد «نامشخص»؛ دست نخورد). چون typecheck اجرا نشد، نوع `Electron.MenuItemConstructorOptions` در `src/main/index.ts` باید با اولین `npm run typecheck` تأیید شود.
++race واقعی دو پردازه‌ی Electron/Prisma، `npm install`، `prisma generate`، `typecheck` کامل، crash/قطع برق وسط transaction، render واقعی Electron/React، timezone غیر Asia/Tehran، حجم ۵۰٬۰۰۰+ ردیف با Prisma واقعی، migration روی داده‌ی تاریخی واقعی و اجرای واقعی پنجره‌های چاپ/بکاپ اجرا نشدند؛ دلیل: npm/npx/Electron و شبکه در محیط نبودند. پذیرش تاریخی `test/acceptance-db-session36.mjs` طبق وضعیت قبلی **۱۳۱ موفق · ۷ ناموفق** است و هر ۷ مورد مربوط به `destination=null` و سبد «نامشخص» است؛ دست نخورد. چون typecheck اجرا نشد، importهای تازه در `src/main/ipc/index.ts` و نوع `status` در updateMany باید با اولین `npm run typecheck` تأیید شوند.
+ 
+ ۱۰-۶) وضعیت خوشه‌ها
+ - A: در سطح کد و SQLite هارنس جلو آمده (گیت تکرار بستن، اتمیک close، گیت تعویض اجباری، idempotency نشست، race دو اتصال)، ولی در Prisma/Electron واقعی اثبات‌نشده.
+-- B، C، D، E، F، G، K، L، M: رفع‌نشده یا نیمه‌کاره طبق نشست‌های قبل؛ C همچنان فقط با یک تست یکپارچه‌ی واحد ادامه یابد.
+-- H: نیمه‌کاره؛ DevTools رفع شد؛ allowlist سخت‌گیرانه‌ی `settingsSet` (با گیت رمز مدیر و AuditLog، بند ۴-۲۹) و گیت `sale:purge` (ManagerGate + `periodLockService.assertOpen` + actor از session + فقط void، بند ۴-۲۲) باقی‌اند.
+-- I: نیمه‌کاره؛ ستون `at` رفع شد؛ فرمول «نرخ برگشت غیرعادی» با تعداد کم فروشنده، بازه‌ی «امروز» در StaffReportService، outOfShift با shiftId واقعی و ستون تعویض پنل کارمند باقی‌اند.
+-- J: نیمه‌کاره؛ regex خط‌تیره رفع شد؛ ردیف جمع تب تعویض (ستون جابه‌جا + نبود در Excel)، `pick()` برای آرایه‌ی خام در تب‌های چک/اعتبار، شاخه‌ی چاپ اختصاصی هر تب و سه ستون چاپ برگشت (بند ۴-۲۵) باقی‌اند.
++- B، C، E، F، G، K، L، M: رفع‌نشده یا نیمه‌کاره طبق نشست‌های قبل؛ C همچنان فقط با یک تست یکپارچه‌ی واحد ادامه یابد و تکه‌تکه نشود.
++- D: بخش‌هایی از اعتبار خرید و ledger رفع شده، اما cross-check یکپارچه‌ی اعتبار/برگشت/تعویض/گزارش باقی است.
++- H: نیمه‌کاره؛ DevTools، allowlist settings:set، گیت نشست/رمز مدیر purge، قفل دوره و void اسناد purge رفع شدند. پنجره‌های پنهان چاپ/بکاپ با Electron واقعی و پاک‌سازی archive/vacuum هنوز جداگانه بررسی نشده‌اند.
++- I: نیمه‌کاره؛ ستون AuditLog به `at` رفع شد؛ فرمول نرخ برگشت غیرعادی با تعداد کم فروشنده، بازه‌ی «امروز» در StaffReportService، outOfShift با shiftId واقعی، ستون تعویض و مصرف اعتبار در پنل کارمند باقی‌اند.
++- J: نیمه‌کاره؛ regex خط‌تیره رفع شد؛ ردیف جمع تب تعویض، `pick()` برای آرایه‌ی خام، شاخه‌ی چاپ اختصاصی هر تب و سه ستون چاپ برگشت باقی‌اند.
+ 
+ ۱۰-۷) نقطه‌ی دقیق شروع نشست بعد
+-۱) ابتدا گام ۰ را در محیط دارای npm/Prisma اجرا کن و خروجی هر سه دستور را دقیق در سه فایل زنده ثبت کن؛ اگر شد، اول typecheck تغییرات نشست ۸۴ را تأیید کن.
+-۲) اگر Prisma واقعی در دسترس شد، s81 و s82 را با دو Prisma Client/اتصال مستقل و ترجیحاً دو پردازه‌ی واقعی Electron بازاجرا کن و rollback/crash وسط transaction را بسنج؛ اگر نشد، صریحاً «اجرا نشد، دلیل: ...» بنویس.
+-۳) اگر محیط باز هم ناقص بود، باقی‌مانده‌ی مستقل خوشه H را ببند: allowlist `settingsSet` و گیت `sale:purge` (اولی با `src/main/ipc/index.ts` و `AuthService.ts` شروع شود)، هر کدام با تست قبل/بعد در هارنس. سپس `pick()` و ردیف جمع تعویض خوشه J.
+-۴) بعد از بسته‌شدن A، فقط با یک تست یکپارچه به خوشه C برگرد: `remainingOf`، پل تطبیق، برگشت و تعویض تاریخی، refund، store credit و closed period را هم‌زمان cross-check کن. تغییر تکه‌ای در یک زیرمسیر ممنوع است.
+-۵) هر رفع جدید را همراه تست قبل/بعد، ثبت در `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md` انجام بده و در پایان همین بند ۱۰ را برای نشست بعد به‌روز کن.
++۱) ابتدا گام ۰ را در محیط دارای npm/Prisma اجرا کن و خروجی هر سه دستور را دقیق در سه فایل زنده ثبت کن؛ سپس typecheck تغییرات نشست ۸۵ را تأیید کن.
++۲) با Prisma واقعی، migration و تست void purge را روی دیتابیس تازه‌ساخته از تمام migrationها اجرا کن؛ سپس روی کپی داده‌ی تاریخی، بدون نوشتن روی اصل، بررسی کن که فاکتور/پرداخت/برگشت/اعتبار و شماره فیش باقی می‌مانند و گزارش فعال دوباره‌شماری نمی‌کند.
++۳) اگر محیط باز هم ناقص بود، خوشه J را فقط در یک مسیر منسجم جلو ببر: ابتدا `pick()` و ردیف جمع تعویض، سپس چاپ/Excel برگشت با سه ستون؛ قبل/بعد و رگرسیون کامل را ثبت کن.
++۴) پنجره‌های پنهان چاپ/بکاپ را با Electron واقعی بررسی کن و DevTools را در build نهایی قطعی کن؛ ادعای سبز بدون اجرای Electron ممنوع.
++۵) بعد از بسته‌شدن A، فقط با یک تست یکپارچه به خوشه C/D برگرد: `remainingOf`، پل تطبیق، برگشت و تعویض تاریخی، refund، store credit، closed period و purge void را هم‌زمان cross-check کن.
++۶) هر رفع جدید را همراه تست قبل/بعد، ثبت در `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md` انجام بده و در پایان همین بند ۱۰ را برای نشست بعد به‌روز کن.
+--- a/src/main/ipc/index.ts
++++ b/src/main/ipc/index.ts
+@@ -26,13 +26,16 @@
+ import { priceAdjustService } from '../services/PriceAdjustService'
+ import { printService } from '../services/PrintService'
+ import { exportTableFile } from '../services/ExportService'
+-import { authService } from '../services/AuthService'
++import { authService, assertManagerPassword } from '../services/AuthService'
+ import { barcodePng } from '../services/BarcodeService'
+ import { backupService } from '../services/BackupService'
+ import { maintenanceService } from '../services/MaintenanceService'
+ import { printHtml } from '../print/printer'
+ import { receiptHtml, reportHtml, labelHtml, summaryThermalHtml } from '../print/templates'
+ import { toUserMessage } from '../errors'
++import { audit } from '../services/AuditService'
++import { AuditAction } from '@shared/enums'
++import { SETTING_KEYS } from '@shared/receipt'
+ 
+ /**
+  * wrapper یکسان همه‌ی کانال‌ها.
+@@ -95,6 +98,60 @@
+   return { ...(payload ?? {}), userId: actorId }
+ }
+ 
++/**
++ * `settings:set` یک مسیر قدیمی و عمومی است؛ نباید بتواند با نوشتن مستقیم روی
++ * Setting، گیت‌های تنظیمات حساس را دور بزند. کلید ناشناس fail-closed است و
++ * کلیدهای حساس فقط با رمز مدیر و actor واقعی نشست ثبت می‌شوند.
++ */
++const RAW_SETTING_SAFE_KEYS = new Set([
++  SETTING_KEYS.receiptTemplate,
++  SETTING_KEYS.labelTemplate,
++  SETTING_KEYS.backupConfig,
++  SETTING_KEYS.backupImports
++])
++
++const RAW_SETTING_MANAGER_KEYS = new Set([
++  SETTING_KEYS.saleDefaults,
++  SETTING_KEYS.shiftConfig,
++  SETTING_KEYS.securityConfig,
++  SETTING_KEYS.panelLocks,
++  SETTING_KEYS.discountPolicy,
++  SETTING_KEYS.accountingPolicy,
++  SETTING_KEYS.creditSettings,
++  SETTING_KEYS.taxCharge,
++  SETTING_KEYS.serviceChargeByCategory,
++  SETTING_KEYS.officialTime,
++  SETTING_KEYS.stocktakeSchedule
++])
++
++async function setRawSetting(input: any): Promise<{ key: string }> {
++  const key = String(input?.key ?? '').trim()
++  if (!key) throw new Error('کلید تنظیمات مشخص نشده است.')
++  if (!RAW_SETTING_SAFE_KEYS.has(key) && !RAW_SETTING_MANAGER_KEYS.has(key))
++    throw new Error(`تغییر مستقیم تنظیم «${key}» از این مسیر مجاز نیست؛ از پنل رسمی همان تنظیم استفاده کنید.`)
++
++  const actorId = await shiftService.currentStaffId()
++  if (RAW_SETTING_MANAGER_KEYS.has(key))
++    await assertManagerPassword(input?.managerPassword, `تغییر تنظیم حساس «${key}»`)
++
++  const before = (await prisma.setting.findUnique({ where: { key } }))?.value ?? null
++  const value = String(input?.value ?? '')
++  await prisma.setting.upsert({ where: { key }, update: { value }, create: { key, value } })
++  await audit(prisma, {
++    action: AuditAction.SETTINGS_UPDATE,
++    entity: 'Setting',
++    entityId: 0,
++    userId: actorId,
++    before: JSON.stringify({ key, value: before }),
++    after: JSON.stringify({ key, value }),
++    note:
++      RAW_SETTING_MANAGER_KEYS.has(key)
++        ? `تغییر تنظیم حساس از مسیر مستقیم با تایید رمز مدیر: ${key}`
++        : `تغییر تنظیم از مسیر مستقیم: ${key}`
++  })
++  return { key }
++}
++
+ export function registerIpcHandlers(): void {
+   // ---- کالا / انبار ----
+   handle(IPC.productList, (p) => productService.list(p ?? {}))
+@@ -125,7 +182,11 @@
+   handle(IPC.saleReturnUpdate, async (p) => salesService.returnUpdate(await withUser(p)))
+   handle(IPC.saleReturnDelete, async (p) => salesService.returnDelete(await withUser(p)))
+   handle(IPC.salePurgePreview, (p) => salesService.purgePreview(p ?? {}))
+-  handle(IPC.salePurge, (p) => salesService.purge(p ?? {}))
++  handle(IPC.salePurge, async (p) => {
++    const payload = await withSessionActor(p ?? {})
++    await assertManagerPassword(payload.managerPassword, 'پاک‌سازی گزارشات فروش')
++    return salesService.purge(payload)
++  })
+   // ---- فروش نسیه: پرداختی چندمرحله‌ای و چک ----
+   handle(IPC.salePayments, (p) => salesService.payments(p ?? {}))
+   // نشست ۶۷ — actor همه‌ی mutationهای Payment فقط از نشست باز می‌آید؛
+@@ -351,9 +412,7 @@
+ 
+   // ---- سیستم و تنظیمات ----
+   handle(IPC.settingsGet, async (p) => (await prisma.setting.findUnique({ where: { key: p.key } }))?.value ?? null)
+-  handle(IPC.settingsSet, (p) =>
+-    prisma.setting.upsert({ where: { key: p.key }, update: { value: p.value }, create: { key: p.key, value: p.value } })
+-  )
++  handle(IPC.settingsSet, (p) => setRawSetting(p))
+   handle(IPC.settingsBundle, () => settingsService.bundle())
+   handle(IPC.settingsSaveBundle, (p) => settingsService.saveBundle(p ?? {}))
+   /** سوییچ «تعیین شیفت بر اساس ساعت» — ذخیره‌ی فوری، مستقل از فرم تنظیمات (مورد ۱) */
+--- a/src/main/services/SalesService.ts
++++ b/src/main/services/SalesService.ts
+@@ -6219,6 +6219,12 @@
+     /** مورد ۱: فقط همین فاکتورها حذف شوند (خالی = کل بازه‌ی تاریخی، مثل قبل) */
+     invoiceIds?: number[] | null
+     userId?: number | null
++    /** پاک‌سازی همیشه رمز مدیر می‌خواهد؛ actor از IPC و نشست باز می‌آید. */
++    managerPassword?: string | null
++    /** اگر بازه بسته باشد، دلیل اصلاحی اجباری است. */
++    overrideReason?: string | null
++    /** IPC رمز مدیر را بیرون از تراکنش سنجیده است. */
++    managerVerified?: boolean
+   }) {
+     const fromJalali = input.fromJalali ?? jalaliToday()
+     const toJalali = input.toJalali ?? fromJalali
+@@ -6236,6 +6242,20 @@
+     const from = jalaliStartOfDay(fromJalali)
+     const to = jalaliEndOfDay(toJalali)
+ 
++    /**
++     * بند ۴-۲۹ و قفل دوره: پیش‌سنجش بیرون از transaction انجام می‌شود تا
++     * AuthLockout هیچ‌وقت وسط تراکنش نوشته نشود. خود assertOpen دوباره داخل
++     * تراکنش وضعیت دوره را می‌سنجد و اگر بین دو مرحله بسته شده باشد، عملیات را
++     * fail-closed متوقف می‌کند.
++     */
++    const periodApproved = await periodLockService.preverify({
++      at: from,
++      what: 'پاک‌سازی گزارشات فروش',
++      managerPassword: input.managerPassword,
++      overrideReason: input.overrideReason,
++      alreadyVerified: input.managerVerified === true
++    })
++
+     const invoices = await prisma.saleInvoice.findMany({
+       where: selective ? { id: { in: picked } } : { issuedAt: { gte: from, lte: to } },
+       select: { id: true, receiptNo: true, grandTotal: true }
+@@ -6254,6 +6274,19 @@
+ 
+     const result = await prisma.$transaction(
+       async (tx) => {
++        await periodLockService.assertOpen(tx, {
++          at: from,
++          what: 'پاک‌سازی گزارشات فروش',
++          entity: 'SaleInvoice',
++          entityId: 0,
++          managerPassword: input.managerPassword,
++          overrideReason: input.overrideReason,
++          userId: input.userId ?? null,
++          before: { fromJalali, toJalali, invoiceIds },
++          after: { restoreStock: restore, selective },
++          managerVerified: periodApproved
++        })
++
+         const returns = await tx.saleReturn.findMany({ where: { invoiceId: { in: invoiceIds } }, select: { id: true } })
+         const returnIds = returns.map((r) => r.id)
+ 
+@@ -6345,34 +6378,58 @@
+           })
+         }
+ 
+-        // ۲) حذف داده‌ها به ترتیبِ وابستگی‌ها (برگشت‌ها اول، بعد فاکتورها)
+-        if (returnIds.length) {
+-          await tx.saleReturnItem.deleteMany({ where: { returnId: { in: returnIds } } })
+-          await tx.saleReturn.deleteMany({ where: { id: { in: returnIds } } })
+-        }
+-        await tx.payment.deleteMany({ where: { invoiceId: { in: invoiceIds } } })
+-        // جلسه ۴۷ — دفتر مبدأ کسرِ همین فاکتورها (بعد از برگشت کالا به انبارها)
+-        await stockAllocationService.dropAllocations(tx, invoiceIds)
+-        await tx.saleInvoiceItem.deleteMany({ where: { invoiceId: { in: invoiceIds } } })
+-        // حرکات انبارِ همین فاکتورها/برگشت‌ها (رکورد فاکتور دیگر وجود ندارد)
+-        await tx.stockMovement.deleteMany({
+-          where: {
+-            OR: [
+-              { refType: 'SaleInvoice', refId: { in: invoiceIds } },
+-              returnIds.length ? { refType: 'SaleReturn', refId: { in: returnIds } } : { id: -1 }
+-            ]
+-          }
++        /**
++         * ۲) سندها حذف فیزیکی نمی‌شوند. پاک‌سازی گزارش فقط آن‌ها را void می‌کند؛
++         * اقلام، پرداخت‌ها، برگشت‌ها، تخصیص مبدأ و دفتر انبار برای حسابرسی
++         * می‌مانند. اگر اعتبارِ صادرشده از همین برگشت قبلاً مصرف شده باشد،
++         * عملیات متوقف می‌شود تا تعهد مشتری بی‌صدا نابود نشود.
++         */
++        const returnCredits = returnIds.length
++          ? await tx.storeCredit.findMany({
++              where: { returnId: { in: returnIds }, voidedAt: null },
++              select: { id: true, usedAmount: true }
++            })
++          : []
++        const usedReturnCredit = returnCredits.find((c) => Math.round(c.usedAmount ?? 0) > 0)
++        if (usedReturnCredit)
++          throw new BusinessError(
++            `پاک‌سازی انجام نشد: اعتبار خرید شماره ${faDigits(usedReturnCredit.id)} قبلاً مصرف شده است؛ ` +
++              'ابتدا رسیدگی مدیر انجام شود تا سابقه‌ی مالی پنهان نشود.'
++          )
++
++        const voidedAt = new Date()
++        const voidReason = selective
++          ? `ابطال گزارش فروش انتخاب‌شده با تایید مدیر · ${input.overrideReason ?? 'بدون دلیل ثبت‌شده'}`
++          : `ابطال گزارش فروش بازه ${fromJalali} تا ${toJalali} با تایید مدیر · ${
++              input.overrideReason ?? 'بدون دلیل ثبت‌شده'
++            }`
++        if (returnCredits.length)
++          await tx.storeCredit.updateMany({
++            where: { id: { in: returnCredits.map((c) => c.id) }, voidedAt: null },
++            data: { status: StoreCreditStatus.CANCELED, voidedAt, voidedReason: voidReason }
++          })
++        if (returnIds.length)
++          await tx.saleReturn.updateMany({
++            where: { id: { in: returnIds }, voidedAt: null },
++            data: { voidedAt, voidedByUserId: input.userId ?? null, voidReason }
++          })
++        await tx.payment.updateMany({
++          where: { invoiceId: { in: invoiceIds }, voidedAt: null },
++          data: { voidedAt, voidedByUserId: input.userId ?? null, voidReason }
++        })
++        const voided = await tx.saleInvoice.updateMany({
++          where: { id: { in: invoiceIds }, voidedAt: null },
++          data: { voidedAt, voidedByUserId: input.userId ?? null, voidReason, status: SaleStatus.CANCELED }
+         })
+-        const deleted = await tx.saleInvoice.deleteMany({ where: { id: { in: invoiceIds } } })
+ 
+         await audit(tx, {
+-          action: AuditAction.DELETE,
++          action: AuditAction.VOID,
+           entity: 'SaleInvoice',
+           userId: input.userId ?? null,
+           before: JSON.stringify({
+             fromJalali,
+             toJalali,
+-            invoiceCount: invoiceIds.length,
++            invoiceCount: voided.count,
+             receiptNumbers: invoices.slice(0, 200).map((i) => i.receiptNo),
+             returnCount: returnIds.length,
+             grandTotal
+@@ -6388,14 +6445,16 @@
+           }),
+           note:
+             (selective
+-              ? `حذف ${invoiceIds.length} فاکتور فروش انتخاب‌شده`
+-              : `حذف گزارشات فروش بازه (${fromJalali} تا ${toJalali})`) +
++              ? `ابطال ${voided.count} فاکتور فروش انتخاب‌شده`
++              : `ابطال گزارشات فروش بازه (${fromJalali} تا ${toJalali})`) +
+             (restore ? ' · با بازگشت موجودی به انبار' : ' · بدون تغییر موجودی انبار')
+         })
+ 
+         return {
+-          deletedInvoices: deleted.count,
+-          deletedReturns: returnIds.length,
++          deletedInvoices: 0,
++          voidedInvoices: voided.count,
++          deletedReturns: 0,
++          voidedReturns: returnIds.length,
+           reversedCreditRedemptions,
+           restoredToWarehouses: warehouseRestored
+         }
+--- a/src/renderer/src/pages/Settings.tsx
++++ b/src/renderer/src/pages/Settings.tsx
+@@ -274,6 +274,7 @@
+   const [purgeTo, setPurgeTo] = useState(jalaliToday())
+   const [purge, setPurge] = useState<SalesPurgePreview | null>(null)
+   const [purgeBusy, setPurgeBusy] = useState(false)
++  const [purgeReason, setPurgeReason] = useState('')
+   /** پرسش «موجودی‌ها به انبار بازگردند؟» باز است؟ */
+   const [askRestore, setAskRestore] = useState(false)
+   /**
+@@ -1022,17 +1023,20 @@
+           fromJalali: purgeFrom,
+           toJalali: purgeTo,
+           restoreStock,
++          managerPassword: toLatinDigits(panelManagerPw).trim(),
++          overrideReason: purgeReason.trim(),
+           // مورد ۱: خالی = کل بازه (رفتار قبلی) · پرشده = فقط همین فاکتورها
+           invoiceIds: onlySelected ? selected : null
+         })
++        setPanelManagerPw('')
+         setSelected([])
+         setSelPurge(null)
+         flash(
+           (onlySelected
+-            ? `${faDigits(res.deletedInvoices)} فاکتور انتخاب‌شده حذف شد`
+-            : `گزارشات فروش بازه‌ی ${faDigits(res.fromJalali)} تا ${faDigits(res.toJalali)} حذف شد · ` +
+-              `${faDigits(res.deletedInvoices)} فاکتور`) +
+-            ` · ${faDigits(res.deletedReturns)} برگشت از فروش · جمع ${money(res.grandTotal)} ریال · ` +
++            ? `${faDigits(res.voidedInvoices ?? res.deletedInvoices ?? 0)} فاکتور انتخاب‌شده باطل شد`
++            : `گزارشات فروش بازه‌ی ${faDigits(res.fromJalali)} تا ${faDigits(res.toJalali)} باطل شد · ` +
++              `${faDigits(res.voidedInvoices ?? res.deletedInvoices ?? 0)} فاکتور`) +
++            ` · ${faDigits(res.voidedReturns ?? res.deletedReturns ?? 0)} برگشت از فروش · جمع ${money(res.grandTotal)} ریال · ` +
+             (res.restoreStock
+               ? `${faDigits(res.restoredQty)} عدد از ${faDigits(res.restoredVariants)} کالا به موجودی انبار برگشت`
+               : 'موجودی انبار دست‌نخورده ماند') +
+@@ -1051,7 +1055,7 @@
+       }
+     },
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+-    [purgeFrom, purgeTo, purgeMode, selected]
++    [panelManagerPw, purgeFrom, purgeReason, purgeTo, purgeMode, selected]
+   )
+ 
+   /** باز کردن پرسش حذف برای *کل بازه* (رفتار قبلی). */
+@@ -3940,6 +3944,21 @@
+                   آرشیو و پاک‌سازی
+                 </button>
+               </div>
++              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
++                <label>
++                  <div className="mb-1">رمز مدیر برای پاک‌سازی اجباری</div>
++                  <PasswordField value={panelManagerPw} onChange={(e) => setPanelManagerPw(e.target.value)} />
++                </label>
++                <label>
++                  <div className="mb-1">دلیل پاک‌سازی / اصلاح دوره</div>
++                  <input
++                    className="inp w-full"
++                    value={purgeReason}
++                    onChange={(e) => setPurgeReason(e.target.value)}
++                    placeholder="مثلاً حذف فاکتورهای آزمایشی با تأیید مدیر"
++                  />
++                </label>
++              </div>
+               <div className="flex flex-wrap gap-4">
+                 <label className="flex items-center gap-2">
+                   <input type="checkbox" className="w-4 h-4" checked={slimBackup} onChange={(e) => setSlimBackup(e.target.checked)} />
+@@ -4391,6 +4410,9 @@
+         }
+       >
+         <p className="font-bold text-base">آیا بعد از حذف، موجودی‌ها به انبار بازگردند؟</p>
++        <p className="text-red-700">
++          پاک‌سازی فقط با رمز مدیر انجام می‌شود. اگر دوره بسته باشد، دلیل بالا باید حداقل ۳ نویسه باشد.
++        </p>
+         <p>
+           {purgeMode === 'selected'
+             ? `${faDigits(selected.length)} فاکتور انتخاب‌شده`
+--- a/tests/audit-fixes/fix-s85-security-gates.mjs
++++ b/tests/audit-fixes/fix-s85-security-gates.mjs
+@@ -0,0 +1,49 @@
++/**
++ * نشست ۸۵ · خوشه H · گیت مسیرهای حساس تنظیمات و purge.
++ *
++ * این تست ایستا است؛ محیط فعلی Electron/npm/Prisma تولیدی ندارد. برای ثبت
++ * رفتار قبل/بعد، همین تست روی zip خام نشست ۸۴ و سپس روی سورس اصلاح‌شده اجرا
++ * می‌شود.
++ *
++ *   node --import ./test/harness/register.mjs tests/audit-fixes/fix-s85-security-gates.mjs
++ */
++import { readFileSync } from 'node:fs'
++import { resolve } from 'node:path'
++
++const root = process.env.MAHAK_ROOT ? resolve(process.env.MAHAK_ROOT) : resolve('.')
++const read = (p) => readFileSync(resolve(root, p), 'utf8')
++const ipc = read('src/main/ipc/index.ts')
++const sales = read('src/main/services/SalesService.ts')
++const settings = read('src/renderer/src/pages/Settings.tsx')
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (got === want) {
++    ok++
++    console.log(`  ✓ ${label}`)
++  } else {
++    bad++
++    console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)} · انتظار ${JSON.stringify(want)}`)
++  }
++}
++
++const purgeBody = sales.match(/async purge\(input:[\s\S]*?\n  \}\n\}/)?.[0] ?? ''
++
++eq('settings:set کلیدهای ناشناس را fail-closed رد می‌کند', /RAW_SETTING_SAFE_KEYS\.has\(key\)[\s\S]*?RAW_SETTING_MANAGER_KEYS\.has\(key\)[\s\S]*?مجاز نیست/.test(ipc), true)
++eq('settings:set برای کلیدهای حساس رمز مدیر می‌خواهد', /RAW_SETTING_MANAGER_KEYS\.has\(key\)[\s\S]*?assertManagerPassword\(input\?\.managerPassword/.test(ipc), true)
++eq('settings:set actor را از نشست می‌گیرد، نه payload', /const actorId = await shiftService\.currentStaffId\(\)/.test(ipc), true)
++eq('settings:set تغییر را Audit می‌کند', /action: AuditAction\.SETTINGS_UPDATE[\s\S]*?entity: 'Setting'/.test(ipc), true)
++eq('purge actor را از نشست باز می‌گیرد', /handle\(IPC\.salePurge,[\s\S]*?withSessionActor/.test(ipc), true)
++eq('purge همیشه گیت رمز مدیر دارد', /handle\(IPC\.salePurge,[\s\S]*?assertManagerPassword\(payload\.managerPassword/.test(ipc), true)
++eq('purge قفل دوره را قبل از تراکنش پیش‌سنجی می‌کند', /const periodApproved = await periodLockService\.preverify/.test(purgeBody), true)
++eq('purge قفل دوره را داخل تراکنش دوباره assert می‌کند', /await periodLockService\.assertOpen\(tx/.test(purgeBody), true)
++eq('purge سند فاکتور را void می‌کند', /saleInvoice\.updateMany[\s\S]*?voidedAt[\s\S]*?SaleStatus\.CANCELED/.test(purgeBody), true)
++eq('purge پرداخت و برگشت را فیزیکی حذف نمی‌کند', /\.deleteMany\(|\.delete\(/.test(purgeBody), false)
++eq('purge برای Audit از VOID استفاده می‌کند', /action: AuditAction\.VOID/.test(purgeBody), true)
++eq('UI رمز مدیر purge را به main می‌فرستد', /managerPassword: toLatinDigits\(panelManagerPw\)\.trim\(\)/.test(settings), true)
++eq('UI دلیل purge را به main می‌فرستد', /overrideReason: purgeReason\.trim\(\)/.test(settings), true)
++
++console.log('  ⓘ تست ایستا است؛ اجرای Electron و Prisma Client تولیدی: اجرا نشد، دلیل: npm/Electron در محیط نیست.')
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++if (bad) process.exit(1)

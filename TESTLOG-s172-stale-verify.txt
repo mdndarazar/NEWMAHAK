@@ -1,0 +1,55 @@
+(node:5861) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5861) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/ipc/index.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+— ۱) نشست ۱۴۰: actor برگشت از نشست باز، نه userId renderer
+[ipc:sale:return] Error: برای ثبت برگشت از فروش، ابتدا یک نشست بازِ کارمند لازم است.
+    at withSessionActor (file:///home/user/work/mahak/src/main/ipc/index.ts:105:11)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:235:65
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async file:///home/user/work/mahak/tests/audit/audit-s172-stale-observations-verify.mjs:51:14
+  ✓ بی‌نشست باز: برگشت IPC با پیام فارسی «نشست باز» رد
+  ✓ برگشت ثبت شد
+  ✓ SaleReturn.userId = کارمند نشست باز
+  ✓ ابطال برگشت ثبت شد
+  ✓ actor ابطال = کارمند نشست باز، نه همکار جعلی
+
+— ۲) نشست ۱۴۱: سقف تخفیف روی کالای جایگزین تعویض (از IPC)
+[ipc:sale:exchange:create] BusinessError: جمع تخفیف این فاکتور ۳۰۰٬۰۰۰ ریال است (تخفیف ردیف ۳۰۰٬۰۰۰ ریال، تخفیف کل فاکتور ۰ ریال و کاهش قیمت زیر قیمت مرجع ۰ ریال) و از سقف مجاز ۱۰۰٬۰۰۰ ریال بیشتر است (سقف: ۱۰٪ از ۱٬۰۰۰٬۰۰۰ ریال). این محدودیت را مدیر در «سیاست تخفیف» تعیین کرده و با رمز مدیر هم باز نمی‌شود.
+    at preverifySalePolicy (file:///home/user/work/mahak/src/main/services/SalesService.ts:1751:15)
+    at async Object.createExchange (file:///home/user/work/mahak/src/main/services/SalesService.ts:4859:44)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async file:///home/user/work/mahak/tests/audit/audit-s172-stale-observations-verify.mjs:73:14 {
+  isBusinessError: true
+}
+  ✓ تخفیف ۳۰٪ روی جایگزین با سقف ۱۰٪ ⇒ رد با «سقف مجاز»
+[ipc:sale:exchange:create] BusinessError: جمع تخفیف این فاکتور ۳۰۰٬۰۰۰ ریال است (تخفیف ردیف ۳۰۰٬۰۰۰ ریال، تخفیف کل فاکتور ۰ ریال و کاهش قیمت زیر قیمت مرجع ۰ ریال) و از سقف مجاز ۱۰۰٬۰۰۰ ریال بیشتر است (سقف: ۱۰٪ از ۱٬۰۰۰٬۰۰۰ ریال). این محدودیت را مدیر در «سیاست تخفیف» تعیین کرده و با رمز مدیر هم باز نمی‌شود.
+    at preverifySalePolicy (file:///home/user/work/mahak/src/main/services/SalesService.ts:1751:15)
+    at async Object.createExchange (file:///home/user/work/mahak/src/main/services/SalesService.ts:4859:44)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async file:///home/user/work/mahak/tests/audit/audit-s172-stale-observations-verify.mjs:75:14 {
+  isBusinessError: true
+}
+  ✓ با رمز مدیر هم رد (بند ۴-۲۶)
+  ✓ هیچ سند/اعتبار/پرداختی ساخته نشد
+  ✓ کنترل: تخفیف دقیقاً ۱۰٪ پذیرفته
+
+— ۳) نشست ۱۴۲: نقد هرگز مستقیم «حساب مدیر» نیست
+  ✓ allowedDestinationsFor(CASH) = فقط نقد در صندوق
+[ipc:sale:payment:add] BusinessError: پول نقد نمی‌تواند مستقیماً به «حساب مدیر» برود؛ مقصد پول نقد فقط «نقدی (صندوق فروشگاه)» است. اگر مدیر خودش پول نقد را گرفته، اول آن را با مقصد «نقدی (صندوق فروشگاه)» ثبت کنید و سپس با «برداشت از صندوق» (رمز مدیر و دلیل اجباری) از صندوق خارج کنید تا نقد مورد انتظار کشو و کسری/اضافی درست بماند.
+    at assertDestination (file:///home/user/work/mahak/src/main/services/SalesService.ts:2267:11)
+    at file:///home/user/work/mahak/src/main/services/SalesService.ts:7203:11
+    at async client.$transaction (file:///home/user/work/mahak/test/harness/prismaLite.mjs:775:22)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async file:///home/user/work/mahak/tests/audit/audit-s172-stale-observations-verify.mjs:87:13 {
+  isBusinessError: true
+}
+  ✓ addPayment نقدی ⇐ حساب مدیر از IPC ⇒ رد با ارجاع به «برداشت از صندوق»
+  ✓ هیچ ردیف پرداختی ساخته نشد
+  ✓ کنترل: نقدی ⇐ صندوق پذیرفته
+  ✓ ثبت‌کننده‌ی پرداخت = کارمند نشست باز
+
+نتیجه: 14 موفق · 0 ناموفق

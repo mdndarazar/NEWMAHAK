@@ -1,0 +1,554 @@
+diff -ruN /tmp/orig/mahak/src/main/services/SalesService.ts mahak/src/main/services/SalesService.ts
+--- /tmp/orig/mahak/src/main/services/SalesService.ts	2026-09-27 10:31:46.000000000 +0000
++++ mahak/src/main/services/SalesService.ts	2026-09-27 10:47:59.844595644 +0000
+@@ -1607,14 +1607,23 @@
+ 
+ async function preverifySalePolicy(
+   input: CreateSaleInput,
+-  ctx: { orderType: string; originalItems?: { variantId: number; unitPrice: number }[] | null }
++  ctx: { orderType: string; originalItems?: { variantId: number; unitPrice: number; qty?: number | null }[] | null }
+ ): Promise<SalePricingCheck> {
+   // ---------- ۱) مرجع‌ها ----------
+   const invoiceRef = new Map<number, number>()
++  /**
++   * نشست ۱۶۵ · S153-D6 · S165-D2 — مرجع فاکتور اصلی فقط برای **همان تعداد** معتبر است.
++   * قبلاً قیمتی که مدیر برای یک عدد تأیید کرده بود، در ویرایش برای هر تعداد دلخواه بی‌رمز می‌ماند
++   * (مثلاً ۱ عدد با تأیید مدیر ۳۰۰٬۰۰۰ ⇒ ویرایش به ۱۰ عدد ۳۰۰٬۰۰۰ بی‌رمز). حالا تعداد اضافه بر فاکتور اصلی
++   * با قیمت فعلی کالا (CATALOG) سنجیده می‌شود.
++   */
++  const invoiceQty = new Map<number, number>()
+   for (const it of ctx.originalItems ?? []) {
+     const price = Math.round(Number(it.unitPrice))
+     const prev = invoiceRef.get(it.variantId)
+     if (prev == null || price < prev) invoiceRef.set(it.variantId, price)
++    const q = it.qty == null ? Number.POSITIVE_INFINITY : Math.max(0, Math.round(Number(it.qty)))
++    invoiceQty.set(it.variantId, (invoiceQty.get(it.variantId) ?? 0) + q)
+   }
+   const ids = [...new Set(input.lines.map((l) => l.variantId))]
+   const variants = new Map<number, { code: string; salePrice: number }>()
+@@ -1625,28 +1634,43 @@
+   let reduction = 0
+   let base = 0
+   let goods = 0
++  const noRef = (l: { code?: string; variantId: number }) =>
++    new BusinessError(
++      `کالا پیدا نشد؛ قیمت مرجع وجود ندارد (کد ${l.code || faDigits(l.variantId)}). ` +
++        'بدون قیمت مرجع، کم‌ثبتی قیمت قابل سنجش نیست؛ کالا را دوباره از فهرست انتخاب کنید.'
++    )
+   for (const l of input.lines) {
+     const variant = variants.get(l.variantId)
+     const fromInvoice = invoiceRef.get(l.variantId)
+-    if (fromInvoice == null && !variant)
+-      throw new BusinessError(
+-        `کالا پیدا نشد؛ قیمت مرجع وجود ندارد (کد ${l.code || faDigits(l.variantId)}). ` +
+-          'بدون قیمت مرجع، کم‌ثبتی قیمت قابل سنجش نیست؛ کالا را دوباره از فهرست انتخاب کنید.'
+-      )
+-    const ref = fromInvoice ?? variant!.salePrice
++    if (fromInvoice == null && !variant) throw noRef(l)
+     const unit = l.unitPrice
+-    reduction += Math.max(0, ref - unit) * l.qty
+-    base += Math.max(unit, ref) * l.qty
+     goods += unit * l.qty
+-    if (unit !== ref)
+-      overrides.push({
+-        variantId: l.variantId,
+-        code: variant?.code || l.code || String(l.variantId),
+-        qty: l.qty,
+-        refPrice: ref,
+-        enteredPrice: unit,
+-        source: fromInvoice != null ? 'INVOICE' : 'CATALOG'
+-      })
++    /** S165-D2 — سهم تحت پوشش فاکتور اصلی (مرجع INVOICE) و مازاد آن (مرجع CATALOG) */
++    const covered = fromInvoice == null ? 0 : Math.min(l.qty, invoiceQty.get(l.variantId) ?? 0)
++    if (fromInvoice != null) invoiceQty.set(l.variantId, (invoiceQty.get(l.variantId) ?? 0) - covered)
++    const excess = l.qty - covered
++    if (excess > 0 && !variant)
++      throw new BusinessError(
++        `تعداد کالای کد ${l.code || faDigits(l.variantId)} در ویرایش از فاکتور اصلی بیشتر شده ` +
++          `(${faDigits(excess)} عدد اضافه) ولی این کالا دیگر در فهرست نیست و قیمت مرجعی برای عددهای اضافه وجود ندارد. ` +
++          'تعداد را به همان مقدار فاکتور اصلی برگردانید.'
++      )
++    const portions: { qty: number; ref: number; source: 'INVOICE' | 'CATALOG' }[] = []
++    if (covered > 0) portions.push({ qty: covered, ref: fromInvoice!, source: 'INVOICE' })
++    if (excess > 0) portions.push({ qty: excess, ref: variant!.salePrice, source: 'CATALOG' })
++    for (const p of portions) {
++      reduction += Math.max(0, p.ref - unit) * p.qty
++      base += Math.max(unit, p.ref) * p.qty
++      if (unit !== p.ref)
++        overrides.push({
++          variantId: l.variantId,
++          code: variant?.code || l.code || String(l.variantId),
++          qty: p.qty,
++          refPrice: p.ref,
++          enteredPrice: unit,
++          source: p.source
++        })
++    }
+   }
+ 
+   // ---------- ۲) بازه‌ی تخفیف (خالص، بدون نوشتن) ----------
+@@ -3602,7 +3626,8 @@
+         // نشست ۱۵۶ (S151-c2) — عوارض/حق سرویس ذخیره‌شده برای «ویرایش بدون تغییر عوارض»
+         taxTotal: true,
+         serviceCharge: true,
+-        items: { select: { variantId: true, unitPrice: true } }
++        // نشست ۱۶۵ (S165-D2) — qty: مرجع فاکتور اصلی فقط برای همان تعداد
++        items: { select: { variantId: true, unitPrice: true, qty: true } }
+       }
+     })
+     /**
+diff -ruN /tmp/orig/mahak/src/main/services/StaffService.ts mahak/src/main/services/StaffService.ts
+--- /tmp/orig/mahak/src/main/services/StaffService.ts	2026-09-27 09:08:46.000000000 +0000
++++ mahak/src/main/services/StaffService.ts	2026-09-27 10:50:57.866375762 +0000
+@@ -2,6 +2,8 @@
+ import { SETTING_KEYS } from '@shared/receipt'
+ import { STAFF_ROLES, STAFF_ROLE_LABELS, normalizeStaffRole } from '@shared/enums'
+ import { faDigits } from '@shared/jalali'
++import { PANEL_KEYS } from '@shared/panels'
++import { assertPanelPassword } from './AuthService'
+ 
+ /**
+  * ===========================================================================
+@@ -82,15 +84,36 @@
+   },
+ 
+   /** ثبت کارمند تازه یا ویرایش نام/نقش/فعال‌بودن یکی از قبلی‌ها. */
+-  async save(input: { id?: number | null; name?: string; role?: string; isActive?: boolean; userId?: number | null }) {
++  async save(input: {
++    id?: number | null
++    name?: string
++    role?: string
++    isActive?: boolean
++    userId?: number | null
++    panelPassword?: string | null
++  }) {
+     const name = String(input?.name ?? '').trim()
+     if (!name) throw new Error('نام کارمند را وارد کنید.')
+     const role = normalizeStaffRole(input?.role)
+     const id = Math.round(Number(input?.id ?? 0))
+ 
+-    if (id > 0) {
+-      const before = await prisma.user.findUnique({ where: { id }, select: SELECT })
+-      if (!before) throw new Error('این کارمند پیدا نشد.')
++    /**
++     * نشست ۱۶۵ · S165-D4 (بند ۴-۲۹ مورد ۱، بند ۴-۳۰، بند ۵ «هر گیت در main») — فهرست کارمندان داخل پنل
++     * همیشه‌قفل «تنظیمات» است، ولی کانال staff:save هیچ گیتی نداشت ⇒ هر کسی با دور زدن UI می‌توانست نام همکار را
++     * عوض کند (نام در همه‌ی گزارش‌های گذشته‌ی او عوض می‌شود)، او را غیرفعال کند یا کارمند ساختگی بسازد.
++     * حالا همان رمز پنل «تنظیمات» (مثل حذف مشتری، S155-D5)، بعد از اعتبارسنجی ورودی و پیش از هر نوشتن.
++     */
++    const before = id > 0 ? await prisma.user.findUnique({ where: { id }, select: SELECT }) : null
++    if (id > 0 && !before) throw new Error('این کارمند پیدا نشد.')
++    await assertPanelPassword(
++      PANEL_KEYS.settings,
++      input?.panelPassword ?? null,
++      id > 0
++        ? `ویرایش کارمند «${String((before as any)?.displayName || (before as any)?.username || '')}» (نام/نقش/فعال‌بودن)`
++        : `ثبت کارمند تازه «${name}»`
++    )
++
++    if (id > 0 && before) {
+       const updated = await prisma.user.update({
+         where: { id },
+         data: { displayName: name, role, isActive: input?.isActive !== false },
+diff -ruN /tmp/orig/mahak/src/main/services/accountingReport.ts mahak/src/main/services/accountingReport.ts
+--- /tmp/orig/mahak/src/main/services/accountingReport.ts	2026-09-27 09:57:05.000000000 +0000
++++ mahak/src/main/services/accountingReport.ts	2026-09-27 10:45:44.947246760 +0000
+@@ -360,7 +360,13 @@
+    * `currentPeriod` مبنای دریافتیِ *فروشگاه* است و پولی که به حساب مدیر رفته به
+    * فروشگاه نرسیده. (ردیف جدای خودش را در گزارش دارد.)
+    */
+-  totals.currentPeriod = totals.cash + totals.card + totals.credit + totals.other - totals.priorPeriod
++  /**
++   * نشست ۱۶۵ · Y23 · S165-D1 — cash/card/credit/other بالا هیچ چکی ندارند (چک فقط در سبدهای چک می‌نشیند)،
++   * پس سهم چکِ پاس‌شده‌ی دوره‌ی قبل (priorClearedCheques) نباید از آن‌ها کم شود؛ وگرنه «وصول همین دوره» به
++   * اندازه‌ی آن چک کم نشان داده می‌شد. با قاعده‌ی فعلی receiptBucketOf این سهم همیشه ۰ است (اثر امروز صفر)،
++   * ولی فرمول دیگر به آن قاعده وابسته نیست. تست: tests/audit-fixes/fix-y23-settled-current.mjs
++   */
++  totals.currentPeriod = totals.cash + totals.card + totals.credit + totals.other - (totals.priorPeriod - totals.priorClearedCheques)
+ 
+   // ---- بلوک چک: چهار وضعیت، همیشه، حتی صفر (بند ۳-ه) ----
+   const at = scope.to ?? new Date()
+diff -ruN /tmp/orig/mahak/src/renderer/src/pages/Settings.tsx mahak/src/renderer/src/pages/Settings.tsx
+--- /tmp/orig/mahak/src/renderer/src/pages/Settings.tsx	2026-09-27 09:08:46.000000000 +0000
++++ mahak/src/renderer/src/pages/Settings.tsx	2026-09-27 10:50:57.866375762 +0000
+@@ -234,6 +234,8 @@
+   const [timePw, setTimePw] = useState('')
+   const [byTimePw, setByTimePw] = useState('')
+   const [custDelPw, setCustDelPw] = useState('')
++  /** نشست ۱۶۵ (S165-D4) — رمز پنل تنظیمات برای ثبت/ویرایش کارمند (سمت main هم سنجیده می‌شود) */
++  const [staffPw, setStaffPw] = useState('')
+   const [printers, setPrinters] = useState<string[]>([])
+   const [preview, setPreview] = useState('')
+   /** پیش‌نمایش زنده‌ی لیبل (مثل پیش‌نمایش رسید، ولی برای برچسب کالا) */
+@@ -1484,7 +1486,8 @@
+         id: staffDraft.id,
+         name: staffDraft.name.trim(),
+         role: staffDraft.role,
+-        isActive: staffDraft.isActive
++        isActive: staffDraft.isActive,
++        panelPassword: staffPw
+       })
+       setStaffDraft({ id: null, name: '', role: 'CASHIER', isActive: true })
+       await loadStaff()
+@@ -1493,6 +1496,7 @@
+       setErr(e.message)
+     } finally {
+       setStaffBusy(false)
++      setStaffPw('')
+     }
+   }
+ 
+@@ -3664,7 +3668,11 @@
+                     />
+                     فعال
+                   </label>
+-                  <button className="btn btn-primary" onClick={() => void saveStaff()} disabled={staffBusy}>
++                  <label title="ثبت یا ویرایش کارمند (نام/نقش/فعال‌بودن) رمز مدیر یا رمز دوم پنل تنظیمات می‌خواهد">
++                    <div className="mb-1 font-bold">رمز مدیر / رمز تنظیمات</div>
++                    <PasswordField value={staffPw} onChange={(e) => setStaffPw(e.target.value)} />
++                  </label>
++                  <button className="btn btn-primary" onClick={() => void saveStaff()} disabled={staffBusy || !staffPw.trim()}>
+                     {staffBusy ? 'در حال ذخیره…' : staffDraft.id ? 'ذخیره‌ی ویرایش' : 'ثبت کارمند'}
+                   </button>
+                   {staffDraft.id && (
+diff -ruN /tmp/orig/mahak/tests/audit-fixes/fix-s151b-sale-price-override-discount-range.mjs mahak/tests/audit-fixes/fix-s151b-sale-price-override-discount-range.mjs
+--- /tmp/orig/mahak/tests/audit-fixes/fix-s151b-sale-price-override-discount-range.mjs	2026-09-27 09:08:46.000000000 +0000
++++ mahak/tests/audit-fixes/fix-s151b-sale-price-override-discount-range.mjs	2026-09-27 10:48:09.740694593 +0000
+@@ -146,7 +146,9 @@
+ seed.rows('UPDATE "ProductVariant" SET salePrice = 1200000 WHERE id = ? RETURNING id', v1)
+ const upd = (o = {}) => ({ ...sale(o), id: Number(base?.id), keepPayments: true })
+ a0 = overrideAudits()
+-await safe('ویرایش با قیمت اصلی پس از گران‌شدن کالا ⇒ بی‌رمز پذیرفته', () => salesService.update(upd({ lines: [line({ qty: 2 }), line({ variantId: v2, code: 'P152-2', barcode: 'B152-2', unitPrice: 500_000 })] })))
++// نشست ۱۶۵ (S165-D3): qty از ۲ به ۱ — مرجع فاکتور اصلی فقط برای همان تعداد است (S165-D2)؛ عدد دوم زیر قیمت فعلی
++// رمز می‌خواهد و در tests/audit-fixes/fix-s165-edit-qty-price-reference.mjs سنجیده می‌شود. قصد این بند (قیمت اصلی مرجع است) دست نخورد.
++await safe('ویرایش با قیمت اصلی پس از گران‌شدن کالا ⇒ بی‌رمز پذیرفته', () => salesService.update(upd({ lines: [line({ qty: 1 }), line({ variantId: v2, code: 'P152-2', barcode: 'B152-2', unitPrice: 500_000 })] })))
+ eq('بدون Audit قیمت دستی (قیمت اصلی فاکتور مرجع است)', overrideAudits(), a0)
+ await rejects('ویرایش با کاهش زیر قیمت اصلی بی‌رمز ⇒ رد', () => salesService.update(upd({ lines: [line({ unitPrice: 900_000 })] })), 'رمز مدیر')
+ await safe('ویرایش با کاهش زیر قیمت اصلی با رمز ⇒ پذیرفته', () => salesService.update(upd({ lines: [line({ unitPrice: 900_000 })], managerPassword: PW })))
+diff -ruN /tmp/orig/mahak/tests/audit-fixes/fix-s165-edit-qty-price-reference.mjs mahak/tests/audit-fixes/fix-s165-edit-qty-price-reference.mjs
+--- /tmp/orig/mahak/tests/audit-fixes/fix-s165-edit-qty-price-reference.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-s165-edit-qty-price-reference.mjs	2026-09-27 10:47:56.800565197 +0000
+@@ -0,0 +1,99 @@
++/**
++ * ===========================================================================
++ * نشست ۱۶۵ · S153-D6 · S165-D2 — مرجع قیمت ویرایش فاکتور فقط برای همان تعداد فاکتور اصلی.
++ *
++ * قبل از رفع: preverifySalePolicy مرجع ویرایش را «کمترین قیمت همان کالا در فاکتور اصلی» می‌گرفت، بدون تعداد.
++ * پس قیمتی که مدیر برای ۱ عدد تأیید کرده بود (۳۰۰٬۰۰۰ برای کالای ۱٬۰۰۰٬۰۰۰) در ویرایش برای ۱۰ عدد بی‌رمز و
++ * بدون هیچ Audit قیمت دستی پذیرفته می‌شد ⇒ ۶٬۳۰۰٬۰۰۰ ریال کم‌ثبتی پنهان (بند ۴-۲۶ / ۴-۳۹، هدف ضدسرقت).
++ * بعد از رفع: عددهای اضافه بر فاکتور اصلی با قیمت فعلی کالا (CATALOG) سنجیده می‌شوند.
++ *
++ *     node --import ./test/harness/register.mjs tests/pending/fix-s165-edit-qty-price-reference.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s165-edit-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const db = harnessClient()
++const seed = makeSeeder(db)
++const { salesService } = await import('../../src/main/services/SalesService.ts')
++const { settingsService } = await import('../../src/main/services/SettingsService.ts')
++const { SETTING_KEYS, DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/receipt')
++const { jalaliToday } = await import('@shared/jalali')
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
++}
++const rejects = async (label, fn, needle) => {
++  try { await fn(); bad++; console.log(`  ✗ ${label} — بدون تأیید پذیرفته شد`) }
++  catch (e) {
++    const m = String(e?.message ?? e)
++    if (!m.startsWith('HARNESS:') && /[\u0600-\u06FF]/.test(m) && (!needle || m.includes(needle))) { ok++; console.log(`  ✓ ${label} (رد شد: ${m.split('\n')[0].slice(0, 120)})`) }
++    else { bad++; console.log(`  ✗ ${label} — پیام نامنتظره: ${m.split('\n')[0].slice(0, 160)}`) }
++  }
++}
++const safe = async (label, fn) => {
++  try { const r = await fn(); ok++; console.log(`  ✓ ${label}`); return r } catch (e) { bad++; console.log(`  ✗ ${label} — خطای نامنتظره: ${String(e?.message ?? e).split('\n')[0].slice(0, 160)}`); return null }
++}
++
++const actor = seed.user('فروشنده ۱۶۵')
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: jalaliToday(), openedAt: Date.now() - 3600_000, userId: actor, staffConfirmed: 1 })
++const pid = seed.product('شلوار ۱۶۵', seed.category('پوشاک ۱۶۵'))
++const v1 = seed.insert('ProductVariant', { productId: pid, code: 'P165-1', barcode: 'B165-1', salePrice: 1_000_000, stock: 100 })
++const v2 = seed.insert('ProductVariant', { productId: pid, code: 'P165-2', barcode: 'B165-2', salePrice: 1_000_000, stock: 100 })
++seed.setting(SETTING_KEYS.discountPolicy, { mode: 'FREE', fixedMode: 'PERCENT', fixedValue: 0, allowLine: true, allowInvoice: true, maxPercent: 100, maxAmount: 0 })
++const setAccounting = async (patch) => seed.setting(SETTING_KEYS.accountingPolicy, { ...(await settingsService.accountingPolicy()), ...patch })
++const overrideAudits = () => seed.count('AuditLog', 'action = ?', 'SALE_PRICE_OVERRIDE')
++const lastOverride = () => seed.one('SELECT entityId, before, after, note FROM "AuditLog" WHERE action = ? ORDER BY id DESC LIMIT 1', 'SALE_PRICE_OVERRIDE')
++const line = (o = {}) => ({ variantId: v1, code: 'P165-1', barcode: 'B165-1', name: 'شلوار ۱۶۵', qty: 1, unitPrice: 1_000_000, discount: 0, tax: 0, ...o })
++const sale = (o = {}) => ({ userId: actor, shiftId, deductInventory: false, lines: [line()], payments: [], ...o })
++const itemsOf = (id) => seed.rows('SELECT variantId, qty, unitPrice FROM "SaleInvoiceItem" WHERE invoiceId = ? ORDER BY id', id).map((r) => [Number(r.variantId), Number(r.qty), Number(r.unitPrice)])
++
++console.log('\n۱) قیمت تأییدشده برای ۱ عدد، در ویرایش برای ۱۰ عدد')
++const inv = await safe('فروش ۱ عدد ۳۰۰٬۰۰۰ با رمز مدیر', () => salesService.create(sale({ lines: [line({ unitPrice: 300_000 })], managerPassword: PW })))
++const upd = (o = {}) => ({ ...sale(o), id: Number(inv?.id), keepPayments: true })
++let a0 = overrideAudits()
++await rejects('ویرایش به ۱۰ عدد ۳۰۰٬۰۰۰ بی‌رمز ⇒ رد', () => salesService.update(upd({ lines: [line({ qty: 10, unitPrice: 300_000 })] })), 'رمز مدیر')
++eq('فاکتور دست‌نخورده ماند', itemsOf(inv?.id), [[v1, 1, 300_000]])
++eq('Audit قیمت دستی تازه‌ای ثبت نشد', overrideAudits(), a0)
++await rejects('همان ویرایش با دو ردیف ۵+۵ بی‌رمز ⇒ رد (مصرف مشترک سهم فاکتور اصلی)', () => salesService.update(upd({ lines: [line({ qty: 5, unitPrice: 300_000 }), line({ qty: 5, unitPrice: 300_000 })] })), 'رمز مدیر')
++await safe('ویرایش به ۱۰ عدد ۳۰۰٬۰۰۰ با رمز مدیر ⇒ پذیرفته', () => salesService.update(upd({ lines: [line({ qty: 10, unitPrice: 300_000 })], managerPassword: PW })))
++eq('Audit SALE_PRICE_OVERRIDE ویرایش ثبت شد', overrideAudits(), a0 + 1)
++const ov = lastOverride()
++eq('Audit: ۹ عدد مازاد با مرجع قیمت فعلی کالا', /"qty":9,"price":1000000,"source":"CATALOG"/.test(String(ov?.before)), true)
++eq('Audit: عدد تحت پوشش فاکتور اصلی (همان ۳۰۰٬۰۰۰) قیمت دستی نیست', /"source":"INVOICE"/.test(String(ov?.before)), false)
++await safe('ویرایش دوباره با همان ۱۰ عدد بی‌رمز ⇒ پذیرفته (مدیر ۱۰ عدد را تأیید کرده)', () => salesService.update(upd({ lines: [line({ qty: 10, unitPrice: 300_000 })] })))
++await safe('کاهش به ۳ عدد بی‌رمز ⇒ پذیرفته', () => salesService.update(upd({ lines: [line({ qty: 3, unitPrice: 300_000 })] })))
++await rejects('برگشت دوباره به ۴ عدد بی‌رمز ⇒ رد', () => salesService.update(upd({ lines: [line({ qty: 4, unitPrice: 300_000 })] })), 'رمز مدیر')
++
++console.log('\n۲) قیمت اصلی پس از گران‌شدن کالا (سازگار با S153-D5)')
++const inv2 = await safe('فروش ۱ عدد کالای دوم با قیمت فروش ۱٬۰۰۰٬۰۰۰', () => salesService.create(sale({ lines: [line({ variantId: v2, code: 'P165-2', barcode: 'B165-2' })] })))
++seed.rows('UPDATE "ProductVariant" SET salePrice = 1200000 WHERE id = ? RETURNING id', v2)
++const upd2 = (o = {}) => ({ ...sale(o), id: Number(inv2?.id), keepPayments: true })
++const l2 = (o = {}) => line({ variantId: v2, code: 'P165-2', barcode: 'B165-2', ...o })
++await safe('همان ۱ عدد با قیمت اصلی ⇒ بی‌رمز پذیرفته', () => salesService.update(upd2({ lines: [l2()] })))
++await rejects('۲ عدد با قیمت اصلی (عدد دوم زیر قیمت فعلی) بی‌رمز ⇒ رد', () => salesService.update(upd2({ lines: [l2({ qty: 2 })] })), 'رمز مدیر')
++await safe('۲ عدد با قیمت فعلی ۱٬۲۰۰٬۰۰۰ برای عدد دوم ⇒ بی‌رمز پذیرفته', () => salesService.update(upd2({ lines: [l2(), l2({ unitPrice: 1_200_000 })] })))
++
++console.log('\n۳) گیت قیمت دستی خاموش: بی‌رمز ولی با Audit')
++await setAccounting({ requireManagerForPriceOverride: false })
++a0 = overrideAudits()
++await safe('ویرایش به ۶ عدد ۳۰۰٬۰۰۰ با گیت خاموش ⇒ پذیرفته', () => salesService.update(upd({ lines: [line({ qty: 6, unitPrice: 300_000 })] })))
++eq('Audit ثبت شد با مرجع CATALOG برای ۳ عدد مازاد', /"qty":3,"price":1000000,"source":"CATALOG"/.test(String(lastOverride()?.before)) && overrideAudits() === a0 + 1, true)
++await setAccounting({ requireManagerForPriceOverride: true })
++
++console.log('\n۴) بازه‌ی تخفیف: کاهش قیمتِ عددهای مازاد هم تخفیف حساب می‌شود')
++seed.setting(SETTING_KEYS.discountPolicy, { mode: 'FREE', fixedMode: 'PERCENT', fixedValue: 0, allowLine: true, allowInvoice: true, maxPercent: 20, maxAmount: 0 })
++await rejects('ویرایش به ۸ عدد ۳۰۰٬۰۰۰ حتی با رمز ⇒ رد با پیام بازه‌ی تخفیف', () => salesService.update(upd({ lines: [line({ qty: 8, unitPrice: 300_000 })], managerPassword: PW })), 'تخفیف')
++
++console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
++process.exitCode = bad ? 1 : 0
+diff -ruN /tmp/orig/mahak/tests/audit-fixes/fix-s165-staff-save-gate.mjs mahak/tests/audit-fixes/fix-s165-staff-save-gate.mjs
+--- /tmp/orig/mahak/tests/audit-fixes/fix-s165-staff-save-gate.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-s165-staff-save-gate.mjs	2026-09-27 10:50:53.962336723 +0000
+@@ -0,0 +1,86 @@
++/**
++ * ===========================================================================
++ * نشست ۱۶۵ · S165-D4 — گیت سمت main برای staff:save (ریسک باز «staffSave بی‌رمز»، S160-D3).
++ *
++ * قبل از رفع: فهرست کارمندان فقط در UI پشت پنل همیشه‌قفل «تنظیمات» بود؛ IPC.staffSave بی‌هیچ رمزی
++ * نام/نقش/فعال‌بودن هر کارمند را عوض می‌کرد یا کارمند تازه می‌ساخت. نام کارمند در همه‌ی گزارش‌های گذشته
++ * زنده خوانده می‌شود ⇒ فروشنده می‌توانست نام خودش و همکارش را جابه‌جا کند و مسئولیت فروش/برگشت/مغایرت‌های
++ * گذشته را در گزارش به گردن دیگری بیندازد (هدف ضدسرقت؛ بند ۴-۲۹ مورد ۱، بند ۵ «هر گیت در main»).
++ *
++ *     node --import ./test/harness/register.mjs tests/pending/fix-s165-staff-save-gate.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s165-staff-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const electron = await import('electron')
++const handlers = new Map()
++electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const db = harnessClient()
++const seed = makeSeeder(db)
++const { registerIpcHandlers } = await import('../../src/main/ipc/index.ts')
++const { IPC } = await import('@shared/ipc')
++const { DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/receipt')
++registerIpcHandlers()
++const ipc = (ch, payload) => handlers.get(ch)(null, payload)
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
++}
++const ipcOk = async (label, ch, payload) => {
++  const r = await ipc(ch, payload)
++  if (r?.ok) { ok++; console.log(`  ✓ ${label}`) } else { bad++; console.log(`  ✗ ${label} — ${String(r?.error).slice(0, 200)}`) }
++  return r?.data
++}
++const ipcRejects = async (label, ch, payload, needle) => {
++  const r = await ipc(ch, payload)
++  if (r?.ok === false && /[\u0600-\u06FF]/.test(String(r.error)) && (!needle || String(r.error).includes(needle))) { ok++; console.log(`  ✓ ${label} (رد شد: ${String(r.error).slice(0, 110)})`) }
++  else { bad++; console.log(`  ✗ ${label} — ${r?.ok ? 'بدون رمز پذیرفته شد' : 'پیام نامنتظره: ' + String(r?.error).slice(0, 160)}`) }
++}
++const userRow = (id) => seed.one('SELECT displayName, role, isActive FROM "User" WHERE id = ?', id)
++const shape = (r) => [r?.displayName, r?.role, Number(r?.isActive)]
++const audits = () => seed.count('AuditLog', "action IN ('STAFF_CREATE','STAFF_UPDATE')")
++const users = () => seed.count('User')
++
++const ali = seed.user('علی')
++const reza = seed.user('رضا')
++seed.rows('UPDATE "User" SET role = \'CASHIER\', isActive = 1 WHERE id IN (?, ?) RETURNING id', ali, reza)
++
++console.log('\n۱) بدون رمز / رمز غلط ⇒ رد، هیچ تغییری نه در کارمند نه در Audit')
++const a0 = audits(); const u0 = users()
++await ipcRejects('تغییر نام «رضا» به «علی» بی‌رمز', IPC.staffSave, { id: reza, name: 'علی', role: 'CASHIER' }, 'رمز')
++await ipcRejects('غیرفعال‌کردن «علی» بی‌رمز', IPC.staffSave, { id: ali, name: 'علی', role: 'CASHIER', isActive: false }, 'رمز')
++await ipcRejects('ارتقای نقش به مدیر بی‌رمز', IPC.staffSave, { id: ali, name: 'علی', role: 'MANAGER' }, 'رمز')
++await ipcRejects('کارمند ساختگی بی‌رمز', IPC.staffSave, { name: 'کارمند ساختگی', role: 'CASHIER' }, 'رمز')
++await ipcRejects('تغییر نام با رمز غلط', IPC.staffSave, { id: reza, name: 'علی', role: 'CASHIER', panelPassword: 'wrong-165' }, 'رمز')
++eq('«رضا» دست‌نخورده', shape(userRow(reza)), ['رضا', 'CASHIER', 1])
++eq('«علی» دست‌نخورده', shape(userRow(ali)), ['علی', 'CASHIER', 1])
++eq('کارمند تازه‌ای ساخته نشد', users(), u0)
++eq('هیچ Audit کارمندی ثبت نشد', audits(), a0)
++
++console.log('\n۲) با رمز مدیر ⇒ پذیرفته و Audit')
++await ipcOk('ویرایش نام با رمز مدیر', IPC.staffSave, { id: reza, name: 'رضا احمدی', role: 'CASHIER', panelPassword: PW })
++eq('نام عوض شد', userRow(reza)?.displayName, 'رضا احمدی')
++const created = await ipcOk('ثبت کارمند تازه با رمز مدیر', IPC.staffSave, { name: 'سارا', role: 'STOCKKEEPER', panelPassword: PW })
++eq('کارمند تازه ساخته شد', users(), u0 + 1)
++eq('دو Audit کارمند ثبت شد', audits(), a0 + 2)
++await ipcRejects('کارمند ناموجود ⇒ «پیدا نشد» پیش از رمز', IPC.staffSave, { id: 987654, name: 'x', role: 'CASHIER' }, 'پیدا نشد')
++
++console.log('\n۳) UI: کادر رمز در فرم کارمند و ارسال panelPassword')
++const ui = readFileSync(resolve('src/renderer/src/pages/Settings.tsx'), 'utf8')
++eq('فرم کارمند panelPassword می‌فرستد', /CH\.staffSave, \{[\s\S]{0,200}panelPassword: staffPw/.test(ui), true)
++eq('دکمه‌ی ذخیره با رمز خالی غیرفعال', /saveStaff\(\)\} disabled=\{staffBusy \|\| !staffPw\.trim\(\)\}/.test(ui), true)
++
++console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
++process.exitCode = bad ? 1 : 0
+diff -ruN /tmp/orig/mahak/tests/audit-fixes/fix-y23-settled-current.mjs mahak/tests/audit-fixes/fix-y23-settled-current.mjs
+--- /tmp/orig/mahak/tests/audit-fixes/fix-y23-settled-current.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-y23-settled-current.mjs	2026-09-27 10:45:43.791235200 +0000
+@@ -0,0 +1,106 @@
++/**
++ * ===========================================================================
++ * نشست ۱۶۵ · Y23 — «وصول همین دوره» (accounting.credit.settledCurrent) و چکِ پاس‌شده‌ی فاکتور دوره‌ی قبل.
++ *
++ * فرضیه‌ی هندآف ۱۶۴: در accountingReport.paymentStatement داریم
++ *   currentPeriod = cash + card + credit + other − priorPeriod
++ * ولی priorPeriod سهم چکِ پاس‌شده‌ی دوره‌ی قبل (priorClearedCheques) را هم دارد در حالی که cash/card/other
++ * هیچ چکی ندارند ⇒ اگر روزی چکی به سبد cash/card/other برود، settledCurrent به اندازه‌ی آن چک کم نشان داده می‌شود.
++ *
++ * بخش (۱) قطعی می‌کند که با قاعده‌ی فعلی receiptBucketOf (چک ⇒ فقط managerAccount یا unknown) اثر امروز صفر است.
++ * بخش (۲) سناریوی یکپارچه: وصول همین دوره = فقط پول واقعی فاکتورهای همین دوره؛ هیچ چک دوره‌ی قبل (مقصد مدیر،
++ *   بی‌مقصد، یا «CASH» قدیمی) نه در settledCurrent و نه در settledPrior/سهم نقد نمی‌نشیند.
++ * آزمون جهش (TESTLOG-s165-mutation.txt): اگر receiptBucketOf برای چک CASH سبد 'cash' بدهد، فرمول قدیمی
++ *   settledCurrent را ۱٬۰۰۰ کم نشان می‌داد (FAIL)؛ فرمول اصلاح‌شده (S165-D1) همچنان ۵۰۰ می‌دهد (PASS).
++ *
++ *     node --import ./test/harness/register.mjs tests/pending/fix-y23-settled-current.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-y23-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { salesService } = await import('../../src/main/services/SalesService.ts')
++const { receiptBucketOf } = await import('@shared/accounting')
++const { toJalaliDate } = await import('@shared/jalali')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++const MUTANT = process.env.Y23_MUTANT === '1'
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
++}
++const safe = async (label, fn) => {
++  try { return await fn() } catch (e) { bad++; console.log(`  ✗ ${label} — خطای نامنتظره: ${String(e?.message ?? e).split('\n')[0]}`); return null }
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n۱) قاعده‌ی سبد چک (بند ۴-۱۲ / ۴-۲۴)')
++if (MUTANT) console.log('  (حالت جهش: فقط بخش ۲ معنا دارد)')
++else for (const d of ['CASH', 'CARD', 'MANAGER', null, 'cash', 'OTHER', ''])
++  eq(`چک با مقصد ${JSON.stringify(d)} ⇒ فقط حساب مدیر یا نامشخص`,
++    ['managerAccount', 'unknown'].includes(receiptBucketOf({ isCheque: true, destination: d, methodKind: 'CASH' })), true)
++
++// ---------------------------------------------------------------------------
++const HOUR = 3_600_000
++const userId = seed.user('مدیر Y23')
++const cat = seed.category('پوشاک Y23')
++const product = seed.product('پیراهن Y23', cat)
++const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
++const today = toJalaliDate(new Date())
++const Yat = Date.now() - 30 * HOUR
++const yday = toJalaliDate(new Date(Yat))
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - HOUR, userId })
++const yShift = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: yday, openedAt: Yat - HOUR, closedAt: Yat + HOUR, userId })
++let vseq = 0
++const variant = (price) => {
++  const id = seed.variant(product, `سایز Y${++vseq}`)
++  sql.prepare('UPDATE "ProductVariant" SET stock = 100, salePrice = ? WHERE id = ?').run(price, id)
++  return id
++}
++const line = (variantId, price) => ({ variantId, qty: 1, unitPrice: price, discount: 0, tax: 0 })
++const yesterdaySale = async (price) => {
++  const inv = await salesService.create({ userId, shiftId, lines: [line(variant(price), price)], payments: [] })
++  sql.prepare('UPDATE "SaleInvoice" SET issuedAt = ?, issuedAtJalali = ?, shiftId = ? WHERE id = ?').run(Yat, yday, yShift, inv.id)
++  return inv
++}
++const chequeClearedToday = async (inv, amount, destination) => {
++  await salesService.addPayment({ invoiceId: inv.id, kind: 'CHEQUE', amount, chequeNo: `Y23-${inv.id}`, bankName: 'ملت', dueDateJalali: today, userId })
++  const c = seed.one('SELECT id FROM "Payment" WHERE invoiceId = ? AND kind = \'CHEQUE\' ORDER BY id DESC LIMIT 1', inv.id)
++  /** چک دیروز ثبت شده و امروز پاس شده؛ مقصد «CASH»/null فقط داده‌ی قدیمی است (مسیر عادی فقط MANAGER می‌پذیرد) */
++  sql.prepare('UPDATE "Payment" SET paidAt = ?, paidAtJalali = ?, createdAt = ?, createdShiftId = ?, chequeStatus = \'CLEARED\', destination = ?, clearedAt = ?, clearedAtJalali = ?, clearedShiftId = ? WHERE id = ?')
++    .run(Yat, yday, Yat, yShift, destination, Date.now(), today, shiftId, c?.id)
++}
++
++console.log('\n۲) گزارش امروز: وصول همین دوره در حضور چک‌های پاس‌شده‌ی دوره‌ی قبل')
++const A = await safe('فاکتور دیروز الف', () => yesterdaySale(1000))
++const B = await safe('فاکتور دیروز ب', () => yesterdaySale(1000))
++const C = await safe('فاکتور دیروز ج', () => yesterdaySale(1000))
++const D = await safe('فاکتور دیروز د', () => yesterdaySale(1000))
++await safe('چک الف (مدیر)', () => chequeClearedToday(A, 1000, 'MANAGER'))
++await safe('چک ب (بی‌مقصد)', () => chequeClearedToday(B, 1000, null))
++await safe('چک ج (CASH قدیمی)', () => chequeClearedToday(C, 1000, 'CASH'))
++await safe('وصول نقدی ۳۰۰ فاکتور د', () => salesService.addPayment({ invoiceId: D.id, amount: 300, methodId: cash, destination: 'CASH', userId }))
++await safe('فروش نقدی امروز ۵۰۰', () => salesService.create({ userId, shiftId, lines: [line(variant(500), 500)], payments: [{ methodId: cash, amount: 500, destination: 'CASH' }] }))
++
++const rep = await safe('گزارش امروز', () => salesService.reportRows({ fromJalali: today, toJalali: today, withDrillDown: true, bridgeSourceTake: 2000 }))
++const cr = rep?.accounting?.credit
++eq('وصول همین دوره = فقط فروش نقدی امروز', Number(cr?.settledCurrent ?? NaN), 500)
++/** در حالت جهش چک CASH عمداً «نقد» حساب می‌شود، پس ۱٬۳۰۰ معنای درستِ همان قاعده‌ی جهش‌یافته است */
++eq('وصول نسیه‌ی دوره‌ی قبل = فقط نقد ۳۰۰ (هیچ چکی)', Number(cr?.settledPrior ?? NaN), MUTANT ? 1300 : 300)
++eq('سهم نقدِ وصول دوره‌ی قبل', Number(cr?.settledPriorCash ?? NaN), MUTANT ? 1300 : 300)
++if (!MUTANT) eq('پل امروز بسته', rep?.accounting?.bridge?.unexplained, 0)
++
++console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
++process.exitCode = bad ? 1 : 0
+diff -ruN /tmp/orig/mahak/tests/audit-fixes/fix-y9-shift-open-staff-save-actor.mjs mahak/tests/audit-fixes/fix-y9-shift-open-staff-save-actor.mjs
+--- /tmp/orig/mahak/tests/audit-fixes/fix-y9-shift-open-staff-save-actor.mjs	2026-09-27 09:08:46.000000000 +0000
++++ mahak/tests/audit-fixes/fix-y9-shift-open-staff-save-actor.mjs	2026-09-27 10:50:53.954336644 +0000
+@@ -30,6 +30,8 @@
+ const seed = makeSeeder(db)
+ const { registerIpcHandlers } = await import('../../src/main/ipc/index.ts')
+ const { IPC } = await import('@shared/ipc')
++// نشست ۱۶۵ (S165-D5): staffSave رمز پنل تنظیمات می‌خواهد (S165-D4)؛ فقط setup — قصد تست (actor نشست) دست نخورد
++const { DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/receipt')
+ registerIpcHandlers()
+ const ipc = (ch, payload) => handlers.get(ch)(null, payload)
+ 
+@@ -57,9 +59,9 @@
+ eq('actor Audit SHIFT_OPEN', uid(lastAudit('SHIFT_OPEN')), staff)
+ 
+ console.log('\n۲) staffSave با نشست باز و userId جعلی ⇒ actor نشست')
+-const created = await ipcOk('staffSave (ثبت تازه)', IPC.staffSave, { name: 'کارمند تازه Y9', role: 'CASHIER', userId: forged })
++const created = await ipcOk('staffSave (ثبت تازه)', IPC.staffSave, { name: 'کارمند تازه Y9', role: 'CASHIER', userId: forged, panelPassword: PW })
+ eq('actor Audit STAFF_CREATE', uid(lastAudit('STAFF_CREATE')), staff)
+-await ipcOk('staffSave (غیرفعال‌سازی)', IPC.staffSave, { id: created?.id, name: 'کارمند تازه Y9', role: 'CASHIER', isActive: false, userId: forged })
++await ipcOk('staffSave (غیرفعال‌سازی)', IPC.staffSave, { id: created?.id, name: 'کارمند تازه Y9', role: 'CASHIER', isActive: false, userId: forged, panelPassword: PW })
+ eq('actor Audit STAFF_UPDATE', uid(lastAudit('STAFF_UPDATE')), staff)
+ 
+ console.log('\n۳) ساختار: هیچ کانالی در ipc/index.ts دیگر withUser نمی‌گیرد')

@@ -1,0 +1,104 @@
+diff -ruN pristine/mahak-session131/src/main/ipc/index.ts s151/mahak-session131/src/main/ipc/index.ts
+--- pristine/mahak-session131/src/main/ipc/index.ts	2026-09-25 14:22:48.000000000 +0000
++++ s151/mahak-session131/src/main/ipc/index.ts	2026-09-25 15:13:25.461673974 +0000
+@@ -269,7 +269,7 @@
+   handle(IPC.saleFraudReview, (p) => fraudService.review(p ?? {}))
+   handle(IPC.settingsAccountingPolicy, () => settingsService.accountingPolicy())
+   handle(IPC.settingsAccountingPolicySet, async (p) => settingsService.setAccountingPolicy(await withUser(p)))
+-  handle(IPC.storeCreditLookup, async (p) => storeCreditService.lookup(await withUser(p)))
++  handle(IPC.storeCreditLookup, async (p) => storeCreditService.lookup(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.storeCreditList, (p) => storeCreditService.list(p ?? {}))
+ 
+   /**
+@@ -277,8 +277,10 @@
+    * `withUser` روی هر کانالی که چیزی *می‌نویسد* گذاشته شده تا ستون «کاربر» در
+    * AuditLog و دفتر مصرف هیچ‌وقت خالی نماند (§۱۰). خواندن‌ها بدون آن می‌مانند،
+    * دقیقاً مثل بقیه‌ی کانال‌های گزارشی.
++   * نشست ۱۵۲ · S151-a (S151-D2) — withUser (که userId رندرر را نگه می‌داشت) با
++   * withOptionalSessionActor عوض شد: actor فقط از نشست باز main؛ بدون نشست ⇒ null، نه جعلی.
+    */
+-  handle(IPC.creditPreview, async (p) => storeCreditService.preview(await withUser(p)))
++  handle(IPC.creditPreview, async (p) => storeCreditService.preview(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.creditDashboard, (p) => storeCreditService.dashboard(p ?? {}))
+   handle(IPC.creditList, (p) => storeCreditService.list(p ?? {}))
+   handle(IPC.creditDetail, (p) => storeCreditService.detail(p ?? {}))
+@@ -286,24 +288,24 @@
+   handle(IPC.creditIssue, async (p) => storeCreditService.issueManual(await withSessionActor(p ?? {}, 'صدور دستی اعتبار خرید')))
+   handle(IPC.creditBulkIssue, async (p) => storeCreditService.bulkIssue(await withSessionActor(p ?? {}, 'تولید گروهی اعتبار خرید')))
+   handle(IPC.creditBatchList, (p) => storeCreditService.batches(p ?? {}))
+-  handle(IPC.creditVoid, async (p) => storeCreditService.void(await withUser(p)))
+-  handle(IPC.creditSuspend, async (p) => storeCreditService.suspend(await withUser(p)))
+-  handle(IPC.creditReactivate, async (p) => storeCreditService.reactivate(await withUser(p)))
+-  handle(IPC.creditExpiryChange, async (p) => storeCreditService.changeExpiry(await withUser(p)))
+-  handle(IPC.creditAmountChange, async (p) => storeCreditService.changeAmount(await withUser(p)))
+-  handle(IPC.creditUsesChange, async (p) => storeCreditService.changeUses(await withUser(p)))
+-  handle(IPC.creditHolderChange, async (p) => storeCreditService.changeHolder(await withUser(p)))
+-  handle(IPC.creditRestrictionChange, async (p) => storeCreditService.changeRestrictions(await withUser(p)))
+-  handle(IPC.creditDelete, async (p) => storeCreditService.remove(await withUser(p)))
+-  handle(IPC.creditMarkPrinted, async (p) => storeCreditService.markPrinted(await withUser(p)))
++  handle(IPC.creditVoid, async (p) => storeCreditService.void(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.creditSuspend, async (p) => storeCreditService.suspend(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.creditReactivate, async (p) => storeCreditService.reactivate(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.creditExpiryChange, async (p) => storeCreditService.changeExpiry(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.creditAmountChange, async (p) => storeCreditService.changeAmount(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.creditUsesChange, async (p) => storeCreditService.changeUses(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.creditHolderChange, async (p) => storeCreditService.changeHolder(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.creditRestrictionChange, async (p) => storeCreditService.changeRestrictions(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.creditDelete, async (p) => storeCreditService.remove(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.creditMarkPrinted, async (p) => storeCreditService.markPrinted(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.creditReminderCandidates, (p) => storeCreditService.reminderCandidates(p ?? {}))
+-  handle(IPC.creditReminderQueue, async (p) => storeCreditService.queueReminder(await withUser(p)))
++  handle(IPC.creditReminderQueue, async (p) => storeCreditService.queueReminder(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.creditReminderLogs, (p) => storeCreditService.reminderLogs(p ?? {}))
+   handle(IPC.creditSettingsGet, () => settingsService.creditSettings())
+   handle(IPC.creditSettingsSet, async (p) => settingsService.saveCreditSettings(await withUser(p)))
+-  handle(IPC.printCredit, async (p) => printService.printCredit(await withUser(p)))
+-  handle(IPC.printCreditBatch, async (p) => printService.printCreditBatch(await withUser(p)))
+-  handle(IPC.creditPdf, async (p) => printService.creditPdf(await withUser(p)))
++  handle(IPC.printCredit, async (p) => printService.printCredit(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.printCreditBatch, async (p) => printService.printCreditBatch(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.creditPdf, async (p) => printService.creditPdf(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.creditPreviewHtml, (p) => printService.creditHtml(Number(p?.id ?? 0)))
+   // ---- تب «نسیه» گزارشات فروش (بخش ۷) ----
+   handle(IPC.saleCreditList, (p) => salesService.creditList(p ?? {}))
+@@ -327,9 +329,9 @@
+ 
+   // ---- اشخاص (مشتری / تامین‌کننده) ----
+   handle(IPC.customerList, (p) => partyService.customers(p ?? {}))
+-  handle(IPC.customerCreate, (p) => partyService.createCustomer(p))
+-  handle(IPC.customerUpdate, (p) => partyService.updateCustomer(p ?? {}))
+-  handle(IPC.customerDelete, (p) => partyService.deleteCustomer(p ?? { id: 0 }))
++  handle(IPC.customerCreate, async (p) => partyService.createCustomer(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.customerUpdate, async (p) => partyService.updateCustomer(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.customerDelete, async (p) => partyService.deleteCustomer(await withOptionalSessionActor(p ?? { id: 0 })))
+   handle(IPC.customerByPhone, (p) => partyService.byPhone(p ?? {}))
+   handle(IPC.customerDirectory, (p) => partyService.directory(p ?? {}))
+   handle(IPC.supplierList, (p) => partyService.suppliers(p ?? {}))
+diff -ruN pristine/mahak-session131/src/main/services/PartyService.ts s151/mahak-session131/src/main/services/PartyService.ts
+--- pristine/mahak-session131/src/main/services/PartyService.ts	2026-09-25 14:30:36.000000000 +0000
++++ s151/mahak-session131/src/main/services/PartyService.ts	2026-09-25 15:13:25.461673974 +0000
+@@ -268,7 +268,7 @@
+     })
+   },
+ 
+-  async createCustomer(input: PartyInput & { isWholesale?: boolean; manualPurchaseTotal?: number }) {
++  async createCustomer(input: PartyInput & { isWholesale?: boolean; manualPurchaseTotal?: number; userId?: number | null }) {
+     const name = input.name?.trim()
+     if (!name) throw new Error('نام مشتری الزامی است')
+     // نشست ۱۵۰ — پیش از هر نوشتن (شامل ارتقای مشتری هم‌شماره)
+@@ -291,6 +291,7 @@
+             action: 'CUSTOMER_CREATE',
+             entity: 'Customer',
+             entityId: promoted.id,
++            userId: input.userId ?? null, // نشست ۱۵۲ · S151-a — actor نشست (IPC)
+             before: JSON.stringify({ isWholesale: same.isWholesale }),
+             after: JSON.stringify({ isWholesale: true }),
+             note: 'مشتری موجود با همین شماره تلفن پیدا شد و به «مشتری عمده» تغییر برچسب داد (رکورد تکراری ساخته نشد)'
+@@ -317,6 +318,7 @@
+       action: 'CUSTOMER_CREATE',
+       entity: 'Customer',
+       entityId: c.id,
++      userId: input.userId ?? null, // نشست ۱۵۲ · S151-a — actor نشست (IPC)
+       after: JSON.stringify({ code, name, phone, isWholesale: wholesale }),
+       note: wholesale ? 'ثبت مشتری عمده' : 'ثبت مشتری تکی'
+     })

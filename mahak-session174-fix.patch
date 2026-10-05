@@ -1,0 +1,736 @@
+diff -ruN base/mahak/src/main/services/SalesLedger.ts mahak/src/main/services/SalesLedger.ts
+--- base/mahak/src/main/services/SalesLedger.ts	2026-09-27 13:47:12.000000000 +0000
++++ mahak/src/main/services/SalesLedger.ts	2026-09-27 14:05:23.444835348 +0000
+@@ -2,7 +2,7 @@
+ import { exchangeRefundPartOf } from '@shared/settlement'
+ import { receiptBucketOf } from '@shared/accounting'
+ import { prisma } from '../db/client'
+-import { storeCreditScopes } from './accountingReport'
++import { storeCreditScopes, liteRowsByIdChunks, rowsForIdsInOrder } from './accountingReport'
+ import {
+   saleWhere,
+   eventInvoiceContextWhere,
+@@ -534,7 +534,7 @@
+      * فیلتری نداشت ⇒ دفتر با پل نمی‌خواند.
+      */
+     const creditNotes: string[] = []
+-    const { redemptionWhere } = await storeCreditScopes(
++    const { redemptionWhere, redemptionIds } = await storeCreditScopes(
+       {
+         where,
+         from: period.from,
+@@ -549,18 +549,40 @@
+       },
+       creditNotes
+     )
+-    const [usedCredits, usedCreditTotal] = await Promise.all([
+-      prisma.storeCreditRedemption.findMany({
+-        where: redemptionWhere,
+-        select: {
+-          id: true, creditId: true, code: true, amount: true, seq: true, remainderAfter: true,
+-          at: true, atJalali: true, atTime: true, invoiceId: true, receiptNo: true, userId: true, shiftId: true
+-        },
+-        orderBy: [{ at: 'asc' }, { id: 'asc' }],
+-        take: sectionCap
+-      }),
+-      prisma.storeCreditRedemption.count({ where: redemptionWhere })
+-    ])
++    const usedSelect = {
++      id: true, creditId: true, code: true, amount: true, seq: true, remainderAfter: true,
++      at: true, atJalali: true, atTime: true, invoiceId: true, receiptNo: true, userId: true, shiftId: true
++    } as const
++    let usedCredits: any[]
++    let usedCreditTotal: number
++    if (redemptionIds) {
++      /**
++       * نشست ۱۷۴ · S173-D3 — با فیلتر فاکتوری، مصرف‌های منطبق از قبل دسته‌ای (۵۰۰تایی) به شناسه
++       * حل شده‌اند (redemptionIds)؛ به‌جای `invoiceId in` بلند، ردیف‌های سبک (id/at) دسته‌ای خوانده،
++       * به همان ترتیب قبلی (at صعودی، سپس id) چیده، sectionCap اول برش و فقط همان‌ها کامل خوانده
++       * می‌شوند. شمارش = طول آرایه (همان count قبلی).
++       */
++      const lite = await liteRowsByIdChunks<{ id: number; at: any }>(
++        'storeCreditRedemption', redemptionWhere, redemptionIds, { at: true },
++        (a, b) => {
++          const ta = new Date(a.at as any).getTime()
++          const tb = new Date(b.at as any).getTime()
++          return ta !== tb ? ta - tb : Number(a.id) - Number(b.id)
++        }
++      )
++      usedCreditTotal = lite.length
++      usedCredits = await rowsForIdsInOrder('storeCreditRedemption', lite.slice(0, sectionCap).map((r) => Number(r.id)), usedSelect)
++    } else {
++      ;[usedCredits, usedCreditTotal] = await Promise.all([
++        prisma.storeCreditRedemption.findMany({
++          where: redemptionWhere,
++          select: usedSelect,
++          orderBy: [{ at: 'asc' }, { id: 'asc' }],
++          take: sectionCap
++        }),
++        prisma.storeCreditRedemption.count({ where: redemptionWhere })
++      ])
++    }
+     const storeCreditsUsedPage = { skip: 0, take: sectionCap, totalCount: usedCreditTotal, truncated: usedCreditTotal > sectionCap }
+     if (storeCreditsUsedPage.truncated)
+       warnings.push(`دفتر رویداد: ${faDigits(usedCreditTotal)} مصرف اعتبار در این بازه است؛ فقط ${faDigits(sectionCap)} ردیف اول نمایش داده شد. بازه را کوچک‌تر کنید.`)
+diff -ruN base/mahak/src/main/services/accountingReport.ts mahak/src/main/services/accountingReport.ts
+--- base/mahak/src/main/services/accountingReport.ts	2026-09-27 13:43:50.000000000 +0000
++++ mahak/src/main/services/accountingReport.ts	2026-09-27 14:05:23.440835325 +0000
+@@ -573,8 +573,97 @@
+ }
+ 
+ /**
++ * نشست ۱۷۴ · S173-D3 — سقف IN گزارش‌ها (۵۰۰، همان REPORT_IN_CHUNK سرویس فروش/کارمند).
++ * هیچ فهرست شناسه‌ای بلندتر از این مستقیم در `in` نمی‌نشیند؛ مصرف‌کننده‌ها روی دسته‌های جدا
++ * (`idChunkWheres`) جمع/شمارش/خواندن می‌کنند.
++ */
++const CREDIT_IN_CHUNK = 500
++
++/**
++ * where پایه + (اگر فهرست شناسه داده شد) یک where برای هر دسته‌ی ۵۰۰تایی.
++ * ids = null ⇒ بی‌قید شناسه (همان where پایه)؛ ids = [] ⇒ هیچ where (هیچ ردیفی منطبق نیست).
++ * دسته‌ها از یک Set یکتا ساخته می‌شوند، پس جمع روی دسته‌ها هیچ ردیفی را دوبار نمی‌شمارد.
++ */
++export function idChunkWheres(base: any, ids: number[] | null): any[] {
++  if (ids == null) return [base]
++  const uniq = [...new Set(ids)]
++  const out: any[] = []
++  for (let i = 0; i < uniq.length; i += CREDIT_IN_CHUNK)
++    out.push({ AND: [base, { id: { in: uniq.slice(i, i + CREDIT_IN_CHUNK) } }] })
++  return out
++}
++
++/** aggregate روی دسته‌های شناسه: جمع فیلدهای _sum و _count._all، مثل یک aggregate واحد. */
++async function aggregateByIdChunks(
++  model: 'storeCredit' | 'storeCreditRedemption',
++  base: any,
++  ids: number[] | null,
++  sumFields: string[]
++): Promise<{ sum: Record<string, number>; count: number }> {
++  const sum: Record<string, number> = Object.fromEntries(sumFields.map((f) => [f, 0]))
++  let count = 0
++  for (const where of idChunkWheres(base, ids)) {
++    const agg: any = await (prisma as any)[model].aggregate({
++      where,
++      _sum: Object.fromEntries(sumFields.map((f) => [f, true])),
++      _count: { _all: true }
++    })
++    for (const f of sumFields) sum[f] += n(agg?._sum?.[f])
++    count += n(agg?._count?._all)
++  }
++  return { sum, count }
++}
++
++/**
++ * شناسه‌ی ردیف‌های منطبق (سبک: id + ستون‌های مرتب‌سازی) روی دسته‌های شناسه، یکتا و مرتب با
++ * `sort`. مصرف‌کننده صفحه را از همین آرایه می‌بُرد و فقط شناسه‌های صفحه را دسته‌ای می‌خواند
++ * (الگوی S172-D3/S173-D1).
++ */
++export async function liteRowsByIdChunks<T extends { id: number }>(
++  model: 'storeCredit' | 'storeCreditRedemption',
++  base: any,
++  ids: number[] | null,
++  select: Record<string, true>,
++  sort: (a: T, b: T) => number
++): Promise<T[]> {
++  const seen = new Set<number>()
++  const out: T[] = []
++  for (const where of idChunkWheres(base, ids)) {
++    const part: T[] = await (prisma as any)[model].findMany({ where, select: { id: true, ...select } })
++    for (const r of part) if (!seen.has(Number(r.id))) { seen.add(Number(r.id)); out.push(r) }
++  }
++  return out.sort(sort)
++}
++
++/** خواندن کامل ردیف‌ها برای شناسه‌های یک صفحه، دسته‌ای و به ترتیب همان آرایه‌ی ورودی. */
++export async function rowsForIdsInOrder(
++  model: 'storeCredit' | 'storeCreditRedemption',
++  ids: number[],
++  select?: Record<string, true>
++): Promise<any[]> {
++  const byId = new Map<number, any>()
++  for (let i = 0; i < ids.length; i += CREDIT_IN_CHUNK) {
++    const part: any[] = await (prisma as any)[model].findMany({
++      where: { id: { in: ids.slice(i, i + CREDIT_IN_CHUNK) } },
++      ...(select ? { select: { id: true, ...select } } : {})
++    })
++    for (const r of part) byId.set(Number(r.id), r)
++  }
++  return ids.map((id) => byId.get(id)).filter((r) => r != null)
++}
++
++/**
+  * ممیزی A108-02 — predicateهای «اعتبار صادرشده» و «مصرف اعتبار» یک‌جا، تا ردیف پل (aggregate) و
+  * اسناد سازنده‌ی همان ردیف (drill-down) از یک where بخوانند: «یک فیلتر، یک عدد».
++ *
++ * نشست ۱۷۴ · S173-D3 — قبلاً با فیلتر فاکتوری تا ۲۰٬۰۰۰ شناسه‌ی فاکتور مستقیم در OR سه‌تایی
++ * `in` (scoped) و `invoiceId in` (redemptionWhere) و تا ۲۰٬۰۰۰ شناسه‌ی اعتبار در issuedScoped
++ * می‌نشست ⇒ با ۵۰۱+ فاکتور یک کارمند، پل با خطا می‌افتاد و drill/دفتر مصرف اعتبار خوانده نمی‌شد.
++ * حالا شناسه‌ها دسته‌به‌دسته (۵۰۰تایی) به شناسه‌ی *خود* اعتبار/مصرف حل می‌شوند و where ها
++ * «پایه» (بی‌فهرست) برمی‌گردند؛ فهرست‌ها در scopedIds / issuedIds / redemptionIds:
++ *   null = بی‌قید (بدون فیلتر فاکتوری، یا عبور از سقف امن با یادداشت صریح)،
++ *   [] = هیچ ردیف منطبق، آرایه = فقط همین شناسه‌ها (مصرف‌کننده با idChunkWheres جمع می‌زند).
++ * ⚠️ هر مصرف‌کننده‌ی تازه *باید* فهرست را هم اعمال کند؛ where پایه به‌تنهایی کل بازه است.
+  */
+ export async function storeCreditScopes(scope: StatementScope, notes: string[]) {
+   const range = dateRange(scope.from, scope.to)
+@@ -594,15 +683,36 @@
+     }
+   }
+ 
+-  const scoped = invoiceIds
+-    ? {
+-        OR: [
+-          { sourceInvoiceId: { in: invoiceIds } },
+-          { exchangeInvoiceId: { in: invoiceIds } },
+-          { usedInvoiceId: { in: invoiceIds } }
+-        ]
+-      }
+-    : {}
++  /** اعتبارهای مرتبط با فاکتورهای فیلتر (source/exchange/used) — دسته‌ای، یکتا */
++  let scopedIds: number[] | null = null
++  /** مصرف‌های زنده‌ی بازه روی فاکتورهای فیلتر — دسته‌ای، یکتا */
++  let redemptionIds: number[] | null = null
++  const redemptionBase: any = { reversedAt: null, ...(range ? { at: range } : {}) }
++  if (invoiceIds) {
++    const sc = new Set<number>()
++    const rd = new Set<number>()
++    for (let i = 0; i < invoiceIds.length; i += CREDIT_IN_CHUNK) {
++      const part = invoiceIds.slice(i, i + CREDIT_IN_CHUNK)
++      const creds = await prisma.storeCredit.findMany({
++        where: {
++          OR: [
++            { sourceInvoiceId: { in: part } },
++            { exchangeInvoiceId: { in: part } },
++            { usedInvoiceId: { in: part } }
++          ]
++        },
++        select: { id: true }
++      })
++      for (const c of creds) sc.add(Number(c.id))
++      const reds = await prisma.storeCreditRedemption.findMany({
++        where: { ...redemptionBase, invoiceId: { in: part } },
++        select: { id: true }
++      })
++      for (const r of reds) rd.add(Number(r.id))
++    }
++    scopedIds = [...sc].sort((a, b) => b - a)
++    redemptionIds = [...rd].sort((a, b) => b - a)
++  }
+ 
+   const voidedCreditIds = await creditIdsOfVoidedReturns(range)
+   const notVoided = voidedCreditIds.length ? { id: { notIn: voidedCreditIds } } : {}
+@@ -612,7 +722,7 @@
+    * از مسیر فاکتور (source/exchange و حتی usedInvoiceId) با بازه‌ی *صدور فاکتور*
+    * می‌شمرد ⇒ اعتبار برگشتِ شیفت شب روی فاکتور صبح در پل صبح، و تب ≠ پل.
+    */
+-  let issuedScoped: any = scoped
++  let issuedIds: number[] | null = scopedIds
+   if (hasInvoiceScopedFilter(scope.filter)) {
+     const f = scope.filter
+     const ids = await creditIdsForReportScope(
+@@ -632,19 +742,18 @@
+       { overCap: 'return' }
+     )
+     if (ids && ids.length > ID_LIST_CAP) {
+-      issuedScoped = {}
++      issuedIds = null
+       notes.push('اعتبار صادرشده: تعداد اعتبارهای منطبق از سقف امن گذشت و فیلترها روی این عدد قابل تفکیک نیست — عدد نمایش‌داده‌شده کل بازه است.')
+     } else if (ids) {
+-      issuedScoped = { AND: [{ id: { in: ids } }] }
++      issuedIds = [...new Set(ids)].sort((a, b) => b - a)
+     }
+   }
+-  const issuedWhere: any = { ...issuedScoped, ...notVoided, ...(range ? { issuedAt: range } : {}) }
+-  const redemptionWhere: any = {
+-    reversedAt: null,
+-    ...(invoiceIds ? { invoiceId: { in: invoiceIds } } : {}),
+-    ...(range ? { at: range } : {})
++  const issuedWhere: any = { ...notVoided, ...(range ? { issuedAt: range } : {}) }
++  const redemptionWhere: any = redemptionBase
++  return {
++    range, invoiceIds, scopedIds, notVoided, issuedIds, issuedWhere,
++    redemptionWhere, redemptionIds
+   }
+-  return { range, invoiceIds, scoped, notVoided, issuedScoped, issuedWhere, redemptionWhere }
+ }
+ 
+ /**
+@@ -660,7 +769,7 @@
+  * OVERPAY جدا در ردیف «دریافت پول اضافه» است (S61-2) و اینجا نمی‌آید.
+  * گزارش اعتبار (بند ۴-۴۸، issued) دست نمی‌خورد؛ این تفکیک فقط برای پل و نمایش است.
+  */
+-async function storeCreditBridgeSplit(issuedWhere: any): Promise<{
++async function storeCreditBridgeSplit(issuedWhere: any, issuedIds: number[] | null): Promise<{
+   backedIds: number[]
+   backed: number
+   unbacked: number
+@@ -675,11 +784,12 @@
+    * مصرف جزئی اعتبار اضافه‌دریافت (source=OVERPAY کپی‌شده از والد، issuedAt=روز مصرف) از
+    * اعتبار اضافه‌دریافتِ تازه. OVERPAY هرگز وارد backed/unbacked/remainder نمی‌شود (S61-2).
+    */
+-  const rows: Array<{ id: number; amount: any; returnId: number | null; source: string }> = await prisma.storeCredit.findMany({
+-    where: { ...issuedWhere },
+-    select: { id: true, amount: true, returnId: true, source: true },
+-    orderBy: { id: 'desc' }
+-  })
++  /** نشست ۱۷۴ · S173-D3 — روی دسته‌های شناسه (issuedIds) و یکتا، به ترتیب id نزولی */
++  const rows = await liteRowsByIdChunks<{ id: number; amount: any; returnId: number | null; source: string }>(
++    'storeCredit', { ...issuedWhere }, issuedIds,
++    { amount: true, returnId: true, source: true },
++    (a, b) => Number(b.id) - Number(a.id)
++  )
+   const remainderIds = new Set<number>()
+   const ids = rows.map((r) => r.id)
+   for (let i = 0; i < ids.length; i += 500) {
+@@ -710,21 +820,22 @@
+   scope: StatementScope,
+   notes: string[]
+ ): Promise<StoreCreditTotals> {
+-  const { range, scoped, notVoided, issuedScoped, issuedWhere, redemptionWhere } = await storeCreditScopes(scope, notes)
+-  const issued = await prisma.storeCredit.aggregate({
+-    where: issuedWhere,
+-    _sum: { amount: true }, _count: { _all: true }
+-  })
++  const { range, scopedIds, notVoided, issuedIds, issuedWhere, redemptionWhere, redemptionIds } =
++    await storeCreditScopes(scope, notes)
++  /** نشست ۱۷۴ · S173-D3 — همه‌ی جمع‌ها روی دسته‌های ۵۰۰تایی شناسه (نه یک IN بلند) */
++  const issued = await aggregateByIdChunks('storeCredit', issuedWhere, issuedIds, ['amount'])
+   /**
+    * نشست ۶۱ (S61-2) — سهم «اعتبار از اضافه‌دریافت» از صادرشده‌ی همین بازه. در گزارش
+    * اعتبار (بند ۴-۴۸) جزو صادرشده می‌ماند، ولی در پل تطبیق از ردیف «اعتبار
+    * صادرشده» بیرون می‌رود: پولش واقعاً دریافت شده و کل مبلغ اضافه همین حالا در
+    * ردیف «دریافت پول اضافه» از پل کم شده است؛ کسر دوباره پل را باز می‌گذاشت.
+    */
+-  const issuedOverpay = await prisma.storeCredit.aggregate({
+-    where: { ...issuedScoped, ...notVoided, source: CreditSource.OVERPAY, ...(range ? { issuedAt: range } : {}) },
+-    _sum: { amount: true }
+-  })
++  const issuedOverpay = await aggregateByIdChunks(
++    'storeCredit',
++    { ...notVoided, source: CreditSource.OVERPAY, ...(range ? { issuedAt: range } : {}) },
++    issuedIds,
++    ['amount']
++  )
+ 
+   /**
+    * =========================================================================
+@@ -742,10 +853,7 @@
+    * برگشتِ یک مصرف، همان مصرف را همچنان پول‌شده نشان می‌داد).
+    * =========================================================================
+    */
+-  const used = await prisma.storeCreditRedemption.aggregate({
+-    where: redemptionWhere,
+-    _sum: { amount: true }, _count: { _all: true }
+-  })
++  const used = await aggregateByIdChunks('storeCreditRedemption', redemptionWhere, redemptionIds, ['amount'])
+ 
+   /**
+    * D2 — «تعهد اعتبار» = باقی‌ماندهٔ اعتبارهای زنده، نه مبلغ اولیه‌شان.
+@@ -755,31 +863,30 @@
+    * بدهی واقعی به مشتری از ترازنامه غیب می‌شد.
+    */
+   const liveSum = async (statuses: string[]) => {
+-    const agg = await prisma.storeCredit.aggregate({
+-      where: {
+-        ...scoped, status: { in: statuses },
+-        ...(range && scope.to ? { issuedAt: { lte: scope.to } } : {})
+-      },
+-      _sum: { amount: true, usedAmount: true }
+-    })
+-    return Math.max(0, n(agg._sum.amount) - n(agg._sum.usedAmount))
++    const agg = await aggregateByIdChunks(
++      'storeCredit',
++      { status: { in: statuses }, ...(range && scope.to ? { issuedAt: { lte: scope.to } } : {}) },
++      scopedIds,
++      ['amount', 'usedAmount']
++    )
++    return Math.max(0, agg.sum.amount - agg.sum.usedAmount)
+   }
+   const statusSum = async (status: string) =>
+-    n(
+-      (
+-        await prisma.storeCredit.aggregate({
+-          where: { ...scoped, status, ...(range && scope.to ? { issuedAt: { lte: scope.to } } : {}) },
+-          _sum: { amount: true }
+-        })
+-      )._sum.amount
+-    )
++    (
++      await aggregateByIdChunks(
++        'storeCredit',
++        { status, ...(range && scope.to ? { issuedAt: { lte: scope.to } } : {}) },
++        scopedIds,
++        ['amount']
++      )
++    ).sum.amount
+ 
+   /** نشست ۱۷۰ · S169-D4 — سهم سند‌دار (پل) / بی‌سند / باقی‌مانده از صادرشده‌ی همین بازه */
+-  const split = await storeCreditBridgeSplit(issuedWhere)
++  const split = await storeCreditBridgeSplit(issuedWhere, issuedIds)
+ 
+   return {
+-    issued: n(issued._sum.amount),
+-    issuedFromOverpay: n(issuedOverpay._sum.amount),
++    issued: issued.sum.amount,
++    issuedFromOverpay: issuedOverpay.sum.amount,
+     issuedBacked: split.backed,
+     issuedUnbacked: split.unbacked,
+     issuedUnbackedCount: split.unbackedCount,
+@@ -788,9 +895,9 @@
+     /** نشست ۱۷۱ · S170-D3 — باقی‌مانده‌ی اعتبار اضافه‌دریافت (داخل issuedFromOverpay) */
+     issuedOverpayRemainder: split.overpayRemainder,
+     issuedOverpayRemainderCount: split.overpayRemainderCount,
+-    issuedCount: n(issued._count?._all),
+-    used: n(used._sum.amount),
+-    usageCount: n(used._count?._all),
++    issuedCount: issued.count,
++    used: used.sum.amount,
++    usageCount: used.count,
+     active: await liveSum([
+       StoreCreditStatus.ACTIVE,
+       StoreCreditStatus.PARTIALLY_USED,
+@@ -1170,12 +1277,12 @@
+     if (key === 'storeCreditIssued') {
+       // نشست ۶۱ — اعتبار اضافه‌دریافت در ردیف overpayReceived است.
+       // ممیزی A108-02 — همان where ردیف (مالک رویداد/هویت A97-01)، نه کل بازه.
+-      const { issuedWhere } = await storeCreditScopes(scope, [])
++      const { issuedWhere, issuedIds } = await storeCreditScopes(scope, [])
+       /**
+        * نشست ۱۷۰ · S169-D4 — همان predicate ردیف: فقط اعتبار سند‌دار (returnId ≠ null) و غیر
+        * «باقی‌مانده»؛ اعتبار دستی/گروهی بی‌سند و باقی‌مانده در ردیف پل نیستند، پس اینجا هم نه.
+        */
+-      const { backedIds } = await storeCreditBridgeSplit(issuedWhere)
++      const { backedIds } = await storeCreditBridgeSplit(issuedWhere, issuedIds)
+       /**
+        * نشست ۱۷۲ · S172-D3 — backedIds سقف ندارد (بازه‌ی بزرگ ⇒ ۵۰۱+ اعتبار سند‌دار) و
+        * `id in backedIds` از سقف IN گزارش‌ها (۵۰۰، REPORT_IN_CHUNK) رد می‌شد؛ خطا در catch همین
+@@ -1203,11 +1310,23 @@
+        * خودش. قبلاً drill از StoreCredit.usedAt با مبلغ *اولیه*‌ی اعتبار می‌خواند (مصرف ۳۰۰٬۰۰۰ از
+        * اعتبار ۱٬۰۰۰٬۰۰۰ ⇒ ۱٬۰۰۰٬۰۰۰) و مصرف‌های قبلی اعتبار چندبارمصرف غایب بودند.
+        */
+-      const { redemptionWhere } = await storeCreditScopes(scope, [])
+-      const totalCount = await prisma.storeCreditRedemption.count({ where: redemptionWhere })
+-      const rows = await prisma.storeCreditRedemption.findMany({
+-        where: redemptionWhere, orderBy: { id: 'desc' }, skip, take
+-      })
++      /**
++       * نشست ۱۷۴ · S173-D3 — با فیلتر فاکتوری، redemptionIds (یکتا، id نزولی) از دسته‌های ۵۰۰تایی
++       * فاکتور حل شده؛ شمارش = طول آرایه، صفحه = برش همان آرایه، و فقط شناسه‌های صفحه دسته‌ای
++       * خوانده می‌شوند (الگوی S172-D3). بدون فیلتر، همان count/findMany قبلی.
++       */
++      const { redemptionWhere, redemptionIds } = await storeCreditScopes(scope, [])
++      let totalCount: number
++      let rows: any[]
++      if (redemptionIds) {
++        totalCount = redemptionIds.length
++        rows = await rowsForIdsInOrder('storeCreditRedemption', redemptionIds.slice(skip, skip + take))
++      } else {
++        totalCount = await prisma.storeCreditRedemption.count({ where: redemptionWhere })
++        rows = await prisma.storeCreditRedemption.findMany({
++          where: redemptionWhere, orderBy: { id: 'desc' }, skip, take
++        })
++      }
+       for (const r of rows)
+         out.push({
+           kind: 'STORE_CREDIT', id: r.id, amount: n(r.amount),
+diff -ruN base/mahak/src/main/services/invoiceDebt.ts mahak/src/main/services/invoiceDebt.ts
+--- base/mahak/src/main/services/invoiceDebt.ts	2026-09-27 09:57:05.000000000 +0000
++++ mahak/src/main/services/invoiceDebt.ts	2026-09-27 14:07:14.813481482 +0000
+@@ -39,11 +39,16 @@
+     })
+     if (!rets.length) continue
+     // کارت‌به‌کارتِ لغوشده: پولی به مشتری نرسید ⇒ بازپرداخت حساب نمی‌شود
+-    const c2cIds = rets.filter((r: any) => r.refundMethod === 'CARD_TO_CARD').map((r: any) => r.id)
++    /**
++     * نشست ۱۷۴ (بند ۳ نقطه‌ی شروع ۱۷۳) — c2cIds بی‌سقف بود: یک دسته‌ی ۵۰۰ فاکتور با چند برگشت
++     * کارت‌به‌کارت روی هر فاکتور ⇒ ۵۰۱+ شناسه در `returnId in` (عبور از سقف IN گزارش‌ها). حالا
++     * همان دسته‌ی ۵۰۰تایی؛ Set «لغوشده» از همه‌ی دسته‌ها جمع می‌شود و منطق بدهی دست نمی‌خورد.
++     */
++    const c2cIds: number[] = rets.filter((r: any) => r.refundMethod === 'CARD_TO_CARD').map((r: any) => r.id)
+     const canceled = new Set<number>()
+-    if (c2cIds.length) {
++    for (let j = 0; j < c2cIds.length; j += 500) {
+       const reqs = await (client as any).cardTransferRequest.findMany({
+-        where: { returnId: { in: c2cIds }, status: 'CANCELED' },
++        where: { returnId: { in: c2cIds.slice(j, j + 500) }, status: 'CANCELED' },
+         select: { returnId: true }
+       })
+       for (const q of reqs) canceled.add(q.returnId)
+diff -ruN base/mahak/src/renderer/src/components/CardTransferPanel.tsx mahak/src/renderer/src/components/CardTransferPanel.tsx
+--- base/mahak/src/renderer/src/components/CardTransferPanel.tsx	2026-09-27 09:08:46.000000000 +0000
++++ mahak/src/renderer/src/components/CardTransferPanel.tsx	2026-09-27 14:09:37.442308980 +0000
+@@ -1,4 +1,5 @@
+-import { useCallback, useEffect, useMemo, useState } from 'react'
++import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
++import { createLatestGate } from '@shared/latestRequest'
+ import { call, CH } from '../lib/api'
+ import { exportTable } from '../lib/exportCsv'
+ import Modal from './Modal'
+@@ -226,7 +227,22 @@
+     window.setTimeout(() => setMsg((c) => (c === m ? null : c)), 6000)
+   }
+ 
++  /**
++   * نشست ۱۷۴ · مشاهده‌ی P3 ممیزی ۸۸ (الگوی A88-01) — فقط پاسخ آخرین درخواست روی جدول/جمع‌ها
++   * می‌نشیند؛ با عوض‌شدن بازه/فیلتر وضعیت، ردیف‌ها و جمع‌های قبلی فوراً پاک می‌شوند و Excel حین
++   * بارگذاری بسته است (بازخوانی بعد از پرداخت/لغو همان بازه را پاک نمی‌کند).
++   */
++  const gate = useRef(createLatestGate()).current
++  const loadedKey = useRef<string | null>(null)
+   const load = useCallback(async () => {
++    const seq = gate.next()
++    const key = `${fromJalali}|${toJalali}|${statusFilter}`
++    if (loadedKey.current !== key) {
++      setRows([])
++      setTotals(null)
++      setListWarnings([])
++      setOutOfSales(null)
++    }
+     setBusy(true)
+     setErr(null)
+     try {
+@@ -247,15 +263,17 @@
+          */
+         call<PendingRestockSummary>(CH.pendingRestockSummary, {})
+       ])
++      if (!gate.isLatest(seq)) return
++      loadedKey.current = key
+       setRows(list?.rows ?? [])
+       setTotals(list?.totals ?? null)
+       setListWarnings([...(list?.warnings ?? []), ...(out?.warnings ?? [])])
+       setOutOfSales(out ? { totals: out.totals, note: out.note } : null)
+       setPending(pend ?? EMPTY_PENDING_RESTOCK)
+     } catch (e: any) {
+-      setErr(e.message)
++      if (gate.isLatest(seq)) setErr(e.message)
+     } finally {
+-      setBusy(false)
++      if (gate.isLatest(seq)) setBusy(false)
+     }
+   }, [fromJalali, toJalali, statusFilter])
+ 
+@@ -424,6 +442,7 @@
+   )
+ 
+   const exportRows = async () => {
++    if (busy) return
+     try {
+       const res = await exportTable({
+         fileName: `درخواست‌های کارت‌به‌کارت ${fromJalali} تا ${toJalali}`,
+@@ -461,7 +480,7 @@
+         <button className="btn btn-primary" onClick={() => void load()} disabled={busy}>
+           {busy ? 'در حال خواندن…' : 'بازخوانی'}
+         </button>
+-        <button className="btn" onClick={() => void exportRows()} disabled={!rows.length}>
++        <button className="btn" onClick={() => void exportRows()} disabled={busy || !rows.length}>
+           خروجی اکسل
+         </button>
+         <span className="kbd leading-6 flex-1 min-w-[280px]">
+diff -ruN base/mahak/src/renderer/src/components/MovementsModal.tsx mahak/src/renderer/src/components/MovementsModal.tsx
+--- base/mahak/src/renderer/src/components/MovementsModal.tsx	2026-09-27 09:08:46.000000000 +0000
++++ mahak/src/renderer/src/components/MovementsModal.tsx	2026-09-27 14:08:49.626031561 +0000
+@@ -1,4 +1,5 @@
+-import { useEffect, useMemo, useState } from 'react'
++import { useEffect, useMemo, useRef, useState } from 'react'
++import { createLatestGate } from '@shared/latestRequest'
+ import Modal from './Modal'
+ import { call, CH } from '../lib/api'
+ import { faDigits, toJalaliDateTime } from '@shared/jalali'
+@@ -51,8 +52,25 @@
+     if (open && variant) setSkip(0)
+   }, [open, variant?.id])
+ 
++  /**
++   * نشست ۱۷۴ · مشاهده‌ی P3 ممیزی ۱۱۶ (الگوی A88-01) — تعویض کالا یا صفحه دو درخواست هم‌زمان
++   * می‌ساخت و پاسخ دیرتر برنده بود: حرکت‌های کالای قبلی با موجودی کالای فعلی (ستون «موجودی بعد»
++   * غلط) نمایش داده می‌شد. حالا فقط پاسخ آخرین درخواست می‌نشیند؛ تعویض کالا ردیف‌های قبلی را
++   * فوراً پاک می‌کند و بستن مودال درخواست‌های در جریان را کهنه می‌کند.
++   */
++  const gate = useRef(createLatestGate()).current
++  const loadedVariant = useRef<number | null>(null)
+   useEffect(() => {
+-    if (!open || !variant) return
++    if (!open || !variant) {
++      gate.invalidate()
++      loadedVariant.current = null
++      return
++    }
++    const seq = gate.next()
++    if (loadedVariant.current !== variant.id) {
++      setRows([])
++      setMeta({})
++    }
+     setLoading(true)
+     setErr(null)
+     call<any[] & { page?: any; warnings?: string[]; totals?: any; newerDeltaSum?: number }>(CH.stockMovements, {
+@@ -60,6 +78,8 @@
+       skip
+     })
+       .then((result) => {
++        if (!gate.isLatest(seq)) return
++        loadedVariant.current = variant.id
+         setRows(result)
+         setMeta({
+           page: result.page,
+@@ -68,8 +88,12 @@
+           newerDeltaSum: result.newerDeltaSum ?? 0
+         })
+       })
+-      .catch((e: any) => setErr(e.message))
+-      .finally(() => setLoading(false))
++      .catch((e: any) => {
++        if (gate.isLatest(seq)) setErr(e.message)
++      })
++      .finally(() => {
++        if (gate.isLatest(seq)) setLoading(false)
++      })
+   }, [open, variant?.id, skip])
+ 
+   /** موجودی پس از هر حرکت، از موجودی فعلی به عقب (لیست نزولی است). */
+diff -ruN base/mahak/src/renderer/src/components/OutOfShiftPanel.tsx mahak/src/renderer/src/components/OutOfShiftPanel.tsx
+--- base/mahak/src/renderer/src/components/OutOfShiftPanel.tsx	2026-09-27 09:08:46.000000000 +0000
++++ mahak/src/renderer/src/components/OutOfShiftPanel.tsx	2026-09-27 14:08:26.997900276 +0000
+@@ -1,4 +1,5 @@
+-import { useCallback, useEffect, useState } from 'react'
++import { useCallback, useEffect, useRef, useState } from 'react'
++import { createLatestGate } from '@shared/latestRequest'
+ import { call, CH } from '../lib/api'
+ import { exportTable } from '../lib/exportCsv'
+ import { faDigits, money } from '@shared/jalali'
+@@ -67,15 +68,28 @@
+   const [err, setErr] = useState<string | null>(null)
+   const [msg, setMsg] = useState<string | null>(null)
+ 
++  /**
++   * نشست ۱۷۴ · مشاهده‌ی P3 ممیزی ۸۸ (الگوی A88-01) — فقط پاسخ آخرین درخواست روی جدول می‌نشیند؛
++   * با عوض‌شدن بازه، ردیف‌های بازه‌ی قبلی فوراً پاک می‌شوند و Excel حین بارگذاری بسته است، تا عدد
++   * بازه‌ی دیگر زیر عنوان بازه‌ی فعلی نه دیده شود نه خروجی گرفته شود.
++   */
++  const gate = useRef(createLatestGate()).current
++  const loadedRange = useRef<string | null>(null)
+   const load = useCallback(async () => {
++    const seq = gate.next()
++    const rangeKey = `${fromJalali}|${toJalali}`
++    if (loadedRange.current !== rangeKey) setData(null)
+     setBusy(true)
+     setErr(null)
+     try {
+-      setData(await call<OutOfShiftResult>(CH.staffOutOfShift, { fromJalali, toJalali }))
++      const res = await call<OutOfShiftResult>(CH.staffOutOfShift, { fromJalali, toJalali })
++      if (!gate.isLatest(seq)) return
++      loadedRange.current = rangeKey
++      setData(res)
+     } catch (e: any) {
+-      setErr(e.message)
++      if (gate.isLatest(seq)) setErr(e.message)
+     } finally {
+-      setBusy(false)
++      if (gate.isLatest(seq)) setBusy(false)
+     }
+   }, [fromJalali, toJalali])
+ 
+@@ -84,7 +98,7 @@
+   }, [load])
+ 
+   const exportRows = async () => {
+-    if (!data) return
++    if (!data || busy) return
+     try {
+       const res = await exportTable({
+         fileName: `تراکنش‌های خارج از بازه‌ی شیفت ${fromJalali} تا ${toJalali}`,
+@@ -119,7 +133,7 @@
+         <button className="btn btn-primary" onClick={() => void load()} disabled={busy}>
+           {busy ? 'در حال خواندن…' : 'بازخوانی'}
+         </button>
+-        <button className="btn" onClick={() => void exportRows()} disabled={!data?.rows.length}>
++        <button className="btn" onClick={() => void exportRows()} disabled={busy || !data?.rows.length}>
+           خروجی اکسل
+         </button>
+       </div>
+diff -ruN base/mahak/src/renderer/src/components/OverrideSessionsPanel.tsx mahak/src/renderer/src/components/OverrideSessionsPanel.tsx
+--- base/mahak/src/renderer/src/components/OverrideSessionsPanel.tsx	2026-09-27 09:08:46.000000000 +0000
++++ mahak/src/renderer/src/components/OverrideSessionsPanel.tsx	2026-09-27 14:08:32.057929638 +0000
+@@ -1,4 +1,5 @@
+-import { useCallback, useEffect, useState } from 'react'
++import { useCallback, useEffect, useRef, useState } from 'react'
++import { createLatestGate } from '@shared/latestRequest'
+ import { call, CH } from '../lib/api'
+ import { exportTable } from '../lib/exportCsv'
+ import { faDigits } from '@shared/jalali'
+@@ -37,15 +38,28 @@
+   const [err, setErr] = useState<string | null>(null)
+   const [msg, setMsg] = useState<string | null>(null)
+ 
++  /**
++   * نشست ۱۷۴ · مشاهده‌ی P3 ممیزی ۸۸ (الگوی A88-01) — فقط پاسخ آخرین درخواست روی جدول می‌نشیند؛
++   * با عوض‌شدن بازه، ردیف‌های بازه‌ی قبلی فوراً پاک می‌شوند و Excel حین بارگذاری بسته است، تا عدد
++   * بازه‌ی دیگر زیر عنوان بازه‌ی فعلی نه دیده شود نه خروجی گرفته شود.
++   */
++  const gate = useRef(createLatestGate()).current
++  const loadedRange = useRef<string | null>(null)
+   const load = useCallback(async () => {
++    const seq = gate.next()
++    const rangeKey = `${fromJalali}|${toJalali}`
++    if (loadedRange.current !== rangeKey) setData(null)
+     setBusy(true)
+     setErr(null)
+     try {
+-      setData(await call<any>(CH.shiftOverrides, { fromJalali, toJalali }))
++      const res = await call<any>(CH.shiftOverrides, { fromJalali, toJalali })
++      if (!gate.isLatest(seq)) return
++      loadedRange.current = rangeKey
++      setData(res)
+     } catch (e: any) {
+-      setErr(e.message)
++      if (gate.isLatest(seq)) setErr(e.message)
+     } finally {
+-      setBusy(false)
++      if (gate.isLatest(seq)) setBusy(false)
+     }
+   }, [fromJalali, toJalali])
+ 
+@@ -64,7 +78,7 @@
+         </button>
+         <button
+           className="btn"
+-          disabled={!rows.length}
++          disabled={busy || !rows.length}
+           onClick={() =>
+             void exportTable({
+               fileName: `نشست‌های override‌شده ${fromJalali} تا ${toJalali}`,
+diff -ruN base/mahak/src/shared/latestRequest.ts mahak/src/shared/latestRequest.ts
+--- base/mahak/src/shared/latestRequest.ts	1970-01-01 00:00:00.000000000 +0000
++++ mahak/src/shared/latestRequest.ts	2026-09-27 14:09:37.262307937 +0000
+@@ -0,0 +1,32 @@
++/**
++ * ===========================================================================
++ * نشست ۱۷۴ · مشاهده‌ی P3 ممیزی ۸۸/۱۱۶ — «پاسخ کهنه» (همان الگوی A88-01، یک‌جا و قابل تست).
++ *
++ * پنل‌های گزارش (OutOfShiftPanel، CardTransferPanel، OverrideSessionsPanel) و MovementsModal با
++ * هر تغییر بازه/فیلتر/کالا/صفحه یک درخواست تازه می‌فرستادند و پاسخ *هر* درخواست را روی صفحه
++ * می‌نشاندند. اگر درخواست قبلی دیرتر برمی‌گشت (بازه‌ی بزرگ‌تر = کندتر)، عددِ بازه/کالای قبلی زیر
++ * عنوان بازه/کالای فعلی می‌نشست و Excel هم با نام بازه‌ی فعلی همان ردیف‌های کهنه را می‌نوشت.
++ *
++ * قاعده: هر درخواست شماره می‌گیرد (next)؛ فقط پاسخ/خطا/پایان آخرین شماره (isLatest) روی state
++ * می‌نشیند. تابع خالص و بی‌وابستگی به React است تا تست Node رفتارش را مستقیم بسنجد.
++ * ===========================================================================
++ */
++export interface LatestGate {
++  /** شماره‌ی درخواست تازه؛ هر درخواست قبلی از این لحظه «کهنه» است. */
++  next(): number
++  /** آیا این شماره هنوز آخرین درخواست است؟ (پاسخ/خطا/busy فقط در این حالت اعمال شود) */
++  isLatest(seq: number): boolean
++  /** همه‌ی درخواست‌های در جریان را کهنه می‌کند (مثلاً بستن مودال). */
++  invalidate(): void
++}
++
++export function createLatestGate(): LatestGate {
++  let current = 0
++  return {
++    next: () => ++current,
++    isLatest: (seq: number) => seq === current,
++    invalidate: () => {
++      current++
++    }
++  }
++}

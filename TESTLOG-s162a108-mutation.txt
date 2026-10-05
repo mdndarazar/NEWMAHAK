@@ -1,0 +1,39 @@
+(node:9583) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:9583) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/mut/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/mut/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+— بدون فیلتر
+  ✓ پیش‌شرط: ردیف‌های پل موجودند
+  ✗ پیش‌شرط اعداد پل: realCash ۱٬۲۰۰٬۰۰۰، prior ۲۰۰٬۰۰۰، priorCheque ۰، used ۳۰۰٬۰۰۰، issued ۱٬۱۵۰٬۰۰۰ · دریافت [1600000,600000,400000,300000,1150000] · انتظار [1200000,200000,0,300000,1150000]
+  ✗ پیش‌شرط ردیف‌های Y18/Y19 موجودند · دریافت false · انتظار true
+  ✗ Y18/Y19: مدیر ۱٬۳۵۰٬۰۰۰، نامشخص ۴۰۰٬۰۰۰، مدیرِ قبل ۸۵۰٬۰۰۰، نامشخصِ قبل ۴۰۰٬۰۰۰ · دریافت [1350000,null,null,null] · انتظار [1350000,400000,850000,400000]
+  ✗ علامت: نامشخص +، مدیرِ قبل −، نامشخصِ قبل − · دریافت [null,null,null] · انتظار [1,-1,-1]
+  ✗ drill نامشخص فقط همان چک بی‌مقصد ۴۰۰٬۰۰۰ · دریافت [] · انتظار ["فاکتور 11 · چک:400000"]
+  ✗ drill نامشخصِ قبل فقط همان چک بی‌مقصد ۴۰۰٬۰۰۰ · دریافت [] · انتظار ["فاکتور 11 · چک:400000"]
+  ✗ drill realCash چک ندارد (نه مدیر، نه نامشخص) · دریافت true · انتظار false
+  ✗ drill مدیرِ قبل: چک مدیر ۷۰۰٬۰۰۰ + کارت‌به‌کارت ۱۵۰٬۰۰۰ (نه دریافتی فاکتور امروز) · دریافت [] · انتظار ["فاکتور 11 · چک:700000","فاکتور 11 · کارت‌به‌کارت:150000"]
+  ✓ realCash: جمع اسناد drill = عدد ردیف (1600000)
+  ✓ realCash: totalCount = تعداد اسناد نمایش‌داده‌شده
+  ✓ priorCreditSettlements: جمع اسناد drill = عدد ردیف (600000)
+  ✓ priorCreditSettlements: totalCount = تعداد اسناد نمایش‌داده‌شده
+  ✓ priorClearedCheques: جمع اسناد drill = عدد ردیف (400000)
+  ✓ priorClearedCheques: totalCount = تعداد اسناد نمایش‌داده‌شده
+  ✓ storeCreditUsed: جمع اسناد drill = عدد ردیف (300000)
+  ✓ storeCreditUsed: totalCount = تعداد اسناد نمایش‌داده‌شده
+  ✓ storeCreditIssued: جمع اسناد drill = عدد ردیف (1150000)
+  ✓ storeCreditIssued: totalCount = تعداد اسناد نمایش‌داده‌شده
+  ✓ overpayReceived: جمع اسناد drill = عدد ردیف (0)
+  ✓ overpayReceived: totalCount = تعداد اسناد نمایش‌داده‌شده
+  ✓ managerAccountReceived: جمع اسناد drill = عدد ردیف (1350000)
+  ✓ managerAccountReceived: totalCount = تعداد اسناد نمایش‌داده‌شده
+— صفحه‌بندی: take=1 روی realCash
+  ✓ هیچ صفحه‌ی خالی با «صفحه‌ی بعد» نیست
+  ✗ صفحه‌ها روی هم همان ۲ سند realCash (نقد، وصول نقد دوره‌ی قبل) · دریافت [3,3] · انتظار [2,2]
+— فیلتر کارمند ب (A108-02 صدور)
+  ✓ [کارمند ب] storeCreditIssued: جمع اسناد drill = عدد ردیف (900000)
+  ✓ [کارمند ب] storeCreditIssued: totalCount = تعداد اسناد نمایش‌داده‌شده
+  ✓ [کارمند ب] drill صدور فقط SC-B
+
+✗ 19 بررسی موفق · 9 ناموفق

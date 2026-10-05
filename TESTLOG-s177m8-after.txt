@@ -1,0 +1,66 @@
+(node:9780) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:9780) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/PriceAdjustService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) افزایش ۱۰٪ «همه‌ی کالاها» (۶۲۰ کالا)
+  ✓ changedCount A = 620
+  ✓ قیمت‌ها پس از A = {"1100":620}
+
+۲) تخفیف ۱۰٪ «همه» + نمایش تخفیف فعال پنل فروش
+  ✓ قیمت‌ها پس از B = {"990":620}
+  ✓ activeDiscounts: ۶۲۰ کالا = 620
+  ✓ activeDiscounts: قیمت پایه/فروش = [1100,990]
+  ✓ activeDiscounts با ۶۲۰ شناسه‌ی درخواستی = 620
+  ✓ هیچ in بالای ۵۰۰ نبود (activeDiscounts) = true
+
+۳) پایان خودکار زمان‌بندی B (endScheduledBatch)
+  ✓ ended/failed = [1,0]
+  ✓ قیمت‌ها پس از پایان خودکار B = {"1100":620}
+  ✓ وضعیت B = ENDED = "ENDED"
+
+۴) تخفیف ۲۰٪ «همه» و بازگردانی دستی
+  ✓ قیمت‌ها پس از C = {"880":620}
+  ✓ restoredCount C = 620
+  ✓ قیمت‌ها پس از بازگردانی C = {"1100":620}
+  ✓ هیچ in بالای ۵۰۰ نبود (revert) = true
+
+۵) دامنه‌ی «کالاهای انتخابی» با ۶۲۰ شناسه (preview + apply)
+  ✓ preview count/changedCount = [620,620,62000]
+  ✓ changedCount D = 620
+  ✓ قیمت‌ها پس از D = {"1200":620}
+
+۶) ویرایش دامنه‌ی D به ۱۰ کالا (۶۱۰ کالای بیرون‌رفته به قیمت قبل)
+  ✓ removedCount/keptCount = [610,10]
+  ✓ قیمت‌ها پس از ویرایش D = {"1100":610,"1200":10}
+  ✓ اقلام باقی‌مانده‌ی D = 10
+
+۷) حذف سابقه‌ی A و D با برگرداندن قیمت‌ها
+  ✓ deletedCount/restoredCount = [2,630]
+  ✓ قیمت‌ها پس از حذف با بازگردانی = {"1000":620}
+  ✓ هیچ in بالای ۵۰۰ نبود (deleteBatches) = true
+
+۸) ۵۲۰ ردیف سابقه: فهرست (batches) و حذف گروهی بدون بازگردانی
+  ✓ قیمت‌ها پس از X1/X2 = {"1000":617,"1200":3}
+  ✓ batches: همه‌ی ردیف‌ها = true
+  ✓ X1/X2 بعد از ردیف ۵۰۰ فهرست‌اند (دسته‌ی دوم شناسه‌ها) = true
+  ✓ هشدار هم‌پوشانی X1 روی ۳ کالا = true
+  ✓ X2 (جدیدتر) هشدار ندارد = null
+  ✓ deletedCount X1/X2 = 2
+  ✓ deletedCount ۵۲۰ = 520
+  ✓ هیچ ردیف سابقه‌ی ۱۷۶ نماند = 0
+  ✓ قیمت‌ها دست‌نخورده = {"1000":620}
+  ✓ هیچ in بالای ۵۰۰ نبود (batches/deleteBatches) = true
+
+۹) زمان‌بندی آینده با دامنه‌ی ۶۲۰ کالای انتخابی (شمارش + شروع خودکار)
+  ✓ قرار آینده SCHEDULED = "SCHEDULED"
+  ✓ عنوان قرار شمار ۶۲۰ کالا را دارد = true
+  ✓ قیمت‌ها هنوز دست‌نخورده = {"1000":620}
+  ✓ started/failed = [1,0]
+  ✓ قیمت‌ها پس از شروع خودکار = {"1050":620}
+  ✓ اقلام دسته‌ی F = 620
+  ✓ هیچ in بالای ۵۰۰ نبود (زمان‌بندی) = true
+
+نتیجه: 40 موفق · 0 ناموفق

@@ -1,0 +1,238 @@
+diff -ruN /home/user/work/baseline/tests/audit/audit-s172-stale-observations-verify.mjs tests/audit/audit-s172-stale-observations-verify.mjs
+--- /home/user/work/baseline/tests/audit/audit-s172-stale-observations-verify.mjs	1970-01-01 00:00:00.000000000 +0000
++++ tests/audit/audit-s172-stale-observations-verify.mjs	2026-09-27 13:03:36.807676701 +0000
+@@ -0,0 +1,97 @@
++/**
++ * نشست ۱۷۲ — تأیید رفتاری سه «مشاهده‌ی باز» کهنه‌ی AUDIT-PROGRESS (بدون تغییر src).
++ *   ۱) نشست ۱۴۰: saleReturn/saleReturnUpdate/saleReturnDelete/saleExchangeCreate در IPC با withUser
++ *      userId renderer را می‌پذیرفتند ⇒ در S141-02 (AUDIT-D72) با withSessionActor بسته شد.
++ *   ۲) نشست ۱۴۱: سیاست تخفیف (preverifySalePolicy، بند ۴-۲۶) روی اقلام جایگزین تعویض اعمال نمی‌شد
++ *      ⇒ Y14 (نشست ۱۵۸، S157-D5..D9) بسته شد.
++ *   ۳) نشست ۱۴۲: allowedDestinationsFor(CASH) مقصد MANAGER را مجاز می‌دانست (خلاف بند ۴-۱۳)
++ *      ⇒ Y15 (نشست ۱۵۸، S158-D5) بسته شد.
++ * هر سه از مسیر IPC واقعی (نه فقط سرویس) آزموده می‌شوند.
++ *     node --import ./test/harness/register.mjs tests/audit/audit-s172-stale-observations-verify.mjs
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label}`) }
++  else { bad++; console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)?.slice(0, 300)} · انتظار ${JSON.stringify(want)}`) }
++}
++const root = process.env.MAHAK_ROOT ? resolve(process.env.MAHAK_ROOT) : resolve('.')
++process.env.HARNESS_DIR = mkdtempSync(join(tmpdir(), 'mahak-s172-'))
++process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
++const electron = await import('electron')
++const handlers = new Map()
++electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
++const { harnessClient } = await import(join(root, 'test/harness/stubs/prismaClient.mjs'))
++const { makeSeeder } = await import(join(root, 'test/harness/seed.mjs'))
++const db = harnessClient(); const seed = makeSeeder(db)
++const { registerIpcHandlers } = await import(join(root, 'src/main/ipc/index.ts'))
++const { IPC } = await import(join(root, 'src/shared/ipc.ts'))
++const { salesService } = await import(join(root, 'src/main/services/SalesService.ts'))
++const { allowedDestinationsFor } = await import(join(root, 'src/shared/enums.ts'))
++const { SETTING_KEYS, DEFAULT_MANAGER_PASSWORD: PW } = await import(join(root, 'src/shared/receipt.ts'))
++const { jalaliToday } = await import(join(root, 'src/shared/jalali.ts'))
++registerIpcHandlers()
++const ipc = (ch, payload) => handlers.get(ch)(null, payload)
++const today = jalaliToday()
++const A = seed.user('فروشنده ۱۷۲')
++const forged = seed.user('همکار جعلی ۱۷۲')
++const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
++const product = seed.product('شلوار ۱۷۲', seed.category('پوشاک ۱۷۲'))
++const mkV = (code, price) => seed.insert('ProductVariant', { productId: product, code, barcode: 'B' + code, salePrice: price, stock: 50 })
++const v1 = mkV('S172A', 1_000_000), vr = mkV('S172R', 1_000_000)
++const line = () => ({ variantId: v1, code: 'S172A', barcode: 'BS172A', name: 'شلوار ۱۷۲', qty: 1, unitPrice: 1_000_000, discount: 0, tax: 0 })
++const itemsOf = (id) => seed.rows('SELECT id FROM "SaleInvoiceItem" WHERE invoiceId = ? ORDER BY id', id).map((r) => Number(r.id))
++const counts = () => JSON.stringify([seed.count('SaleReturn'), seed.count('SaleInvoice'), seed.count('StoreCredit'), seed.count('Payment')])
++seed.setting(SETTING_KEYS.discountPolicy, { mode: 'FREE', fixedMode: 'PERCENT', fixedValue: 0, allowLine: true, allowInvoice: true, maxPercent: 10, maxAmount: 0 })
++
++console.log('\n— ۱) نشست ۱۴۰: actor برگشت از نشست باز، نه userId renderer')
++{
++  const r0 = await ipc(IPC.saleReturn, { invoiceId: 1, full: true, refundMethod: 'NONE', userId: forged })
++  eq('بی‌نشست باز: برگشت IPC با پیام فارسی «نشست باز» رد', r0?.ok === false && /نشست بازِ کارمند/.test(String(r0?.error)), true)
++}
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - 3600_000, userId: A, staffConfirmed: 1 })
++{
++  const s = await salesService.create({ userId: A, shiftId, lines: [line()], payments: [{ methodId: cash, amount: 1_000_000, destination: 'CASH' }] })
++  const r = await ipc(IPC.saleReturn, { invoiceId: s.id, full: false, lines: [{ saleItemId: itemsOf(s.id)[0], qty: 1 }], refundMethod: 'NONE', userId: forged })
++  eq('برگشت ثبت شد', r?.ok ? true : r?.error, true)
++  const row = seed.one('SELECT id, userId FROM "SaleReturn" WHERE invoiceId = ? ORDER BY id DESC', s.id)
++  eq('SaleReturn.userId = کارمند نشست باز', Number(row?.userId), A)
++  const d = await ipc(IPC.saleReturnDelete, { id: Number(row?.id), reason: 'ثبت اشتباه', userId: forged })
++  eq('ابطال برگشت ثبت شد', d?.ok ? true : d?.error, true)
++  const v = seed.one('SELECT voidedByUserId FROM "SaleReturn" WHERE id = ?', Number(row?.id))
++  const a = seed.one(`SELECT userId FROM "AuditLog" WHERE entity = 'SaleReturn' AND entityId = ? ORDER BY id DESC LIMIT 1`, Number(row?.id))
++  eq('actor ابطال = کارمند نشست باز، نه همکار جعلی', Number(v?.voidedByUserId ?? a?.userId), A)
++}
++
++console.log('\n— ۲) نشست ۱۴۱: سقف تخفیف روی کالای جایگزین تعویض (از IPC)')
++{
++  const s = await salesService.create({ userId: A, shiftId, lines: [line()], payments: [{ methodId: cash, amount: 1_000_000, destination: 'CASH' }] })
++  const it = itemsOf(s.id)[0]
++  const c0 = counts()
++  const r1 = await ipc(IPC.saleExchangeCreate, { invoiceId: s.id, lines: [{ saleItemId: it, qty: 1 }], replacements: [{ variantId: vr, qty: 1, unitPrice: 1_000_000, discount: 300_000 }], refundMode: 'STORE_CREDIT', userId: forged })
++  eq('تخفیف ۳۰٪ روی جایگزین با سقف ۱۰٪ ⇒ رد با «سقف مجاز»', r1?.ok === false && /سقف مجاز/.test(String(r1?.error)), true)
++  const r2 = await ipc(IPC.saleExchangeCreate, { invoiceId: s.id, lines: [{ saleItemId: it, qty: 1 }], replacements: [{ variantId: vr, qty: 1, unitPrice: 1_000_000, discount: 300_000 }], refundMode: 'STORE_CREDIT', managerPassword: PW, userId: forged })
++  eq('با رمز مدیر هم رد (بند ۴-۲۶)', r2?.ok === false && /سقف مجاز/.test(String(r2?.error)), true)
++  eq('هیچ سند/اعتبار/پرداختی ساخته نشد', counts(), c0)
++  const r3 = await ipc(IPC.saleExchangeCreate, { invoiceId: s.id, lines: [{ saleItemId: it, qty: 1 }], replacements: [{ variantId: vr, qty: 1, unitPrice: 1_000_000, discount: 100_000 }], refundMode: 'STORE_CREDIT', userId: forged })
++  eq('کنترل: تخفیف دقیقاً ۱۰٪ پذیرفته', r3?.ok ? true : r3?.error, true)
++}
++
++console.log('\n— ۳) نشست ۱۴۲: نقد هرگز مستقیم «حساب مدیر» نیست')
++{
++  eq('allowedDestinationsFor(CASH) = فقط نقد در صندوق', [...allowedDestinationsFor('CASH')], ['CASH'])
++  const inv = await salesService.create({ userId: A, shiftId, lines: [line()], payments: [] })
++  const p0 = seed.count('Payment', 'invoiceId = ?', inv.id)
++  const r = await ipc(IPC.salePaymentAdd, { invoiceId: inv.id, amount: 200_000, methodId: cash, destination: 'MANAGER', userId: forged })
++  eq('addPayment نقدی ⇐ حساب مدیر از IPC ⇒ رد با ارجاع به «برداشت از صندوق»', r?.ok === false && /برداشت از صندوق/.test(String(r?.error)), true)
++  eq('هیچ ردیف پرداختی ساخته نشد', seed.count('Payment', 'invoiceId = ?', inv.id), p0)
++  const k = await ipc(IPC.salePaymentAdd, { invoiceId: inv.id, amount: 200_000, methodId: cash, destination: 'CASH', userId: forged })
++  eq('کنترل: نقدی ⇐ صندوق پذیرفته', k?.ok ? true : k?.error, true)
++  const pr = seed.one('SELECT createdByUserId FROM "Payment" WHERE invoiceId = ? ORDER BY id DESC', inv.id)
++  eq('ثبت‌کننده‌ی پرداخت = کارمند نشست باز', Number(pr?.createdByUserId), A)
++}
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)
+diff -ruN /home/user/work/baseline/tests/audit-fixes/fix-s108-bridge-drilldown-pagination.mjs tests/audit-fixes/fix-s108-bridge-drilldown-pagination.mjs
+--- /home/user/work/baseline/tests/audit-fixes/fix-s108-bridge-drilldown-pagination.mjs	2026-09-27 13:01:39.886998423 +0000
++++ tests/audit-fixes/fix-s108-bridge-drilldown-pagination.mjs	2026-09-27 13:08:05.961238227 +0000
+@@ -30,7 +30,8 @@
+ check('پل metadata صفحه‌ی اسناد سازنده را قرارداد می‌دهد', /sourcesPage\?: SaleReportPage/.test(types))
+ check('فیلتر صفحه‌ی drill-down کلید و skip/take دارد', /bridgeSourceKey\?: string[\s\S]*bridgeSourceSkip\?: number[\s\S]*bridgeSourceTake\?: number/.test(types))
+ // ممیزی A108-01: شاخه‌های پرداخت count را روی مجموعه‌ی منطبق نهایی (paymentDrill) می‌گیرند، نه where خام
+-check('سرویس پل count واقعی می‌گیرد', /prisma\.storeCredit\.count\(\{ where \}\)/.test(service) && (/prisma\.payment\.count\(\{ where \}\)/.test(service) || /const paymentDrill = async[\s\S]*makePage\(matching\.length\)/.test(service)))
++// نشست ۱۷۲ (S172-D5): drill اعتبار حالا شمارش واقعی را از طول کامل backedIds می‌گیرد (نه طول صفحه)؛ اثبات رفتاری در fix-s172-bridge-drill-in-chunk.
++check('سرویس پل count واقعی می‌گیرد', (/prisma\.storeCredit\.count\(\{ where \}\)/.test(service) || /const totalCount = backedIds\.length\n\s*const pageIds = backedIds\.slice\(skip, skip \+ take\)/.test(service)) && (/prisma\.payment\.count\(\{ where \}\)/.test(service) || /const paymentDrill = async[\s\S]*makePage\(matching\.length\)/.test(service)))
+ check('سرویس پل skip و take واقعی مصرف می‌کند', /orderBy: \{ id: 'desc' \}, skip, take/.test(service))
+ check('برگشت‌ها metadata را از کل matching می‌سازند', /matching\.slice\(skip, skip \+ take\)[\s\S]*makePage\(matching\.length\)/.test(service))
+ check('فاکتورهای نسیه‌ی باقی‌مانده بی‌صدا روی ۲۰۰ بریده نمی‌شوند', /key === 'uncollectedCredit'[\s\S]*orderBy: \{ id: 'desc' \}[\s\S]*take: 200/.test(service) === false)
+diff -ruN /home/user/work/baseline/tests/audit-fixes/fix-s172-bridge-drill-in-chunk.mjs tests/audit-fixes/fix-s172-bridge-drill-in-chunk.mjs
+--- /home/user/work/baseline/tests/audit-fixes/fix-s172-bridge-drill-in-chunk.mjs	1970-01-01 00:00:00.000000000 +0000
++++ tests/audit-fixes/fix-s172-bridge-drill-in-chunk.mjs	2026-09-27 13:06:02.356521109 +0000
+@@ -0,0 +1,120 @@
++/**
++ * ===========================================================================
++ * نشست ۱۷۲ · خوشه D · ریسک باقی‌مانده‌ی S170 — drill-down ردیف «اعتبار صادرشده»ی پل
++ *
++ * نشست ۱۷۰ drill ردیف storeCreditIssued را با where { id: { in: backedIds } } ساخت؛ backedIds
++ * همه‌ی اعتبارهای سند‌دار بازه است و هیچ سقفی ندارد. قاعده‌ی پروژه برای گزارش‌ها سقف IN ۵۰۰
++ * (REPORT_IN_CHUNK، S99/S120/S123/S124/S125) است؛ SQLite/Prisma واقعی هم سقف متغیر دارند و
++ * بازه‌ی بزرگ (مثلاً یک سال با ۵۰۱+ برگشت با اعتبار) drill را با خطا یا کندی می‌کشت.
++ * انتظار: شمارش صفحه = تعداد واقعی؛ هیچ IN بالای ۵۰۰؛ صفحه‌ها بی‌هم‌پوشانی و مرتب (id نزولی)؛
++ * جمع همه‌ی صفحه‌ها = مبلغ ردیف پل؛ پیام خطای انگلیسی/HARNESS هرگز به کاربر نرسد.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s172-bridge-drill-in-chunk.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s172-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { salesService, saleWhere } = await import('../../src/main/services/SalesService.ts')
++const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
++const { prisma } = await import('../../src/main/db/client.ts')
++const { RefundMethod } = await import('@shared/enums')
++const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)?.slice(0, 200)}`) }
++}
++
++// سقف IN ۵۰۰ روی StoreCredit (همان الگوی fix-s120/s124)
++let maxIn = 0
++const walk = (w) => {
++  if (!w || typeof w !== 'object') return
++  for (const [k, v] of Object.entries(w)) {
++    if (k === 'in' && Array.isArray(v)) { maxIn = Math.max(maxIn, v.length); if (v.length > 500) throw new Error('HARNESS: سقف IN برابر ۵۰۰ است') }
++    else if (v && typeof v === 'object') walk(v)
++  }
++}
++for (const m of ['findMany', 'count', 'aggregate']) {
++  const orig = prisma.storeCredit[m].bind(prisma.storeCredit)
++  prisma.storeCredit[m] = (args) => { walk(args?.where); return orig(args) }
++}
++
++const userId = seed.user('مدیر تست ۱۷۲')
++const product = seed.product('شلوار ۱۷۲', seed.category('پوشاک'))
++const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
++const today = toJalaliDate(new Date())
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - 3600_000, userId })
++const variant = seed.variant(product, 'M')
++sql.prepare('UPDATE "ProductVariant" SET stock = 100, salePrice = 1000 WHERE id = ?').run(variant)
++
++const inv = await salesService.create({ userId, shiftId, lines: [{ variantId: variant, qty: 1, unitPrice: 1000, discount: 0, tax: 0 }], payments: [{ methodId: cash, amount: 1000, destination: 'CASH' }] })
++const item = seed.rows('SELECT id FROM "SaleInvoiceItem" WHERE invoiceId = ?', inv.id)[0].id
++await salesService.createReturn({ invoiceId: inv.id, full: false, lines: [{ saleItemId: item, qty: 1 }], refundMethod: RefundMethod.STORE_CREDIT, refundAmount: 1000, userId, shiftId })
++const base = seed.rows('SELECT * FROM "StoreCredit" WHERE returnId IS NOT NULL')[0]
++eq('اعتبار سند‌دار پایه ساخته شد', Number(base?.amount ?? 0), 1000)
++// ۵۲۰ کپی سند‌دار از همان سطر (همان returnId/هویت/روز صدور) ⇒ جمعاً ۵۲۱ اعتبار سند‌دار امروز
++const cols = Object.keys(base).filter((c) => c !== 'id' && c !== 'code')
++const ins = sql.prepare(`INSERT INTO "StoreCredit" (code, ${cols.map((c) => `"${c}"`).join(',')}) SELECT ?, ${cols.map((c) => `"${c}"`).join(',')} FROM "StoreCredit" WHERE id = ?`)
++for (let i = 0; i < 520; i++) ins.run(`S172X${i}`, base.id)
++const N = 521
++
++const report = async (skip, take) => {
++  const filter = { fromJalali: today, toJalali: today }
++  try {
++    const { statements } = await buildStatements({
++      where: saleWhere(filter), from: jalaliStartOfDay(today), to: jalaliEndOfDay(today),
++      period: { fromJalali: today, toJalali: today, source: 'explicit' }, filter
++    }, { withDrillDown: true, bridgeSourceKey: 'storeCreditIssued', bridgeSourceSkip: skip, bridgeSourceTake: take })
++    return statements
++  } catch (e) { return { error: String(e?.message ?? e) } }
++}
++const row = (s) => (s?.bridge?.rows ?? []).find((r) => r.key === 'storeCreditIssued')
++
++console.log('\n۱) صفحه‌ی بزرگ (take ۲۰۰۰) با ۵۲۱ اعتبار سند‌دار')
++maxIn = 0
++const s1 = await report(0, 2000)
++eq('گزارش بی‌خطا ساخته شد', s1?.error ?? null, null)
++const r1 = row(s1)
++eq('ردیف پل = −۵۲۱٬۰۰۰', (r1?.sign ?? 0) * (r1?.amount ?? 0), -N * 1000)
++eq('totalCount صفحه = ۵۲۱', r1?.sourcesPage?.totalCount ?? null, N)
++eq('همه‌ی ۵۲۱ سند در یک صفحه', (r1?.sources ?? []).length, N)
++eq('جمع drill = مبلغ ردیف', (r1?.sources ?? []).reduce((a, x) => a + Number(x.amount), 0), r1?.amount ?? -1)
++eq('truncated = false', r1?.sourcesPage?.truncated ?? null, false)
++eq('هیچ IN بالای ۵۰۰ نبود', maxIn <= 500, true)
++
++console.log('\n۲) صفحه‌بندی ۲۰۰تایی: بی‌هم‌پوشانی، مرتب id نزولی، کامل')
++const seen = []
++for (let skip = 0; skip < N; skip += 200) {
++  const s = await report(skip, 200)
++  eq(`صفحه‌ی skip=${skip} بی‌خطا`, s?.error ?? null, null)
++  const r = row(s)
++  eq(`totalCount صفحه‌ی skip=${skip}`, r?.sourcesPage?.totalCount ?? null, N)
++  eq(`اندازه‌ی صفحه‌ی skip=${skip}`, (r?.sources ?? []).length, Math.min(200, N - skip))
++  eq(`truncated صفحه‌ی skip=${skip}`, r?.sourcesPage?.truncated ?? null, skip + 200 < N)
++  seen.push(...(r?.sources ?? []).map((x) => x.id))
++}
++eq('همه‌ی شناسه‌ها یکتا', new Set(seen).size, seen.length)
++eq('مجموعه‌ی صفحه‌ها = همه‌ی ۵۲۱', seen.length, N)
++eq('ترتیب id نزولی در کل صفحه‌ها', seen.every((id, i) => i === 0 || seen[i - 1] > id), true)
++eq('هیچ IN بالای ۵۰۰ نبود (کل صفحه‌ها)', maxIn <= 500, true)
++
++console.log('\n۳) صفحه‌ی بیرون از بازه (skip ۱۰۰۰)')
++const s3 = await report(1000, 200)
++eq('بی‌خطا', s3?.error ?? null, null)
++eq('صفحه‌ی خالی با totalCount درست', [(row(s3)?.sources ?? []).length, row(s3)?.sourcesPage?.totalCount ?? null], [0, N])
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)

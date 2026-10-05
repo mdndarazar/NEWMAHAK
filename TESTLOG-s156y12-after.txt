@@ -1,0 +1,27 @@
+(node:5892) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5892) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+Y12) شیفت فاکتور = شیفت باز لحظه‌ی ثبت
+  ✓ shiftId شیفت بسته‌ی همکار ⇒ رد (رد شد: شیفت ارسالی (شماره‌ی داخلی ۱) با شیفت باز لحظه‌ی ثبت (شماره‌ی داخلی ۲) فرق دارد؛ فروش همیشه به شیفت بازِ همین لحظه نسبت داده می‌شو)
+  ✓ shiftId ناموجود ⇒ رد (رد شد: شیفت ارسالی (شماره‌ی داخلی ۹۹۹۹۹۹) با شیفت باز لحظه‌ی ثبت (شماره‌ی داخلی ۲) فرق دارد؛ فروش همیشه به شیفت بازِ همین لحظه نسبت داده )
+[ipc:sale:create] BusinessError: شیفت ارسالی (شماره‌ی داخلی ۱) با شیفت باز لحظه‌ی ثبت (شماره‌ی داخلی ۲) فرق دارد؛ فروش همیشه به شیفت بازِ همین لحظه نسبت داده می‌شود. صفحه را تازه کنید و دوباره ثبت کنید.
+    at file:///home/user/work/mahak/src/main/services/SalesService.ts:3029:15
+    at async client.$transaction (file:///home/user/work/mahak/test/harness/prismaLite.mjs:775:22)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-y12-sale-shift.mjs:69:11 {
+  isBusinessError: true
+}
+  ✓ IPC.saleCreate با shiftId شیفت بسته ⇒ رد فارسی
+  ✓ هیچ فاکتوری ثبت نشد = 0
+  ✓ بدون shiftId ⇒ پذیرفته
+  ✓ shiftId = شیفت باز = 2
+  ✓ shiftId همان شیفت باز ⇒ پذیرفته
+  ✓ shiftId = شیفت باز = 2
+  ✓ فروش عمده بدون shiftId ⇒ همان شیفت باز
+  ✓ shiftId عمده = شیفت باز = 2
+
+نتیجه: 10 موفق · 0 ناموفق

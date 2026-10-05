@@ -1,0 +1,275 @@
+diff -ruN baseline178/src/main/ipc/index.ts work/mahak/src/main/ipc/index.ts
+--- baseline178/src/main/ipc/index.ts	2026-09-27 15:55:05.579034111 +0000
++++ work/mahak/src/main/ipc/index.ts	2026-09-27 16:02:02.073450505 +0000
+@@ -269,7 +269,9 @@
+   handle(IPC.cashboxMovementAdd, async (p) => cashMovementService.add(await withSessionActor(p ?? {}, 'ثبت گردش نقدی')))
+   handle(IPC.cashboxMovementList, (p) => cashMovementService.list(p ?? {}))
+   handle(IPC.cashboxExpected, (p) => cashboxService.expected(p ?? {}))
+-  handle(IPC.saleFraudReview, (p) => fraudService.review(p ?? {}))
++  // نشست ۱۷۹ (S179-D2) — مرور خواندنی است و نشست باز نمی‌خواهد؛ ولی actor Audit فقط از نشست باز main
++  // (بدون نشست ⇒ null)، و actorId ارسالی رندرر هرگز پذیرفته نمی‌شود. userId payload فیلتر کارمند می‌ماند.
++  handle(IPC.saleFraudReview, async (p) => fraudService.review({ ...(p ?? {}), actorId: await shiftService.currentStaffId() }))
+   handle(IPC.settingsAccountingPolicy, () => settingsService.accountingPolicy())
+   // نشست ۱۵۴ (S151-b، S153-D1) — گیت رمز مدیر در خود سرویس؛ actor از نشست
+   handle(IPC.settingsAccountingPolicySet, async (p) =>
+diff -ruN baseline178/src/main/services/FraudService.ts work/mahak/src/main/services/FraudService.ts
+--- baseline178/src/main/services/FraudService.ts	2026-09-27 15:55:05.579034111 +0000
++++ work/mahak/src/main/services/FraudService.ts	2026-09-27 16:02:02.069450482 +0000
+@@ -86,6 +86,15 @@
+     )
+   return clean
+ }
++/**
++ * نشست ۱۷۹ (S179-D3) — کلید مقایسه‌ی شماره چک: ارقام فارسی/عربی ⇒ لاتین، حذف فاصله/خط‌تیره/
++ * اسلش/نقطه/نیم‌فاصله، حروف بزرگ. فقط برای تشخیص تکرار؛ متن ذخیره‌شده دست نمی‌خورد.
++ */
++export function chequeNoKey(raw: unknown): string {
++  return toLatinDigits(String(raw ?? ''))
++    .replace(/[\s\-_/.\u200c\u200f\u200e]/g, '')
++    .toUpperCase()
++}
+ /** نسبت اعتبار به ارزش فاکتور اصلی، بالاتر از این ⇒ مشکوک (سند مرجع: ~۶۰٪) */
+ const CREDIT_RATIO_LIMIT = 0.6
+ /** برگشت در این تعداد دقیقه‌ی آخر شیفت ⇒ مشکوک */
+@@ -156,6 +165,11 @@
+       toJalali?: string
+       userId?: number | null
+       shiftId?: number | null
++      /**
++       * نشست ۱۷۹ (S179-D2) — actor مرور برای Audit؛ فقط IPC آن را از نشست باز main می‌گذارد.
++       * `userId` بالا *فیلتر کارمند* است و قبلاً به‌اشتباه actor Audit ثبت می‌شد.
++       */
++      actorId?: number | null
+       /** خروجی صریح مدیر برای چاپ/Excel؛ سقف ۲۰۰ منبع را برمی‌دارد. */
+       allSources?: boolean
+     } = {}
+@@ -464,25 +478,49 @@
+     })
+ 
+     // ---------------- ۷) چک‌های تکراری/مشکوک ----------------
+-    const dup = await prisma.payment.groupBy({
+-      by: ['chequeNo'],
+-      where: { kind: PaymentEntryKind.CHEQUE, voidedAt: null, chequeNo: { not: null }, paidAt: { gte: from, lte: to } },
+-      _sum: { amount: true },
+-      _count: { _all: true },
+-      having: { chequeNo: { _count: { gt: 1 } } }
+-    })
++    // نشست ۱۷۹ (S179-D3، مشاهده‌ی ۱۱۱): قبلاً groupBy فقط داخل بازه ⇒ چکی که ماه قبل یک بار و امروز
++    // دوباره خرج شده هرگز هشدار نمی‌گرفت؛ «۱۲۳۴۵»/«12 345»/«12345» سه شماره‌ی جدا بودند و ترتیب
++    // منابع (برش ۲۰۰) قطعی نبود. حالا همه‌ی چک‌های باطل‌نشده (تعدادشان در این فروشگاه کم است)
++    // صفحه‌ای خوانده و با کلید نرمال‌شده گروه می‌شوند؛ هشدار = تکرار در کل زمان + حداقل یک
++    // استفاده داخل بازه؛ مبلغ و count فقط از همان بازه (عدد دوره با دوره‌ی دیگر قاطی نمی‌شود).
++    const chequeRows = await readAll((page) => prisma.payment.findMany({
++      where: { kind: PaymentEntryKind.CHEQUE, voidedAt: null, chequeNo: { not: null } },
++      select: { id: true, chequeNo: true, amount: true, paidAt: true },
++      orderBy: { id: 'asc' },
++      ...page
++    }))
++    const fromMs = from.getTime()
++    const toMs = to.getTime()
++    const chequeGroups = new Map<string, { chequeNo: string; total: number; inRange: number; amount: number }>()
++    for (const c of chequeRows) {
++      const key = chequeNoKey(c.chequeNo)
++      if (!key) continue
++      const g = chequeGroups.get(key) ?? { chequeNo: key, total: 0, inRange: 0, amount: 0 }
++      g.total++
++      const at = c.paidAt instanceof Date ? c.paidAt.getTime() : new Date(c.paidAt as unknown as string).getTime()
++      if (at >= fromMs && at <= toMs) {
++        g.inRange++
++        g.amount += n(c.amount)
++      }
++      chequeGroups.set(key, g)
++    }
++    const dup = [...chequeGroups.values()]
++      .filter((g) => g.total > 1 && g.inRange > 0)
++      .sort((a, b) => (a.chequeNo < b.chequeNo ? -1 : a.chequeNo > b.chequeNo ? 1 : 0))
+     push({
+       key: 'duplicateCheques',
+       title: 'چک با شماره‌ی تکراری',
+       severity: 'MEDIUM',
+       detail: 'یک شماره چک روی چند پرداختی؛ یا اشتباه تایپی است یا یک چک دو بار خرج شده.',
+-      amount: dup.reduce((s, r) => s + n(r._sum.amount), 0),
++      amount: dup.reduce((s, r) => s + r.amount, 0),
+       count: dup.length,
+       sources: dup.map((r, i) => ({
+         kind: 'CHEQUE',
+         id: i,
+-        label: `شماره چک ${r.chequeNo} · ${faDigits(n(r._count?._all))} بار`,
+-        amount: n(r._sum.amount),
++        label:
++          `شماره چک ${r.chequeNo} · ${faDigits(r.total)} بار` +
++          (r.inRange < r.total ? ` (${faDigits(r.inRange)} بار در این بازه، بقیه در بازه‌های دیگر)` : ''),
++        amount: r.amount,
+         dateJalali: null
+       }))
+     })
+@@ -581,8 +619,14 @@
+       action: AuditAction.FRAUD_REVIEW,
+       entity: 'Report',
+       entityId: 0,
+-      userId: input.userId ?? null,
+-      after: JSON.stringify({ fromJalali, toJalali, flagCount: flags.length }),
++      userId: input.actorId ?? null,
++      after: JSON.stringify({
++        fromJalali,
++        toJalali,
++        flagCount: flags.length,
++        filterUserId: input.userId ?? null,
++        filterShiftId: input.shiftId ?? null
++      }),
+       note: `مرور هشدارهای ضدتقلب بازه ${fromJalali} تا ${toJalali} · ${flags.length} هشدار`
+     })
+ 
+diff -ruN baseline178/src/shared/creditUi.ts work/mahak/src/shared/creditUi.ts
+--- baseline178/src/shared/creditUi.ts	2026-09-27 15:55:05.587034158 +0000
++++ work/mahak/src/shared/creditUi.ts	2026-09-27 16:01:33.677285759 +0000
+@@ -53,6 +53,37 @@
+   return Number.isFinite(n) ? n : fallback
+ }
+ 
++/**
++ * نشست ۱۷۹ (S179-D1، مشاهده‌ی ۱۴۳): خواندن سخت‌گیرانه‌ی عدد صحیح ورودی فرم.
++ * هم‌معنای مو‌به‌موی `parseGroupedInteger` در `jalali.ts` (ارقام فارسی/عربی ⇒ لاتین،
++ * حذف جداکننده‌ی هزارگان/فاصله، خالی ⇒ ۰، هر چیز دیگر ⇒ null) ولی این‌جا تکرار شده
++ * چون این فایل عمداً فقط به `./credit` وابسته است (سوییت‌های test/credit-ui-logic-*.ts
++ * همین دو فایل را جدا کپی و اجرا می‌کنند). برابری دو تابع در تست fix-s179 سنجیده می‌شود.
++ * بر خلاف `intOf` (فقط نمایش) هیچ چیزی را گرد یا حذف نمی‌کند.
++ */
++export function parseFormInteger(raw: unknown): number | null {
++  const s = String(raw ?? '')
++    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
++    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
++    .replace(/[,\u060C\u066C\s]/g, '')
++  if (s === '') return 0
++  if (!/^\d+$/.test(s)) return null
++  const n = Number(s)
++  return Number.isSafeInteger(n) ? n : null
++}
++
++/** فیلد عددی فرم ⇒ عدد صحیح نامنفی، یا پیام فارسی با نام فیلد/واحد/مقدار (هرگز گرد بی‌صدا). */
++export function formIntField(raw: unknown, label: string, unit: string): { value: number; error: null } | { value: null; error: string } {
++  const n = parseFormInteger(raw)
++  if (n != null) return { value: n, error: null }
++  return {
++    value: null,
++    error:
++      `«${label}» باید عدد صحیح و نامنفی (${unit}) باشد؛ مقدار واردشده «${String(raw)}» پذیرفته نیست ` +
++      '(اعشار، علامت منفی، حروف یا عدد خیلی بزرگ گرد یا اصلاح نمی‌شود) و چیزی صادر نشد.'
++  }
++}
++
+ export const trimmed = (v: unknown): string => String(v ?? '').trim()
+ export const orNull = (v: unknown): string | null => trimmed(v) || null
+ 
+@@ -516,26 +547,45 @@
+  */
+ export function buildIssuePayload(draft: IssueDraft, settings: CreditSettings): BuildResult<Record<string, unknown>> {
+   const warnings: string[] = []
+-  const amount = intOf(draft.amount)
++  const fail = (error: string): BuildResult<Record<string, unknown>> => ({ ok: false, error, warnings, payload: null, override: false })
++
++  // نشست ۱۷۹ (S179-D1): هر عدد فرم سخت‌گیرانه خوانده می‌شود؛ intOf قبلی «5۰۰۰۰۰» را ۵ ریال،
++  // ۱۰۰۰۰۰٫۶ را ۱۰۰۰۰۱ و حداقل خرید ‎-۵ را بی‌صدا ۰ می‌کرد. فیلدی که در حالت انتخاب‌شده
++  // استفاده نمی‌شود (مدت در «پیش‌فرض/بدون انقضا»، دفعات در غیر «چندباره تا N») سنجیده نمی‌شود.
++  const amountF = formIntField(draft.amount, 'مبلغ اعتبار', 'ریال')
++  if (amountF.error != null) return fail(amountF.error)
++  const minF = formIntField(draft.minPurchase, 'حداقل مبلغ خرید', 'ریال')
++  if (minF.error != null) return fail(minF.error)
++  const maxTxF = formIntField(draft.maxPerTransaction, 'سقف مصرف در هر تراکنش', 'ریال')
++  if (maxTxF.error != null) return fail(maxTxF.error)
++  const daysF = draft.expiryMode === 'days' ? formIntField(draft.days, 'مدت اعتبار', 'روز') : { value: 0, error: null }
++  if (daysF.error != null) return fail(daysF.error)
++  const usesF = draft.usesMode === 'count' ? formIntField(draft.maxUses, 'تعداد دفعات مصرف', 'بار') : { value: 0, error: null }
++  if (usesF.error != null) return fail(usesF.error)
++
++  const amount = amountF.value
++  const clean = {
++    ...draft,
++    days: draft.expiryMode === 'days' ? daysF.value : draft.days,
++    maxUses: draft.usesMode === 'count' ? usesF.value : draft.maxUses
++  }
+   const rules = rulesForSource(settings, CreditSource.MANUAL)
+-  const { maxUses, multiUse } = usesOf(draft)
+-  const days = daysOf(draft)
++  const { maxUses, multiUse } = usesOf(clean)
++  const days = daysOf(clean)
+   const scope = normalizeRestrictScope(draft.restrictScope)
+   const cats = cleanIds(draft.restrictCategoryIds)
+   const vars = cleanIds(draft.restrictVariantIds)
+-  const minPurchase = Math.max(0, intOf(draft.minPurchase))
+-  const maxPerTransaction = Math.max(0, intOf(draft.maxPerTransaction))
+-
+-  const fail = (error: string): BuildResult<Record<string, unknown>> => ({ ok: false, error, warnings, payload: null, override: false })
++  const minPurchase = minF.value
++  const maxPerTransaction = maxTxF.value
+ 
+   if (amount <= 0) return fail('مبلغ اعتبار را وارد کنید (باید بزرگ‌تر از صفر باشد).')
+-  if (draft.expiryMode === 'days' && intOf(draft.days) <= 0)
++  if (draft.expiryMode === 'days' && daysF.value <= 0)
+     return fail('مدت اعتبار را به روز وارد کنید، یا گزینه‌ی «بدون انقضا» را انتخاب کنید.')
+   if (scope === CreditRestrictScope.CATEGORY && !cats.length)
+     return fail('برای محدود کردن اعتبار به دسته‌بندی، حداقل یک دسته‌بندی انتخاب کنید.')
+   if (scope === CreditRestrictScope.VARIANTS && !vars.length)
+     return fail('برای محدود کردن اعتبار به کالا، حداقل یک کالا انتخاب کنید.')
+-  if (draft.usesMode === 'count' && intOf(draft.maxUses) < 2)
++  if (draft.usesMode === 'count' && usesF.value < 2)
+     return fail('برای «چندباره (تا N بار)» عدد دفعات باید حداقل ۲ باشد؛ برای یک بار، گزینه‌ی «یک‌بارمصرف» را انتخاب کنید.')
+ 
+   if (draft.customerLocked && draft.customerId == null)
+@@ -646,20 +696,27 @@
+ }
+ 
+ export function buildBulkPayload(draft: BulkDraft, settings: CreditSettings): BuildResult<Record<string, unknown>> {
+-  const count = intOf(draft.count)
+   const base = buildIssuePayload({ ...draft, asDraft: false }, settings)
+-  if (!base.ok) return { ...base, payload: null }
++  if (!base.ok || !base.payload) return { ...base, payload: null }
+   const warnings = [...base.warnings]
+ 
+   const fail = (error: string): BuildResult<Record<string, unknown>> => ({ ok: false, error, warnings, payload: null, override: base.override })
+ 
++  // نشست ۱۷۹ (S179-D1): تعداد و طول کد هم سخت‌گیرانه؛ مبلغ/حداقل/سقف/مدت/دفعات از payload
++  // سنجیده‌شده‌ی buildIssuePayload برداشته می‌شوند تا دو خواندن متفاوت از یک فرم نداشته باشیم.
++  const countF = formIntField(draft.count, 'تعداد اعتبارهای درخواستی', 'عدد')
++  if (countF.error != null) return fail(countF.error)
++  const count = countF.value
++
+   if (count <= 0) return fail('تعداد اعتبارهای درخواستی را وارد کنید (حداقل ۱).')
+   if (count > settings.bulkMaxCount)
+     return fail(
+       `سقف تولید گروهی در تنظیمات ${settings.bulkMaxCount} اعتبار است و شما ${count} خواسته‌اید، پس چیزی ساخته نمی‌شود.\n` +
+         'یا تعداد را کم کنید، یا سقف را در «تنظیمات اعتبار خرید» بالا ببرید.'
+     )
+-  const codeLength = intOf(draft.codeLength)
++  const codeLengthF = formIntField(draft.codeLength, 'طول کد', 'کاراکتر')
++  if (codeLengthF.error != null) return fail(codeLengthF.error)
++  const codeLength = codeLengthF.value
+   if (codeLength > 0 && (codeLength < MIN_CREDIT_CODE_LENGTH || codeLength > MAX_CREDIT_CODE_LENGTH))
+     return fail(`طول کد باید بین ${MIN_CREDIT_CODE_LENGTH} و ${MAX_CREDIT_CODE_LENGTH} کاراکتر باشد.`)
+ 
+@@ -671,11 +728,11 @@
+       `${count} رکورد مستقل ساخته می‌شود و هر کدام کد/بارکد/سابقه‌ی خودش را دارد؛ ساختش چند ثانیه طول می‌کشد و در همین مدت پنجره را نبندید.`
+     )
+ 
+-  const { maxUses, multiUse } = usesOf(draft)
+-  const days = daysOf(draft)
++  const { maxUses, multiUse } = base.payload as { maxUses: number; multiUse: boolean }
++  const days = base.payload.days as number | null | undefined
+   const payload: Record<string, unknown> = {
+     count,
+-    amountEach: intOf(draft.amount),
++    amountEach: base.payload.amount,
+     source: CreditSource.MANUAL,
+     title: orNull(draft.title),
+     maxUses,
+@@ -685,8 +742,8 @@
+     restrictScope: normalizeRestrictScope(draft.restrictScope),
+     restrictCategoryIds: cleanIds(draft.restrictCategoryIds),
+     restrictVariantIds: cleanIds(draft.restrictVariantIds),
+-    minPurchase: Math.max(0, intOf(draft.minPurchase)),
+-    maxPerTransaction: Math.max(0, intOf(draft.maxPerTransaction)),
++    minPurchase: base.payload.minPurchase,
++    maxPerTransaction: base.payload.maxPerTransaction,
+     customerId: draft.customerId ?? null,
+     customerName: orNull(draft.customerName),
+     customerLocked: draft.customerLocked === true,

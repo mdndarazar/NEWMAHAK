@@ -1,0 +1,22 @@
+(node:6085) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6085) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/invoiceDebt.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) ۵۲۰ برگشت کارت‌به‌کارت روی یک فاکتور، ۳ تای اول و ۲۰ تای آخر لغوشده
+  ✗ بی‌خطا — انتظار null، دریافت "HARNESS: سقف IN برابر ۵۰۰ است"
+  ✗ ارزش برگشتی فاکتور X = ۵۲٬۰۰۰ — انتظار 52000، دریافت null
+  ✗ پس‌داده از دریافتی X = ۴۹۷ × ۱۰۰ (لغوشده‌ها بیرون) — انتظار 49700، دریافت null
+  ✗ فاکتور Y دست‌نخورده: ارزش ۱٬۰۰۰ — انتظار 1000، دریافت null
+  ✗ فاکتور Y: پس‌داده ۱٬۰۰۰ — انتظار 1000، دریافت null
+  ✗ هیچ IN بالای ۵۰۰ نبود — انتظار true، دریافت false
+
+۲) بدهی واحد فاکتور X از همان تابع
+  ✗ بی‌خطا — انتظار null، دریافت "HARNESS: سقف IN برابر ۵۰۰ است"
+  ✗ payable = ۴۸٬۰۰۰ — انتظار 48000، دریافت null
+  ✗ netReceived = ۵۰٬۳۰۰ — انتظار 50300، دریافت null
+  ✗ اضافه‌دریافت = ۲٬۳۰۰ (سهم لغوشده‌ها) — انتظار 2300، دریافت null
+
+نتیجه: 0 موفق · 10 ناموفق

@@ -1,0 +1,26 @@
+
+۱) صدور تکی دستی بدون رمز/رمز غلط ⇒ رد و صفر StoreCredit
+  ✓ issueManual بدون رمز (رد شد: «صدور دستی اعتبار خرید» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.)
+  ✓ issueManual با رمز غلط (رد شد: رمز مدیر درست نیست.)
+  ✓ StoreCredit پس از دو تلاش ناموفق = 0
+
+۲) صدور گروهی بدون رمز/رمز غلط ⇒ رد و صفر Batch/StoreCredit
+  ✓ bulkIssue بدون رمز (رد شد: «تولید گروهی اعتبار خرید» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.)
+  ✓ bulkIssue با رمز غلط (رد شد: رمز مدیر درست نیست.)
+  ✓ StoreCredit پس از تلاش گروهی ناموفق = 0
+  ✓ StoreCreditBatch پس از تلاش گروهی ناموفق = 0
+
+۳) با رمز درست ⇒ صدور + Audit با actor
+  ✓ کد اعتبار تکی صادر شد
+  ✓ StoreCredit پس از صدور تکی = 1
+  ✓ actor Audit صدور تکی = 1
+  ✓ تعداد ساخته‌شده‌ی گروهی = 3
+  ✓ StoreCredit پس از صدور گروهی = 4
+
+۴) سیم‌کشی IPC و رندرر
+  ✓ creditIssue با actor نشست (withSessionActor)
+  ✓ creditBulkIssue با actor نشست (withSessionActor)
+  ✓ هیچ‌کدام دیگر withUser نیستند
+  ✓ CreditManagement رمز مدیر را در payload صدور می‌فرستد
+
+✓ 16 بررسی موفق · 0 ناموفق

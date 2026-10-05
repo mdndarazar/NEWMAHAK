@@ -1,0 +1,9 @@
+Mahak session 120 standalone fix
+Changes: PriceAdjust due-schedule keyset pagination; StockCount variant IN chunking for submit/discrepancy; live progress/decisions/test logs; next-session handoff.
+Tests: S120 schedule before 1/4, after 5/0; S120 stockcount IN before 0/3, after 3/0; audit regression 82 files PASS / 0 FAIL.
+Environment limitation: npm, npx, Prisma Client generation, typecheck, Electron, printer and desktop Excel unavailable.
+
+Mahak session 121 standalone fix
+Changes: SalesReports output metadata now warns on paged A4/thermal/Excel exports; ledger section truncation and fraud source truncation are surfaced in output meta.
+Tests: S121 export warning before 0/8, after 8/0; audit regression 83 files PASS / 0 FAIL.
+Environment limitation: npm, npx, Prisma Client generation, typecheck, Electron, printer, Save dialog and desktop Excel unavailable.

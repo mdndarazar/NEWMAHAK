@@ -1,0 +1,41 @@
+(node:3091) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:3091) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/proj/mahak-session131/src/main/services/CardTransferService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/proj/mahak-session131/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) adjust بدون رمز / با رمز غلط ⇒ رد، صفر ردیف اصلاحی، وضعیت مرجع دست‌نخورده
+  ✓ بدون رمز (رد شد: «ثبت رویداد اصلاحی کارت‌به‌کارت» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را و)
+  ✓ رمز خالی (رد شد: «ثبت رویداد اصلاحی کارت‌به‌کارت» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را و)
+  ✓ رمز غلط (رد شد: رمز درست نیست؛ دوباره تلاش کنید.)
+  ✓ ردیف ADJUSTMENT پس از تلاش‌های بی‌مجوز = 0
+  ✓ Audit ADJUST پس از تلاش‌های بی‌مجوز = 0
+  ✓ وضعیت درخواست مرجع = "PENDING"
+
+۲) validation ورودی پیش از رمز هم برقرار می‌ماند (رفتار S143)
+  ✓ مبلغ اعشاری با رمز درست (رد شد: مبلغ اصلاحی باید عدد صحیح غیرصفر (مثبت یا منفی) به ریال باشد؛ مقدار «1000.4» پذیرفته نیست )
+  ✓ ردیف ADJUSTMENT = 0
+
+۳) با رمز مدیر ⇒ ثبت + Audit با actor و scope تأیید
+  ✓ ردیف ADJUSTMENT معتبر = 1
+  ✓ مبلغ ردیف اصلاحی = -1000
+  ✓ actor در Audit = 1
+  ✓ scope تأیید در Audit = "MANAGER"
+
+۴) سیم‌کشی IPC و UI (ساختاری؛ Electron واقعی اجرا نمی‌شود)
+  ✓ IPC.cardTransferPay با withSessionActor (actor از نشست main)
+  ✓ IPC.cardTransferPay دیگر withUser نیست
+  ✓ IPC.cardTransferCancel با withSessionActor (actor از نشست main)
+  ✓ IPC.cardTransferCancel دیگر withUser نیست
+  ✓ IPC.cardTransferAdjust با withSessionActor (actor از نشست main)
+  ✓ IPC.cardTransferAdjust دیگر withUser نیست
+  ✓ helper cardTransferActor خودش withSessionActor را صدا می‌زند
+  ✓ IPC کارت‌به‌کارت برچسب‌های قابل‌جعل (userName/shiftId/shiftName) renderer را خنثی می‌کند
+  ✓ IPC.stockCountSubmit با withOptionalSessionActor
+  ✓ IPC.stockCountSubmit دیگر withUser نیست
+  ✓ adjust در سرویس assertPanelPassword(PANEL_KEYS.cardTransfers) دارد
+  ✓ CardTransferPanel رمز adjust را در payload می‌فرستد
+  ✓ CardTransferPanel ورودی رمز فرم اصلاحی دارد
+
+✓ 25 بررسی موفق · 0 ناموفق

@@ -1,0 +1,28 @@
+PASS  [REAL] 1. migration SQL is clean (no diff markers, no DROP/RENAME/ALTER TYPE)
+PASS  [STRUCTURAL] 2. REPORT_INCLUDE replaced: payments read with paidAt window
+PASS  [STRUCTURAL] 3. returns read with kind + returnedAt (dead code of session 13 is now live)
+PASS  [STRUCTURAL] 4. returnedTotalOf sums only kind=RETURN inside the period
+PASS  [STRUCTURAL] 5. remaining = max(0, grandTotal - paid - returned) in shape AND recalcSettlement
+PASS  [STRUCTURAL] 6. period-wide totals come from aggregate/groupBy, never from the paginated page
+PASS  [STRUCTURAL] 7. pagination truncation raises an explicit warning with the total row count
+PASS  [STRUCTURAL] 8. shiftId-only filter resolves a period (openedAt .. closedAt ?? now)
+PASS  [STRUCTURAL] 9. store-credit / exchangeDiff / priorSettlement no longer gated behind if (from && to)
+PASS  [STRUCTURAL] 10. cheque block has all four states (registered / due-passed / pending / bounced)
+PASS  [STRUCTURAL] 11. prior-period credit settlement is measured by paidAt, cheques by clearedAt
+PASS  [STRUCTURAL] 12. store-credit redemption is atomic (updateMany where status ACTIVE)
+PASS  [STRUCTURAL] 13. manual replacement price in exchange requires ManagerGate + audit with real vs entered price
+PASS  [STRUCTURAL] 14. force can no longer over-return quantity (runReturn and returnUpdate)
+PASS  [STRUCTURAL] 15. exchange with diff<0 demands explicit refundMode (CASH|CARD|STORE_CREDIT), no implicit default
+PASS  [STRUCTURAL] 16. new return requires refundMethod; legacy rows labelled as an assumption
+PASS  [STRUCTURAL] 17. CashboxService.close uses accounting.ts expectedCash (cash only), not salesService.summary
+PASS  [STRUCTURAL] 18. store-credit ceiling + manager gate + audit
+PASS  [STRUCTURAL] 19. IPC: print:return, cashbox:movement:add/list, cashbox:expected, sale:fraud:review, settings:accountingPolicy
+PASS  [STRUCTURAL] 20. print: returnReceiptHtml + PrintService.printReturn
+PASS  [STRUCTURAL] 21. fraud review exposes the nine managerial warning groups
+PASS  [STRUCTURAL] 22. returnList defaults to kind=RETURN with an opt-in includeExchanges flag
+PASS  [REAL] 23. every changed TypeScript file parses (no syntax error) under node strip-types
+PASS  [REAL] 24. session-13 pure accounting suite (6 scenarios) still passes
+
+session-13 suite output: session 13 accounting acceptance tests: PASS
+
+session 14 acceptance: 24 passed, 0 failed

@@ -1,0 +1,100 @@
+diff -ruN ../base168/src/main/services/InventoryService.ts mahak/src/main/services/InventoryService.ts
+--- ../base168/src/main/services/InventoryService.ts	2026-09-27 12:00:18.782477854 +0000
++++ mahak/src/main/services/InventoryService.ts	2026-09-27 12:07:11.852874346 +0000
+@@ -308,22 +308,25 @@
+           data: { stock: { increment: c.qty } }
+         })
+       }
++      /**
++       * نشست ۱۶۹ (S169-D3، بند ۳ و ۵ «mutation اتمیک» و «هر audit شامل actor») — قبلاً Audit *بعد* از
++       * run و بیرون از آن نوشته می‌شد ⇒ در مسیر بدون tx، حرکت انبار commit می‌شد و Audit جدا با کلاینت
++       * سراسری می‌آمد (قطع/خطا بین این دو = اصلاح موجودی بی‌رد). حالا با همان client تراکنش نوشته می‌شود.
++       * با tx صدازننده دقیقاً مثل قبل است (همان tx)؛ audit همچنان non-throwing است (S146-D5).
++       */
++      if (ctx.reason === 'ADJUSTMENT' || ctx.reason === 'STOCKTAKE' || ctx.reason === 'INITIAL') {
++        await audit(client, {
++          action: ctx.reason === 'INITIAL' ? 'STOCK_INITIAL' : 'STOCK_ADJUST',
++          entity: 'ProductVariant',
++          userId: ctx.userId ?? null,
++          after: JSON.stringify(changes),
++          note: ctx.auditNote ? [ctx.note, ctx.auditNote].filter((x) => x != null && String(x).trim() !== '').join(' · ') : ctx.note
++        })
++      }
+     }
+ 
+     if (tx) await run(tx)
+     else await prisma.$transaction(run, TX_OPTIONS)
+-
+-    if (ctx.reason === 'ADJUSTMENT' || ctx.reason === 'STOCKTAKE' || ctx.reason === 'INITIAL') {
+-      // اگر داخل تراکنش هستیم، لاگ هم باید با همان tx نوشته شود؛ وگرنه SQLite
+-      // قفل نوشتن را نمی‌دهد و تراکنش تا timeout بلاک می‌شود.
+-      await audit(tx ?? prisma, {
+-        action: ctx.reason === 'INITIAL' ? 'STOCK_INITIAL' : 'STOCK_ADJUST',
+-        entity: 'ProductVariant',
+-        userId: ctx.userId ?? null,
+-        after: JSON.stringify(changes),
+-        note: ctx.auditNote ? [ctx.note, ctx.auditNote].filter((x) => x != null && String(x).trim() !== '').join(' · ') : ctx.note
+-      })
+-    }
+   }
+ }
+ 
+diff -ruN ../base168/src/main/services/ProductService.ts mahak/src/main/services/ProductService.ts
+--- ../base168/src/main/services/ProductService.ts	2026-09-27 12:00:18.790477900 +0000
++++ mahak/src/main/services/ProductService.ts	2026-09-27 12:05:50.736403734 +0000
+@@ -417,10 +417,19 @@
+           })
+ 
+       for (const v of input.variants) {
++        /**
++         * نشست ۱۶۹ (S169-D2، بند ۴-۳۴ «فیلتر/جستجوی گزارش‌ها همیشه بر اساس کد داخلی ثابت») — قبلاً برای
++         * واریانت *موجود* هم کادر خالی کد/بارکد (فرم آن را undefined می‌فرستد) کد/بارکد تازه می‌ساخت ⇒ کد
++         * داخلی بی‌صدا و بی‌Audit عوض می‌شد و گزارش/برچسب قدیمی از کار می‌افتاد. حالا برای واریانت موجود
++         * خالی = «همان قبلی»؛ تغییر صریح (غیرخالی) مثل قبل مجاز؛ واریانت تازه مثل قبل خودکار.
++         */
++        const prev = v.id
++          ? await tx.productVariant.findUnique({ where: { id: v.id }, select: { code: true, barcode: true } })
++          : null
+         const data = {
+           productId: product.id,
+-          code: v.code || (await nextCode(tx)),
+-          barcode: v.barcode || (await nextBarcode(tx)),
++          code: v.code || prev?.code || (await nextCode(tx)),
++          barcode: v.barcode || prev?.barcode || (await nextBarcode(tx)),
+           size: v.size ?? null,
+           color: v.color ?? null,
+           salePrice: v.salePrice,
+diff -ruN ../base168/src/main/services/PurchaseService.ts mahak/src/main/services/PurchaseService.ts
+--- ../base168/src/main/services/PurchaseService.ts	2026-09-27 12:00:18.790477900 +0000
++++ mahak/src/main/services/PurchaseService.ts	2026-09-27 12:04:18.435868231 +0000
+@@ -21,7 +21,29 @@
+ 
+ /** پاک‌سازی و اعتبارسنجی مشترک ثبت و ویرایش. */
+ function cleanLines(input: { lines?: PLine[]; force?: boolean; issuedAtJalali?: string }): PLine[] {
+-  const lines = (input.lines ?? []).filter((l) => l.variantId && l.qty > 0)
++  /**
++   * نشست ۱۶۹ (S168-D3، بند ۳ «کمیت فقط عدد صحیح» و «مبالغ به ریال»، بند ۴-۴۲، بند ۵ «هر گیت در main») —
++   * قبلاً ردیف اعشاری/متنی بی‌صدا حذف (پیام گمراه «بدون قلم») یا در update با Math.round گرد می‌شد
++   * (۲٫۵ ⇒ ۳ عدد اضافه به موجودی) و create قیمت اعشاری را عیناً می‌نوشت. حالا هر ردیف دارای کالا که
++   * تعدادش خالی/صفر نیست باید تعداد صحیح مثبت و قیمت واحد صحیح (ریال) داشته باشد؛ ردیف تعداد صفر مثل قبل
++   * نادیده گرفته می‌شود؛ قیمت منفی مثل قبل فقط با force. این سنجش پیش از رمز و تراکنش است.
++   */
++  ;(input.lines ?? []).forEach((l, i) => {
++    if (!l || !l.variantId) return
++    const q = l.qty as unknown
++    if (q === 0 || q === null || q === undefined || q === '') return
++    const row = `ردیف ${faDigits(i + 1)}`
++    if (typeof q !== 'number' || !Number.isSafeInteger(q) || q <= 0)
++      throw new BusinessError(
++        `${row}: تعداد «${faDigits(String(q))}» معتبر نیست؛ تعداد کالا باید عدد صحیح مثبت باشد (کالای اعشاری خرید/فروش نمی‌شود).`
++      )
++    const p = l.unitPrice as unknown
++    if (typeof p !== 'number' || !Number.isSafeInteger(p))
++      throw new BusinessError(
++        `${row}: قیمت واحد «${faDigits(String(p))}» معتبر نیست؛ قیمت باید عدد صحیح به ریال باشد (بدون اعشار).`
++      )
++  })
++  const lines = (input.lines ?? []).filter((l) => l && l.variantId && l.qty > 0)
+   if (!lines.length) throw new BusinessError('فاکتور خرید بدون قلم قابل ثبت نیست')
+   // هشدار نه دیوار: با تایید کاربر (force) قیمت منفی هم ثبت می‌شود.
+   if (lines.some((l) => l.unitPrice < 0) && !input.force)

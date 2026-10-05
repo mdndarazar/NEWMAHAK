@@ -1,0 +1,51 @@
+(node:5766) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5766) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/pristine/src/main/services/ProductService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/pristine/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) حذف نرم ۶۲۰ کالا (+ شناسه‌ی تکراری) به سطل آشغال
+  ✗ remove — خطا: HARNESS: سقف IN برابر ۵۰۰ است
+  ✗ تعداد حذف‌شده — انتظار 620، دریافت null
+  ✗ ۶۲۰ کالا غیرفعال با تاریخ حذف — انتظار 620، دریافت 0
+  ✓ کالای کنترل دست‌نخورده = 1
+  ✗ Audit حذف: وضعیت قبلی هر ۶۲۰ کالا — انتظار 620، دریافت null
+  ✗ هیچ in بالای ۵۰۰ نبود (remove) — انتظار true، دریافت false
+
+۲) بازگردانی ۶۲۰ کالا از سطل آشغال
+  ✗ restore — خطا: HARNESS: سقف IN برابر ۵۰۰ است
+  ✗ تعداد بازگردانی‌شده — انتظار 620، دریافت null
+  ✓ هیچ کالای غیرفعالی نماند = 0
+  ✗ Audit بازگردانی: یادداشت با شمار ۶۲۰ — انتظار true، دریافت false
+  ✗ Audit بازگردانی: ۶۲۰ ردیف قبلی — انتظار 620، دریافت null
+  ✗ هیچ in بالای ۵۰۰ نبود (restore) — انتظار true، دریافت false
+
+۳) حذف همیشگی: پیش‌نمایش ۶۲۰ کالای قدیمی سطل آشغال
+  ✗ remove again — خطا: HARNESS: سقف IN برابر ۵۰۰ است
+  ✗ preview — خطا: HARNESS: سقف IN برابر ۵۰۰ است
+  ✗ پیش‌نمایش: ۶۲۰ ردیف — انتظار 620، دریافت null
+  ✗ پیش‌نمایش: بدون سابقه/حرکت — انتظار [0,0]، دریافت null
+  ✗ هیچ in بالای ۵۰۰ نبود (preview) — انتظار true، دریافت false
+
+۴) حذف همیشگی رد می‌شود اگر یکی از کالاهای دسته‌ی دوم حرکت انبار داشته باشد (همه یا هیچ)
+  ✗ رد با پیام حرکت انبار — انتظار true، دریافت false
+  ✓ هیچ کالایی پاک نشد = 621
+  ✗ هیچ in بالای ۵۰۰ نبود (purge رد) — انتظار true، دریافت false
+
+۵) حذف همیشگی ۶۲۰ کالا
+  ✗ purge — خطا: HARNESS: سقف IN برابر ۵۰۰ است
+  ✗ deleted — انتظار 620، دریافت null
+  ✗ کالاهای ۶۲۰تایی پاک شدند؛ کنترل ماند — انتظار 1، دریافت 621
+  ✗ محصول پایه‌ی بی‌واریانت هم رفت، محصول کنترل ماند — انتظار [0,1]، دریافت [1,1]
+  ✗ هیچ in بالای ۵۰۰ نبود (purge) — انتظار true، دریافت false
+
+۶) حذف ۶۲۰ ردیف انبار مرکزی
+  ✗ secondary remove — خطا: HARNESS: سقف IN برابر ۵۰۰ است
+  ✗ تعداد حذف‌شده — انتظار 620، دریافت null
+  ✗ فقط ردیف کنترل ماند — انتظار ["C177-CTL"]، دریافت ["C177-0","C177-1","C177-10","C177-100","C177-101","C177-102","C177-103","C177-104","C177-105","C177-106","C177-107","C177-108","C177-109","C177-11","C177-110","C177-111","C177-112","C177-113","C177-114","C177-115","C177-116","C177-117","C1
+  ✗ Audit انبار مرکزی: ۶۲۰ ردیف قبلی — انتظار 620، دریافت null
+  ✗ دفتر انبار مرکزی: ۶۲۰ ردیف حذف — انتظار 620، دریافت 0
+  ✗ هیچ in بالای ۵۰۰ نبود (secondary remove) — انتظار true، دریافت false
+
+نتیجه: 3 موفق · 28 ناموفق

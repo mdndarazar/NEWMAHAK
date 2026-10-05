@@ -1,0 +1,48 @@
+
+۱) گیت «فقط آخرین درخواست» — رفتاری
+(node:6341) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/shared/latestRequest.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓ ماژول مشترک @shared/latestRequest وجود دارد = "function"
+  ✓ بعد از پاسخ جدید: داده‌ی بازه‌ی جدید = "۱۴۰۵/۰۷/۰۵..۱۴۰۵/۰۷/۰۵"
+  ✓ پاسخ کهنه‌ی دیررس روی state ننشست = "۱۴۰۵/۰۷/۰۵..۱۴۰۵/۰۷/۰۵"
+  ✓ busy بعد از پاسخ آخر خاموش = false
+  ✓ خطای کهنه نمایش داده نشد = null
+  ✓ busy درخواست جاری هنوز روشن = true
+  ✓ پاسخ جاری نشست = "فعلی"
+  ✓ invalidate درخواست در جریان را کهنه می‌کند = false
+  ✓ درخواست بعدی دوباره آخرین است = true
+  ✓ کنترل بدون گیت: پاسخ کهنه برنده می‌شد (سناریو معتبر است) = "قدیم"
+
+۲) هر چهار مؤلفه — متن کد
+  ✓ OutOfShiftPanel.tsx: گیت مشترک import شده = true
+  ✓ OutOfShiftPanel.tsx: هر درخواست شماره می‌گیرد = true
+  ✓ OutOfShiftPanel.tsx: پاسخ کهنه پیش از setData(res) کنار گذاشته می‌شود = true
+  ✓ OutOfShiftPanel.tsx: خطا فقط برای آخرین درخواست = true
+  ✓ OutOfShiftPanel.tsx: busy/loading فقط برای آخرین درخواست = true
+  ✓ OutOfShiftPanel.tsx: Excel حین بارگذاری بسته = true
+  ✓ OverrideSessionsPanel.tsx: گیت مشترک import شده = true
+  ✓ OverrideSessionsPanel.tsx: هر درخواست شماره می‌گیرد = true
+  ✓ OverrideSessionsPanel.tsx: پاسخ کهنه پیش از setData(res) کنار گذاشته می‌شود = true
+  ✓ OverrideSessionsPanel.tsx: خطا فقط برای آخرین درخواست = true
+  ✓ OverrideSessionsPanel.tsx: busy/loading فقط برای آخرین درخواست = true
+  ✓ OverrideSessionsPanel.tsx: Excel حین بارگذاری بسته = true
+  ✓ CardTransferPanel.tsx: گیت مشترک import شده = true
+  ✓ CardTransferPanel.tsx: هر درخواست شماره می‌گیرد = true
+  ✓ CardTransferPanel.tsx: پاسخ کهنه پیش از setRows(list?.rows ?? []) کنار گذاشته می‌شود = true
+  ✓ CardTransferPanel.tsx: خطا فقط برای آخرین درخواست = true
+  ✓ CardTransferPanel.tsx: busy/loading فقط برای آخرین درخواست = true
+  ✓ CardTransferPanel.tsx: Excel حین بارگذاری بسته = true
+  ✓ MovementsModal.tsx: گیت مشترک import شده = true
+  ✓ MovementsModal.tsx: هر درخواست شماره می‌گیرد = true
+  ✓ MovementsModal.tsx: پاسخ کهنه پیش از setRows(result) کنار گذاشته می‌شود = true
+  ✓ MovementsModal.tsx: خطا فقط برای آخرین درخواست = true
+  ✓ MovementsModal.tsx: busy/loading فقط برای آخرین درخواست = true
+  ✓ MovementsModal: بستن مودال درخواست در جریان را کهنه می‌کند = true
+  ✓ MovementsModal: تعویض کالا ردیف‌های قبلی را پاک می‌کند = true
+  ✓ OutOfShiftPanel.tsx: تعویض بازه داده‌ی قبلی را پاک می‌کند = true
+  ✓ OverrideSessionsPanel.tsx: تعویض بازه داده‌ی قبلی را پاک می‌کند = true
+  ✓ CardTransferPanel: تعویض بازه/وضعیت ردیف و جمع قبلی را پاک می‌کند = true
+
+نتیجه: 38 موفق · 0 ناموفق

@@ -1,0 +1,696 @@
+diff -ruN src-pristine/main/ipc/index.ts proj/mahak-session131/src/main/ipc/index.ts
+--- src-pristine/main/ipc/index.ts	2026-09-25 13:45:41.139207892 +0000
++++ proj/mahak-session131/src/main/ipc/index.ts	2026-09-25 13:51:19.097184204 +0000
+@@ -337,17 +337,18 @@
+ 
+   // ---- انبار مرکزی (کاملاً مستقل از موجودی فروشگاه) ----
+   handle(IPC.secondaryStockList, (p) => secondaryStockService.list(p ?? {}))
+-  handle(IPC.secondaryStockUpsert, (p) => secondaryStockService.upsert(p))
+-  handle(IPC.secondaryStockDelete, (p) => secondaryStockService.remove(p ?? {}))
++  // نشست ۱۴۹ · S147-b — actor همیشه از نشست main (userId رندرر قابل‌جعل بود)؛ نشست باز اجباری نیست (S145-D2)
++  handle(IPC.secondaryStockUpsert, async (p) => secondaryStockService.upsert(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.secondaryStockDelete, async (p) => secondaryStockService.remove(await withOptionalSessionActor(p ?? {})))
+   /**
+    * ---- بخش ۵: چند انبار / چند شعبه ----
+    * `warehouseId = null` (یا صفر) = انبار پیش‌فرض. انتقال بین انبارها فقط عددهای
+    * همین ماژول را جابه‌جا می‌کند و به موجودی انبار فروشگاه دست نمی‌زند.
+    */
+   handle(IPC.secondaryWarehouseList, (p) => secondaryStockService.warehouseList(p ?? {}))
+-  handle(IPC.secondaryWarehouseUpsert, (p) => secondaryStockService.warehouseUpsert(p))
+-  handle(IPC.secondaryWarehouseDelete, (p) => secondaryStockService.warehouseRemove(p ?? {}))
+-  handle(IPC.secondaryStockTransfer, (p) => secondaryStockService.transfer(p))
++  handle(IPC.secondaryWarehouseUpsert, async (p) => secondaryStockService.warehouseUpsert(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.secondaryWarehouseDelete, async (p) => secondaryStockService.warehouseRemove(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.secondaryStockTransfer, async (p) => secondaryStockService.transfer(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.secondaryStockHistory, (p) => secondaryStockService.history(p ?? {}))
+   /**
+    * جلسه ۴۷ — پیش‌نمایش انبارهای مبدأ. **هیچ چیزی نمی‌نویسد** (نه ردیف، نه لاگ،
+@@ -517,7 +518,7 @@
+   handle(IPC.discountPolicySave, (p) => settingsService.saveDiscountPolicy(p ?? {}))
+ 
+   // مورد ۸ — انتقال از انبار مرکزی به انبار فروشگاه
+-  handle(IPC.secondaryStockToStore, (p) => secondaryStockService.toStore(p as any))
++  handle(IPC.secondaryStockToStore, async (p) => secondaryStockService.toStore(await withOptionalSessionActor(p ?? {})))
+   /**
+    * جلسه ۵۴ — «ساخت کالای جدید + انتقال»، اتمیک در یک تراکنش.
+    * ⚠️ مثل `cardTransfer:pay` و `sale:create`، رمزها فقط از همین payload به
+@@ -525,7 +526,7 @@
+    * (`secondaryToStore` و `products`) صدا می‌زند — پس قفل فقط رندرری نیست و یک
+    * تماس مستقیم IPC هم دورش نمی‌زند.
+    */
+-  handle(IPC.secondaryStockToStoreNew, (p) => secondaryStockService.toStoreNewVariant(p as any))
++  handle(IPC.secondaryStockToStoreNew, async (p) => secondaryStockService.toStoreNewVariant(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.secondaryStoreCandidates, (p) => secondaryStockService.storeCandidates((p ?? {}) as any))
+ 
+   // ---- عوارض و مالیات / حق سرویس بر اساس دسته‌بندی کالا (اسکوپ‌دار) ----
+diff -ruN src-pristine/main/services/ProductService.ts proj/mahak-session131/src/main/services/ProductService.ts
+--- src-pristine/main/services/ProductService.ts	2026-09-25 13:45:41.139207892 +0000
++++ proj/mahak-session131/src/main/services/ProductService.ts	2026-09-25 13:45:43.951224370 +0000
+@@ -177,7 +177,7 @@
+  * نشست ۱۴۴ · بند ۴-۲۸(د) — قیمت کالا (ریال) عدد صحیح امن است؛ اعشار/متن/خارج از
+  * سقف با پیام فارسی رد می‌شود، نه گرد بی‌صدا.
+  */
+-function assertPriceInteger(value: unknown, label: string, opts: { positive?: boolean } = {}): number {
++export function assertPriceInteger(value: unknown, label: string, opts: { positive?: boolean } = {}): number {
+   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || (opts.positive && value <= 0))
+     throw new BusinessError(
+       `${label} باید عدد صحیح ${opts.positive ? 'بزرگ‌تر از صفر' : 'صفر یا بیشتر'} به ریال باشد؛ مقدار «${String(value)}» پذیرفته نیست ` +
+diff -ruN src-pristine/main/services/SecondaryStockService.ts proj/mahak-session131/src/main/services/SecondaryStockService.ts
+--- src-pristine/main/services/SecondaryStockService.ts	2026-09-25 13:45:41.143207915 +0000
++++ proj/mahak-session131/src/main/services/SecondaryStockService.ts	2026-09-25 13:51:19.097184204 +0000
+@@ -3,11 +3,11 @@
+ import { inventoryService } from './InventoryService'
+ import { audit } from './AuditService'
+ import { assertPanelPassword } from './AuthService'
+-import { createVariantInTx } from './ProductService'
++import { assertPriceInteger, createVariantInTx } from './ProductService'
+ import { TX_OPTIONS } from '../db/tx'
+ import { BusinessError } from '../errors'
+ import { PANEL_KEYS } from '@shared/panels'
+-import { faDigits, jalaliEndOfDay, jalaliStartOfDay, toClock, toJalaliDate } from '@shared/jalali'
++import { faDigits, jalaliEndOfDay, jalaliStartOfDay, money, toClock, toJalaliDate } from '@shared/jalali'
+ import { AuditAction, SecondaryStockAction, SECONDARY_STOCK_ACTION_LABELS } from '@shared/enums'
+ import type {
+   SecondaryStockInput,
+@@ -95,6 +95,84 @@
+   return Number.isInteger(n) && n > 0 ? n : null
+ }
+ 
++/**
++ * ---------------------------------------------------------------------------
++ * نشست ۱۴۸ · S147-a · بند ۳، ۴-۴۲ و ۴-۲۸(د) — ورودی‌های عددی انبار مرکزی.
++ *
++ * تا نشست ۱۴۷ این ماژول عددها را بی‌صدا تبدیل می‌کرد (Math.round / Math.trunc /
++ * Math.abs و «شناسه‌ی نامعتبر ⇒ انبار پیش‌فرض»): ۲٫۶ ⇒ ۳، ‎-۲ ⇒ ۲، متن «7» ⇒ ۷،
++ * ۲٫۹ ⇒ ۲ عدد به موجودی واقعی فروشگاه. کالاها تکی‌اند و کمیت فقط عدد صحیح است و
++ * سابقه‌ی انبار append-only؛ پس به‌جای تبدیل، کل عملیات با پیام فارسی رد می‌شود و
++ * هیچ موجودی‌ای جابه‌جا نمی‌شود.
++ *
++ * سقف: ستون‌های انبار مرکزی (و ProductVariant.stock) از نوع Prisma Int هستند و سقف
++ * واقعی Int با Prisma تولیدی هنوز قطعی نشده (گام ۰-ج)؛ سقف ۳۲ بیتی در هر دو حالت
++ * خطای خام انگلیسی را حذف می‌کند و برای فروشگاه پوشاک محدودکننده نیست (S147-D2).
++ * `warehouseIdOf` بالا فقط برای فیلترهای خواندنی (history) و حذف انبار می‌ماند.
++ * ---------------------------------------------------------------------------
++ */
++export const CENTRAL_QTY_MAX = 2_147_483_647
++
++function assertCentralInt(
++  value: unknown,
++  label: string,
++  opts: { positive?: boolean; allowNegative?: boolean; unit?: string } = {}
++): number {
++  const ok =
++    typeof value === 'number' &&
++    Number.isSafeInteger(value) &&
++    Math.abs(value) <= CENTRAL_QTY_MAX &&
++    (opts.allowNegative === true || value >= 0) &&
++    (opts.positive !== true || value > 0)
++  if (!ok) {
++    const range = opts.positive ? 'بزرگ‌تر از صفر' : opts.allowNegative ? '(مثبت، صفر یا منفی)' : 'صفر یا بیشتر'
++    const unit = opts.unit ?? 'عدد'
++    throw new BusinessError(
++      `${label} باید عدد صحیح ${range} باشد (سقف مجاز: ${opts.allowNegative ? 'مثبت یا منفی ' : ''}` +
++        `${money(CENTRAL_QTY_MAX)}${unit ? ' ' + unit : ''})؛ مقدار «${String(value)}» پذیرفته نیست ` +
++        '(اعشار، متن یا عدد خیلی بزرگ گرد یا تبدیل نمی‌شود). هیچ موجودی‌ای جابه‌جا نشد.'
++    )
++  }
++  return value as number
++}
++
++/** شناسه‌ی اجباری: خالی/صفر ⇒ همان پیام قدیمی «انتخاب کنید»، هر مقدار نامعتبر دیگر ⇒ رد صریح. */
++function requiredCentralId(raw: unknown, missingMessage: string, label: string): number {
++  if (raw === undefined || raw === null || raw === 0) throw new BusinessError(missingMessage)
++  return assertCentralInt(raw, label, { positive: true, unit: '' })
++}
++
++/**
++ * انبار مقصد/ردیف در ثبت و انتقال: فقط null/undefined/۰ (= انبار پیش‌فرض) یا عدد
++ * صحیح مثبت. قبلاً ۲٫۵ یا متن بی‌صدا «انبار پیش‌فرض» می‌شد و موجودی جای دیگری می‌رفت.
++ */
++function strictWarehouseId(raw: unknown, label: string): number | null {
++  if (raw === undefined || raw === null || raw === 0) return null
++  return assertCentralInt(raw, label, { positive: true, unit: '' })
++}
++
++/** موجودی حاصل (قبل ± تعداد) هم باید در سقف ستون Int بماند، وگرنه Prisma خطای خام می‌دهد. */
++function assertCentralResult(value: number, what: string): number {
++  if (!Number.isSafeInteger(value) || Math.abs(value) > CENTRAL_QTY_MAX)
++    throw new BusinessError(
++      `${what} به ${faDigits(String(value))} عدد می‌رسد که از سقف مجاز (مثبت یا منفی ${money(CENTRAL_QTY_MAX)} عدد) ` +
++        'بیرون است؛ تعداد را کم کنید. هیچ موجودی‌ای جابه‌جا نشد.'
++    )
++  return value
++}
++
++/** سنجش مشترک ورودی «انتقال به انبار فروشگاه» — پیش از تراکنش در toStore و دوباره در toStoreWithin. */
++function toStoreArgs(input: SecondaryToStoreInput): { itemId: number; variantId: number; qty: number } {
++  const itemId = requiredCentralId(input?.itemId, 'ردیف مبدأ در انبار مرکزی مشخص نیست.', 'شناسه‌ی ردیف مبدأ در انبار مرکزی')
++  const variantId = requiredCentralId(
++    input?.variantId,
++    'کالای مقصد در انبار فروشگاه را انتخاب کنید.',
++    'شناسه‌ی کالای مقصد در انبار فروشگاه'
++  )
++  const qty = assertCentralInt(input?.qty, 'تعداد انتقال', { positive: true })
++  return { itemId, variantId, qty }
++}
++
+ /** ردیف مجازی انبار پیش‌فرض (ردیف‌های بدون انبار). */
+ function defaultWarehouseRow(agg: { itemCount: number; totalQty: number; lowCount: number }): SecondaryWarehouseRow {
+   const now = new Date().toISOString()
+@@ -286,15 +364,12 @@
+  */
+ async function toStoreWithin(
+   tx: Prisma.TransactionClient,
+-  input: SecondaryToStoreInput
++  input: SecondaryToStoreInput,
++  /** نشست ۱۴۹ · S147-b — نتیجه‌ی گیت سمت سرور (MANAGER/PANEL/OPEN) برای ثبت در note AuditLog */
++  gateScope?: string
+ ): Promise<SecondaryToStoreResult> {
+-  const itemId = Number(input.itemId)
+-  const variantId = Number(input.variantId)
+-  const qty = Math.trunc(Number(input.qty))
+-  if (!Number.isFinite(itemId) || itemId <= 0) throw new BusinessError('ردیف مبدأ در انبار مرکزی مشخص نیست.')
+-  if (!Number.isFinite(variantId) || variantId <= 0)
+-    throw new BusinessError('کالای مقصد در انبار فروشگاه را انتخاب کنید.')
+-  if (!Number.isFinite(qty) || qty <= 0) throw new BusinessError('تعداد انتقال باید عددی بزرگ‌تر از صفر باشد.')
++  // نشست ۱۴۸ · S147-a — بدون Math.trunc: ۲٫۹ دیگر بی‌صدا ۲ عدد به موجودی واقعی فروشگاه اضافه نمی‌کند.
++  const { itemId, variantId, qty } = toStoreArgs(input)
+ 
+   const src = await tx.secondaryStockItem.findUnique({ where: { id: itemId }, include: { warehouse: true } })
+   if (!src) throw new BusinessError('ردیف مبدأ پیدا نشد (ممکن است حذف شده باشد).')
+@@ -314,19 +389,25 @@
+     )
+ 
+   const fromWarehouseName = src.warehouse?.name ?? DEFAULT_SECONDARY_WAREHOUSE_NAME
++  const variantName = [variant.product?.name ?? '', variant.size ?? '', variant.color ?? '']
++    .filter((p) => String(p).trim().length > 0)
++    .join(' - ')
+   const fromBefore = src.qty
+-  const fromRemaining = fromBefore - qty
++  // S147-a — هر دو حاصل پیش از اولین نوشتن در سقف ستون Int سنجیده می‌شوند
++  const fromRemaining = assertCentralResult(
++    fromBefore - qty,
++    `موجودی باقی‌مانده‌ی «${src.name}» در «${fromWarehouseName}»`
++  )
++  const storeBefore = variant.stock
++  const storeAfter = assertCentralResult(
++    storeBefore + qty,
++    `موجودی کالای «${variantName || variant.code}» در انبار فروشگاه`
++  )
+   await tx.secondaryStockItem.update({ where: { id: itemId }, data: { qty: fromRemaining } })
+ 
+-  const storeBefore = variant.stock
+   await inventoryService.increase([{ variantId, qty }], { reason: 'CENTRAL_WITHDRAW', userId: input.userId ?? null }, tx)
+-  const storeAfter = storeBefore + qty
+   const shortageCovered = storeBefore < 0 ? Math.min(qty, -storeBefore) : 0
+ 
+-  const variantName = [variant.product?.name ?? '', variant.size ?? '', variant.color ?? '']
+-    .filter((p) => String(p).trim().length > 0)
+-    .join(' - ')
+-
+   const noteText =
+     clean(input.note) ||
+     `انتقال ${faDigits(qty)} عدد از «${fromWarehouseName}» به انبار فروشگاه (کالا: ${variantName || variant.code})` +
+@@ -363,7 +444,9 @@
+     entityId: itemId,
+     userId: input.userId ?? null,
+     after: JSON.stringify({ itemId, variantId, qty, storeBefore, storeAfter, shortageCovered }),
+-    note: `${SECONDARY_STOCK_ACTION_LABELS[SecondaryStockAction.TRANSFER_STORE]}: ${noteText}`
++    note:
++      `${SECONDARY_STOCK_ACTION_LABELS[SecondaryStockAction.TRANSFER_STORE]}: ${noteText}` +
++      (gateScope ? ` · تأیید قفل انتقال به انبار فروشگاه: ${gateScope}` : '')
+   })
+ 
+   return {
+@@ -410,28 +493,56 @@
+     const name = clean(input?.name)
+     if (!name) throw new BusinessError('نام کالای انبار مرکزی را وارد کنید.')
+     /**
++     * نشست ۱۴۸ · S147-a — شناسه‌ی ویرایش: خالی/صفر ⇒ ثبت تازه؛ هر مقدار دیگر باید
++     * عدد صحیح مثبتِ یک ردیف موجود باشد (قبلاً ۱٫۵ مستقیم به Prisma می‌رسید).
++     */
++    const rawId = input?.id
++    const id =
++      rawId === undefined || rawId === null || rawId === 0
++        ? null
++        : assertCentralInt(rawId, 'شناسه‌ی ردیف انبار مرکزی', { positive: true, unit: '' })
++    const prev = id ? await prisma.secondaryStockItem.findUnique({ where: { id } }) : null
++    if (id && !prev) throw new BusinessError('ردیف انبار مرکزی پیدا نشد (ممکن است حذف شده باشد)؛ صفحه را تازه کنید.')
++    /**
+      * بخش ۵: `warehouseId` و `minQty` هم ذخیره می‌شوند (قبلاً در `data` نبودند و
+      * بی‌صدا دور ریخته می‌شدند). `warehouseId = null` = انبار پیش‌فرض.
++     *
++     * نشست ۱۴۸ · S147-a — بدون Math.round و بدون «نامعتبر ⇒ ۰/انبار پیش‌فرض»:
++     * تعداد عدد صحیح (منفی طبق طراحی ماژول مجاز)، حد هشدار عدد صحیح ≥ ۰، انبار
++     * null/۰ یا عدد صحیح مثبت. فیلدی که در ویرایش فرستاده نشده ⇒ همان مقدار قبلی
++     * (قبلاً موجودی ردیف بی‌صدا صفر می‌شد ⇒ کسری کاذب انبارگردانی؛ S147-D3، S148-D2)؛
++     * در ثبت تازه ⇒ ۰ / انبار پیش‌فرض.
+      */
++    const qty =
++      input?.qty === undefined || input?.qty === null
++        ? (prev?.qty ?? 0)
++        : assertCentralInt(input.qty, `تعداد «${name}» در انبار مرکزی`, { allowNegative: true })
++    const minQty =
++      input?.minQty === undefined || input?.minQty === null
++        ? (prev?.minQty ?? 0)
++        : assertCentralInt(input.minQty, `حد هشدار موجودی «${name}»`)
++    const warehouseId =
++      input?.warehouseId === undefined
++        ? (prev?.warehouseId ?? null)
++        : strictWarehouseId(input.warehouseId, `شناسه‌ی انبار ردیف «${name}»`)
++    if (warehouseId && !(await prisma.secondaryWarehouse.findUnique({ where: { id: warehouseId } })))
++      throw new BusinessError('انبار انتخاب‌شده برای این ردیف پیدا نشد (ممکن است حذف شده باشد)؛ صفحه را تازه کنید.')
+     const data = {
+       name,
+       code: clean(input?.code) || null,
+-      qty: Math.round(Number(input?.qty ?? 0)) || 0,
++      qty,
+       note: clean(input?.note) || null,
+-      warehouseId: warehouseIdOf(input?.warehouseId),
+-      minQty: Math.max(0, Math.round(Number(input?.minQty ?? 0)) || 0)
++      warehouseId,
++      minQty
+     }
+-    const prev = input?.id
+-      ? await prisma.secondaryStockItem.findUnique({ where: { id: Number(input.id) } })
+-      : null
+-    const saved = input?.id
+-      ? await prisma.secondaryStockItem.update({ where: { id: Number(input.id) }, data })
++    const saved = id
++      ? await prisma.secondaryStockItem.update({ where: { id }, data })
+       : await prisma.secondaryStockItem.create({ data })
+     // با include خوانده می‌شود تا نام انبار هم در خروجی باشد (بخش ۵)
+     const row =
+       (await prisma.secondaryStockItem.findUnique({ where: { id: saved.id }, include: { warehouse: true } })) ?? saved
+     await audit(prisma, {
+-      action: input?.id ? 'SECONDARY_STOCK_UPDATE' : 'SECONDARY_STOCK_CREATE',
++      action: id ? 'SECONDARY_STOCK_UPDATE' : 'SECONDARY_STOCK_CREATE',
+       entity: 'SecondaryStockItem',
+       entityId: row.id,
+       userId: input?.userId ?? null,
+@@ -442,13 +553,13 @@
+       itemId: row.id,
+       warehouseId: data.warehouseId,
+       warehouseName: (row as any).warehouse?.name ?? DEFAULT_SECONDARY_WAREHOUSE_NAME,
+-      action: input?.id ? SecondaryStockAction.UPDATE : SecondaryStockAction.CREATE,
++      action: id ? SecondaryStockAction.UPDATE : SecondaryStockAction.CREATE,
+       name: data.name,
+       code: data.code,
+       qtyBefore: prev?.qty ?? 0,
+       qtyAfter: data.qty,
+       userId: input?.userId ?? null,
+-      note: input?.id ? 'ویرایش ردیف' : 'ثبت ردیف جدید'
++      note: id ? 'ویرایش ردیف' : 'ثبت ردیف جدید'
+     })
+     return shape(row)
+   },
+@@ -630,11 +741,10 @@
+    * ردیف تازه ساخته می‌شود. انبار فروشگاه در این مسیر مطلقاً لمس نمی‌شود.
+    */
+   async transfer(input: SecondaryStockTransferInput): Promise<SecondaryStockTransferResult> {
+-    const itemId = Number(input?.itemId ?? 0)
+-    if (!itemId) throw new BusinessError('ردیف مبدأ انتقال را انتخاب کنید.')
+-    const qty = Math.round(Number(input?.qty ?? 0))
+-    if (!Number.isFinite(qty) || qty <= 0) throw new BusinessError('تعداد انتقال باید بزرگ‌تر از صفر باشد.')
+-    const toId = warehouseIdOf(input?.toWarehouseId)
++    // نشست ۱۴۹ · S147-a — بدون Math.round و بدون «مقصد نامعتبر ⇒ انبار پیش‌فرض»
++    const itemId = requiredCentralId(input?.itemId, 'ردیف مبدأ انتقال را انتخاب کنید.', 'شناسه‌ی ردیف مبدأ انتقال')
++    const qty = assertCentralInt(input?.qty, 'تعداد انتقال', { positive: true })
++    const toId = strictWarehouseId(input?.toWarehouseId, 'شناسه‌ی انبار مقصد انتقال')
+ 
+     return prisma.$transaction(async (tx) => {
+       const src = await tx.secondaryStockItem.findUnique({ where: { id: itemId }, include: { warehouse: true } })
+@@ -665,11 +775,12 @@
+         orderBy: { id: 'asc' }
+       })
+ 
+-      const srcAfter = src.qty - qty
++      // S147-a / S148-D4 — هر دو حاصل پیش از اولین نوشتن در سقف ستون Int سنجیده می‌شوند
++      const srcAfter = assertCentralResult(src.qty - qty, `موجودی باقی‌مانده‌ی «${src.name}» در «${fromName}»`)
++      const destBefore = twin?.qty ?? 0
++      const destAfter = assertCentralResult(destBefore + qty, `موجودی «${src.name}» در «${toName}»`)
+       await tx.secondaryStockItem.update({ where: { id: src.id }, data: { qty: srcAfter } })
+ 
+-      const destBefore = twin?.qty ?? 0
+-      const destAfter = destBefore + qty
+       const dest = twin
+         ? await tx.secondaryStockItem.update({ where: { id: twin.id }, data: { qty: destAfter } })
+         : await tx.secondaryStockItem.create({
+@@ -811,15 +922,21 @@
+    * -------------------------------------------------------------------------
+    */
+   async toStore(input: SecondaryToStoreInput): Promise<SecondaryToStoreResult> {
+-    const itemId = Number(input.itemId)
+-    const variantId = Number(input.variantId)
+-    const qty = Math.trunc(Number(input.qty))
+-    if (!Number.isFinite(itemId) || itemId <= 0) throw new BusinessError('ردیف مبدأ در انبار مرکزی مشخص نیست.')
+-    if (!Number.isFinite(variantId) || variantId <= 0)
+-      throw new BusinessError('کالای مقصد در انبار فروشگاه را انتخاب کنید.')
+-    if (!Number.isFinite(qty) || qty <= 0) throw new BusinessError('تعداد انتقال باید عددی بزرگ‌تر از صفر باشد.')
++    // نشست ۱۴۹ · S147-a — سنجش سخت پیش از تراکنش (بدون Math.trunc)؛ toStoreWithin دوباره می‌سنجد
++    toStoreArgs(input)
++    /**
++     * نشست ۱۴۹ · S147-b · بند ۴-۳۹ و بند ۵ — «انتقال از انبار مرکزی به انبار فروشگاه» موجودی
++     * واقعی فروشگاه را زیاد می‌کند (می‌تواند کسری انبارگردانی را بپوشاند)، پس گیت سمت سرور دارد؛
++     * تا نشست ۱۴۸ فقط ManagerGate رندرر آن را می‌بست. مثل toStoreNewVariant بیرون از
++     * $transaction (verifyPanel روی AuthLockout می‌نویسد و SQLite تک‌نویسنده است). قفل خاموش ⇒ OPEN.
++     */
++    const scope = await assertPanelPassword(
++      PANEL_KEYS.secondaryToStore,
++      input?.toStorePassword ?? null,
++      'انتقال از انبار مرکزی به انبار فروشگاه'
++    )
+ 
+-    return prisma.$transaction(async (tx) => toStoreWithin(tx, input))
++    return prisma.$transaction(async (tx) => toStoreWithin(tx, input, scope))
+   },
+ 
+   /**
+@@ -866,13 +983,18 @@
+    * =========================================================================
+    */
+   async toStoreNewVariant(input: SecondaryToStoreNewVariantInput): Promise<SecondaryToStoreNewVariantResult> {
+-    const itemId = Number(input.itemId)
+-    const qty = Math.trunc(Number(input.qty))
+-    if (!Number.isFinite(itemId) || itemId <= 0) throw new BusinessError('ردیف مبدأ در انبار مرکزی مشخص نیست.')
+-    if (!Number.isFinite(qty) || qty <= 0) throw new BusinessError('تعداد انتقال باید عددی بزرگ‌تر از صفر باشد.')
+-    const salePrice = Math.round(Number(input.salePrice))
+-    if (!Number.isFinite(salePrice) || salePrice <= 0)
++    /**
++     * نشست ۱۴۹ · S147-a — بدون Math.trunc/Math.round و همه پیش از assertPanelPassword:
++     * قیمت ۱٬۲۰۰٬۰۰۰٫۵ دیگر بی‌صدا ۱٬۲۰۰٬۰۰۱ ریال نمی‌شود و قیمت خرید نامعتبر رمز را مصرف نمی‌کند.
++     */
++    const itemId = requiredCentralId(input?.itemId, 'ردیف مبدأ در انبار مرکزی مشخص نیست.', 'شناسه‌ی ردیف مبدأ در انبار مرکزی')
++    const qty = assertCentralInt(input?.qty, 'تعداد انتقال', { positive: true })
++    if (input.salePrice == null || Number(input.salePrice) <= 0)
+       throw new BusinessError('قیمت فروش کالای جدید اجباری است و باید عددی بزرگ‌تر از صفر باشد.')
++    const salePrice = assertPriceInteger(input.salePrice, 'قیمت فروش کالای جدید', { positive: true })
++    const rawPurchase = input.purchasePrice ?? 0
++    if (Number(rawPurchase) < 0) throw new BusinessError('قیمت خرید نمی‌تواند منفی باشد.')
++    const purchasePrice = assertPriceInteger(rawPurchase, 'قیمت خرید کالای جدید')
+     const productId = Number(input.productId ?? 0) > 0 ? Number(input.productId) : null
+     if (productId == null && !clean(input.name)) throw new BusinessError('نام کالای جدید را وارد کنید.')
+ 
+@@ -899,7 +1021,7 @@
+         size: input.size,
+         color: input.color,
+         salePrice,
+-        purchasePrice: input.purchasePrice ?? 0,
++        purchasePrice,
+         code: input.code,
+         note: `ساخته‌شده هنگام انتقال از انبار مرکزی به انبار فروشگاه`
+       })
+@@ -1006,10 +1128,21 @@
+     lines: { variantId: number; qty: number }[],
+     opts: { userId?: number | null; refType?: string; note?: string } = {}
+   ): Promise<{ warnings: string[]; taken: CentralWithdrawLine[]; totalTaken: number }> {
++    /**
++     * نشست ۱۴۹ · S147-a — بدون Math.abs(Math.round): ‎-۲ دیگر ۲ برداشت نمی‌کند و ۱٫۵ دیگر ۲ نمی‌شود.
++     * هر سه caller (create/update/createExchange) ورودی صحیح و مثبت می‌دهند، پس برای ورودی معتبر
++     * رفتار عوض نمی‌شود؛ ورودی نامعتبر ⇒ BusinessError و rollback کل تراکنش سند (defense-in-depth).
++     * qty = ۰ مثل قبل نادیده گرفته می‌شود.
++     */
+     const need = new Map<number, number>()
+     for (const l of lines ?? []) {
+-      const qty = Math.abs(Math.round(Number(l?.qty) || 0))
+-      if (qty > 0 && l?.variantId) need.set(Number(l.variantId), (need.get(Number(l.variantId)) ?? 0) + qty)
++      const qty = assertCentralInt(l?.qty, 'تعداد قلم برای برداشت خودکار از انبار مرکزی')
++      if (qty === 0) continue
++      const variantId = assertCentralInt(l?.variantId, 'شناسه‌ی کالای قلم برای برداشت خودکار از انبار مرکزی', {
++        positive: true,
++        unit: ''
++      })
++      need.set(variantId, assertCentralResult((need.get(variantId) ?? 0) + qty, 'جمع تعداد اقلام یک کالا برای برداشت خودکار'))
+     }
+     if (!need.size) return { warnings: [], taken: [], totalTaken: 0 }
+ 
+diff -ruN src-pristine/renderer/src/components/NewStoreProductModal.tsx proj/mahak-session131/src/renderer/src/components/NewStoreProductModal.tsx
+--- src-pristine/renderer/src/components/NewStoreProductModal.tsx	2026-09-25 13:45:41.143207915 +0000
++++ proj/mahak-session131/src/renderer/src/components/NewStoreProductModal.tsx	2026-09-25 13:47:39.307898954 +0000
+@@ -5,7 +5,7 @@
+ import { call, CH } from '../lib/api'
+ import { usePanelLock, usePanelOpen } from '../hooks/usePanelLocks'
+ import { PANEL_KEYS } from '@shared/panels'
+-import { faDigits } from '@shared/jalali'
++import { faDigits, parseGroupedInteger } from '@shared/jalali'
+ import type { SecondaryToStoreNewVariantInput } from '@shared/types'
+ 
+ /** همان شکل خروجی `category:tree` (در `PriceAdjust.tsx` هم محلی تعریف شده است). */
+@@ -165,8 +165,12 @@
+     }
+   }, [open, mode, prodSearch, newProductOpen])
+ 
+-  const sale = Math.round(Number(salePrice.replace(/[^\d]/g, '')) || 0)
+-  const purchase = Math.round(Number(purchasePrice.replace(/[^\d]/g, '')) || 0)
++  /**
++   * نشست ۱۴۹ · S147-a · S148-D3 — ارقام فارسی و جداکننده‌ی هزارگان پذیرفته می‌شوند؛ اعشار/منفی/حرف ⇒ null
++   * و problem فارسی (قبلاً همه‌ی غیررقم‌ها حذف می‌شد و «1200000.5» ده‌برابر می‌شد، ارقام فارسی ⇒ ۰).
++   */
++  const sale = parseGroupedInteger(salePrice)
++  const purchase = parseGroupedInteger(purchasePrice)
+   const chosenProduct = useMemo(() => prods.find((p) => p.productId === productId) ?? null, [prods, productId])
+ 
+   /**
+@@ -178,7 +182,7 @@
+    * (همان چیزی که مالک خواست): همین‌جا جلویش گرفته شود با پیام روشن. `force`
+    * از این فرم عمداً فرستاده نمی‌شود؛ تعداد باید در پنجره‌ی انتقال اصلاح شود.
+    */
+-  const transferQty = Math.round(seed?.qty || 0)
++  const transferQty = Number(seed?.qty ?? 0) // S147-a — بدون گرد کردن
+   const rowAvailable = Math.round(seed?.available ?? 0)
+   const overAvailable = !!seed && transferQty > rowAvailable
+ 
+@@ -186,7 +190,14 @@
+   const problems: string[] = []
+   if (mode === 'new' && !name.trim()) problems.push('نام کالا را وارد کنید.')
+   if (mode === 'variant' && !productId) problems.push('کالای موجود را انتخاب کنید.')
+-  if (sale <= 0) problems.push('قیمت فروش اجباری است و باید بزرگ‌تر از صفر باشد.')
++  if (sale === null) problems.push('قیمت فروش باید عدد صحیح به ریال باشد (اعشار، علامت منفی یا حرف پذیرفته نیست).')
++  else if (sale <= 0) problems.push('قیمت فروش اجباری است و باید بزرگ‌تر از صفر باشد.')
++  if (purchase === null) problems.push('قیمت خرید باید عدد صحیح به ریال باشد (اعشار، علامت منفی یا حرف پذیرفته نیست).')
++  if (!!seed && (!Number.isSafeInteger(transferQty) || transferQty <= 0))
++    problems.push(
++      `تعداد انتقال (${faDigits(String(seed?.qty ?? ''))}) باید عدد صحیح بزرگ‌تر از صفر باشد؛ ` +
++        'پنجره را ببندید و تعداد را در فرم انتقال اصلاح کنید.'
++    )
+   if (overAvailable)
+     problems.push(
+       `تعداد انتقال (${faDigits(transferQty)}) از موجودی همین ردیف انبار مرکزی (${faDigits(rowAvailable)}) ` +
+@@ -201,7 +212,7 @@
+     if (overAvailable) return
+     onConfirm({
+       itemId: seed.itemId,
+-      qty: Math.round(seed.qty || 0),
++      qty: seed.qty, // S147-a — خام؛ سرور هم جدا می‌سنجد
+       note: seed.note.trim() || null,
+       productId: mode === 'variant' ? productId : null,
+       name: mode === 'new' ? name.trim() : null,
+@@ -209,8 +220,8 @@
+       unit: 'عدد',
+       size: size.trim() || null,
+       color: color.trim() || null,
+-      salePrice: sale,
+-      purchasePrice: purchase || 0,
++      salePrice: sale ?? 0,
++      purchasePrice: purchase ?? 0,
+       code: code.trim() || null,
+       toStorePassword: toStorePw.trim() || null,
+       newProductPassword: newProductPw.trim() || null
+@@ -258,7 +269,7 @@
+               · از <b>{seed.fromName}</b> · انتقال <b>{faDigits(transferQty)}</b> عدد · موجودی همین ردیف{' '}
+               <b className={overAvailable ? 'text-red-700' : undefined}>{faDigits(rowAvailable)}</b>
+               <div className="kbd">
+-                کالا با موجودی صفر ساخته می‌شود و بعد همین {faDigits(Math.round(seed.qty || 0))} عدد به آن منتقل
++                کالا با موجودی صفر ساخته می‌شود و بعد همین {faDigits(transferQty)} عدد به آن منتقل
+                 می‌گردد — هر دو در یک تراکنش. اگر هر خطایی پیش بیاید، هیچ کالایی ساخته نمی‌شود و هیچ موجودی‌ای
+                 جابه‌جا نمی‌شود.
+               </div>
+@@ -337,12 +348,12 @@
+               <label className="block">
+                 <div className="kbd text-red-700">قیمت فروش (اجباری، بزرگ‌تر از صفر)</div>
+                 <input
+-                  className={`inp ${sale <= 0 ? 'border-red-400' : ''}`}
++                  className={`inp ${sale === null || sale <= 0 ? 'border-red-400' : ''}`}
+                   inputMode="numeric"
+                   value={salePrice}
+                   onChange={(e) => setSalePrice(e.target.value)}
+                 />
+-                <div className="kbd">{sale > 0 ? `${money(sale)} ریال` : 'بدون قیمت فروش، فرم ثبت نمی‌شود.'}</div>
++                <div className="kbd">{sale === null ? 'قیمت فروش باید عدد صحیح به ریال باشد.' : sale > 0 ? `${money(sale)} ریال` : 'بدون قیمت فروش، فرم ثبت نمی‌شود.'}</div>
+               </label>
+               <label className="block">
+                 <div className="kbd">قیمت خرید (اختیاری)</div>
+@@ -352,7 +363,7 @@
+                   value={purchasePrice}
+                   onChange={(e) => setPurchasePrice(e.target.value)}
+                 />
+-                <div className="kbd">{purchase > 0 ? `${money(purchase)} ریال` : '—'}</div>
++                <div className="kbd">{purchase === null ? 'قیمت خرید باید عدد صحیح به ریال باشد.' : purchase > 0 ? `${money(purchase)} ریال` : '—'}</div>
+               </label>
+             </div>
+ 
+diff -ruN src-pristine/renderer/src/pages/SecondaryStock.tsx proj/mahak-session131/src/renderer/src/pages/SecondaryStock.tsx
+--- src-pristine/renderer/src/pages/SecondaryStock.tsx	2026-09-25 13:45:41.143207915 +0000
++++ proj/mahak-session131/src/renderer/src/pages/SecondaryStock.tsx	2026-09-25 13:51:48.473355972 +0000
+@@ -9,7 +9,8 @@
+ import { useSettings } from '../hooks/useSettings'
+ import { useAutoCentralWithdraw } from '../hooks/useAutoCentralWithdraw'
+ import ManagerGate from '../components/ManagerGate'
+-import { usePanelOpen } from '../hooks/usePanelLocks'
++import PasswordField from '../components/PasswordField'
++import { usePanelLock, usePanelOpen } from '../hooks/usePanelLocks'
+ import { CENTRAL_WITHDRAW_GATE, PANEL_KEYS } from '@shared/panels'
+ import { faDigits } from '@shared/jalali'
+ import type {
+@@ -134,6 +135,17 @@
+   const [candSearch, setCandSearch] = useState('')
+   /** قفل مستقل «انتقال به انبار فروشگاه» (fail-closed: تا باز نشود، بسته است) */
+   const toStoreOpen = usePanelOpen(PANEL_KEYS.secondaryToStore)
++  /**
++   * نشست ۱۴۹ · S147-b — سرور خودش قفل «انتقال به انبار فروشگاه» را می‌سنجد، پس رمز باید همراه
++   * همین درخواست برود (باز بودن ManagerGate در رندرر برای main کافی نیست). fail-closed: تا سیاست
++   * قفل خوانده نشده، رمز لازم فرض می‌شود.
++   */
++  const { lockEnabled: toStoreLock, loaded: toStoreLockLoaded } = usePanelLock(PANEL_KEYS.secondaryToStore)
++  const needToStorePw = !toStoreLockLoaded || toStoreLock
++  const [toStorePw, setToStorePw] = useState('')
++  useEffect(() => {
++    if (!transfer) setToStorePw('')
++  }, [transfer])
+   /** پیام هشدار قابل‌تایید انتقال بیشتر از موجودی (اصل «هشدار، نه دیوار») */
+   const [forceAsk, setForceAsk] = useState<string | null>(null)
+   /**
+@@ -225,11 +237,12 @@
+         id: draft.id ?? null,
+         name: draft.name.trim(),
+         code: draft.code.trim() || null,
+-        qty: Math.round(draft.qty || 0),
++        // نشست ۱۴۹ · S147-a — مقدار خام فرستاده می‌شود؛ اعشار/منفیِ حد هشدار را سرور با پیام فارسی رد می‌کند (نه گرد/صفر بی‌صدا)
++        qty: draft.qty || 0,
+         note: draft.note.trim() || null,
+         // بخش ۵: انبار و حد هشدار هم ذخیره می‌شوند
+         warehouseId: draft.warehouseId || null,
+-        minQty: Math.max(0, Math.round(draft.minQty || 0))
++        minQty: draft.minQty || 0
+       })
+       setDraft(EMPTY)
+       await load()
+@@ -356,9 +369,10 @@
+       const res = await call<SecondaryToStoreResult>(CH.secondaryStockToStore, {
+         itemId: transfer.itemId,
+         variantId: transfer.variantId,
+-        qty: Math.round(transfer.qty || 0),
++        qty: transfer.qty || 0, // S147-a — خام؛ سرور اعشار را رد می‌کند
+         note: transfer.note.trim() || null,
+-        force: force || undefined
++        force: force || undefined,
++        toStorePassword: toStorePw.trim() || null // S147-b — گیت سمت سرور
+       })
+       setTransfer(null)
+       await load()
+@@ -400,9 +414,9 @@
+      * تکیه‌گاه دوم است: هیچ‌وقت درخواستی که قطعاً رد می‌شود به سرور نمی‌رود.
+      */
+     const seedRow = newProd
+-    if (seedRow && Math.round(payload.qty || 0) > Math.round(seedRow.available ?? 0)) {
++    if (seedRow && Number(payload.qty) > Math.round(seedRow.available ?? 0)) {
+       setErr(
+-        `تعداد انتقال (${faDigits(Math.round(payload.qty || 0))}) از موجودی همین ردیف انبار مرکزی ` +
++        `تعداد انتقال (${faDigits(String(payload.qty))}) از موجودی همین ردیف انبار مرکزی ` +
+           `(${faDigits(Math.round(seedRow.available ?? 0))}) بیشتر است. تعداد را در فرم انتقال کم کنید.`
+       )
+       return
+@@ -441,7 +455,7 @@
+       itemId: transfer.itemId,
+       name: transfer.name,
+       code: transfer.code,
+-      qty: Math.round(transfer.qty || 0),
++      qty: transfer.qty || 0,
+       note: transfer.note,
+       fromName: transfer.fromName,
+       available: transfer.available
+@@ -458,7 +472,7 @@
+       const res = await call<SecondaryStockTransferResult>(CH.secondaryStockTransfer, {
+         itemId: transfer.itemId,
+         toWarehouseId: transfer.toWarehouseId || null,
+-        qty: Math.round(transfer.qty || 0),
++        qty: transfer.qty || 0, // S147-a — خام؛ سرور اعشار را رد می‌کند
+         note: transfer.note.trim() || null,
+         force: force || undefined
+       })
+@@ -688,7 +702,7 @@
+             min={0}
+             className="inp"
+             value={draft.minQty}
+-            onChange={(e) => setDraft((d) => ({ ...d, minQty: Math.max(0, +e.target.value || 0) }))}
++            onChange={(e) => setDraft((d) => ({ ...d, minQty: +e.target.value || 0 }))}
+           />
+         </label>
+         <label className="md:col-span-2">
+@@ -1084,7 +1098,14 @@
+                   ? askNewProduct()
+                   : void doTransfer(false)
+               }
+-              disabled={busy || (transfer?.mode === 'store' && (!toStoreOpen || !transfer.variantId))}
++              disabled={
++                busy ||
++                (transfer?.mode === 'store' &&
++                  (!toStoreOpen ||
++                    !transfer.variantId ||
++                    // فرم «کالای جدید» فیلد رمز خودش را دارد
++                    (needToStorePw && !toStorePw.trim() && transfer.variantId !== NEW_PRODUCT_CHOICE)))
++              }
+               title={
+                 transfer?.mode === 'store' && !toStoreOpen
+                   ? 'تا قفل «انتقال به انبار فروشگاه» باز نشود، این انتقال ممکن نیست'
+@@ -1242,6 +1263,14 @@
+                 </div>
+               </ManagerGate>
+             )}
++            {transfer.mode === 'store' && needToStorePw && transfer.variantId !== NEW_PRODUCT_CHOICE && (
++              <label className="block">
++                <div className="kbd">
++                  رمز مدیر (یا رمز دوم پنل «انتقال به انبار فروشگاه») — سرور خودش همین رمز را هنگام ثبت انتقال می‌سنجد
++                </div>
++                <PasswordField value={toStorePw} onChange={(e) => setToStorePw(e.target.value)} />
++              </label>
++            )}
+             <label className="block">
+               <div className="kbd">تعداد</div>
+               <input
+diff -ruN src-pristine/shared/jalali.ts proj/mahak-session131/src/shared/jalali.ts
+--- src-pristine/shared/jalali.ts	2026-09-25 13:45:41.147207939 +0000
++++ proj/mahak-session131/src/shared/jalali.ts	2026-09-25 13:46:48.643602664 +0000
+@@ -159,3 +159,17 @@
+ export function jalaliMonthStart(day = jalaliToday()): string {
+   return `${toLatinDigits(day).trim().slice(0, 8)}01`
+ }
++
++/**
++ * نشست ۱۴۹ · S147-a · S148-D3 — پارس عدد صحیح گروه‌بندی‌شده از ورودی متنی فرم (مثلاً قیمت به ریال).
++ * ارقام فارسی/عربی به لاتین تبدیل و فقط جداکننده‌ی هزارگان (کاما، «٬»، «،» و فاصله) حذف می‌شود.
++ * خالی ⇒ ۰. هر چیز دیگر (نقطه/«٫» اعشار، منفی، حرف، عدد خارج از بازه‌ی امن) ⇒ null تا فرم پیام
++ * فارسی بدهد؛ قبلاً replace(/[^\d]/g,'') نقطه را حذف می‌کرد و «1200000.5» ده‌برابر (12000005) می‌شد.
++ */
++export function parseGroupedInteger(raw: unknown): number | null {
++  const s = toLatinDigits(String(raw ?? '')).replace(/[,\u060C\u066C\s]/g, '')
++  if (s === '') return 0
++  if (!/^\d+$/.test(s)) return null
++  const n = Number(s)
++  return Number.isSafeInteger(n) ? n : null
++}
+diff -ruN src-pristine/shared/types.ts proj/mahak-session131/src/shared/types.ts
+--- src-pristine/shared/types.ts	2026-09-25 13:45:41.147207939 +0000
++++ proj/mahak-session131/src/shared/types.ts	2026-09-25 13:51:19.097184204 +0000
+@@ -1398,6 +1398,11 @@
+   userId?: number | null
+   /** تایید آگاهانه برای انتقال بیشتر از موجودی ردیف مبدأ */
+   force?: boolean
++  /**
++   * نشست ۱۴۹ · S147-b — رمز قفل «انتقال به انبار فروشگاه» (`PANEL_KEYS.secondaryToStore`)؛
++   * سرور خودش می‌سنجد (بند ۴-۳۹ و بند ۵). قفل خاموش ⇒ لازم نیست.
++   */
++  toStorePassword?: string | null
+ }
+ 
+ export interface SecondaryToStoreResult {

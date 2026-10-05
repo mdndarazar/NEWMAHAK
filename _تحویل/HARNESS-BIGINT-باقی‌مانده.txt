@@ -1,0 +1,24 @@
+# تست‌هایی که با HARNESS_BIGINT=1 هنوز می‌شکنند
+# به‌روزشده در نشست ۱۸۲، بعد از رفع دو باگ خودِ هارنس در groupBy
+# (کلید گروه‌بندی bigint می‌شد و _sum ستون BigInt به number تبدیل می‌شد — دقیقاً برعکس Prisma)
+#
+# کار باز نشست بعد: اینها را یکی‌یکی ببندید، بعد پرچم را حذف و وفاداری را پیش‌فرض کنید.
+
+tests/audit-fixes/fix-s115-purchase-list-full-range.mjs
+tests/audit-fixes/fix-s61-overpay-credit.mjs
+tests/audit-fixes/fix-s69-cash-close-atomic.mjs
+tests/audit-fixes/fix-s69-consolidation-retry.mjs
+tests/audit-fixes/fix-s75-shift-atomic.mjs
+tests/audit-fixes/fix-s77-cash-close-repeat.mjs
+tests/audit-fixes/fix-s80-open-session-idempotency.mjs
+tests/audit-fixes/fix-s98-credit-filter-scale.mjs
+tests/audit-fixes/fix-y18-unknown-destination-outside-expected.mjs
+tests/audit/audit-a69-01-opening-float-override.mjs
+tests/audit/audit-a71-01-cheque-cleared-owner.mjs
+tests/audit/audit-a75-01-shift-audit-atomic.mjs
+tests/audit/audit-a77-02-opening-float-window.mjs
+tests/audit/audit-s88-staff-report-e2e.mjs
+test/acceptance-db-session35.mjs
+test/acceptance-db-session36.mjs
+test/acceptance-db-session40.mjs
+test/fix-s56-harness.mjs

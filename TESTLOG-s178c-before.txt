@@ -1,0 +1,24 @@
+(node:6694) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6694) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mut/src/main/services/VariantPurgeService.ts is not specified and it doesn't parse as CommonJS.
+To eliminate this warning, add "type": "module" to /home/user/work/mut/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+— ۱) پیش‌نمایش مانع‌ها را همان‌طور می‌گوید که purge رد می‌کند
+  ✗ تازه‌حذف (۱۰ روز): canPurge = false · دریافت undefined · انتظار false
+  ✗ تازه‌حذف: مانع ردیف پیام مهلت ۷۳۰ روز دارد · دریافت false · انتظار true
+  ✗ تازه‌حذف: blockers کل پیش‌نمایش پیام فارسی مهلت دارد · دریافت false · انتظار true
+  ✓ purge همان کالا رد می‌شود (پیش‌نمایش = عملیات)
+  ✗ بدون deletedAt: canPurge = false با پیام مهلت · دریافت [null,false] · انتظار [false,true]
+  ✗ کالای فعال: canPurge = false و پیام «هنوز در فهرست کالاهای فعال» · دریافت [null,false] · انتظار [false,true]
+  ✗ دارای حرکت انبار: canPurge = false و پیام دفتر گردش · دریافت [null,false] · انتظار [false,true]
+  ✓ purge کالای دارای حرکت رد می‌شود
+  ✗ مخلوط (مجاز + تازه): canPurge = false (همه یا هیچ) و فقط ردیف تازه مانع دارد · دریافت [null,null,false] · انتظار [false,null,true]
+  ✗ شناسه‌ی ناموجود: هشدار «پیدا نشد» ولی مانع حذف موارد موجود نیست (purge هم فقط موجودها را می‌گیرد) · دریافت [null,0,false] · انتظار [true,0,true]
+
+— ۲) مسیر مجاز
+  ✗ ۷۳۱ روز بی‌حرکت: canPurge = true، بدون مانع · دریافت [null,null,null] · انتظار [true,[],null]
+  ✓ فیلدهای قبلی پیش‌نمایش حفظ شد
+  ✓ purge همان کالا انجام می‌شود
+  ✗ انتخاب خالی: canPurge = false با پیام انتخاب · دریافت [null,false] · انتظار [false,true]
+
+✗ 4 بررسی موفق · 10 ناموفق

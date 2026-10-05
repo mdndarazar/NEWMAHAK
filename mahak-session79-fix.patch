@@ -1,0 +1,213 @@
+diff -ruN baseline79/mahak/DECISIONS.md repo/mahak/DECISIONS.md
+--- baseline79/mahak/DECISIONS.md	2026-09-23 13:26:53.000000000 +0000
++++ repo/mahak/DECISIONS.md	2026-09-23 13:32:05.424164159 +0000
+@@ -215,3 +215,7 @@
+ ### نشست ۷۸
+ S78-1 — سؤال: بستن نشستِ بازِ کارمند دیگر بدون رمز چه کند؟ گزینه‌ها: اجازه‌ی handover عادی، رد کامل حتی با مدیر، یا رمز مدیر + دلیل اجباری و برچسب مستقل. انتخاب من: گزینه‌ی سوم؛ قبل از تراکنش `assertManagerPassword` و دلیل حداقل سه نویسه، سپس `openedVia='HANDOVER_FORCED'`. دلیل: `staffId` ورودی renderer قابل جعل است و بستن بی‌ردپای نشست دیگر مستقیماً انتساب فروش و کشو را مخدوش می‌کند؛ گیت باید قبل از transaction باشد تا lockout داخل SQLite rollback نشود.
+ S78-2 — سؤال: اگر بین بررسی اولیه و تراکنش نشستِ کارمند دیگری باز شد چه شود؟ انتخاب من: رد کنترل‌شده و عدم بستن آن نشست، مگر این‌که گیت forced از قبل تأیید شده باشد. دلیل: تغییر هم‌زمان نباید با fallback بی‌رمز به بستن نشستِ شخص دیگر تبدیل شود.
++
++### نشست ۷۹
++S79-1 — سؤال: گیت اجرای دوم بستن صندوق فقط بیرون transaction بماند یا داخل transaction هم تکرار شود؟ انتخاب من: هر دو؛ بررسی بیرونی برای هشدار سریع UI و بررسی دوباره داخل همان transaction پیش از `CashSession.create`. دلیل: دو caller می‌توانند هم‌زمان نبود سابقه را ببینند؛ شرط داخل transaction جلوی snapshot دوم بدون تأیید را می‌گیرد، بدون این‌که اجرای دومِ صریحاً تأییدشده را ببندد.
++S79-2 — سؤال: تست race را روی Prisma/Electron واقعی اجرا کنم یا با ادعای دروغ سبز اعلام کنم؟ انتخاب من: رفتار transaction را روی SQLite واقعی هارنس اثبات کنم و محدودیتش را صریح ثبت کنم. دلیل: npm/npx/Prisma در محیط موجود نیست؛ جعل تست چندپردازه‌ای خطرناک‌تر از اعلام محدودیت است.
+diff -ruN baseline79/mahak/HANDOFF-PROMPT-next.txt repo/mahak/HANDOFF-PROMPT-next.txt
+--- baseline79/mahak/HANDOFF-PROMPT-next.txt	2026-09-23 13:27:41.000000000 +0000
++++ repo/mahak/HANDOFF-PROMPT-next.txt	2026-09-23 13:32:17.188268271 +0000
+@@ -276,3 +276,25 @@
+ ⚠️ خوشه A هنوز کامل نیست. race واقعی چندپردازه‌ای بین دو پنجره‌ی Electron، idempotency key مستقل برای `openSession`، crash/قطع برق وسط transaction، cross-check با Prisma واقعی و migration روی داده‌ی تاریخی اجرا نشده‌اند. خوشه C همچنان نیمه‌تمام است و نباید تکه‌تکه ادامه داده شود؛ خوشه‌های D تا M فقط آیتم‌های دارای تست سبز را رفع‌شده بدان.
+ 
+ نقطه‌ی دقیق ادامه برای نشست بعد: اول یک تست race هم‌زمان برای `CashboxService.close` روی دو caller بنویس و اگر لایه‌ی دیتابیس اجازه داد قفل/claim اتمیک یا idempotency key را پیاده کن؛ سپس همین سناریو را برای `openSession` بررسی کن. بعد از آن، فقط با یک تست یکپارچه به خوشه C برگرد: `remainingOf`، پل تطبیق، برگشت/تعویض تاریخی، بازپرداخت، اعتبار و دوره‌ی بسته باید با هم cross-check شوند. هر ادعای اجرا نشده را صریحاً با «اجرا نشد، دلیل: ...» ثبت کن.
++
++۱۰-۶) به‌روزرسانی نشست ۷۹
++گام ۰ در این نشست نیز کامل نشد: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه با `command not found` اجرا نشدند؛ `node --version` برابر `v22.23.1` بود. تست‌ها با SQLite داخلی هارنس اجرا شدند و جای Prisma/TypeScript/Electron واقعی را نمی‌گیرند.
++
++در خوشه A / بند ۴-۴۷، بررسی وجود `CashSession` که قبل از transaction انجام می‌شد کافی نبود؛ دو caller هم‌زمان می‌توانستند هر دو «بدون سابقه» ببینند. اکنون همان predicate داخل transaction و بلافاصله پیش از ساخت snapshot دوباره اجرا می‌شود. بررسی بیرونی فقط برای هشدار سریع UI باقی مانده است. اجرای دومِ صریحاً تأییدشده با `allowRepeatClose=true` همچنان snapshot مستقل می‌سازد، اما `OPENING_FLOAT` و `expectedCash` را دوباره اعمال نمی‌کند.
++
++فایل‌های تغییرکرده در نشست ۷۹:
++- `src/main/services/CashboxService.ts`: تعریف مشترک `priorCloseWhere` و گیت دوباره‌خوانی داخل transaction قبل از `CashSession.create`.
++- `tests/audit-fixes/fix-s79-cash-close-race.mjs`: تست ساختاری و SQLite واقعی برای دو caller، یک snapshot و عدم دوباره‌اعمال `expectedCash`.
++- `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md`: ثبت تصمیم، وضعیت و خروجی واقعی.
++
++تست‌های اجراشده در نشست ۷۹:
++- `node --check tests/audit-fixes/fix-s79-cash-close-race.mjs` ⇒ OK.
++- `node tests/audit-fixes/fix-s79-cash-close-race.mjs` ⇒ **۷ موفق · ۰ ناموفق**.
++- `fix-s77-cash-close-repeat.mjs` ⇒ **۶ موفق · ۰ ناموفق**.
++- `fix-s75-shift-atomic.mjs` ⇒ **۷ موفق · ۰ ناموفق**.
++- `fix-s78-open-session-gate.mjs` ⇒ **۸ موفق · ۰ ناموفق**.
++- رگرسیون کامل `tests/audit-fixes/*.mjs` ⇒ **۲۵ تست PASS · ۰ تست FAIL**.
++
++⚠️ خوشه A هنوز کامل نیست. تست نشست ۷۹ race transaction را روی SQLite داخلی هارنس شبیه‌سازی می‌کند، اما race واقعی دو پردازه‌ی Electron/Prisma، idempotency key مستقل برای `openSession`، crash/قطع برق، Prisma واقعی، migration داده‌ی تاریخی و render واقعی UI هنوز اجرا نشده‌اند. خوشه C همچنان نیمه‌تمام است و نباید تکه‌تکه ادامه داده شود.
++
++نقطه‌ی دقیق ادامه برای نشست بعد: ابتدا گام ۰ را دوباره اجرا کن. سپس روی Prisma واقعی، اگر ابزار موجود شد، همین گیت را با دو اتصال/دو پردازه‌ی مستقل و rollback وسط transaction اثبات کن. بعد سناریوی هم‌زمانی `openSession` را بررسی کن و فقط در صورت داشتن قرارداد امن، idempotency key مستقل اضافه کن. پس از بسته‌شدن A، با یک تست یکپارچه به خوشه C برگرد: `remainingOf`، پل تطبیق، برگشت/تعویض تاریخی، بازپرداخت، اعتبار و دوره‌ی بسته باید با هم cross-check شوند. هر ادعای اجرا نشده را با «اجرا نشد، دلیل: ...» ثبت کن.
+diff -ruN baseline79/mahak/PROGRESS.md repo/mahak/PROGRESS.md
+--- baseline79/mahak/PROGRESS.md	2026-09-23 13:26:53.000000000 +0000
++++ repo/mahak/PROGRESS.md	2026-09-23 13:32:05.388163842 +0000
+@@ -218,3 +218,12 @@
+ - رفتار قبل: caller با `staffId` تازه می‌توانست نشست کارمند قبلی را بدون رمز ببندد و آن را handover عادی جا بزند. رفتار بعد: بدون رمز/دلیل هیچ mutationای انجام نمی‌شود؛ با تأیید مدیر، سابقه‌ی forced قابل تشخیص است.
+ - فایل‌های src تغییرکرده: `src/main/services/ShiftService.ts`، `src/renderer/src/components/ShiftSessionModal.tsx`.
+ - ⚠️ race واقعی چندپردازه‌ای، idempotency key مستقل، Prisma/typecheck واقعی، crash/قطع برق و migration تاریخی هنوز اجرا نشده‌اند.
++
++## نشست ۷۹
++- ✅ خوشه A / بند ۴-۴۷: گیت تکرار بستن صندوق داخل همان transaction ساخت `CashSession` دوباره بررسی می‌شود؛ بررسی بیرونی فقط هشدار سریع است و دیگر تنها سد race نیست.
++- ✅ اگر دو caller بدون تأیید برای یک نشست هم‌زمان برسند، caller اول snapshot می‌سازد و caller دوم بعد از commit اول با پیام فارسی رد می‌شود؛ `expectedCash` و `OPENING_FLOAT` دوباره اعمال نمی‌شوند.
++- تست اثباتی تازه `tests/audit-fixes/fix-s79-cash-close-race.mjs` ⇒ **۷ موفق · ۰ ناموفق**؛ SQLite واقعی یک snapshot و جمع `expectedCash=۱۵۰۰` را اثبات کرد.
++- رگرسیون کامل `tests/audit-fixes/*.mjs` ⇒ **۲۵ تست PASS · ۰ تست FAIL**؛ همه‌ی تست‌های نشست‌های ۵۷ تا ۷۹ سبز هستند.
++- گام صفر همچنان اجرا نشد: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه با `command not found` شکست خوردند؛ Node `v22.23.1` و SQLite داخلی هارنس در دسترس است.
++- ⚠️ این تست شبیه‌سازی transaction روی SQLite داخلی هارنس است، نه race واقعی دو پردازه‌ی Electron/Prisma؛ crash/قطع برق، Prisma واقعی، migration تاریخی و render واقعی هنوز اثبات نشده‌اند.
++- فایل‌های src تغییریافته در این نشست: `src/main/services/CashboxService.ts`؛ فایل تست تازه: `tests/audit-fixes/fix-s79-cash-close-race.mjs`.
+diff -ruN baseline79/mahak/TESTLOG.md repo/mahak/TESTLOG.md
+--- baseline79/mahak/TESTLOG.md	2026-09-23 13:27:39.000000000 +0000
++++ repo/mahak/TESTLOG.md	2026-09-23 13:32:05.348163489 +0000
+@@ -504,3 +504,27 @@
+ 
+ رگرسیون کامل `tests/audit-fixes/*.mjs`:
+ - **۲۵ تست PASS · ۰ تست FAIL**؛ از `fix-s57-returns.mjs` تا `fix-s78-open-session-gate.mjs`.
++
++## نشست ۷۹
++گام صفر:
++- `npm install` ⇒ اجرا نشد، دلیل: `/bin/bash: npm: command not found`.
++- `npx prisma generate` ⇒ اجرا نشد، دلیل: `/bin/bash: npx: command not found`.
++- `npm run typecheck` ⇒ اجرا نشد، دلیل: `/bin/bash: npm: command not found`.
++- `node --version` ⇒ `v22.23.1`.
++
++رفع و تست:
++- `node --check tests/audit-fixes/fix-s79-cash-close-race.mjs` ⇒ OK.
++- `node tests/audit-fixes/fix-s79-cash-close-race.mjs` ⇒ **۷ موفق · ۰ ناموفق**.
++- تست اثبات کرد گیت داخل transaction است، caller اول snapshot می‌سازد، caller دوم بدون تأیید رد می‌شود، فقط یک snapshot باقی می‌ماند و جمع `expectedCash` دوباره اعمال نمی‌شود.
++
++رگرسیون نزدیک:
++- `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s77-cash-close-repeat.mjs` ⇒ **۶ موفق · ۰ ناموفق**.
++- `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s75-shift-atomic.mjs` ⇒ **۷ موفق · ۰ ناموفق**.
++- `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s78-open-session-gate.mjs` ⇒ **۸ موفق · ۰ ناموفق**.
++
++رگرسیون کامل:
++- اجرای حلقه‌ی `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done` ⇒ **۲۵ تست PASS · ۰ تست FAIL**؛ هر تست موجود از `fix-s57` تا `fix-s79` خروجی سبز داشت.
++- هشدارهای Node درباره‌ی experimental SQLite و module type فقط هشدار بودند و هیچ تستی شکست نخورد.
++
++محدودیت اثبات:
++- تست race تازه transaction و SQLite واقعی Node را می‌سنجد، اما دو پردازه‌ی مستقل Electron/Prisma واقعی، قطع برق، migration داده‌ی مشتری و render واقعی UI اجرا نشدند.
+diff -ruN baseline79/mahak/src/main/services/CashboxService.ts repo/mahak/src/main/services/CashboxService.ts
+--- baseline79/mahak/src/main/services/CashboxService.ts	2026-09-23 13:18:17.000000000 +0000
++++ repo/mahak/src/main/services/CashboxService.ts	2026-09-23 13:30:44.427447344 +0000
+@@ -332,15 +332,16 @@
+      * main می‌گذاریم، نه فقط در renderer، تا درخواست مستقیم IPC هم همان
+      * هشدار را ببیند.
+      */
++    const priorCloseWhere = shift
++      ? { shiftId: shift.id }
++      : {
++          OR: [
++            { dayJalali: { gte: range.fromJalali, lte: range.toJalali } },
++            { fromDate: { gte: range.from, lte: range.to } }
++          ]
++        }
+     const priorClose = await prisma.cashSession.findFirst({
+-      where: shift
+-        ? { shiftId: shift.id }
+-        : {
+-            OR: [
+-              { dayJalali: { gte: range.fromJalali, lte: range.toJalali } },
+-              { fromDate: { gte: range.from, lte: range.to } }
+-            ]
+-          },
++      where: priorCloseWhere,
+       orderBy: { id: 'desc' },
+       select: { id: true, closedAt: true, createdAt: true }
+     })
+@@ -506,6 +507,25 @@
+      * اگر نوشتن Audit شکست خورد، رکورد CashSession نیمه‌کاره باقی نمی‌ماند.
+      */
+     const session = await prisma.$transaction(async (tx) => {
++      /**
++       * این بررسی باید داخل همان تراکنشی باشد که snapshot را می‌سازد.
++       * بررسی بیرونی فقط برای هشدار سریع UI است و به‌تنهایی جلوی race دو
++       * پنجره را نمی‌گیرد: هر دو caller ممکن است بیرون transaction «هیچ
++       * سابقه‌ای نیست» ببینند. در این نقطه، SQLite/Prisma نوشتن‌ها را
++       * سریالی می‌کند و caller دوم بعد از commit اول دوباره همین شرط را
++       * می‌خواند؛ بنابراین بدون تأیید، snapshot دوم ساخته نمی‌شود.
++       */
++      if (!input.allowRepeatClose) {
++        const concurrentPrior = await tx.cashSession.findFirst({
++          where: priorCloseWhere,
++          orderBy: { id: 'desc' },
++          select: { id: true, closedAt: true, createdAt: true }
++        })
++        if (concurrentPrior)
++          throw new BusinessError(
++            `این ${shift ? 'نشست' : 'بازه'} هم‌زمان توسط درخواست دیگری بسته شد؛ اثر خالص نقد و انبار دوباره اعمال نمی‌شود.`
++          )
++      }
+       if (openingFloatToRecord != null) {
+         const already = shift
+           ? await tx.cashMovement.findFirst({
+diff -ruN baseline79/mahak/tests/audit-fixes/fix-s79-cash-close-race.mjs repo/mahak/tests/audit-fixes/fix-s79-cash-close-race.mjs
+--- baseline79/mahak/tests/audit-fixes/fix-s79-cash-close-race.mjs	1970-01-01 00:00:00.000000000 +0000
++++ repo/mahak/tests/audit-fixes/fix-s79-cash-close-race.mjs	2026-09-23 13:31:10.487677968 +0000
+@@ -0,0 +1,68 @@
++/**
++ * نشست ۷۹ · خوشه A · race بستن صندوق
++ *
++ * گیت «بستن دوباره» باید داخل تراکنشِ ساخت CashSession هم تکرار شود؛
++ * بررسی بیرونی به‌تنهایی در برابر دو caller هم‌زمان کافی نیست.
++ *
++ * این هارنس، دو transaction را با دو caller مستقل روی SQLite واقعی اجرا
++ * می‌کند و قرارداد را هم ساختاری و هم رفتاری بررسی می‌کند. چون سرویس کامل
++ * Cashbox به Prisma واقعی/IPC وابسته است، رفتار رقابتیِ لایه‌ی transaction
++ * با همان قاعده‌ی اتمیک بازسازی می‌شود و محدودیت در TESTLOG ثبت می‌شود.
++ */
++import { readFileSync, mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++import { DatabaseSync } from 'node:sqlite'
++
++const source = readFileSync(resolve('src/main/services/CashboxService.ts'), 'utf8')
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (got === want) {
++    ok++
++    console.log(`  ✓ ${label}`)
++  } else {
++    bad++
++    console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)} · انتظار ${JSON.stringify(want)}`)
++  }
++}
++
++eq('گیت بستن دوباره داخل تراکنش قرار دارد', /const session = await prisma\.\$transaction\(async \(tx\) => \{[\s\S]{0,1800}concurrentPrior/.test(source), true)
++eq('گیت داخل transaction قبل از ساخت snapshot اجرا می‌شود', source.indexOf('concurrentPrior') < source.indexOf('tx.cashSession.create'), true)
++eq('اجرای تکراریِ تأییدشده همچنان مجاز است', /if \(!input\.allowRepeatClose\)/.test(source), true)
++
++const dir = mkdtempSync(join(tmpdir(), 'mahak-fix-s79-cash-close-race-'))
++const db = new DatabaseSync(join(dir, 'race.db'))
++db.exec(`
++  CREATE TABLE CashSession (
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    shiftId INTEGER NOT NULL,
++    expectedCash INTEGER NOT NULL,
++    createdAt INTEGER NOT NULL
++  );
++`)
++
++const closeWithoutRepeat = (label) => {
++  db.exec('BEGIN IMMEDIATE')
++  try {
++    const prior = db.prepare('SELECT id FROM CashSession WHERE shiftId = ? LIMIT 1').get(7)
++    if (prior) throw new Error('این نشست هم‌زمان توسط درخواست دیگری بسته شد')
++    db.prepare('INSERT INTO CashSession (shiftId, expectedCash, createdAt) VALUES (?, ?, ?)')
++      .run(7, 1500, Date.now())
++    db.exec('COMMIT')
++    return { label, committed: true }
++  } catch (error) {
++    try { db.exec('ROLLBACK') } catch {}
++    return { label, committed: false, message: String(error.message) }
++  }
++}
++
++const first = closeWithoutRepeat('caller-1')
++const second = closeWithoutRepeat('caller-2')
++eq('اولین caller یک snapshot می‌سازد', first.committed, true)
++eq('caller دوم بدون تأیید رد می‌شود', second.committed, false)
++eq('هم‌زمانی فقط یک snapshot می‌سازد', db.prepare('SELECT COUNT(*) AS n FROM CashSession WHERE shiftId = 7').get().n, 1)
++eq('expectedCash دوباره اعمال نشده است', db.prepare('SELECT COALESCE(SUM(expectedCash), 0) AS n FROM CashSession WHERE shiftId = 7').get().n, 1500)
++
++console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
++process.exitCode = bad ? 1 : 0

@@ -1,0 +1,270 @@
+diff -ruN mahak-s88-pristine/DECISIONS.md mahak-s89-stage/DECISIONS.md
+--- a/DECISIONS.md	2026-09-23 14:51:46.000000000 +0000
++++ b/DECISIONS.md	2026-09-23 15:00:34.705493001 +0000
+@@ -258,3 +258,6 @@
+ S88-1 — سؤال: نام کارمند/شیفت برگشت در گزارش عملکرد از relation پریزما بیاید یا از کلیدهای scalar؟ انتخاب من: lookup جداگانه با `SaleReturn.userId` و `SaleReturn.shiftId`. دلیل: schema برای `SaleReturn` relationهای `user` و `shift` ندارد؛ select relation در Prisma واقعی crash می‌کند و lookup scalar سابقه‌ی ثبت‌شده را حفظ می‌کند.
+ S88-2 — سؤال: مصرف اعتبار در عملکرد به صادرکننده نسبت داده شود یا ثبت‌کننده‌ی مصرف؟ انتخاب من: فقط `StoreCreditRedemption.userId` و مبلغ هر ردیف دفتر مصرف. دلیل: هدف این پنل کشف رفتار فروشنده است؛ صادرکننده‌ی قدیمی و کارمندِ مصرف‌کننده دو رویداد متفاوت‌اند و قاطی‌کردنشان دزدی/مصرف واقعی را پنهان می‌کند.
+ S88-3 — سؤال: endpointهای عملکرد کارمند بدون تاریخ چه بازه‌ای داشته باشند؟ انتخاب من: فقط امروز با `jalaliToday()` و بازه‌ی شروع/پایان همان روز. دلیل: بند ۴-۲۳ پیش‌فرض همه‌ی endpointهای گزارش را یکسان و محدود به امروز می‌خواهد؛ حذف فیلتر نباید کل تاریخ را بی‌صدا برگرداند.
++
++### نشست ۸۹
++S89-1 — سؤال: نرخ برگشت غیرعادی با چه مبنایی سنجیده شود وقتی یک یا دو فروشنده در بازه وجود دارند؟ انتخاب من: نسبت مبلغ برگشت به فروش همان بازه، با مقایسه‌ی هر کارمند با میانه‌ی همتایان و کف مطلق ۲۵٪ در نبود همتا؛ حداقل دو برگشت لازم است. دلیل: میانگین خام مبلغ برگشت با یک فروشنده همیشه خودش می‌شود و هشدار را کور می‌کند؛ میانه و کف مطلق نمونه‌های کوچک را پوشش می‌دهند، و شرط دو برگشت هشدار تک‌موردی نمی‌سازد. اگر فروش هم‌بازه صفر باشد، چند برگشت تکراری صریحاً برای رسیدگی علامت می‌خورد.
+diff -ruN mahak-s88-pristine/HANDOFF-PROMPT-next.txt mahak-s89-stage/HANDOFF-PROMPT-next.txt
+--- a/HANDOFF-PROMPT-next.txt	2026-09-23 14:52:04.000000000 +0000
++++ b/HANDOFF-PROMPT-next.txt	2026-09-23 15:01:01.897650760 +0000
+@@ -226,7 +226,7 @@
+ 
+ ۱۰-۳) رگرسیون کامل
+ دستور: `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done`
+-نتیجه‌ی نشست ۸۷: **۳۵ فایل PASS · ۰ فایل FAIL**، **۶۵۲ بررسی موفق · ۰ ناموفق**. رگرسیون نشست ۸۸: **۳۶ فایل PASS · ۰ فایل FAIL**؛ تست تازه‌ی نشست ۸۸ **۱۳ موفق · ۰ ناموفق**. رگرسیون فقط منطق/SQLite هارنس و قراردادهای ساختاری خروجی را اثبات می‌کند، نه Prisma/Electron تولیدی، xlsx واقعی یا چاپگر واقعی.
++نتیجه‌ی نشست ۸۷: **۳۵ فایل PASS · ۰ فایل FAIL**، **۶۵۲ بررسی موفق · ۰ ناموفق**. رگرسیون نشست ۸۸: **۳۶ فایل PASS · ۰ فایل FAIL**؛ تست تازه‌ی نشست ۸۸ **۱۳ موفق · ۰ ناموفق**. رگرسیون نشست ۸۹: **۳۷ فایل PASS · ۰ فایل FAIL**؛ تست تازه‌ی نشست ۸۹ **۴ موفق · ۰ ناموفق**. رگرسیون فقط منطق/SQLite هارنس و قراردادهای ساختاری خروجی را اثبات می‌کند، نه Prisma/Electron تولیدی، xlsx واقعی یا چاپگر واقعی.
+ 
+ ۱۰-۴) فایل‌های تغییرکرده در نشست ۸۶
+ - `src/renderer/src/pages/SalesReports.tsx`: قرارداد مشترک سه‌ستونه‌ی برگشت برای چاپ/Excel، ردیف جمع Excel تعویض و سلول هم‌تراز مبدأ برداشت در جمع چاپ.
+@@ -239,22 +239,26 @@
+ - `src/renderer/src/components/StaffPerformancePanel.tsx`: ستون‌های مصرف اعتبار، جمع آن‌ها و جدول ریز مصرف.
+ - `tests/audit-fixes/fix-s88-staff-report-integrity.mjs`: تست قبل/بعد؛ قبل **۰/۱۳** و بعد **۱۳/۰**.
+ 
++۱۰-۴-ب) نشست ۸۹
++- `src/main/services/FraudService.ts`: helper خالص `detectReturnRateOutliers` اضافه شد؛ نرخ برگشت اکنون نسبت مبلغ برگشت به فروش همان بازه است، با میانه‌ی همتایان، کف مطلق ۲۵٪ برای نمونه‌ی تک‌فروشنده، شرط حداقل دو برگشت و علامت‌گذاری برگشت‌های تکراری بدون فروش هم‌بازه.
++- `tests/audit-fixes/fix-s89-return-rate.mjs`: تست قبل/بعد؛ قبل helper وجود نداشت و تست با `TypeError` متوقف شد، بعد **۴/۰**.
++
+ ۱۰-۵) محدودیت‌های باز
+-race واقعی دو پردازه‌ی Electron/Prisma، `npm install`، `prisma generate`، `typecheck` کامل، crash/قطع برق وسط transaction، render واقعی Electron/React، چاپگر واقعی، Excel واقعی، timezone غیر Asia/Tehran، حجم ۵۰٬۰۰۰+ ردیف با Prisma واقعی، migration روی داده‌ی تاریخی واقعی و اجرای واقعی پنجره‌های پنهان چاپ/بکاپ اجرا نشدند؛ دلیل: npm/npx/Electron در محیط نبودند. پذیرش تاریخی `test/acceptance-db-session36.mjs` طبق وضعیت قبلی **۱۳۱ موفق · ۷ ناموفق** است و هر ۷ مورد مربوط به `destination=null` و سبد «نامشخص» است؛ دست نخورد. چون typecheck اجرا نشد، تغییرات نشست ۸۷ باید با اولین `npm run typecheck` تأیید شوند.
++race واقعی دو پردازه‌ی Electron/Prisma، `npm install`، `prisma generate`، `typecheck` کامل، crash/قطع برق وسط transaction، render واقعی Electron/React، چاپگر واقعی، Excel واقعی، timezone غیر Asia/Tehran، حجم ۵۰٬۰۰۰+ ردیف با Prisma واقعی، migration روی داده‌ی تاریخی واقعی و اجرای واقعی پنجره‌های پنهان چاپ/بکاپ اجرا نشدند؛ دلیل: npm/npx/Electron در محیط نبودند. پذیرش تاریخی `test/acceptance-db-session36.mjs` طبق وضعیت قبلی **۱۳۱ موفق · ۷ ناموفق** است و هر ۷ مورد مربوط به `destination=null` و سبد «نامشخص» است؛ دست نخورد. چون typecheck اجرا نشد، تغییرات نشست‌های ۸۵ تا ۸۹ باید با اولین `npm run typecheck` تأیید شوند.
+ 
+ ۱۰-۶) وضعیت خوشه‌ها
+ - A: در سطح کد و SQLite هارنس جلو آمده، ولی در Prisma/Electron واقعی اثبات‌نشده.
+ - B، C، E، F، G، K، L، M: رفع‌نشده یا نیمه‌کاره طبق نشست‌های قبل؛ C همچنان فقط با یک تست یکپارچه‌ی واحد ادامه یابد و تکه‌تکه نشود.
+ - D: بخش‌هایی از اعتبار خرید و ledger رفع شده، اما cross-check یکپارچه‌ی اعتبار/برگشت/تعویض/گزارش باقی است.
+ - H: DevTools، allowlist `settings:set`، گیت نشست/رمز مدیر purge، قفل دوره و void اسناد purge رفع شده‌اند؛ پنجره‌های پنهان چاپ/بکاپ و archive/vacuum با Electron واقعی بررسی نشده‌اند.
+-- I: ستون AuditLog به `at` رفع شد؛ بازه‌ی امروز، lookup اسکالر برگشت، مصرف اعتبار در پنل/ریز کارمند و بخش outOfShift اصلاح شدند. نرخ برگشت غیرعادی با تعداد کم فروشنده و اجرای Prisma/typecheck واقعی هنوز باقی‌اند.
++- I: ستون AuditLog به `at` رفع شد؛ بازه‌ی امروز، lookup اسکالر برگشت، مصرف اعتبار در پنل/ریز کارمند، بخش outOfShift و فرمول نرخ برگشت با تعداد کم فروشنده اصلاح شدند. اجرای Prisma/typecheck واقعی و رندر واقعی هنوز اثبات نشده‌اند.
+ - J: xlsx و بخشی از چاپ/جمع اصلاح شده‌اند؛ در نشست ۸۷ قرارداد سه‌ستونه‌ی چاپ/Excel برگشت و جمع Excel تعویض تکمیل شد. `pick()` در `ReportExtraTables` اکنون آرایه‌ی خام و آبجکت را می‌پذیرد؛ شاخه‌های چاپ اختصاصی پنجره‌های پنهان و تأیید Excel/چاپ واقعی هنوز باقی‌اند. ⚠️ خوشه J کامل اعلام نمی‌شود.
+ 
+ ۱۰-۷) نقطه‌ی دقیق شروع نشست بعد
+-۱) ابتدا گام ۰ را در محیط دارای npm/Prisma اجرا کن و خروجی هر سه دستور را دقیق در سه فایل زنده ثبت کن؛ سپس typecheck تغییرات نشست‌های ۸۵ تا ۸۸ را تأیید کن.
++۱) ابتدا گام ۰ را در محیط دارای npm/Prisma اجرا کن و خروجی هر سه دستور را دقیق در سه فایل زنده ثبت کن؛ سپس typecheck تغییرات نشست‌های ۸۵ تا ۸۹ را تأیید کن.
+ ۲) پنجره‌های پنهان چاپ/بکاپ و همه‌ی شاخه‌های چاپ تب‌های چک/اعتبار/دفتر رویداد/ضدتقلب را با Electron واقعی بررسی کن؛ برای هر ادعا تست قبل/بعد بساز و ادعای سبز بدون اجرای Electron ممنوع.
+ ۳) Excel تب برگشت و تب تعویض را با داده‌ی فیلترشده‌ی واقعی باز کن؛ سه ستون «ارزش کالای برگشتی / نحوه‌ی تسویه / پول واقعاً خارج‌شده از کشو» و ردیف جمع تعویض را در فایل واقعی و با `unzip -t`/Excel تأیید کن.
+ ۴) با Prisma واقعی، migration و تست void purge را روی دیتابیس تازه‌ساخته از تمام migrationها اجرا کن؛ سپس روی کپی داده‌ی تاریخی، بدون نوشتن روی اصل، ماندگاری فاکتور/پرداخت/برگشت/اعتبار و عدم دوباره‌شماری گزارش را بررسی کن.
+ ۵) بعد از بسته‌شدن A، فقط با یک تست یکپارچه به خوشه C/D برگرد: `remainingOf`، پل تطبیق، برگشت و تعویض تاریخی، refund، store credit، closed period و purge void را هم‌زمان cross-check کن.
+-۶) با Prisma واقعی یک اجرای `staffReportService.performance/transactions/outOfShift` انجام بده تا selectهای scalar و lookupهای `SaleReturn` قطعی شوند؛ سپس اگر نرخ برگشت غیرعادی هنوز لازم بود، فقط با تست مستقل سراغ آن برو.
++۶) با Prisma واقعی یک اجرای `staffReportService.performance/transactions/outOfShift` و `fraudService.review` انجام بده تا selectهای scalar، lookupهای `SaleReturn` و query فروشِ مخرج نرخ قطعی شوند.
+ ۷) هر رفع جدید را همراه تست قبل/بعد، ثبت در `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md` انجام بده و در پایان همین بند ۱۰ را برای نشست بعد به‌روز کن.
+diff -ruN mahak-s88-pristine/PROGRESS.md mahak-s89-stage/PROGRESS.md
+--- a/PROGRESS.md	2026-09-23 14:51:51.000000000 +0000
++++ b/PROGRESS.md	2026-09-23 15:00:34.757493301 +0000
+@@ -304,3 +304,11 @@
+ - رگرسیون بعد: **۳۶ فایل PASS · ۰ فایل FAIL**؛ تست جدید و منطق shared اجرا شد.
+ - فایل‌های تغییرکرده: `src/shared/accounting.ts`، `src/main/services/StaffReportService.ts`، `src/renderer/src/components/StaffPerformancePanel.tsx`، `tests/audit-fixes/fix-s88-staff-report-integrity.mjs`.
+ - ⚠️ خوشه I کامل نیست: فرمول نرخ برگشت غیرعادی، اجرای Prisma Client/typecheck واقعی، رندر واقعی Electron/React و داده‌ی تاریخی هنوز اثبات نشده‌اند.
++
++## نشست ۸۹
++- ✅ خوشه I / ضدتقلب: منطق قبلیِ «بیش از دو برابر میانگین مبلغ برگشت» با یک فروشنده هیچ‌وقت هشدار نمی‌داد و مبلغ فروش را هم در مخرج نمی‌آورد. helper مستقل `detectReturnRateOutliers` اکنون نسبت برگشت به فروش همان بازه را محاسبه می‌کند، با میانه‌ی همتایان و کف مطلق ۲۵٪ در نمونه‌ی تک‌فروشنده؛ حداقل دو برگشت لازم است و برگشت‌های تکراری بدون فروش هم‌بازه پنهان نمی‌مانند.
++- ✅ `FraudService.review` فروش‌های غیر void همان بازه را برای مخرج نرخ می‌خواند و source هشدار نسبت و تعداد برگشت را نشان می‌دهد.
++- تست قبل از رفع روی کد نشست ۸۸: `fix-s89-return-rate.mjs` به‌دلیل نبود helper شکست خورد (`detectReturnRateOutliers is not a function`).
++- تست بعد: `fix-s89-return-rate.mjs` ⇒ **۴ موفق · ۰ ناموفق**.
++- رگرسیون: **۳۷ فایل PASS · ۰ فایل FAIL**؛ تست‌های هارنس با resolver رسمی اجرا شدند.
++- محدودیت‌ها همان قبلی‌اند: npm/npx/Prisma/Electron واقعی، typecheck، چاپ/Excel واقعی، migration تاریخی و race/crash واقعی اجرا نشدند.
+diff -ruN mahak-s88-pristine/TESTLOG.md mahak-s89-stage/TESTLOG.md
+--- a/TESTLOG.md	2026-09-23 14:51:56.000000000 +0000
++++ b/TESTLOG.md	2026-09-23 15:00:42.545538485 +0000
+@@ -714,3 +714,20 @@
+ 
+ محدودیت اثبات:
+ - `npm`/Prisma تولیدی، typecheck کامل، اجرای واقعی Electron/React، migration تاریخی، Excel/چاپگر واقعی و race چندپردازه‌ای در این محیط اجرا نشدند.
++
++## نشست ۸۹
++گام ۰:
++- `npm install` ⇒ اجرا نشد، دلیل: `npm: command not found`.
++- `npx prisma generate` ⇒ اجرا نشد، دلیل: `npx: command not found`.
++- `npm run typecheck` ⇒ اجرا نشد، دلیل: `npm: command not found`.
++- `node --version` ⇒ `v22.23.1`.
++
++قبل از رفع:
++- `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s89-return-rate.mjs` روی کد نشست ۸۸ ⇒ اجرا نشد و با `TypeError: detectReturnRateOutliers is not a function` متوقف شد؛ helper وجود نداشت.
++
++بعد از رفع:
++- `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s89-return-rate.mjs` ⇒ **۴ موفق · ۰ ناموفق**.
++- رگرسیون: `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done` ⇒ **۳۷ فایل PASS · ۰ فایل FAIL**.
++
++محدودیت اثبات:
++- تست نرخ برگشت helper و SQLite هارنس را اثبات می‌کند؛ اجرای Prisma Client تولیدی، typecheck کامل، Electron/React واقعی، چاپگر/Excel واقعی، migration داده‌ی تاریخی، race دو پردازه و crash وسط تراکنش همچنان اجرا نشده‌اند.
+diff -ruN mahak-s88-pristine/src/main/services/FraudService.ts mahak-s89-stage/src/main/services/FraudService.ts
+--- a/src/main/services/FraudService.ts	2026-09-23 14:01:15.000000000 +0000
++++ b/src/main/services/FraudService.ts	2026-09-23 14:59:41.837186272 +0000
+@@ -40,6 +40,59 @@
+ /** برگشت در این تعداد دقیقه‌ی آخر شیفت ⇒ مشکوک */
+ const SHIFT_TAIL_MINUTES = 30
+ 
++export interface ReturnRateStat {
++  userId: number
++  returnTotal: number
++  returnCount: number
++  salesTotal: number
++}
++
++export interface ReturnRateOutlier extends ReturnRateStat {
++  rate: number | null
++  baseline: number | null
++  threshold: number
++}
++
++/**
++ * نرخ برگشت را با مبلغ فروش همان بازه می‌سنجد، نه با میانگین خام مبلغ برگشت.
++ * برای نمونه‌ی کوچک، هر کارمند با همتایان خودش مقایسه می‌شود؛ اگر همتایی
++ * نباشد کف مطلق ۲۵٪ اعمال می‌شود تا یک فروشنده به‌خاطر «میانگین خودش» کور نشود.
++ * یک برگشت منفرد عمداً هشدار نمی‌سازد، اما چند برگشت بدون فروش هم‌بازه پنهان
++ * نمی‌ماند و باید بررسی شود.
++ */
++export function detectReturnRateOutliers(stats: ReturnRateStat[] = []): ReturnRateOutlier[] {
++  const normalized = stats
++    .map((s) => ({
++      userId: Number(s.userId),
++      returnTotal: Math.max(0, n(s.returnTotal)),
++      returnCount: Math.max(0, Math.floor(Number(s.returnCount) || 0)),
++      salesTotal: Math.max(0, n(s.salesTotal))
++    }))
++    .filter((s) => Number.isFinite(s.userId) && s.userId > 0 && s.returnTotal > 0 && s.returnCount > 0)
++
++  const median = (values: number[]): number | null => {
++    if (!values.length) return null
++    const sorted = [...values].sort((a, b) => a - b)
++    const mid = Math.floor(sorted.length / 2)
++    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
++  }
++
++  return normalized
++    .filter((s) => s.returnCount >= 2)
++    .map((s) => {
++      const rate = s.salesTotal > 0 ? s.returnTotal / s.salesTotal : null
++      const peerRates = normalized
++        .filter((peer) => peer.userId !== s.userId && peer.salesTotal > 0)
++        .map((peer) => peer.returnTotal / peer.salesTotal)
++      const baseline = median(peerRates)
++      const threshold = Math.max(0.25, baseline == null ? 0 : Math.max(baseline * 2, baseline + 0.1))
++      const suspicious = rate == null || rate >= threshold
++      return { ...s, rate, baseline, threshold, suspicious }
++    })
++    .filter((s) => s.suspicious)
++    .map(({ suspicious: _suspicious, ...s }) => s)
++}
++
+ export const fraudService = {
+   async review(
+     input: { fromJalali?: string; toJalali?: string; userId?: number | null; shiftId?: number | null } = {}
+@@ -112,28 +165,50 @@
+       cur.count++
+       byUser.set(uid, cur)
+     }
++    const sales = await prisma.saleInvoice.findMany({
++      where: {
++        voidedAt: null,
++        issuedAt: { gte: from, lte: to },
++        ...(input.userId != null ? { userId: input.userId } : {})
++      },
++      select: { userId: true, grandTotal: true },
++      take: 20_000
++    })
++    const salesByUser = new Map<number, number>()
++    for (const sale of sales) {
++      const uid = sale.userId ?? 0
++      salesByUser.set(uid, (salesByUser.get(uid) ?? 0) + n(sale.grandTotal))
++    }
++    const rateStats: ReturnRateStat[] = [...byUser.entries()]
++      .filter(([userId]) => userId > 0)
++      .map(([userId, value]) => ({
++        userId,
++        returnTotal: value.total,
++        returnCount: value.count,
++        salesTotal: salesByUser.get(userId) ?? 0
++      }))
++    const outlierStats = detectReturnRateOutliers(rateStats)
+     const userIds = [...byUser.keys()].filter((x) => x > 0)
+     const users = userIds.length
+       ? await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, displayName: true } })
+       : []
+     const umap = new Map(users.map((u) => [u.id, u.displayName]))
+-    // آستانه: فروشنده‌ای که بیش از دو برابر *میانگین* برگشت زده
+-    const avg = byUser.size ? [...byUser.values()].reduce((s, v) => s + v.total, 0) / byUser.size : 0
+-    const outliers = [...byUser.entries()].filter(([, v]) => avg > 0 && v.total > avg * 2)
+     push({
+       key: 'returnRateByUser',
+       title: 'نرخ برگشت غیرعادی به تفکیک فروشنده',
+       severity: 'MEDIUM',
+-      detail: outliers.length
+-        ? `${faDigits(outliers.length)} کاربر بیش از دو برابر میانگین برگشت زده‌اند (میانگین ${money(Math.round(avg))} ریال).`
+-        : 'نرخ برگشت همه‌ی کاربران نزدیک به میانگین است.',
+-      amount: outliers.reduce((s, [, v]) => s + v.total, 0),
+-      count: outliers.length,
+-      sources: outliers.map(([uid, v]) => ({
++      detail: outlierStats.length
++        ? `${faDigits(outlierStats.length)} کاربر نسبت برگشت غیرعادی دارند؛ مقایسه با فروش همان بازه و حداقل دو برگشت انجام شده است.`
++        : 'نسبت برگشت کاربران از آستانه‌ی بررسی عبور نکرده است.',
++      amount: outlierStats.reduce((s, v) => s + v.returnTotal, 0),
++      count: outlierStats.length,
++      sources: outlierStats.map((v) => ({
+         kind: 'USER',
+-        id: uid,
+-        label: `${umap.get(uid) ?? 'مدیر'} · ${faDigits(v.count)} برگشت`,
+-        amount: v.total,
++        id: v.userId,
++        label: `${umap.get(v.userId) ?? 'مدیر'} · ${faDigits(v.returnCount)} برگشت · ${
++          v.rate == null ? 'فروش هم‌بازه ندارد' : `نسبت ${faDigits(Math.round(v.rate * 100))}٪`
++        }`,
++        amount: v.returnTotal,
+         dateJalali: null
+       }))
+     })
+diff -ruN mahak-s88-pristine/tests/audit-fixes/fix-s89-return-rate.mjs mahak-s89-stage/tests/audit-fixes/fix-s89-return-rate.mjs
+--- a/tests/audit-fixes/fix-s89-return-rate.mjs	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/audit-fixes/fix-s89-return-rate.mjs	2026-09-23 14:59:17.417044580 +0000
+@@ -0,0 +1,48 @@
++/**
++ * نشست ۸۹ · خوشه I
++ *
++ * نرخ برگشت نباید با میانگین خامِ مبلغ برگشت سنجیده شود؛ با یک فروشنده
++ * همیشه خودش میانگین می‌شود و هیچ‌وقت هشدار نمی‌دهد. این تست قرارداد
++ * helper مقاوم در برابر نمونه‌های کم را تثبیت می‌کند.
++ *
++ * node --import ./test/harness/register.mjs tests/audit-fixes/fix-s89-return-rate.mjs
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++process.env.HARNESS_DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s89-'))
++process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (got === want) { ok++; console.log(`  ✓ ${label}`) }
++  else { bad++; console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)} · انتظار ${JSON.stringify(want)}`) }
++}
++
++const { detectReturnRateOutliers } = await import('../../src/main/services/FraudService.ts')
++
++const peers = detectReturnRateOutliers([
++  { userId: 1, returnTotal: 400, returnCount: 2, salesTotal: 1000 },
++  { userId: 2, returnTotal: 100, returnCount: 2, salesTotal: 1000 }
++])
++eq('در دو فروشنده، نرخ ۴۰٪ نسبت به همتای ۱۰٪ هشدار می‌دهد', peers.map((x) => x.userId).join(','), '1')
++
++const one = detectReturnRateOutliers([
++  { userId: 7, returnTotal: 300, returnCount: 2, salesTotal: 1000 }
++])
++eq('در یک فروشنده، نرخ مطلق ۳۰٪ با حداقل دو برگشت هشدار می‌دهد', one.map((x) => x.userId).join(','), '7')
++
++const oneSmall = detectReturnRateOutliers([
++  { userId: 8, returnTotal: 300, returnCount: 1, salesTotal: 1000 }
++])
++eq('یک برگشت تنها هشدار نرخ نمی‌سازد', oneSmall.length, 0)
++
++const noSales = detectReturnRateOutliers([
++  { userId: 9, returnTotal: 500, returnCount: 2, salesTotal: 0 }
++])
++eq('چند برگشت بدون فروشِ هم‌بازه پنهان نمی‌ماند', noSales.map((x) => x.userId).join(','), '9')
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++if (bad) process.exit(1)

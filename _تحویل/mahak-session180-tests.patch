@@ -1,0 +1,50 @@
+diff --git a/tests/audit-fixes/fix-s104-report-scale-followups.mjs b/tests/audit-fixes/fix-s104-report-scale-followups.mjs
+index 0f2d1ef..2acbcd8 100644
+--- a/tests/audit-fixes/fix-s104-report-scale-followups.mjs
++++ b/tests/audit-fixes/fix-s104-report-scale-followups.mjs
+@@ -20,7 +20,9 @@ const check = (label, actual) => {
+ check('پرداخت‌های جزئیات شیفت با readAll کامل خوانده می‌شوند', /const payments = await readAll/.test(cashbox))
+ check('سقف بی‌هشدار ۵۰۰۰ پرداخت حذف شده است', !/take:\s*5000/.test(cashbox))
+ check('IN پرداخت‌های فاکتور chunk شده است', /chunksOf\(invoiceIds\)/.test(cashbox))
+-check('برگشت‌های معلق با readAll کامل خوانده می‌شوند', /return readAll\(\(page\) => client\.saleReturn\.findMany/.test(pending))
++// نشست ۱۸۰ (S180-D3): `readAll` حالا با پارامتر تایپ صریح صدا زده می‌شود
++// (`readAll<PendingReturnRow>`)؛ معنای قرارداد «خواندن کامل بدون سقف» عوض نشده.
++check('برگشت‌های معلق با readAll کامل خوانده می‌شوند', /return readAll(?:<\w+>)?\(\(page\) => client\.saleReturn\.findMany/.test(pending))
+ check('سقف بی‌هشدار ۵۰۰۰ برگشت حذف شده است', !/take:\s*5000/.test(pending))
+ check('IN درخواست کارت‌به‌کارت chunk شده است', /chunksOf\(returnIds\)/.test(pending))
+ check('IN کالاهای معلق chunk شده است', /chunksOf\(variantIds\)/.test(pending))
+diff --git a/tests/audit-fixes/fix-s105-report-limits-filter-propagation.mjs b/tests/audit-fixes/fix-s105-report-limits-filter-propagation.mjs
+index 74a5d34..38e9c20 100644
+--- a/tests/audit-fixes/fix-s105-report-limits-filter-propagation.mjs
++++ b/tests/audit-fixes/fix-s105-report-limits-filter-propagation.mjs
+@@ -33,9 +33,12 @@ check('برگشت و تعویض همان دامنه‌ی جدول را مصرف
+ check('چک همان where جدول را مصرف می‌کند', /prisma\.payment\.count\(\{ where: chequeWhere \}\)/.test(service))
+ check('اعتبار legacy از totalCount سرویس واقعی استفاده می‌کند', /storeCreditService[\s\S]{0,500}result\.page\.totalCount/.test(service))
+ check(
++  // نشست ۱۸۰ (S180-D13): `page` در CreditReportResult اختیاری است، پس خوانش
++  // با `?.` و fallback به rows.length انجام می‌شود؛ پنجره‌ی regex هم برای
++  // یادداشت توضیحی بازتر شد. معنای قرارداد (مصرف همان کانال) عوض نشده.
+   // ممیزی A105-01 — شمارنده‌ی نسیه همان creditList جدول است؛ دروازه‌ی DRAFT/CANCELED داخل creditList
+   'شمارش نسیه همان کانال جدول (creditList با دروازه‌ی لغوشده/پیش‌نویس) را مصرف می‌کند',
+-  /salesService[\s\S]{0,40}\.creditList\(\{[\s\S]{0,300}result\.page\.totalCount/.test(service)
++  /salesService[\s\S]{0,40}\.creditList\(\{[\s\S]{0,700}result\.page\??\.totalCount/.test(service)
+ )
+ check('سقف اعتبار در همان ردیف شمارش‌شده اعلام می‌شود', /row\('storeCredits', 'اعتبار خرید', creditList/.test(service))
+ 
+diff --git a/tests/audit-fixes/fix-s88-staff-report-integrity.mjs b/tests/audit-fixes/fix-s88-staff-report-integrity.mjs
+index 40bad4f..3ecfaef 100644
+--- a/tests/audit-fixes/fix-s88-staff-report-integrity.mjs
++++ b/tests/audit-fixes/fix-s88-staff-report-integrity.mjs
+@@ -49,8 +49,10 @@ eq('مصرف اعتبار کارمند ردیف عملکرد را می‌ساز
+ eq('بازه‌ی پیش‌فرض StaffReportService امروز است', /const reportRange[\s\S]{0,180}jalaliToday\(\)/.test(service), true)
+ eq('SaleReturn با relation user select نمی‌شود', /saleReturn\.findMany[\s\S]{0,900}user:\s*\{\s*select/.test(service), false)
+ eq('SaleReturn با relation shift select نمی‌شود', /saleReturn\.findMany[\s\S]{0,900}shift:\s*\{\s*select/.test(service), false)
+-eq('نام کاربر برگشت از lookup اسکالر خوانده می‌شود', /returnMaps\.users\.get\(r\.userId\)/.test(service), true)
+-eq('نام شیفت برگشت از lookup اسکالر خوانده می‌شود', /returnMaps\.shifts\.get\(r\.shiftId\)/.test(service), true)
++// نشست ۱۸۰ (S180-D4): helperهای null-safe `userOf`/`shiftOf` جایگزین `map.get` شدند؛
++// معنای قرارداد (خواندن از lookup اسکالر، نه relation پریزمایی) دست‌نخورده است.
++eq('نام کاربر برگشت از lookup اسکالر خوانده می‌شود', /returnMaps\.(users\.get|userOf)\(r\.userId\)/.test(service), true)
++eq('نام شیفت برگشت از lookup اسکالر خوانده می‌شود', /returnMaps\.(shifts\.get|shiftOf)\(r\.shiftId\)/.test(service), true)
+ eq('ریز مصرف اعتبار از main برمی‌گردد', /creditRedemptions/.test(service), true)
+ eq('پنل ستون تعداد مصرف اعتبار دارد', /تعداد مصرف اعتبار/.test(panel), true)
+ eq('پنل ستون مبلغ مصرف اعتبار دارد', /جمع مصرف اعتبار/.test(panel), true)

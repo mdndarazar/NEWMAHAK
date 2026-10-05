@@ -1,0 +1,158 @@
+diff -ruN base/src/main/print/templates.ts s/mahak/src/main/print/templates.ts
+--- base/src/main/print/templates.ts	2026-09-27 13:40:27.920026305 +0000
++++ s/mahak/src/main/print/templates.ts	2026-09-27 13:50:15.931437797 +0000
+@@ -821,6 +821,8 @@
+   showRemaining: boolean
+   /** نسخه‌ی دوم به بعد ⇒ برچسب «نسخه‌ی مجدد» (§۱۳) */
+   reprint: boolean
++  /** نشست ۱۷۳ · S173-D5 — اعتبار باطل‌شده ⇒ نوار صریح «باطل شده — غیرقابل استفاده» بالای برگه */
++  voided?: boolean
+   printCount: number
+   linkedReceiptNo?: number | null
+   note?: string | null
+@@ -849,6 +851,13 @@
+ /** بدنه‌ی یک سند اعتبار (بدون <html>) — تا چاپ گروهی بتواند N تا را کنار هم بچیند. */
+ function creditDocBody(d: CreditDocData, t: ReceiptTemplate): string {
+   const parts: string[] = []
++  /**
++   * نشست ۱۷۳ · S173-D5 (مشاهده‌ی ۱۰۶/۱۰۷) — چاپ دسته‌ای اعتبار باطل‌شده‌ی دسته را هم چاپ می‌کند
++   * (سابقه‌ی چاپ عمداً حذف نمی‌شود)، ولی برگه‌ی باطل نباید شبیه سند معتبر باشد: مبلغ درشت و
++   * بارکد بدون نشان صریح ابزار فریب مشتری است. بازخرید در main همچنان رد می‌شود.
++   */
++  if (d.voided)
++    parts.push('<div class="reprint">باطل شده — غیرقابل استفاده · این برگه هیچ ارزش خریدی ندارد</div>')
+   if (d.reprint)
+     parts.push(`<div class="reprint">نسخه‌ی مجدد (چاپ ${faDigits(d.printCount)})</div>`)
+   /**
+diff -ruN base/src/main/services/PrintService.ts s/mahak/src/main/services/PrintService.ts
+--- base/src/main/services/PrintService.ts	2026-09-27 13:40:27.920026305 +0000
++++ s/mahak/src/main/services/PrintService.ts	2026-09-27 13:50:21.327469107 +0000
+@@ -28,6 +28,7 @@
+   CREDIT_MARK_PRINTED_NONE,
+   CREDIT_SCOPE_LABELS,
+   CreditRestrictScope,
++  CreditStatus,
+   creditCopyPlan,
+   creditPaperSize,
+   creditPdfAuditOnly,
+@@ -554,6 +555,8 @@
+       // چاپ مجدد اعتبار جدید نمی‌سازد؛ فقط برچسب می‌خورد (§۱۳).
+       // آستانه‌اش تصمیمِ مشترک بخش ۹.۲ است، نه یک مقایسه‌ی محلی.
+       reprint: isCreditReprint(c.printCount),
++      // نشست ۱۷۳ · S173-D5 — سند باطل‌شده روی کاغذ صریحاً «باطل شده — غیرقابل استفاده»
++      voided: c.status === CreditStatus.CANCELED,
+       printCount: c.printCount + 1,
+       linkedReceiptNo: c.exchangeReceiptNo ?? c.sourceReceiptNo ?? null,
+       note: c.note
+diff -ruN base/src/main/services/SalesLedger.ts s/mahak/src/main/services/SalesLedger.ts
+--- base/src/main/services/SalesLedger.ts	2026-09-27 13:40:27.920026305 +0000
++++ s/mahak/src/main/services/SalesLedger.ts	2026-09-27 13:47:12.442373243 +0000
+@@ -374,12 +374,25 @@
+     // ------------------ ۴) وصول نسیه‌ی بازه‌های قبل ------------------
+     let priorSettlementPage = { skip: 0, take: sectionCap, totalCount: 0, truncated: false }
+     if (period.from) {
++      /**
++       * نشست ۱۷۳ · S173-D4 (مشاهده‌ی باز ۱۰۶/۱۰۷) — مصرف اعتبار خرید/تعویض «وصول نسیه» نیست و قبلاً
++       * فقط بعد از take در JS کنار گذاشته می‌شد ⇒ count و هشدار سقف دروغ، و بدتر: مصرف‌های زودتر
++       * جای take را پر می‌کردند و وصول نقدی واقعی دوره‌ی قبل از دفتر غیب می‌شد. حالا همان شرط
++       * پیش از take/count در where است (methodId غیرتهی است؛ فهرست روش‌ها کوچک است).
++       */
++      const creditMethodIds = (
++        await prisma.paymentMethod.findMany({
++          where: { kind: { in: [PaymentKind.STORE_CREDIT, PaymentKind.EXCHANGE_CREDIT] } },
++          select: { id: true }
++        })
++      ).map((m) => m.id)
+       const priorPaymentWhere = {
+           invoice: { ...eventInvoiceContext, issuedAt: { lt: period.from } },
+           // ممیزی A88-03 — پرداخت باطل‌شده در دفتر رویداد نمی‌آید (مثل ردیف‌های اصلی پرداخت)
+           voidedAt: null,
+           ...createdPaymentOwner,
+           kind: PaymentEntryKind.CASH,
++          ...(creditMethodIds.length ? { methodId: { notIn: creditMethodIds } } : {}),
+           ...(window ? { paidAt: window } : {})
+         }
+       const [priorPayments, priorTotal] = await Promise.all([
+diff -ruN base/src/main/services/accountingReport.ts s/mahak/src/main/services/accountingReport.ts
+--- base/src/main/services/accountingReport.ts	2026-09-27 13:40:27.920026305 +0000
++++ s/mahak/src/main/services/accountingReport.ts	2026-09-27 13:43:50.017198813 +0000
+@@ -22,7 +22,7 @@
+   CashMovementType,
+   orderTypesForChannels
+ } from '@shared/enums'
+-import { toJalaliDate } from '@shared/jalali'
++import { toJalaliDate, money } from '@shared/jalali'
+ import { remainingOf, isSimpleReturn, refundFromReceivedOf, exchangeRefundPartOf, exchangeDebtReductionOf } from '@shared/settlement'
+ import { debtAdjustmentsByInvoice, adjustmentsOrEmpty } from './invoiceDebt'
+ import { creditIdsForReportScope } from './creditReportScope'
+@@ -1130,13 +1130,23 @@
+       .sort((x, y) => y.r.id - x.r.id)
+     const pageRows = matching.slice(skip, skip + take)
+     const amountOf = new Map(pageRows.map((x) => [x.r.id, x.amt]))
+-    const full = pageRows.length
+-      ? await prisma.payment.findMany({
+-          where: { id: { in: pageRows.map((x) => x.r.id) } },
++    /**
++     * نشست ۱۷۳ · S173-D1 — take تا ۲٬۰۰۰ مجاز است؛ `id in pageRows` برای صفحه‌ی بزرگ از سقف IN
++     * گزارش‌ها (۵۰۰، REPORT_IN_CHUNK) رد می‌شد، خطا در catch همین تابع بلعیده می‌شد و drill ردیف
++     * «وجه واقعی» با ۶۰۰ پرداخت «۰ سند» نشان می‌داد. شناسه‌های صفحه در دسته‌های ۵۰۰تایی خوانده و
++     * دوباره به ترتیب id نزولی چیده می‌شوند؛ شمارش و جمع‌ها دست نمی‌خورند.
++     */
++    const pageIds = pageRows.map((x) => x.r.id)
++    const full: any[] = []
++    for (let i = 0; i < pageIds.length; i += 500)
++      full.push(
++        ...(await prisma.payment.findMany({
++          where: { id: { in: pageIds.slice(i, i + 500) } },
+           include: { invoice: { select: { receiptNo: true } }, method: { select: { label: true, kind: true } } },
+           orderBy: { id: 'desc' }
+-        })
+-      : []
++        }))
++      )
++    full.sort((a, b) => Number(b.id) - Number(a.id))
+     for (const r of full) {
+       const amt = amountOf.get(r.id) ?? 0
+       out.push({
+@@ -1316,6 +1326,13 @@
+   } catch (e) {
+     // نبودن drill-down نباید کل گزارش را از کار بیندازد
+     console.error('[accounting] bridge sources failed', key, e)
++    /**
++     * نشست ۱۷۳ · S173-D2 — قبلاً خطا بی‌صدا به «۰ سند، totalCount ۰» تبدیل می‌شد و ردیف پل
++     * «بی‌مدرک» به نظر می‌رسید. حالا صفحه صریحاً failed است و buildStatements هشدار فارسی
++     * با مبلغ ردیف می‌سازد؛ هیچ سند نیمه‌خوانده‌ای هم نشان داده نمی‌شود.
++     */
++    out.length = 0
++    return { sources: out, page: { ...makePage(0), failed: true } }
+   }
+   return { sources: out, page: makePage(out.length) }
+ }
+@@ -1531,7 +1548,14 @@
+       sources: drill?.sources ?? [],
+       sourcesPage: drill?.page,
+       // ممیزی A108-03 — صفحه‌ی آخر هم «بخشی از اسناد» است (bridgeDrillPager مشترک با UI)
+-      sourcesWarning: drill ? (bridgeDrillPager(drill.page, drill.sources.length).warning ?? undefined) : undefined
++      // نشست ۱۷۳ · S173-D2 — خطای خواندن drill هشدار صریح می‌گیرد، نه «۰ سند» بی‌صدا
++      sourcesWarning: drill
++        ? drill.page.failed
++          ? `اسناد سازنده‌ی این ردیف خوانده نشد (خطا در خواندن پایگاه داده). عدد ردیف (${money(r.amount)} ریال) ` +
++            'از جمع اصلی گزارش است و معتبر می‌ماند؛ فهرست خالی به معنی «بدون سند» نیست. ' +
++            'گزارش را دوباره باز کنید یا صفحه‌ی کوچک‌تری انتخاب کنید.'
++          : (bridgeDrillPager(drill.page, drill.sources.length).warning ?? undefined)
++        : undefined
+     })
+   }
+ 
+diff -ruN base/src/shared/types.ts s/mahak/src/shared/types.ts
+--- base/src/shared/types.ts	2026-09-27 13:40:27.924026329 +0000
++++ s/mahak/src/shared/types.ts	2026-09-27 13:43:50.017198813 +0000
+@@ -1161,6 +1161,8 @@
+   totalCount: number
+   /** ردیف‌های نمایش‌داده‌شده کمتر از کل هستند؟ */
+   truncated: boolean
++  /** نشست ۱۷۳ · S173-D2 — خواندن اسناد drill پل با خطا روبه‌رو شد (فهرست خالی ≠ «بدون سند») */
++  failed?: boolean
+ }
+ 
+ /**

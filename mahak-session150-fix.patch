@@ -1,0 +1,829 @@
+diff -ruN pristine149/src/main/ipc/index.ts proj/mahak-session131/src/main/ipc/index.ts
+--- pristine149/src/main/ipc/index.ts	2026-09-25 14:15:25.374276811 +0000
++++ proj/mahak-session131/src/main/ipc/index.ts	2026-09-25 14:22:49.108851240 +0000
+@@ -504,13 +504,16 @@
+   handle(IPC.managerPanelLocksSet, (p) => authService.setPanelLocks(p ?? {}))
+ 
+   // ---- بند ۴: ماژول «تخفیف و افزایش/کاهش قیمت» ----
++  // نشست ۱۵۰ · بند ۴-۳۹ — mutationهای تغییر گروهی قیمت: گیت در سرویس، actor فقط از نشست main
+   handle(IPC.priceAdjustPreview, (p) => priceAdjustService.preview(p))
+-  handle(IPC.priceAdjustApply, (p) => priceAdjustService.apply(p))
++  handle(IPC.priceAdjustApply, async (p) => priceAdjustService.apply(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.priceAdjustBatches, (p) => priceAdjustService.batches(p ?? {}))
+   handle(IPC.priceAdjustBatchLines, (p) => priceAdjustService.batchLines(p ?? {}))
+-  handle(IPC.priceAdjustRevert, (p) => priceAdjustService.revert(p ?? {}))
+-  handle(IPC.priceAdjustBatchEdit, (p) => priceAdjustService.editBatch(p ?? {}))
+-  handle(IPC.priceAdjustBatchesDelete, (p) => priceAdjustService.deleteBatches(p ?? {}))
++  handle(IPC.priceAdjustRevert, async (p) => priceAdjustService.revert(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.priceAdjustBatchEdit, async (p) => priceAdjustService.editBatch(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.priceAdjustBatchesDelete, async (p) =>
++    priceAdjustService.deleteBatches(await withOptionalSessionActor(p ?? {}))
++  )
+   handle(IPC.priceAdjustActiveDiscounts, (p) => priceAdjustService.activeDiscounts(p ?? {}))
+   handle(IPC.priceAdjustRunSchedule, () => priceAdjustService.runDueSchedules())
+   // ---- بند ۳: سیاست تخفیف پنل فروش ----
+diff -ruN pristine149/src/main/services/PartyService.ts proj/mahak-session131/src/main/services/PartyService.ts
+--- pristine149/src/main/services/PartyService.ts	2026-09-25 14:15:25.374276811 +0000
++++ proj/mahak-session131/src/main/services/PartyService.ts	2026-09-25 14:30:36.003560042 +0000
+@@ -1,7 +1,7 @@
+ import { prisma } from '../db/client'
+ import { audit } from './AuditService'
+ import { BusinessError } from '../errors'
+-import { toJalaliDate, toLatinDigits, faDigits } from '@shared/jalali'
++import { toJalaliDate, toLatinDigits, faDigits, money } from '@shared/jalali'
+ import type {
+   PagedRows,
+   CustomerDeleteResult,
+@@ -12,6 +12,25 @@
+ } from '@shared/types'
+ import type { Prisma } from '@prisma/client'
+ 
++/**
++ * نشست ۱۵۰ · بند ۴-۲۸(د) — «مجموع مبلغ خرید دستی» (Customer.manualPurchaseTotal، Prisma Int).
++ * خالی (undefined/null) ⇒ ۰؛ متن/NaN/اعشار/منفی/بیش از سقف ⇒ رد فارسی، نه گرد/صفرکردن بی‌صدا.
++ */
++const MANUAL_PURCHASE_MAX = 2_147_483_647
++function assertManualPurchaseTotal(raw: unknown): number {
++  if (raw == null) return 0
++  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0)
++    throw new BusinessError(
++      `مجموع مبلغ خرید دستی باید عدد صحیح صفر یا بیشتر به ریال باشد؛ مقدار «${typeof raw === 'number' ? faDigits(String(raw)) : String(raw)}» ` +
++        'پذیرفته نیست (اعشار، منفی یا متن گرد/صفر نمی‌شود). هیچ تغییری ذخیره نشد.'
++    )
++  if (raw > MANUAL_PURCHASE_MAX)
++    throw new BusinessError(
++      `مجموع مبلغ خرید دستی (${money(raw)} ریال) از سقف مجاز ${money(MANUAL_PURCHASE_MAX)} ریال بیشتر است. هیچ تغییری ذخیره نشد.`
++    )
++  return raw
++}
++
+ type Client = Prisma.TransactionClient | typeof prisma
+ 
+ /** شماره تلفن یکدست: ارقام فارسی → لاتین، حذف فاصله و خط تیره. */
+@@ -252,6 +271,8 @@
+   async createCustomer(input: PartyInput & { isWholesale?: boolean; manualPurchaseTotal?: number }) {
+     const name = input.name?.trim()
+     if (!name) throw new Error('نام مشتری الزامی است')
++    // نشست ۱۵۰ — پیش از هر نوشتن (شامل ارتقای مشتری هم‌شماره)
++    const manualPurchaseTotal = assertManualPurchaseTotal(input.manualPurchaseTotal)
+     const wholesale = input.isWholesale === true
+     const phone = normalizePhone(input.phone) || null
+     /**
+@@ -289,7 +310,7 @@
+         phone,
+         address: input.address?.trim() || null,
+         isWholesale: wholesale,
+-        manualPurchaseTotal: Math.max(0, Math.round(Number(input.manualPurchaseTotal) || 0))
++        manualPurchaseTotal
+       }
+     })
+     await audit(prisma, {
+@@ -314,6 +335,9 @@
+     if (!before) throw new BusinessError('این مشتری پیدا نشد؛ فهرست را تازه‌سازی کنید.')
+ 
+     const data: Prisma.CustomerUpdateInput = {}
++    // نشست ۱۵۰ — validation عددی پیش از هر فیلد دیگر ⇒ رد کامل، نه ذخیره‌ی نیمه
++    const manualPurchaseTotal =
++      input.manualPurchaseTotal !== undefined ? assertManualPurchaseTotal(input.manualPurchaseTotal) : undefined
+     if (input.name !== undefined) {
+       const name = String(input.name ?? '').trim()
+       if (!name) throw new BusinessError('نام مشتری نمی‌تواند خالی باشد.')
+@@ -333,8 +357,7 @@
+     }
+     if (input.address !== undefined) data.address = String(input.address ?? '').trim() || null
+     if (input.isWholesale !== undefined) data.isWholesale = input.isWholesale === true
+-    if (input.manualPurchaseTotal !== undefined)
+-      data.manualPurchaseTotal = Math.max(0, Math.round(Number(input.manualPurchaseTotal) || 0))
++    if (manualPurchaseTotal !== undefined) data.manualPurchaseTotal = manualPurchaseTotal
+ 
+     if (!Object.keys(data).length) return before
+     const after = await prisma.customer.update({ where: { id }, data })
+diff -ruN pristine149/src/main/services/PriceAdjustService.ts proj/mahak-session131/src/main/services/PriceAdjustService.ts
+--- pristine149/src/main/services/PriceAdjustService.ts	2026-09-25 14:15:25.374276811 +0000
++++ proj/mahak-session131/src/main/services/PriceAdjustService.ts	2026-09-25 14:22:49.104851217 +0000
+@@ -3,6 +3,8 @@
+ import { audit } from './AuditService'
+ import { BusinessError } from '../errors'
+ import { TX_OPTIONS } from '../db/tx'
++import { assertPanelPassword } from './AuthService'
++import { PANEL_KEYS } from '@shared/panels'
+ import { faDigits, isValidJalaliDate, jalaliAtClock, money, toClock, toJalaliDate } from '@shared/jalali'
+ import { AuditAction } from '@shared/enums'
+ import {
+@@ -143,26 +145,99 @@
+   return rows
+ }
+ 
++/**
++ * نشست ۱۵۰ · بند ۴-۲۸(د) — سقف ستون‌های قیمت (Prisma Int، i32). تا مهاجرت BigInt
++ * (خوشه‌ی M) هر قیمت/مبلغ/جمع اختلافی که در ستون Int می‌نشیند پیش از نوشتن با همین
++ * سقف و پیام فارسی سنجیده می‌شود، نه خطای خام انگلیسی Prisma یا نوشتن بی‌سقف.
++ */
++export const PRICE_ADJUST_MAX = 2_147_483_647
++
++const shown = (v: unknown): string => (typeof v === 'number' ? faDigits(String(v)) : String(v))
++
++/**
++ * نشست ۱۵۰ · S150-D1 — یک عدد صحیح قاعده، بدون گرد/clamp بی‌صدا.
++ * خالی (undefined/null) فقط برای فیلدهای اختیاری (رُند، کف) مجاز است و مقدار پیش‌فرض
++ * همیشگی را می‌گیرد؛ متن، NaN، اعشار، منفی و بیش از سقف ⇒ BusinessError فارسی.
++ */
++function ruleInt(
++  raw: unknown,
++  label: string,
++  opts: { min: number; fallback?: number; unit?: string }
++): number {
++  if (raw == null && opts.fallback != null) return opts.fallback
++  const unit = opts.unit ?? ''
++  if (typeof raw !== 'number' || !Number.isFinite(raw))
++    throw new BusinessError(
++      `${label} باید عدد صحیح باشد؛ مقدار «${shown(raw)}» پذیرفته نیست (متن یا مقدار نامعتبر گرد یا تبدیل نمی‌شود). هیچ قیمتی تغییر نکرد.`
++    )
++  if (!Number.isInteger(raw))
++    throw new BusinessError(
++      `${label} باید عدد صحیح باشد؛ «${shown(raw)}»${unit} پذیرفته نیست (اعشار بی‌صدا به ${shown(Math.round(raw))} گرد نمی‌شود). هیچ قیمتی تغییر نکرد.`
++    )
++  if (raw < opts.min)
++    throw new BusinessError(
++      `${label} باید ${opts.min <= 0 ? 'صفر یا بیشتر' : `${faDigits(String(opts.min))} یا بیشتر`} باشد؛ «${shown(raw)}»${unit} پذیرفته نیست. هیچ قیمتی تغییر نکرد.`
++    )
++  if (raw > PRICE_ADJUST_MAX)
++    throw new BusinessError(
++      `${label} (${money(raw)}${unit}) از سقف مجاز ${money(PRICE_ADJUST_MAX)} ریال بیشتر است. هیچ قیمتی تغییر نکرد.`
++    )
++  return raw
++}
++
+ /** ورودی خام ⇒ یک قاعده‌ی تمیز و معتبر (یا خطای فارسی). */
+ function ruleOf(input: PriceAdjustInput): PriceAdjustRule {
+   const kind = normalizeKind(input?.kind)
+   const mode = normalizeMode(input?.mode)
+-  const value = Math.round(Number(input?.value) || 0)
+-  if (value <= 0)
++  const rawValue = input?.value as unknown
++  // پیام قدیمی برای خالی/صفر/منفی حفظ شد (همان متنی که کاربر می‌شناسد)
++  if (typeof rawValue === 'number' && Number.isFinite(rawValue) && rawValue <= 0)
+     throw new BusinessError(
+       mode === 'PERCENT' ? 'درصد را وارد کنید (بزرگ‌تر از صفر).' : 'مبلغ را وارد کنید (بزرگ‌تر از صفر).'
+     )
++  const value = ruleInt(rawValue, mode === 'PERCENT' ? 'درصد تغییر' : 'مبلغ تغییر', {
++    min: 1,
++    unit: mode === 'PERCENT' ? '٪' : ' ریال'
++  })
+   if (mode === 'PERCENT' && value > 100) throw new BusinessError('درصد نمی‌تواند بیشتر از ۱۰۰ باشد.')
+   return {
+     kind,
+     mode,
+     value,
+-    round: Math.max(1, Math.round(Number(input?.round) || 1)),
++    round: ruleInt(input?.round, 'گام رُند قیمت نهایی (۱ = بدون رُند)', { min: 1, fallback: 1, unit: ' ریال' }),
+     target: normalizeTarget(input?.target),
+-    minPrice: Math.max(0, Math.round(Number(input?.minPrice) || 0))
++    minPrice: ruleInt(input?.minPrice, 'کف قیمت (کمترین قیمت مجاز)', { min: 0, fallback: 0, unit: ' ریال' })
+   }
+ }
+ 
++/**
++ * نشست ۱۵۰ · S150-D2 — قیمت حاصل هر کالا پیش از نوشتن با سقف ستون سنجیده می‌شود؛
++ * عبور ⇒ کل عملیات رد (داخل تراکنش ⇒ rollback کامل)، نه نوشتن بی‌سقف.
++ */
++function assertAdjustedPrice(newPrice: number, oldPrice: number, name: string): void {
++  if (newPrice > PRICE_ADJUST_MAX)
++    throw new BusinessError(
++      `قیمت جدید «${name}» (${money(newPrice)} ریال، از ${money(oldPrice)} ریال) از سقف مجاز ${money(PRICE_ADJUST_MAX)} ریال ` +
++        'بیشتر می‌شود؛ هیچ قیمتی تغییر نکرد. مقدار تغییر را کمتر کنید یا این کالا را از دامنه خارج کنید.'
++    )
++}
++
++/** نشست ۱۵۰ · S150-D3 — جمع اختلاف دسته هم در ستون Int می‌نشیند. */
++function assertDeltaTotal(deltaTotal: number): void {
++  if (Math.abs(deltaTotal) > PRICE_ADJUST_MAX)
++    throw new BusinessError(
++      `جمع اختلاف قیمت این دسته (${money(Math.abs(deltaTotal))} ریال) از سقف مجاز ${money(PRICE_ADJUST_MAX)} ریال ` +
++        'بیشتر است و تا مهاجرت ستون‌ها به BigInt قابل ثبت در سابقه نیست؛ هیچ قیمتی تغییر نکرد. ' +
++        'دامنه را به چند دسته‌ی کوچک‌تر تقسیم کنید.'
++    )
++}
++
++/** نشست ۱۵۰ · بند ۴-۳۹ — گیت main تغییر گروهی قیمت (بیرون از تراکنش). */
++async function adjustGate(password: unknown, action: string): Promise<'MANAGER' | 'PANEL' | 'OPEN'> {
++  return assertPanelPassword(PANEL_KEYS.priceAdjust, typeof password === 'string' ? password : null, action)
++}
++const gateNote = (scope: string): string => ` · تأیید قفل تغییر گروهی قیمت: ${scope}`
++
+ /** شرط `where` دامنه‌ی انتخاب کالاها (بدون هیچ نوشتنی). */
+ async function scopeWhere(
+   input: PriceAdjustInput,
+@@ -410,6 +485,7 @@
+     for (const v of variants) {
+       const oldPrice = target === 'PURCHASE' ? v.purchasePrice : v.salePrice
+       const newP = nextPrice(oldPrice, rule)
++      assertAdjustedPrice(newP, oldPrice, variantTitle(v))
+       const delta = newP - oldPrice
+       let skipReason: string | null = null
+       if (delta === 0) {
+@@ -441,6 +517,7 @@
+       })
+     }
+ 
++    assertDeltaTotal(newTotal - oldTotal)
+     const warnings: string[] = []
+     if (!variants.length)
+       warnings.push('در این دامنه هیچ کالای فعالی پیدا نشد؛ انتخاب دسته یا فهرست کالاها را بررسی کنید.')
+@@ -496,6 +573,8 @@
+       normalizeScope(input?.scope) === 'VARIANTS'
+         ? [...new Set((input?.variantIds ?? []).map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0))]
+         : []
++    // نشست ۱۵۰ · بند ۴-۳۹ — بعد از validation ورودی، پیش از هر نوشتن/تراکنش
++    const gate = await adjustGate(input?.password, 'تغییر گروهی قیمت')
+ 
+     /**
+      * -----------------------------------------------------------------------
+@@ -553,7 +632,7 @@
+           startAtTime: win.startTime,
+           endAtJalali: win.endJalali,
+           endAtTime: win.endTime
+-        })}`
++        })}${gateNote(gate)}`
+       }).catch(() => undefined)
+ 
+       // زمان‌بند را همان لحظه بیدار می‌کنیم تا تایمرش با این قرارِ تازه هم‌تراز شود
+@@ -593,6 +672,7 @@
+         const oldPrice = target === 'PURCHASE' ? v.purchasePrice : v.salePrice
+         const newP = nextPrice(oldPrice, rule)
+         if (newP === oldPrice) continue
++        assertAdjustedPrice(newP, oldPrice, variantTitle(v))
+         changes.push({ variantId: v.id, name: variantTitle(v), code: v.code, oldPrice, newPrice: newP })
+       }
+ 
+@@ -604,6 +684,7 @@
+ 
+       const at = new Date()
+       const deltaTotal = changes.reduce((s, c) => s + (c.newPrice - c.oldPrice), 0)
++      assertDeltaTotal(deltaTotal)
+       const title = titleOf(rule, scope, categoryName, variants.length)
+ 
+       const batch = await tx.priceChangeBatch.create({
+@@ -664,7 +745,7 @@
+         entityId: batch.id,
+         userId: input?.userId ?? null,
+         after: JSON.stringify({ batchId: batch.id, itemCount: changes.length, deltaTotal, title }),
+-        note: title + (note ? ` · ${note}` : '')
++        note: title + (note ? ` · ${note}` : '') + gateNote(gate)
+       })
+ 
+       const sign = deltaTotal >= 0 ? '+' : '−'
+@@ -838,9 +919,12 @@
+    * می‌شود — نه این‌که کل بازگردانی با خطا بایستد.
+    * -------------------------------------------------------------------------
+    */
+-  async revert(input: { batchId?: number; userId?: number | null } = {}): Promise<PriceAdjustRevertResult> {
++  async revert(
++    input: { batchId?: number; userId?: number | null; password?: string | null } = {}
++  ): Promise<PriceAdjustRevertResult> {
+     const batchId = Number(input?.batchId ?? 0)
+     if (!batchId) throw new BusinessError('دسته‌ی تغییر قیمت مشخص نشده است.')
++    const gate = await adjustGate(input?.password, 'بازگردانی تغییر گروهی قیمت')
+ 
+     return prisma.$transaction(async (tx) => {
+       const batch = await tx.priceChangeBatch.findUnique({ where: { id: batchId }, include: { items: true } })
+@@ -895,7 +979,7 @@
+         userId: input?.userId ?? null,
+         before: JSON.stringify({ batchId: batch.id, title: batch.title }),
+         after: JSON.stringify({ restored, missing, deltaTotal }),
+-        note: `بازگردانی «${batch.title}» — قیمت ${restored} کالا به مقدار قبلش برگشت`
++        note: `بازگردانی «${batch.title}» — قیمت ${restored} کالا به مقدار قبلش برگشت${gateNote(gate)}`
+       })
+ 
+       return {
+@@ -983,6 +1067,7 @@
+     const batchId = Number(input?.batchId ?? 0)
+     if (!batchId) throw new BusinessError('دسته‌ی تغییر قیمت مشخص نشده است.')
+     const scope = normalizeScope(input?.scope)
++    const gate = await adjustGate(input?.password, 'ویرایش دامنه‌ی تغییر گروهی قیمت')
+ 
+     return prisma.$transaction(async (tx) => {
+       const batch = await tx.priceChangeBatch.findUnique({ where: { id: batchId }, include: { items: true } })
+@@ -1103,6 +1188,7 @@
+         const oldPrice = target === 'PURCHASE' ? v.purchasePrice : v.salePrice
+         const newP = nextPrice(oldPrice, rule)
+         if (newP === oldPrice) continue
++        assertAdjustedPrice(newP, oldPrice, variantTitle(v))
+         await tx.productVariant.update({
+           where: { id: v.id },
+           data: target === 'PURCHASE' ? { purchasePrice: newP } : { salePrice: newP }
+@@ -1123,6 +1209,7 @@
+       // ---- ۳) جمع‌بندی دوباره‌ی خودِ دسته ----
+       const items = await tx.priceChangeItem.findMany({ where: { batchId: batch.id } })
+       const deltaTotal = items.reduce((sum, i) => sum + (i.newPrice - i.oldPrice), 0)
++      assertDeltaTotal(deltaTotal)
+       const at = new Date()
+       const title = titleOf(rule, scope, categoryName, inScope.length)
+       await tx.priceChangeBatch.update({
+@@ -1150,7 +1237,8 @@
+         after: JSON.stringify({ scope, itemCount: items.length, deltaTotal, removedCount, addedCount }),
+         note:
+           `ویرایش دامنه‌ی «${batch.title}» ⇒ ${title} — قیمت ${removedCount} کالا به حالت قبل برگشت و ` +
+-          `${addedCount} کالای جدید وارد این دسته شد`
++          `${addedCount} کالای جدید وارد این دسته شد` +
++          gateNote(gate)
+       })
+ 
+       return {
+@@ -1189,6 +1277,7 @@
+     const ids = [...new Set((input?.batchIds ?? []).map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0))]
+     if (!ids.length) throw new BusinessError('هیچ ردیفی از سابقه انتخاب نشده است.')
+     const restore = input?.restorePrices === true
++    const gate = await adjustGate(input?.password, 'حذف سابقه‌ی تغییر گروهی قیمت')
+ 
+     return prisma.$transaction(async (tx) => {
+       const batches = await tx.priceChangeBatch.findMany({ where: { id: { in: ids } }, include: { items: true } })
+@@ -1235,7 +1324,8 @@
+         after: JSON.stringify({ deleted: batches.length, restorePrices: restore, restoredCount }),
+         note:
+           `حذف ${batches.length} ردیف از سابقه‌ی تغییر قیمت — ` +
+-          (restore ? `قیمت ${restoredCount} کالا هم به حالت قبل برگشت` : 'قیمت‌ها دست‌نخورده ماندند')
++          (restore ? `قیمت ${restoredCount} کالا هم به حالت قبل برگشت` : 'قیمت‌ها دست‌نخورده ماندند') +
++          gateNote(gate)
+       })
+ 
+       return {
+@@ -1388,6 +1478,7 @@
+       const oldPrice = target === 'PURCHASE' ? v.purchasePrice : v.salePrice
+       const newP = nextPrice(oldPrice, rule)
+       if (newP === oldPrice) continue
++      assertAdjustedPrice(newP, oldPrice, variantTitle(v))
+       await tx.productVariant.update({
+         where: { id: v.id },
+         data: target === 'PURCHASE' ? { purchasePrice: newP } : { salePrice: newP }
+@@ -1399,6 +1490,7 @@
+       changed++
+     }
+ 
++    assertDeltaTotal(deltaTotal)
+     const at = new Date()
+     await tx.priceChangeBatch.update({
+       where: { id: batch.id },
+diff -ruN pristine149/src/main/services/StoreCreditService.ts proj/mahak-session131/src/main/services/StoreCreditService.ts
+--- pristine149/src/main/services/StoreCreditService.ts	2026-09-25 14:15:25.374276811 +0000
++++ proj/mahak-session131/src/main/services/StoreCreditService.ts	2026-09-25 14:30:36.003560042 +0000
+@@ -1368,8 +1368,39 @@
+ // ۶) عملیات مدیریتی (§۸، §۱۰، §۱۱) — همه با رمز مدیر و Audit مقدار قبل/بعد
+ // ---------------------------------------------------------------------------
+ 
++/**
++ * نشست ۱۵۰ · بند ۴-۲۸(د) — عددهای عملیات مدیریتی اعتبار (ستون‌های Prisma Int).
++ * هیچ گرد/clamp بی‌صدایی نیست: خارج از بازه ⇒ رد فارسی با مقدار و بازه‌ی مجاز.
++ * همیشه *پیش از* رمز مدیر صدا زده می‌شود (مثل S147-a) تا پیام درست دیده شود.
++ */
++const CREDIT_INT_MAX = 2_147_483_647
++function assertCreditInt(raw: unknown, label: string, min: number, max: number = CREDIT_INT_MAX, unit = ''): number {
++  const shown = typeof raw === 'number' ? faDigits(String(raw)) : String(raw)
++  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < min)
++    throw new BusinessError(
++      `${label} باید عدد صحیح ${min <= 0 ? 'صفر یا بیشتر' : `${money(min)} یا بیشتر`}${max < CREDIT_INT_MAX ? ` و حداکثر ${money(max)}` : ''}${unit} باشد؛ ` +
++        `مقدار «${shown}» پذیرفته نیست (اعشار، منفی یا متن گرد/محدود نمی‌شود). هیچ تغییری ذخیره نشد.`
++    )
++  if (raw > max)
++    throw new BusinessError(
++      max < CREDIT_INT_MAX
++        ? `${label} باید عدد صحیح حداکثر ${money(max)}${unit} باشد؛ «${shown}» پذیرفته نیست (بی‌صدا به ${money(max)} محدود نمی‌شود). هیچ تغییری ذخیره نشد.`
++        : `${label} (${money(raw)}${unit}) از سقف مجاز ${money(CREDIT_INT_MAX)} ریال بیشتر است. هیچ تغییری ذخیره نشد.`
++    )
++  return raw
++}
++
++/** نشست ۱۵۰ — شناسه‌ی اعتبار: فقط عدد صحیح مثبت؛ ۱٫۵ دیگر به اعتبار #۲ گرد نمی‌شود. */
++function assertCreditId(id: unknown): number {
++  if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)
++    throw new BusinessError(
++      `شناسه‌ی اعتبار نامعتبر است («${String(id)}»)؛ اعتبار دیگری به‌جای آن بارگذاری یا تغییر داده نمی‌شود. فهرست را تازه کنید.`
++    )
++  return id
++}
++
+ async function loadCredit(client: Client, id: number): Promise<any> {
+-  const row = await client.storeCredit.findUnique({ where: { id: Math.round(Number(id) || 0) } })
++  const row = await client.storeCredit.findUnique({ where: { id: assertCreditId(id) } })
+   if (!row) throw new BusinessError('این اعتبار پیدا نشد؛ ممکن است حذف شده باشد. فهرست را تازه کنید.')
+   return row
+ }
+@@ -1401,6 +1432,7 @@
+     build: (row: any, reason: string) => { data: Record<string, unknown>; before: Record<string, unknown>; after: Record<string, unknown>; note: string }
+   }
+ ): Promise<StoreCreditRow> {
++  assertCreditId(input.id) // نشست ۱۵۰ — پیش از رمز
+   await assertManagerPassword(input.managerPassword, input.actionTitle)
+   const reason = requireReason(input.reason, input.actionTitle)
+ 
+@@ -1491,7 +1523,8 @@
+   managerPassword?: string | null
+   userId?: number | null
+ }): Promise<StoreCreditRow> {
+-  const extend = clampInt(input.extendDays, 0, 3650, 0)
++  // نشست ۱۵۰ — خالی ⇒ ۰؛ اعشار/منفی/متن/بیش از ۳٬۶۵۰ روز ⇒ رد (قبلاً clamp بی‌صدا)
++  const extend = input.extendDays == null ? 0 : assertCreditInt(input.extendDays, 'تعداد روز تمدید', 0, 3650, ' روز')
+   return managerChange({
+     ...input,
+     actionTitle: 'فعال‌سازی مجدد اعتبار خرید',
+@@ -1568,8 +1601,10 @@
+   managerPassword?: string | null
+   userId?: number | null
+ }): Promise<StoreCreditRow> {
+-  const amount = Math.max(0, Math.round(Number(input.amount) || 0))
+-  if (amount <= 0) throw new BusinessError('مبلغ اعتبار باید بزرگ‌تر از صفر باشد.')
++  // نشست ۱۵۰ — پیام قدیمی صفر/منفی حفظ شد؛ اعشار/متن/NaN/سقف ⇒ رد، نه گرد
++  if (typeof input.amount === 'number' && Number.isFinite(input.amount) && input.amount <= 0)
++    throw new BusinessError('مبلغ اعتبار باید بزرگ‌تر از صفر باشد.')
++  const amount = assertCreditInt(input.amount, 'مبلغ اعتبار', 1, CREDIT_INT_MAX, ' ریال')
+   return managerChange({
+     ...input,
+     actionTitle: 'تغییر مبلغ اعتبار خرید',
+@@ -1601,13 +1636,20 @@
+   managerPassword?: string | null
+   userId?: number | null
+ }): Promise<StoreCreditRow> {
++  // نشست ۱۵۰ — عددها پیش از رمز و بدون clamp (۵۰۰۰ دیگر بی‌صدا ۱۰۰۰ نمی‌شود)
++  const reqMaxUses =
++    input.maxUses == null ? null : assertCreditInt(input.maxUses, 'سقف دفعات مصرف', 1, MULTI_USE_UNLIMITED, ' بار')
++  const reqMaxPerTx =
++    input.maxPerTransaction == null
++      ? null
++      : assertCreditInt(input.maxPerTransaction, 'سقف هر تراکنش', 0, CREDIT_INT_MAX, ' ریال')
+   return managerChange({
+     ...input,
+     actionTitle: 'تغییر دفعات مصرف اعتبار خرید',
+     auditAction: AuditAction.CREDIT_USES_CHANGE,
+     build: (row, reason) => {
+       const multiUse = input.multiUse == null ? row.multiUse === true : input.multiUse === true
+-      let maxUses = input.maxUses == null ? Math.round(asNum(row.maxUses)) : clampInt(input.maxUses, 1, MULTI_USE_UNLIMITED, 1)
++      let maxUses = reqMaxUses == null ? Math.round(asNum(row.maxUses)) : reqMaxUses
+       /**
+        * جلسه ۳۵ · یافته‌ی هارنس واقعی (§۴ و §۸) — خطرناک‌ترین نوع باگ: *سکوت*.
+        *
+@@ -1619,7 +1661,7 @@
+        * دفعات بی‌معناست)، ولی در *تغییر مدیریتی* یک ورودی صریحِ متناقض است و
+        * باید با پیام روشن رد شود — نه این‌که برعکسِ خواسته اجرا شود.
+        */
+-      if (multiUse && input.maxUses != null && clampInt(input.maxUses, 1, MULTI_USE_UNLIMITED, 1) < 2)
++      if (multiUse && reqMaxUses != null && reqMaxUses < 2)
+         throw new BusinessError(
+           'سقف «یک بار» با حالت «چندباره تا سقف مبلغ» جمع نمی‌شود.\n' +
+             'اگر می‌خواهید این اعتبار یک‌بارمصرف شود، همان‌جا «چندباره» را خاموش کنید؛ ' +
+@@ -1632,7 +1674,7 @@
+           `این اعتبار تا حالا ${faDigits(usedCount)} بار مصرف شده است، پس سقف دفعات نمی‌تواند کمتر از ${faDigits(usedCount)} باشد.`
+         )
+       const maxPerTransaction =
+-        input.maxPerTransaction == null ? Math.round(asNum(row.maxPerTransaction)) : clampInt(input.maxPerTransaction, 0, Number.MAX_SAFE_INTEGER, 0)
++        reqMaxPerTx == null ? Math.round(asNum(row.maxPerTransaction)) : reqMaxPerTx
+       return {
+         data: { maxUses, multiUse, maxPerTransaction, settingsOverride: true, overrideReason: reason },
+         before: { maxUses: Math.round(asNum(row.maxUses)), multiUse: row.multiUse === true, maxPerTransaction: Math.round(asNum(row.maxPerTransaction)) },
+@@ -1719,6 +1761,13 @@
+   managerPassword?: string | null
+   userId?: number | null
+ }): Promise<StoreCreditRow> {
++  // نشست ۱۵۰ — عددها پیش از رمز و بدون clamp
++  const reqMinPurchase =
++    input.minPurchase == null ? null : assertCreditInt(input.minPurchase, 'حداقل خرید', 0, CREDIT_INT_MAX, ' ریال')
++  const reqMaxPerTx =
++    input.maxPerTransaction == null
++      ? null
++      : assertCreditInt(input.maxPerTransaction, 'سقف هر تراکنش', 0, CREDIT_INT_MAX, ' ریال')
+   return managerChange({
+     ...input,
+     actionTitle: 'تغییر محدودیت اعتبار خرید',
+@@ -1735,9 +1784,8 @@
+         restrictScope: scope,
+         restrictCategoryIdsJson: cats.length ? JSON.stringify(cats) : null,
+         restrictVariantIdsJson: vars.length ? JSON.stringify(vars) : null,
+-        minPurchase: input.minPurchase == null ? Math.round(asNum(row.minPurchase)) : clampInt(input.minPurchase, 0, Number.MAX_SAFE_INTEGER, 0),
+-        maxPerTransaction:
+-          input.maxPerTransaction == null ? Math.round(asNum(row.maxPerTransaction)) : clampInt(input.maxPerTransaction, 0, Number.MAX_SAFE_INTEGER, 0),
++        minPurchase: reqMinPurchase == null ? Math.round(asNum(row.minPurchase)) : reqMinPurchase,
++        maxPerTransaction: reqMaxPerTx == null ? Math.round(asNum(row.maxPerTransaction)) : reqMaxPerTx,
+         settingsOverride: true,
+         overrideReason: reason
+       }
+diff -ruN pristine149/src/renderer/src/components/CreditPickers.tsx proj/mahak-session131/src/renderer/src/components/CreditPickers.tsx
+--- pristine149/src/renderer/src/components/CreditPickers.tsx	2026-09-25 14:15:25.374276811 +0000
++++ proj/mahak-session131/src/renderer/src/components/CreditPickers.tsx	2026-09-25 14:30:36.007560065 +0000
+@@ -95,7 +95,8 @@
+         max={max}
+         disabled={disabled}
+         value={Number.isFinite(value) ? value : 0}
+-        onChange={(e) => onChange(Math.round(+e.target.value || 0))}
++        // نشست ۱۵۰ — مقدار خام؛ اعشار دیگر بی‌صدا گرد نمی‌شود و سرور با پیام فارسی رد می‌کند
++        onChange={(e) => onChange(e.target.value === '' ? 0 : Number(e.target.value))}
+       />
+       {hint && <span className="kbd">{hint}</span>}
+     </label>
+diff -ruN pristine149/src/renderer/src/pages/PriceAdjust.tsx proj/mahak-session131/src/renderer/src/pages/PriceAdjust.tsx
+--- pristine149/src/renderer/src/pages/PriceAdjust.tsx	2026-09-25 14:15:25.378276835 +0000
++++ proj/mahak-session131/src/renderer/src/pages/PriceAdjust.tsx	2026-09-25 14:23:45.877180563 +0000
+@@ -7,6 +7,8 @@
+ import ConfirmDialog from '../components/ConfirmDialog'
+ import Modal from '../components/Modal'
+ import JalaliDateInput from '../components/JalaliDateInput'
++import PasswordField from '../components/PasswordField'
++import { usePanelLock } from '../hooks/usePanelLocks'
+ import { PANEL_KEYS } from '@shared/panels'
+ import {
+   PRICE_ADJUST_MODE_LABELS,
+@@ -118,6 +120,8 @@
+ /** 'HH:mm' — ارقام فارسی هم پذیرفته می‌شود؛ خالی مجاز است (پیش‌فرض سرور). */
+ const cleanClock = (v: string) => toLatinDigits(v).trim()
+ const clockOk = (v: string) => !v || /^([01]?\d|2[0-3]):[0-5]\d$/.test(v)
++/** نشست ۱۵۰ — سقف ستون قیمت (همان PRICE_ADJUST_MAX سرور؛ سرور تکیه‌گاه نهایی است). */
++const PRICE_INPUT_MAX = 2_147_483_647
+ 
+ function PriceAdjustInner() {
+   const nav = useNavigate()
+@@ -148,6 +152,14 @@
+ 
+   // ---------- وضعیت ----------
+   const [busy, setBusy] = useState(false)
++  /**
++   * نشست ۱۵۰ · بند ۴-۳۹ — گیت main تغییر گروهی قیمت: رمز هر عملیات (اعمال، ویرایش
++   * دامنه، بازگردانی، حذف سابقه) همراه همان درخواست فرستاده می‌شود و سرور می‌سنجد.
++   * تا وضعیت قفل خوانده نشده، رمز لازم فرض می‌شود (fail-closed).
++   */
++  const { lockEnabled: adjustLock, loaded: adjustLockLoaded } = usePanelLock(PANEL_KEYS.priceAdjust)
++  const needAdjustPw = !adjustLockLoaded || adjustLock
++  const [adjustPw, setAdjustPw] = useState('')
+   const [err, setErr] = useState<string | null>(null)
+   const [msg, setMsg] = useState<string | null>(null)
+   /** مودال انتخاب کالا برای فرم اصلی یا برای فرم ویرایش دامنه */
+@@ -249,7 +261,16 @@
+   /** چرا فعلاً نمی‌توان پیش‌نمایش گرفت (متن دقیقِ فارسی، نه فقط disable شدنِ دکمه). */
+   const blocker = useMemo(() => {
+     if (!(value > 0)) return 'مقدار تغییر را وارد کنید؛ صفر معنایی ندارد.'
++    // نشست ۱۵۰ — عدد اعشاری دیگر بی‌صدا گرد نمی‌شود (سرور هم رد می‌کند)
++    if (!Number.isInteger(value))
++      return mode === 'PERCENT'
++        ? 'درصد تغییر باید عدد صحیح باشد (مثلاً ۱۰، نه ۱۰٫۶).'
++        : 'مبلغ تغییر باید عدد صحیح باشد (به ریال، بدون اعشار).'
+     if (mode === 'PERCENT' && value > 100) return 'درصد نمی‌تواند بیشتر از ۱۰۰ باشد.'
++    if (value > PRICE_INPUT_MAX) return `مبلغ تغییر از سقف مجاز ${money(PRICE_INPUT_MAX)} ریال بیشتر است.`
++    if (!Number.isInteger(minPrice) || minPrice < 0)
++      return 'کف قیمت باید عدد صحیح صفر یا بیشتر باشد (به ریال، بدون اعشار).'
++    if (minPrice > PRICE_INPUT_MAX) return `کف قیمت از سقف مجاز ${money(PRICE_INPUT_MAX)} ریال بیشتر است.`
+     if (scope === 'CATEGORY' && !categoryId) return 'دسته‌بندی را انتخاب کنید.'
+     if (scope === 'VARIANTS' && !picked.length) return 'هیچ کالایی انتخاب نشده است.'
+     if (startDate.trim() && !isValidJalaliDate(startDate.trim()))
+@@ -261,7 +282,7 @@
+     if (!startDate.trim() && cleanClock(startTime)) return 'ساعت شروع بدون تاریخ شروع معنا ندارد؛ تاریخ را هم وارد کنید.'
+     if (!endDate.trim() && cleanClock(endTime)) return 'ساعت پایان بدون تاریخ پایان معنا ندارد؛ تاریخ را هم وارد کنید.'
+     return null
+-  }, [value, mode, scope, categoryId, picked, startDate, startTime, endDate, endTime])
++  }, [value, mode, minPrice, scope, categoryId, picked, startDate, startTime, endDate, endTime])
+ 
+   /** آیا این ثبت، یک «قرار برای آینده» است یا اعمال فوری؟ (فقط برای متن دکمه/تایید) */
+   const scheduledNow = !!startDate.trim()
+@@ -295,7 +316,10 @@
+     setApplyAsk(false)
+     setBusy(true)
+     try {
+-      const r = await call<PriceAdjustResult>(CH.priceAdjustApply, input)
++      const r = await call<PriceAdjustResult>(CH.priceAdjustApply, {
++        ...input,
++        password: adjustPw.trim() || null // نشست ۱۵۰ — گیت سمت سرور
++      })
+       flash(r?.message ?? `اعمال شد: ${faDigits(r?.changedCount ?? 0)} کالا.`)
+       setPreview(null)
+       setValue(0)
+@@ -304,6 +328,7 @@
+       setErr(e.message)
+     } finally {
+       setBusy(false)
++      setAdjustPw('') // بند ۴-۴۰ — رمز هر عملیات حساس دوباره پرسیده شود
+     }
+   }
+ 
+@@ -313,7 +338,10 @@
+     if (!b) return
+     setBusy(true)
+     try {
+-      const r = await call<PriceAdjustRevertResult>(CH.priceAdjustRevert, { batchId: b.id })
++      const r = await call<PriceAdjustRevertResult>(CH.priceAdjustRevert, {
++        batchId: b.id,
++        password: adjustPw.trim() || null
++      })
+       flash(r?.message ?? `قیمت ${faDigits(r?.restoredCount ?? 0)} کالا به حالت قبل برگشت.`)
+       setOpenBatch(null)
+       await loadBatches()
+@@ -321,6 +349,7 @@
+       setErr(e.message)
+     } finally {
+       setBusy(false)
++      setAdjustPw('') // بند ۴-۴۰ — رمز هر عملیات حساس دوباره پرسیده شود
+     }
+   }
+ 
+@@ -395,7 +424,8 @@
+         batchId: b.id,
+         scope: editScope,
+         categoryId: editScope === 'CATEGORY' ? editCategoryId ?? undefined : undefined,
+-        variantIds: editScope === 'VARIANTS' ? editPicked.map((p) => p.id) : undefined
++        variantIds: editScope === 'VARIANTS' ? editPicked.map((p) => p.id) : undefined,
++        password: adjustPw.trim() || null
+       })
+       setEditRow(null)
+       setOpenBatch(null)
+@@ -410,6 +440,7 @@
+       setErr(e.message)
+     } finally {
+       setBusy(false)
++      setAdjustPw('') // بند ۴-۴۰ — رمز هر عملیات حساس دوباره پرسیده شود
+     }
+   }
+ 
+@@ -437,7 +468,8 @@
+     try {
+       const r = await call<PriceAdjustDeleteResult>(CH.priceAdjustBatchesDelete, {
+         batchIds: selected,
+-        restorePrices: deleteRestore
++        restorePrices: deleteRestore,
++        password: adjustPw.trim() || null
+       })
+       flash(
+         r?.message ??
+@@ -451,9 +483,18 @@
+       setErr(e.message)
+     } finally {
+       setBusy(false)
++      setAdjustPw('') // بند ۴-۴۰ — رمز هر عملیات حساس دوباره پرسیده شود
+     }
+   }
+ 
++  /** نشست ۱۵۰ — کادر رمز مشترک گیت main (در تأیید اعمال/بازگردانی/حذف و فرم ویرایش). */
++  const pwField = needAdjustPw ? (
++    <label className="flex flex-col gap-1 mt-2">
++      <span className="kbd">رمز مدیر یا رمز دوم «تغییر قیمت گروهی» (سمت سرور هم بررسی می‌شود)</span>
++      <PasswordField value={adjustPw} onChange={(e) => setAdjustPw(e.target.value)} />
++    </label>
++  ) : null
++
+   /** کشویی دسته‌بندی — در فرم اصلی و در فرم ویرایش، یکسان. */
+   const categorySelect = (val: number | null, onPick: (id: number | null) => void) => (
+     <select className="inp w-72 py-1" value={val ?? ''} onChange={(e) => onPick(e.target.value ? +e.target.value : null)}>
+@@ -523,8 +564,8 @@
+               className="inp w-36 py-1"
+               value={value}
+               onChange={(e) => {
+-                const raw = Math.max(0, +e.target.value || 0)
+-                setValue(mode === 'PERCENT' ? Math.min(100, raw) : Math.round(raw))
++                // نشست ۱۵۰ — مقدار خام؛ اعشار/بیش از ۱۰۰٪ با پیام blocker نشان داده می‌شود، نه گرد بی‌صدا
++                setValue(e.target.value === '' ? 0 : Number(e.target.value))
+               }}
+             />
+           </label>
+@@ -537,7 +578,6 @@
+               onChange={(e) => {
+                 const m = e.target.value as PriceAdjustMode
+                 setMode(m)
+-                if (m === 'PERCENT') setValue((v) => Math.min(100, v))
+               }}
+             >
+               {(Object.keys(PRICE_ADJUST_MODE_LABELS) as PriceAdjustMode[]).map((m) => (
+@@ -581,7 +621,7 @@
+               min={0}
+               className="inp w-40 py-1"
+               value={minPrice}
+-              onChange={(e) => setMinPrice(Math.max(0, Math.round(+e.target.value || 0)))}
++              onChange={(e) => setMinPrice(e.target.value === '' ? 0 : Number(e.target.value))}
+             />
+           </label>
+         </div>
+@@ -1048,6 +1088,7 @@
+             )}
+ 
+             {editBlocker && <div className="kbd text-amber-700 font-bold">{editBlocker}</div>}
++            {pwField}
+           </>
+         )}
+       </Modal>
+@@ -1057,6 +1098,7 @@
+         title={scheduledNow ? 'ثبت زمان‌بندی تغییر قیمت' : 'اعمال تغییر قیمت'}
+         message={
+           preview ? (
++            <div>
+             <div className="whitespace-pre-line">
+               {scheduledNow
+                 ? `این تغییر همین حالا روی هیچ قیمتی نمی‌نشیند؛ یک قرار ثبت می‌شود و برنامه سر همان لحظه خودش اعمالش می‌کند.\n${scheduleHint}\n\nطبق پیش‌نمایش امروز، ${faDigits(
+@@ -1068,6 +1110,8 @@
+                   (endDate.trim() ? `\nپایان خودکار: ${faDigits(endDate.trim())} ساعت ${faDigits(cleanClock(endTime) || '23:59')}` : '') +
+                   '\nاین تغییر روی فاکتورهای ثبت‌شده اثری ندارد و از سابقه‌ی همین صفحه قابل بازگردانی است.'}
+             </div>
++            {pwField}
++            </div>
+           ) : (
+             ''
+           )
+@@ -1083,11 +1127,18 @@
+         open={!!revertAsk}
+         title="بازگردانی قیمت‌ها"
+         message={
+-          revertAsk
+-            ? `قیمت ${faDigits(revertAsk.itemCount)} کالای این دسته به مقدار قبل از «${revertAsk.title}» برمی‌گردد.${
+-                revertAsk.revertWarning ? `\n${revertAsk.revertWarning}` : ''
+-              }`
+-            : ''
++          revertAsk ? (
++            <div>
++              <div className="whitespace-pre-line">
++                {`قیمت ${faDigits(revertAsk.itemCount)} کالای این دسته به مقدار قبل از «${revertAsk.title}» برمی‌گردد.${
++                  revertAsk.revertWarning ? `\n${revertAsk.revertWarning}` : ''
++                }`}
++              </div>
++              {pwField}
++            </div>
++          ) : (
++            ''
++          )
+         }
+         confirmLabel="برگردان"
+         cancelLabel="انصراف"
+@@ -1149,6 +1200,7 @@
+             <div className="kbd text-amber-800">
+               حذف ردیف سابقه برگشت‌ناپذیر است: قیمت‌های «قبل»ِ ثبت‌شده در آن ردیف هم با آن پاک می‌شوند.
+             </div>
++            {pwField}
+           </div>
+         }
+         confirmLabel={deleteRestore ? 'قیمت‌ها را برگردان و حذف کن' : 'فقط ردیف‌ها را حذف کن'}
+diff -ruN pristine149/src/renderer/src/pages/Settings.tsx proj/mahak-session131/src/renderer/src/pages/Settings.tsx
+--- pristine149/src/renderer/src/pages/Settings.tsx	2026-09-25 14:15:25.378276835 +0000
++++ proj/mahak-session131/src/renderer/src/pages/Settings.tsx	2026-09-25 14:30:45.503615170 +0000
+@@ -16,7 +16,8 @@
+   jalaliToday,
+   jalaliAddDays,
+   jalaliMonthStart,
+-  isValidJalaliDate
++  isValidJalaliDate,
++  parseGroupedInteger
+ } from '@shared/jalali'
+ import type {
+   CustomerDeleteResult,
+@@ -763,13 +764,17 @@
+   const saveCustomer = async () => {
+     const name = custDraft.name.trim()
+     if (!name) return setErr('نام مشتری را وارد کنید.')
++    // نشست ۱۵۰ — «۱۲٫۵» دیگر با حذف غیررقم ۱۲۵ نمی‌شود؛ نامعتبر ⇒ پیام فارسی
++    const manualPurchaseTotal = parseGroupedInteger(custDraft.manualPurchaseTotal)
++    if (manualPurchaseTotal == null)
++      return setErr('مجموع مبلغ خرید دستی باید عدد صحیح صفر یا بیشتر به ریال باشد (بدون اعشار و علامت منفی).')
+     setCustBusy(true)
+     try {
+       const payload = {
+         name,
+         phone: toLatinDigits(custDraft.phone).trim() || null,
+         isWholesale: custDraft.isWholesale,
+-        manualPurchaseTotal: Number(toLatinDigits(custDraft.manualPurchaseTotal).replace(/[^0-9]/g, '')) || 0
++        manualPurchaseTotal
+       }
+       if (custDraft.id) await call(CH.customerUpdate, { ...payload, id: custDraft.id })
+       else await call(CH.customerCreate, payload)
+@@ -789,7 +794,11 @@
+ 
+   /** ثبت سریع فقط «مجموع مبلغ خرید» یک ردیف، بدون باز کردن فرم */
+   const saveCustomerTotal = async (c: CustomerDirectoryRow, raw: string) => {
+-    const value = Number(toLatinDigits(raw).replace(/[^0-9]/g, '')) || 0
++    const value = parseGroupedInteger(raw)
++    if (value == null)
++      return setErr(
++        `مجموع مبلغ خرید دستی باید عدد صحیح صفر یا بیشتر به ریال باشد؛ «${raw}» برای «${c.name}» ذخیره نشد.`
++      )
+     if (value === c.manualPurchaseTotal) return
+     try {
+       await call(CH.customerUpdate, { id: c.id, manualPurchaseTotal: value })
+diff -ruN pristine149/src/shared/types.ts proj/mahak-session131/src/shared/types.ts
+--- pristine149/src/shared/types.ts	2026-09-25 14:15:25.378276835 +0000
++++ proj/mahak-session131/src/shared/types.ts	2026-09-25 14:22:49.108851240 +0000
+@@ -2626,6 +2626,8 @@
+   /** توضیح آزاد مدیر («حراج پایان فصل») — روی سابقه ثبت می‌شود */
+   note?: string | null
+   userId?: number | null
++  /** نشست ۱۵۰ · بند ۴-۳۹ — رمز مدیر یا رمز دوم پنل «تغییر قیمت گروهی» (گیت main؛ preview نادیده می‌گیرد) */
++  password?: string | null
+   // ------------------------------------------------------------------------
+   // نشست دهم — مورد ۱: زمان‌بندی خودکار (هر چهار فیلد اختیاری).
+   // خالی بودنشان = رفتار مو‌به‌موی قبل: همین حالا اعمال شود و تا «بازگردانی»
+@@ -2762,6 +2764,8 @@
+   categoryId?: number | null
+   variantIds?: number[] | null
+   userId?: number | null
++  /** نشست ۱۵۰ · بند ۴-۳۹ — گیت main */
++  password?: string | null
+ }
+ 
+ export interface PriceAdjustEditResult {
+@@ -2788,6 +2792,8 @@
+   /** true = اول قیمت‌ها به حالت قبل برگردند، بعد ردیف سابقه پاک شود */
+   restorePrices: boolean
+   userId?: number | null
++  /** نشست ۱۵۰ · بند ۴-۳۹ — گیت main */
++  password?: string | null
+ }
+ 
+ export interface PriceAdjustDeleteResult {

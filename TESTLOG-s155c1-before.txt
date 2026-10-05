@@ -1,0 +1,102 @@
+(node:5570) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5570) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak-orig/src/main/services/SettingsService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak-orig/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) settingsSaveBundle: بخش‌های حساس تغییرکرده بی‌رمز مدیر ⇒ رد، پیش از هر نوشتن
+  ✗ security تغییرکرده بی‌رمز — بدون تأیید پذیرفته شد
+  ✗ securityConfig دست‌نخورده — انتظار null، دریافت "{\"lockoutEnabled\":true,\"maxAttempts\":7,\"lockMinutes\":10}"
+  ✗ receipt + security تغییرکرده بی‌رمز (کل درخواست رد) — بدون تأیید پذیرفته شد
+  ✗ receiptTemplate هم نوشته نشد (گیت پیش از هر نوشتن) — انتظار null، دریافت "{\"shopName\":\"فروشگاه\",\"phone\":\"\",\"website\":\"\",\"showDateTime\":true,\"showReceiptNo\":true,\"showOrderType\":true,\"showTable\":true,\"showCustomer\":true,\"showCashier\":false,\"showRowNumber\":true,\"showUnitPrice\":false,\"showGoodsTotal\":true,\"showServiceCharge\":true,\"showDiscount\":true,\"showTax\":true,\"showPayable\":true,\"showPaid\":true,\"showRemaining\":true,\"showPaymentMethod\":true,\"showReturnCode\":true,\"showReturnBarcode\":true,\"showReturnDeadline\":true,\"showPhone\":true,\"showWebsite\":false,\"receiptNoLabel\":\"شماره\",\"tableLabel\":\"میز\",\"customerLabel\":\"اشتراک\",\"goodsTotalLabel\":\"جمع کل\",\"serviceChargeLabel\":\"حق سرویس\",\"discountLabel\":\"تخفیف\",\"taxLabel\":\"مالیات و عوارض\",\"payableLabel\":\"قابل پرداخت\",\"paidLabel\":\"مبلغ پرداختی\",\"remainingLabel\":\"مانده حساب\",\"paymentLabel\":\"نحوه پرداخت\",\"returnCodeLabel\":\"کد فاکتور (برگشت از فروش)\",\"footerLine1\":\"کیفیت هنر ماست\",\"footerLine2\":\"\",\"footerLine3\":\"\",\"paperWidthMm\":72,\"fontSizePx\":12,\"copies\":1,\"autoPrint\":true,\"printerName\":\"\",\"showLogo\":false,\"logoHeightMm\":10,\"logoDataUrl\":\"\"}"
+  ✗ security تغییرکرده با رمز غلط — بدون تأیید پذیرفته شد
+  ✓ security بدون تغییر بی‌رمز ⇒ پذیرفته
+  ✓ security تغییرکرده با رمز مدیر و userId جعلی ⇒ پذیرفته
+  ✓ maxAttempts ذخیره شد = 7
+  ✓ Audit نوشته شد
+  ✓ actor Audit ذخیره‌ی کلی = کارمند نشست = 1
+  ✗ shift تغییرکرده بی‌رمز — بدون تأیید پذیرفته شد
+  ✗ shiftConfig دست‌نخورده — انتظار null، دریافت "{\"byTime\":true,\"templates\":[{\"name\":\"شیفت اول\",\"startTime\":\"08:00\",\"endTime\":\"14:00\"},{\"name\":\"شیفت دوم\",\"startTime\":\"14:00\",\"endTime\":\"20:00\"},{\"name\":\"شیفت سوم\",\"startTime\":\"20:00\",\"endTime\":\"00:00\"}],\"names\":[\"شیفت اول\",\"شیفت دوم\",\"شیفت سوم\"],\"clockFormat\":\"12\"}"
+  ✓ shift تغییرکرده با رمز مدیر ⇒ پذیرفته
+  ✗ time تغییرکرده بی‌رمز — بدون تأیید پذیرفته شد
+  ✗ officialTime دست‌نخورده — انتظار null، دریافت "{\"offsetHours\":1}"
+  ✓ time تغییرکرده با رمز مدیر ⇒ پذیرفته
+  ✗ sale (مهلت کد برگشت) تغییرکرده بی‌رمز — بدون تأیید پذیرفته شد
+  ✗ saleDefaults دست‌نخورده — انتظار null، دریافت "{\"serviceChargePercent\":0,\"taxPercent\":0,\"returnCodeDays\":9,\"returnCodeDaysRemote\":14,\"returnCodeLength\":6,\"cashierName\":\"مدیر\",\"wholesaleReturnCode\":true,\"wholesaleReturnCodeDays\":7,\"wholesaleReturnCodeDaysRemote\":14,\"wholesaleReturnCodeLength\":6,\"printEnabled\":true,\"autoCentralWithdraw\":false}"
+  ✗ sale (درصد عوارض قدیمی) تغییرکرده بی‌رمز — بدون تأیید پذیرفته شد
+  ✓ sale تغییرکرده با رمز مدیر ⇒ پذیرفته
+  ✓ returnCodeDays ذخیره شد = 9
+
+۲) مسیرهای رسمی POS که فقط sale می‌فرستند (Pos.tsx ~۳۰۳، useAutoCentralWithdraw ~۸۶)
+  ✓ فقط printEnabled عوض شد بی‌رمز ⇒ پذیرفته (S155-D2)
+  ✓ printEnabled ذخیره شد = false
+  ✗ printEnabled + returnCodeDays بی‌رمز ⇒ رد (میان‌بر نیست) — بدون تأیید پذیرفته شد
+  ✗ autoCentralWithdraw بی‌رمز با قفل روشن ⇒ رد — بدون تأیید پذیرفته شد
+  ✗ autoCentralWithdraw دست‌نخورده — انتظار false، دریافت true
+  ✓ autoCentralWithdraw با رمز (panelPassword) ⇒ پذیرفته
+  ✓ autoCentralWithdraw ذخیره شد = true
+  ✓ autoCentralWithdraw بی‌رمز با قفل خاموش ⇒ پذیرفته
+  ✓ sale بدون تغییر بی‌رمز ⇒ پذیرفته
+  ✓ فقط receipt و label (غیرحساس) بی‌رمز ⇒ پذیرفته
+
+۳) charges از ذخیره‌ی کلی: رمز پنل همان kind/scope
+  ✗ charges.pos.tax تغییرکرده بی‌رمز — بدون تأیید پذیرفته شد
+  ✗ کلید عوارض دست‌نخورده — انتظار "{\"enabled\":true,\"rules\":[],\"fallback\":null}"، دریافت "{\"enabled\":true,\"rules\":[],\"fallback\":{\"mode\":\"PERCENT\",\"value\":9}}"
+  ✓ charges بدون تغییر بی‌رمز ⇒ پذیرفته
+  ✓ charges.pos.tax تغییرکرده با panelPassword ⇒ پذیرفته
+
+۴) chargesSave: گیت سرور با کلید kind/scope و actor نشست
+  ✗ chargesSave (حق سرویس عمده) بی‌رمز با قفل روشن — بدون تأیید پذیرفته شد
+  ✗ کلید حق سرویس عمده دست‌نخورده — انتظار "{\"enabled\":true,\"rules\":[],\"fallback\":null}"، دریافت "{\"enabled\":true,\"rules\":[],\"fallback\":{\"mode\":\"PERCENT\",\"value\":9}}"
+  ✗ chargesSave با رمز غلط — بدون تأیید پذیرفته شد
+  ✓ chargesSave با رمز مدیر و userId جعلی ⇒ پذیرفته
+  ✗ actor Audit chargesSave = کارمند نشست — انتظار 1، دریافت 2
+  ✓ chargesSave عوارض عمده بی‌رمز با قفل همان پنل خاموش ⇒ پذیرفته
+  ✗ قفل پنل دیگر خاموش ⇒ حق سرویس خرده همچنان رمز می‌خواهد — بدون تأیید پذیرفته شد
+
+۵) purchaseCreate/Update: گیت پنل خرید و actor نشست
+  ✗ purchaseCreate بی‌رمز با قفل خرید روشن — بدون تأیید پذیرفته شد
+  ✗ فاکتور خریدی ثبت نشد — انتظار 0، دریافت 1
+  ✗ موجودی دست‌نخورده — انتظار 0، دریافت 2
+  ✓ purchaseCreate با رمز و userId جعلی ⇒ پذیرفته
+  ✗ actor PURCHASE_CREATE = کارمند نشست — انتظار 1، دریافت 2
+  ✗ purchaseUpdate بی‌رمز — بدون تأیید پذیرفته شد
+  ✗ اقلام خرید دست‌نخورده — انتظار 2، دریافت 5
+  ✓ purchaseUpdate با رمز ⇒ پذیرفته
+  ✗ actor PURCHASE_UPDATE = کارمند نشست — انتظار 1، دریافت 2
+  ✓ purchaseCreate بی‌رمز با قفل خرید خاموش ⇒ پذیرفته
+
+۶) customerDelete: دارای فاکتور + force ⇒ رمز؛ بدهکار ⇒ رد کامل؛ پیوند بدهی null نشود
+  ✓ بدون force ⇒ فقط هشدار (مثل قبل)
+  ✓ هشدار بدون حذف = false
+  ✗ دارای فاکتور + force بی‌رمز ⇒ رد — بدون تأیید پذیرفته شد
+  ✗ مشتری باقی ماند — انتظار 1، دریافت 0
+  ✗ customerId فاکتور تسویه دست‌نخورده — انتظار 1، دریافت 0
+  ✗ بدهکار + force + رمز مدیر ⇒ رد کامل — بدون تأیید پذیرفته شد
+  ✗ مشتری بدهکار باقی ماند — انتظار 1، دریافت 0
+  ✗ پیوند بدهی فاکتور نسیه null نشد — انتظار 2، دریافت 0
+[ipc:customer:delete] BusinessError: این مشتری پیدا نشد؛ فهرست را تازه‌سازی کنید.
+    at Object.deleteCustomer (file:///home/user/work/mahak-orig/src/main/services/PartyService.ts:402:19) {
+  isBusinessError: true
+}
+  ✗ تسویه‌شده + force + رمز و userId جعلی ⇒ حذف — این مشتری پیدا نشد؛ فهرست را تازه‌سازی کنید.
+  ✗ حذف شد — انتظار true، دریافت undefined
+  ✓ actor Audit حذف = کارمند نشست = 1
+  ✓ شناسه‌ی فاکتورهای جداشده در Audit ثبت شد (مدرک قابل بازسازی)
+  ✓ مشتری بی‌فاکتور بی‌رمز ⇒ حذف (رفتار قبل)
+  ✓ مشتری بی‌فاکتور حذف شد = 0
+
+۷) ساختاری: اتمیک بودن و سیم‌کشی UI
+  ✗ deleteCustomer داخل $transaction (updateMany + delete + audit)
+  ✗ IPC.chargesSave ⇒ withOptionalSessionActor
+  ✗ IPC.purchaseCreate ⇒ withOptionalSessionActor
+  ✗ IPC.purchaseUpdate ⇒ withOptionalSessionActor
+  ✗ Settings: ذخیره‌ی کلی managerPassword می‌فرستد
+  ✗ Settings: saveSecurity managerPassword می‌فرستد
+  ✗ Settings: حذف مشتری panelPassword می‌فرستد
+  ✗ CategoryCharges: chargesSave با panelPassword
+  ✗ PurchaseInvoice: ثبت/ویرایش خرید با panelPassword
+  ✗ useAutoCentralWithdraw: panelPassword می‌فرستد
+
+نتیجه: 29 موفق · 47 ناموفق

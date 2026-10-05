@@ -1,0 +1,108 @@
+(node:3933) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:3933) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///tmp/pr/src/main/services/PriceAdjustService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /tmp/pr/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) ruleOf سخت: اعشار/متن/سقف با پیام فارسی رد می‌شود، نه گرد بی‌صدا (preview، بی‌رمز)
+  ✗ درصد ۱۰٫۶ (قبلاً بی‌صدا ۱۱٪) — بدون خطا پذیرفته شد
+  ✗ درصد «10» متنی — بدون خطا پذیرفته شد
+  ✓ درصد NaN (رد شد: درصد را وارد کنید (بزرگ‌تر از صفر).)
+  ✓ درصد صفر (رد شد: درصد را وارد کنید (بزرگ‌تر از صفر).)
+  ✓ درصد منفی (رد شد: درصد را وارد کنید (بزرگ‌تر از صفر).)
+  ✓ درصد ۱۰۱ (رد شد: درصد نمی‌تواند بیشتر از ۱۰۰ باشد.)
+  ✗ مبلغ ۱۵۰۰٫۵ (قبلاً بی‌صدا ۱۵۰۱) — بدون خطا پذیرفته شد
+  ✗ مبلغ ۳٬۰۰۰٬۰۰۰٬۰۰۰ بیش از سقف — بدون خطا پذیرفته شد
+  ✗ رُند ۲٫۵ — بدون خطا پذیرفته شد
+  ✗ رُند صفر — بدون خطا پذیرفته شد
+  ✗ رُند ‎-۱۰۰۰ — بدون خطا پذیرفته شد
+  ✗ کف قیمت ۲٫۵ — بدون خطا پذیرفته شد
+  ✗ کف قیمت ‎-۱ — بدون خطا پذیرفته شد
+  ✗ کف قیمت ۳e9 — بدون خطا پذیرفته شد
+  ✓ preview معتبر ۱۰٪ (رُند/کف ارسال‌نشده ⇒ پیش‌فرض ۱ و ۰)
+  ✓ پیش‌نمایش ۱٬۰۰۰٬۰۰۰ + ۱۰٪ = 1100000
+  ✓ preview معتبر با رُند ۱۰۰۰ و کف ۰ صریح
+  ✓ پیش‌نمایش با رُند ۱۰۰۰ = 1100000
+
+۲) سقف قیمت حاصل: ۲٬۰۰۰٬۰۰۰٬۰۰۰ + ۱۰٪ ⇒ رد پیش از هر نوشتن
+  ✗ preview حاصل بیش از سقف — بدون خطا پذیرفته شد
+  ✗ apply حاصل بیش از سقف — بدون خطا پذیرفته شد
+  ✗ قیمت کالای گران دست‌نخورده — انتظار 2000000000، دریافت 2200000000
+  ✗ قیمت کالای دیگر همان دسته هم دست‌نخورده (اتمیک) — انتظار 1000000، دریافت 1100000
+  ✗ هیچ دسته‌ای ثبت نشد — انتظار 0، دریافت 1
+  ✗ apply مبلغ ثابت که حاصلش بیش از سقف است — بدون خطا پذیرفته شد
+  ✗ قیمت کالای گران پس از مبلغ ثابت دست‌نخورده — انتظار 2000000000، دریافت 2400000000
+
+۳) گیت main: قفل «تغییر قیمت گروهی» روشن ⇒ بی‌رمز/رمز غلط رد، صفر تغییر
+  ✗ apply بی‌رمز — بدون خطا پذیرفته شد
+  ✗ apply رمز خالی — بدون خطا پذیرفته شد
+  ✗ apply رمز غلط — بدون خطا پذیرفته شد
+  ✗ validation پیش از رمز (۱۰٫۶٪ بی‌رمز ⇒ پیام درصد) — بدون خطا پذیرفته شد
+  ✗ زمان‌بندی آینده هم بی‌رمز رد — بدون خطا پذیرفته شد
+  ✗ قیمت دست‌نخورده — انتظار 1000000، دریافت 1625151
+  ✗ دسته‌ای ثبت نشد — انتظار 0، دریافت 7
+  ✗ Audit تغییر قیمت تازه‌ای ثبت نشد — انتظار 2، دریافت 7
+
+۴) IPC با رمز مدیر و userId جعلی ⇒ انجام با actor نشست و scope در note
+  ✗ IPC.priceAdjustApply بی‌رمز — بدون تأیید پذیرفته شد
+  ✓ IPC.priceAdjustApply با رمز مدیر
+  ✗ قیمت ۱٬۰۰۰٬۰۰۰ ⇒ ۱٬۱۰۰٬۰۰۰ — انتظار 1100000، دریافت 1966433
+  ✗ userId دسته = کارمند نشست (نه جعلی) — انتظار 1، دریافت 2
+  ✗ actor Audit = کارمند نشست — انتظار 1، دریافت 2
+  ✗ scope در note Audit
+
+۵) ویرایش دامنه / بازگردانی / حذف سابقه هم گیت دارند
+  ✗ editBatch بی‌رمز — بدون خطا پذیرفته شد
+  ✗ کالای C دست‌نخورده — انتظار 500000، دریافت 550000
+  ✓ IPC.priceAdjustBatchEdit با رمز
+  ✓ کالای C ۵۰۰٬۰۰۰ ⇒ ۵۵۰٬۰۰۰ = 550000
+  ✗ actor Audit ویرایش = نشست — انتظار 1، دریافت 2
+  ✗ scope ویرایش در note
+  ✗ revert بی‌رمز — بدون خطا پذیرفته شد
+  ✗ قیمت A پس از revert بی‌رمز همان — انتظار 1100000، دریافت 1787666
+[ipc:priceAdjust:revert] BusinessError: این دسته قبلاً (۱۴۰۵/۰۷/۰۳) بازگردانی شده است و دوباره بازگردانی نمی‌شود.
+    at file:///tmp/pr/src/main/services/PriceAdjustService.ts:855:15
+    at async client.$transaction (file:///tmp/pr/test/harness/prismaLite.mjs:766:22) {
+  isBusinessError: true
+}
+  ✗ IPC.priceAdjustRevert با رمز — این دسته قبلاً (۱۴۰۵/۰۷/۰۳) بازگردانی شده است و دوباره بازگردانی نمی‌شود.
+  ✗ قیمت A برگشت — انتظار 1000000، دریافت 1787666
+  ✓ قیمت C برگشت = 500000
+  ✗ actor Audit بازگردانی = نشست — انتظار 1، دریافت 0
+  ✗ scope بازگردانی در note
+  ✗ deleteBatches بی‌رمز — بدون خطا پذیرفته شد
+  ✗ ردیف سابقه باقی ماند — انتظار 9، دریافت 8
+[ipc:priceAdjust:batches:delete] BusinessError: این ردیف‌ها پیدا نشدند؛ صفحه را تازه کنید.
+    at file:///tmp/pr/src/main/services/PriceAdjustService.ts:1195:34
+    at async client.$transaction (file:///tmp/pr/test/harness/prismaLite.mjs:766:22) {
+  isBusinessError: true
+}
+  ✗ IPC.priceAdjustBatchesDelete با رمز — این ردیف‌ها پیدا نشدند؛ صفحه را تازه کنید.
+  ✗ actor Audit حذف سابقه = نشست — انتظار 1، دریافت 0
+  ✗ scope حذف سابقه در note
+
+۶) قفل خاموش ⇒ بی‌رمز باز (OPEN)
+  ✓ apply بی‌رمز با قفل خاموش
+  ✗ قیمت A ⇒ ۱٬۱۰۰٬۰۰۰ — انتظار 1100000، دریافت 1966433
+  ✗ scope OPEN در note
+
+۷) زمان‌بند: قرار ثبت‌شده که لحظه‌ی شروع حاصلش بیش از سقف است ⇒ شکست ثبت‌شده با علت، بدون نوشتن
+  ✓ runDueSchedules بدون پرتاب خطا
+  ✗ یک قرار شکست خورد — انتظار 1، دریافت 0
+  ✗ قیمت کالای D دست‌نخورده — انتظار 2000000000، دریافت 2200000000
+  ✗ قرار شکست‌خورده با وضعیت ENDED کنار گذاشته شد (نه APPLIED) — انتظار "ENDED"، دریافت "APPLIED"
+  ✗ یادداشت قرار علت فارسی «سقف» را دارد
+
+۸) سیم‌کشی UI و نوع‌ها (ساختاری؛ رندر واقعی Electron اجرا نمی‌شود)
+  ✗ usePanelLock(PANEL_KEYS.priceAdjust) با fail-closed
+  ✗ PasswordField در صفحه
+  ✗ رمز همراه apply/revert/edit/delete فرستاده می‌شود
+  ✗ onChange مقدار دیگر گرد/clamp نمی‌کند
+  ✗ onChange کف قیمت دیگر گرد نمی‌کند
+  ✗ blocker برای درصد/مبلغ اعشاری پیام فارسی دارد
+  ✗ PriceAdjustInput.password
+  ✗ PriceAdjustEditInput.password
+  ✗ PriceAdjustDeleteInput.password
+
+✗ 14 بررسی موفق · 60 ناموفق

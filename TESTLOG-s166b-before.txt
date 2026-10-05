@@ -1,0 +1,21 @@
+  ✓ پیش‌شرط: چاپ روشن است = true
+  ✗ خاموش‌کردن چاپ بی‌رمز — بدون رمز پذیرفته شد
+  ✗ خاموش‌کردن چاپ با رمز غلط — بدون رمز پذیرفته شد
+  ✗ saleDefaults دست‌نخورده — انتظار null، دریافت "{\"serviceChargePercent\":0,\"taxPercent\":0,\"returnCodeDays\":7,\"returnCodeDaysRemote\":14,\"returnCodeLength\":6,\"cashierName\":\"مدیر\",\"wholesaleReturnCode\":true,\"wholesaleReturnCodeDays\":7,\"wholesaleReturnCodeDaysRemote\":14,\"wholesaleReturnCodeLength\":6,\"printEnabled\":false,\"autoCentralWithdraw\":false}"
+  ✗ چاپ هنوز روشن است — انتظار true، دریافت false
+  ✗ هیچ Audit تازه‌ای ثبت نشد — انتظار 4، دریافت 6
+  ✓ خاموش‌کردن چاپ با رمز مدیر (panelPassword)
+  ✓ چاپ خاموش شد = false
+  ✗ یک Audit تازه — انتظار 5، دریافت 7
+  ✓ Audit با actor نشست = 1
+  ✗ یادداشت Audit: «چاپ فاکتور خاموش شد» — انتظار true، دریافت false
+  ✗ روشن‌کردن چاپ بی‌رمز — بدون رمز پذیرفته شد
+  ✓ روشن‌کردن چاپ با managerPassword
+  ✓ چاپ روشن شد = true
+  ✗ یادداشت Audit: «چاپ فاکتور روشن شد» — انتظار true، دریافت false
+  ✓ sale بی‌تغییر بی‌رمز
+  ✓ خاموش‌کردن چاپ بی‌رمز با قفل خاموش
+  ✓ چاپ خاموش شد = false
+  ✗ togglePrintEnabled ⇒ settingsSaveBundle با panelPassword — انتظار true، دریافت false
+  ✗ کادر رمز کنار چک‌باکس چاپ — انتظار true، دریافت false
+✗ 9 بررسی موفق · 11 ناموفق

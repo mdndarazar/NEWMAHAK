@@ -1,0 +1,264 @@
+diff -ruN s177/mahak/tests/audit/audit-s127-maintenance-retention-verify.mjs work178/tests/audit/audit-s127-maintenance-retention-verify.mjs
+--- s177/mahak/tests/audit/audit-s127-maintenance-retention-verify.mjs	2026-09-27 09:08:46.000000000 +0000
++++ work178/tests/audit/audit-s127-maintenance-retention-verify.mjs	2026-09-27 15:40:17.262139199 +0000
+@@ -70,8 +70,9 @@
+ eq('پرداخت فاکتور قدیمی حذف، پرداخت امروز باقی', [seed.count('Payment', 'invoiceId = ?', oldInv.id), seed.count('Payment', 'invoiceId = ?', newInv.id)], [0, 1])
+ eq('تعداد کل StockMovement دست‌نخورده', seed.count('StockMovement'), movesBefore)
+ eq('حرکت انبار فاکتور حذف‌شده باقی', seed.count('StockMovement', `refType = 'SaleInvoice' AND refId = ?`, oldInv.id), oldMoves)
+-eq('تجمیع قدیمی حذف شد', seed.count('Consolidation', 'id = ?', cons), 0)
+-eq('حرکت متصل به تجمیع حذف‌شده باقی', seed.count('StockMovement', 'id = ?', consMove), 1)
++// نشست ۱۷۸ (S178-D1/D2) — تجمیعِ وصل به دفتر گردش انبار دیگر حذف نمی‌شود (وگرنه ON DELETE SET NULL ستون consolidationId دفتر را NULL می‌کرد)
++eq('تجمیع قدیمیِ وصل به دفتر انبار حفظ شد (S178-D1)', seed.count('Consolidation', 'id = ?', cons), 1)
++eq('حرکت متصل به تجمیع باقی و پیوندش دست‌نخورده', seed.count('StockMovement', 'id = ? AND consolidationId = ?', consMove, cons), 1)
+ eq('هشدار append-only در نتیجه', (a2?.warnings ?? []).some((w) => /append-only/.test(w)), true)
+ const mv = await safe(() => productService.movements({ variantId: v }))
+ eq('ریز حرکات کالا بعد از پاک‌سازی crash نمی‌کند', mv?.__error ?? null, null)
+diff -ruN s177/mahak/tests/audit-fixes/fix-s178-purge-keeps-ledger-consolidation.mjs work178/tests/audit-fixes/fix-s178-purge-keeps-ledger-consolidation.mjs
+--- s177/mahak/tests/audit-fixes/fix-s178-purge-keeps-ledger-consolidation.mjs	1970-01-01 00:00:00.000000000 +0000
++++ work178/tests/audit-fixes/fix-s178-purge-keeps-ledger-consolidation.mjs	2026-09-27 15:47:13.396506772 +0000
+@@ -0,0 +1,90 @@
++/**
++ * نشست ۱۷۸ (S178-D1) — مشاهده‌ی P3 ردیف ۱۲۷ AUDIT-PROGRESS: «آرشیو و پاک‌سازی» تجمیع قدیمی را DELETE می‌کرد در حالی که
++ * StockMovement.consolidationId با کلید خارجی ON DELETE SET NULL به آن اشاره دارد. Prisma روی SQLite کلید خارجی را روشن
++ * (PRAGMA foreign_keys = ON) اجرا می‌کند ⇒ حذف تجمیع، ستون consolidationId ردیف‌های دفتر گردش انبار را NULL می‌کرد، یعنی
++ * همان دفتری که قاعده‌ی بند ۳ و متن خود MaintenanceService می‌گوید «نه حذف می‌شود و نه update».
++ * رفع: تجمیعی که هنوز حرکت انباری به آن وصل است حفظ می‌شود (پیش‌نمایش = عملیات؛ شیفت همان تجمیع هم حفظ و در پیش‌نمایش
++ * شمرده نمی‌شود)، تعداد حفظ‌شده در پیش‌نمایش/نتیجه و هشدار فارسی می‌آید.
++ * این تست کلید خارجی هارنس را روشن می‌کند تا رفتار Prisma واقعی را بازسازی کند.
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label}`) }
++  else { bad++; console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)?.slice(0, 300)} · انتظار ${JSON.stringify(want)}`) }
++}
++const root = process.env.MAHAK_ROOT ? resolve(process.env.MAHAK_ROOT) : resolve('.')
++process.env.HARNESS_DIR = mkdtempSync(join(tmpdir(), 'mahak-s178-'))
++process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
++const { harnessClient } = await import(join(root, 'test/harness/stubs/prismaClient.mjs'))
++const { makeSeeder } = await import(join(root, 'test/harness/seed.mjs'))
++const { salesService } = await import(join(root, 'src/main/services/SalesService.ts'))
++const { maintenanceService } = await import(join(root, 'src/main/services/MaintenanceService.ts'))
++const { toJalaliDate, jalaliToday, jalaliAddDays } = await import(join(root, 'src/shared/jalali.ts'))
++const { DEFAULT_MANAGER_PASSWORD: PW } = await import(join(root, 'src/shared/receipt.ts'))
++const db = harnessClient(); const seed = makeSeeder(db); const sql = db.$harness.db
++const safe = async (fn) => { try { return await fn() } catch (e) { return { __error: String(e?.message ?? e).slice(0, 300) } } }
++const DAY = 86400000
++const today = jalaliToday()
++const minCut = jalaliAddDays(today, -730)
++const userId = seed.user('مدیر ۱۷۸')
++const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - 3600_000, userId })
++const p = seed.product('جین', seed.category('پوشاک'))
++const v = seed.variant(p, '۳۲'); sql.prepare('UPDATE "ProductVariant" SET stock = 10, salePrice = 500000 WHERE id = ?').run(v)
++const sale = async () => salesService.create({ userId, shiftId, lines: [{ variantId: v, qty: 1, unitPrice: 500000, discount: 0, tax: 0 }], payments: [{ methodId: cash, amount: 500000, destination: 'CASH' }] })
++const oldInv = await sale()
++const newInv = await sale()
++const oldT = Date.now() - 1100 * DAY; const oldJ = toJalaliDate(new Date(oldT))
++sql.prepare('UPDATE "SaleInvoice" SET issuedAt = ?, issuedAtJalali = ? WHERE id = ?').run(oldT, oldJ, oldInv.id)
++sql.prepare('UPDATE "Payment" SET paidAt = ?, paidAtJalali = ? WHERE invoiceId = ?').run(oldT, oldJ, oldInv.id)
++sql.prepare(`UPDATE "StockMovement" SET createdAt = ? WHERE refType = 'SaleInvoice' AND refId = ?`).run(oldT, oldInv.id)
++// دو شیفت قدیمی: A مالک تجمیعِ دارای حرکت انبار، B مالک تجمیعِ بی‌حرکت
++const shiftA = seed.insert('Shift', { name: 'شب', number: 1, dayJalali: oldJ, openedAt: oldT - 3600_000, userId })
++const shiftB = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: oldJ, openedAt: oldT - 7200_000, userId })
++const consA = seed.insert('Consolidation', { dayJalali: oldJ, fromDate: oldT - DAY, toDate: oldT, shiftId: shiftA })
++const consB = seed.insert('Consolidation', { dayJalali: oldJ, fromDate: oldT - DAY, toDate: oldT - 1000, shiftId: shiftB })
++// حرکت فاکتور قدیمی که با تجمیع A قطعی شده (همان کاری که finalizePendingForInvoices می‌کند)
++sql.prepare(`UPDATE "StockMovement" SET consolidationId = ?, state = 'FINAL' WHERE refType = 'SaleInvoice' AND refId = ?`).run(consA, oldInv.id)
++const linkedIds = sql.prepare('SELECT id FROM "StockMovement" WHERE consolidationId = ? ORDER BY id').all(consA).map((r) => Number(r.id))
++eq('پیش‌شرط: حرکت انبار به تجمیع A وصل است', linkedIds.length >= 1, true)
++const movesBefore = seed.count('StockMovement')
++const auditBefore = seed.count('AuditLog')
++
++// رفتار Prisma واقعی روی SQLite: کلید خارجی روشن
++sql.exec('PRAGMA foreign_keys = ON')
++eq('پیش‌شرط: کلید خارجی هارنس روشن شد', Number(Object.values(sql.prepare('PRAGMA foreign_keys').get())[0]), 1)
++
++console.log('\n— ۱) پیش‌نمایش = عملیات')
++const pv = await safe(() => maintenanceService.preview({ beforeJalali: minCut }))
++eq('پیش‌نمایش بدون خطا', pv?.__error ?? null, null)
++eq('پیش‌نمایش فقط تجمیع بی‌حرکت (B) را «حذف‌شونده» می‌شمارد', pv?.consolidations, 1)
++eq('پیش‌نمایش تجمیع دارای حرکت انبار (A) را «حفظ‌شونده» می‌شمارد', pv?.consolidationsRetained, 1)
++eq('پیش‌نمایش شیفت مالک تجمیع حفظ‌شده (A) را حذف‌شونده نمی‌شمارد (فقط B)', pv?.shifts, 1)
++
++console.log('\n— ۲) پاک‌سازی واقعی')
++const res = await safe(() => maintenanceService.archivePurge({ beforeJalali: minCut, backup: false, vacuum: false, purgeAudit: false, managerPassword: PW }))
++eq('archivePurge بدون خطا', res?.__error ?? null, null)
++eq('فاکتور قدیمی حذف، فاکتور امروز باقی', [seed.count('SaleInvoice', 'id = ?', oldInv.id), seed.count('SaleInvoice', 'id = ?', newInv.id)], [0, 1])
++eq('تعداد کل StockMovement دست‌نخورده', seed.count('StockMovement'), movesBefore)
++eq('consolidationId حرکت‌های دفتر انبار دست‌نخورده (NULL نشد)',
++  sql.prepare('SELECT id FROM "StockMovement" WHERE consolidationId = ? ORDER BY id').all(consA).map((r) => Number(r.id)), linkedIds)
++eq('تجمیع A (دارای حرکت) حفظ شد، تجمیع B حذف شد', [seed.count('Consolidation', 'id = ?', consA), seed.count('Consolidation', 'id = ?', consB)], [1, 0])
++eq('شیفت A (مالک تجمیع حفظ‌شده) باقی، شیفت B حذف', [seed.count('Shift', 'id = ?', shiftA), seed.count('Shift', 'id = ?', shiftB)], [1, 0])
++eq('عدد نتیجه = حذف واقعی (۱ تجمیع، ۱ شیفت) و حفظ‌شده ۱', [res?.consolidations, res?.shifts, res?.consolidationsRetained], [1, 1, 1])
++eq('هشدار فارسی تجمیع حفظ‌شده در نتیجه', (res?.warnings ?? []).some((w) => /۱ تجمیع.*حفظ شد/.test(w)), true)
++eq('هیچ کلید خارجی معلقی نماند (foreign_key_check خالی)', sql.prepare('PRAGMA foreign_key_check').all().length, 0)
++const auditRow = sql.prepare(`SELECT note FROM "AuditLog" WHERE action = 'DATA_ARCHIVE_PURGE' ORDER BY id DESC LIMIT 1`).get()
++eq('Audit پاک‌سازی ثبت شد و تجمیع حفظ‌شده را می‌گوید', [seed.count('AuditLog') > auditBefore, /۱ تجمیع/.test(auditRow?.note ?? '')], [true, true])
++
++console.log('\n— ۳) اجرای دوباره: تجمیع حفظ‌شده «داده برای پاک‌سازی» حساب نمی‌شود')
++const pv2 = await safe(() => maintenanceService.preview({ beforeJalali: minCut }))
++eq('پیش‌نمایش دوم: ۰ تجمیع حذف‌شونده، ۱ حفظ‌شونده، ۰ شیفت', [pv2?.consolidations, pv2?.consolidationsRetained, pv2?.shifts], [0, 1, 0])
++const res2 = await safe(() => maintenanceService.archivePurge({ beforeJalali: minCut, backup: false, vacuum: false, purgeAudit: false, managerPassword: PW }))
++eq('اجرای دوم با پیام «داده‌ای برای پاک‌سازی وجود ندارد» رد', /داده‌ای برای پاک‌سازی وجود ندارد/.test(res2?.__error ?? ''), true)
++eq('بعد از اجرای دوم: تجمیع A و پیوند دفتر همچنان باقی', [seed.count('Consolidation', 'id = ?', consA), seed.count('StockMovement', 'consolidationId = ?', consA)], [1, linkedIds.length])
++
++console.log(`\n${bad ? '✗' : '✓'} ${ok} بررسی موفق · ${bad} ناموفق`)
++if (bad) process.exit(1)
+diff -ruN s177/mahak/tests/audit-fixes/fix-s178-return-rate-zero-peers.mjs work178/tests/audit-fixes/fix-s178-return-rate-zero-peers.mjs
+--- s177/mahak/tests/audit-fixes/fix-s178-return-rate-zero-peers.mjs	1970-01-01 00:00:00.000000000 +0000
++++ work178/tests/audit-fixes/fix-s178-return-rate-zero-peers.mjs	2026-09-27 15:47:13.396506772 +0000
+@@ -0,0 +1,83 @@
++/**
++ * نشست ۱۷۸ (S178-D3) — مشاهده‌ی P3 ردیف ۸۹ AUDIT-PROGRESS («همتایان بدون برگشت در میانه‌ی baseline نمی‌آیند ⇒
++ * baseline به بالا متمایل») با کد تطبیق داده شد و ایراد واقعی ضدسرقت است:
++ *   • FraudService.review فقط کاربرانی را به detectReturnRateOutliers می‌داد که در بازه برگشت داشتند؛
++ *   • detectReturnRateOutliers هم ردیف‌های returnTotal = 0 را از همتایان حذف می‌کرد.
++ * مثال: سه فروشنده‌ی سالم با فروش ۱۰٬۰۰۰٬۰۰۰ و بدون برگشت، یک همتا با ۳۰٪ برگشت، و فروشنده‌ی الف با دو برگشت
++ * ۲٬۷۵۰٬۰۰۰ روی فروش ۱۰٬۰۰۰٬۰۰۰ (۵۵٪). baseline الف = ۳۰٪ (فقط همتای برگشت‌دار) ⇒ آستانه ۶۰٪ ⇒ هیچ هشداری.
++ * رفع: همتای دارای فروش هم‌دامنه با نرخ صفر در میانه می‌آید ⇒ میانه ۰ ⇒ آستانه‌ی کف ۲۵٪ ⇒ الف (۵۵٪) و همتای ۳۰٪ هشدار.
++ * نامزد هشدار همچنان حداقل دو برگشت لازم دارد (فروشنده‌ی بی‌برگشت هرگز هشدار نمی‌گیرد).
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label}`) }
++  else { bad++; console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)} · انتظار ${JSON.stringify(want)}`) }
++}
++process.env.HARNESS_DIR = mkdtempSync(join(tmpdir(), 'mahak-s178rr-'))
++process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { fraudService, detectReturnRateOutliers } = await import('../../src/main/services/FraudService.ts')
++const { toJalaliDate } = await import('@shared/jalali')
++const db = harnessClient(); const seed = makeSeeder(db); const sql = db.$harness.db
++
++console.log('— ۱) helper خالص')
++const pure = detectReturnRateOutliers([
++  { userId: 1, returnTotal: 5_500_000, returnCount: 2, salesTotal: 10_000_000 },
++  { userId: 2, returnTotal: 0, returnCount: 0, salesTotal: 10_000_000 },
++  { userId: 3, returnTotal: 0, returnCount: 0, salesTotal: 10_000_000 },
++  { userId: 4, returnTotal: 0, returnCount: 0, salesTotal: 10_000_000 },
++  { userId: 5, returnTotal: 3_000_000, returnCount: 2, salesTotal: 10_000_000 }
++])
++eq('همتای بی‌برگشت در میانه می‌آید ⇒ الف (۵۵٪) و همتای ۳۰٪ هشدار', pure.map((x) => x.userId).sort(), [1, 5])
++eq('baseline الف = میانه‌ی [۰،۰،۰،۳۰٪] = ۰ و آستانه = کف ۲۵٪', [pure.find((x) => x.userId === 1)?.baseline, pure.find((x) => x.userId === 1)?.threshold], [0, 0.25])
++eq('فروشنده‌ی بی‌برگشت هرگز هشدار نمی‌گیرد', pure.some((x) => [2, 3, 4].includes(x.userId)), false)
++const pureSingle = detectReturnRateOutliers([
++  { userId: 1, returnTotal: 4_000_000, returnCount: 1, salesTotal: 10_000_000 },
++  { userId: 2, returnTotal: 0, returnCount: 0, salesTotal: 10_000_000 }
++])
++eq('یک برگشت تنها (۴۰٪) کنار همتای ۰٪ هم هشدار نرخ نمی‌سازد', pureSingle.length, 0)
++const pureOne = detectReturnRateOutliers([
++  { userId: 1, returnTotal: 400, returnCount: 2, salesTotal: 1000 },
++  { userId: 2, returnTotal: 100, returnCount: 2, salesTotal: 1000 }
++])
++eq('قرارداد قبلی fix-s89 (۴۰٪ در برابر ۱۰٪) حفظ شد', pureOne.map((x) => x.userId), [1])
++const pureNoSalesPeer = detectReturnRateOutliers([
++  { userId: 1, returnTotal: 300, returnCount: 2, salesTotal: 1000 },
++  { userId: 2, returnTotal: 0, returnCount: 0, salesTotal: 0 }
++])
++eq('همتای بدون فروش و بدون برگشت نرخی ندارد و baseline نمی‌سازد (کف مطلق ۲۵٪ ⇒ ۳۰٪ هشدار)', [pureNoSalesPeer.map((x) => x.userId), pureNoSalesPeer[0]?.baseline], [[1], null])
++
++console.log('\n— ۲) مسیر واقعی FraudService.review')
++const today = toJalaliDate(new Date()); const now = Date.now()
++const A = seed.user('فروشنده الف'); const B = seed.user('فروشنده ب'); const C = seed.user('فروشنده ج'); const D = seed.user('فروشنده د'); const E = seed.user('فروشنده ه')
++const shift = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: now - 7200_000, userId: A })
++const shift2 = seed.insert('Shift', { name: 'شب', number: 2, dayJalali: today, openedAt: now - 3600_000, userId: B })
++let rno = 1
++const inv = (userId, total, shiftId = shift) => seed.insert('SaleInvoice', { receiptNo: rno++, userId, shiftId, status: 'FINAL', grandTotal: total, paidTotal: total, issuedAt: now - 60_000, issuedAtJalali: today })
++const ret = (invoiceId, userId, total, shiftId = shift) => seed.insert('SaleReturn', { invoiceId, userId, shiftId, total, returnedAt: now - 30_000, returnedAtJalali: today, kind: 'RETURN' })
++const iA = inv(A, 10_000_000); inv(B, 10_000_000); inv(C, 10_000_000); inv(D, 10_000_000); const iE = inv(E, 10_000_000)
++ret(iA, A, 2_750_000); ret(iA, A, 2_750_000)
++ret(iE, E, 1_500_000); ret(iE, E, 1_500_000)
++// فروش بزرگ بی‌برگشتِ شیفت دیگر: نباید در فیلتر شیفت صبح baseline بسازد
++inv(B, 90_000_000, shift2)
++const flag = (r) => r.flags.find((f) => f.key === 'returnRateByUser')
++const day = await fraudService.review({ fromJalali: today, toJalali: today })
++eq('بدون فیلتر: هشدار نرخ برگشت برای الف (۵۵٪) و ه (۳۰٪)', (flag(day)?.sources ?? []).map((s) => s.id).sort(), [A, E].sort())
++eq('برچسب الف نسبت ۵۵٪', /۵۵٪/.test((flag(day)?.sources ?? []).find((s) => s.id === A)?.label ?? ''), true)
++eq('مبلغ هشدار = جمع برگشت دو کاربر (۸٬۵۰۰٬۰۰۰)', flag(day)?.amount, 8_500_000)
++const byShift = await fraudService.review({ fromJalali: today, toJalali: today, shiftId: shift })
++eq('فیلتر شیفت صبح: همان دو هشدار (همتای بی‌برگشت همان شیفت در میانه)', (flag(byShift)?.sources ?? []).map((s) => s.id).sort(), [A, E].sort())
++const onlyE = await fraudService.review({ fromJalali: today, toJalali: today, userId: E })
++eq('فیلتر فقط کاربر ه: بدون همتا ⇒ کف ۲۵٪ ⇒ ۳۰٪ هشدار (رفتار قبلی حفظ)', (flag(onlyE)?.sources ?? []).map((s) => s.id), [E])
++// کنترل منفی: وقتی همتایان واقعاً نرخ بالای مشابه دارند، ۵۵٪ عادی است
++sql.prepare('DELETE FROM "SaleReturn"').run()
++ret(iA, A, 2_750_000); ret(iA, A, 2_750_000)
++for (const [u, i] of [[B, 2], [C, 3], [D, 4], [E, iE]]) { ret(i, u, 2_500_000); ret(i, u, 2_500_000) }
++const high = await fraudService.review({ fromJalali: today, toJalali: today, shiftId: shift })
++eq('کنترل: همه‌ی همتایان ۵۰٪ ⇒ الف ۵۵٪ زیر آستانه (۱۰۰٪) ⇒ بی‌هشدار', flag(high)?.count ?? 0, 0)
++console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
++process.exitCode = bad ? 1 : 0
+diff -ruN s177/mahak/tests/audit-fixes/fix-s178-variant-purge-preview-blockers.mjs work178/tests/audit-fixes/fix-s178-variant-purge-preview-blockers.mjs
+--- s177/mahak/tests/audit-fixes/fix-s178-variant-purge-preview-blockers.mjs	1970-01-01 00:00:00.000000000 +0000
++++ work178/tests/audit-fixes/fix-s178-variant-purge-preview-blockers.mjs	2026-09-27 15:47:13.396506772 +0000
+@@ -0,0 +1,64 @@
++/**
++ * نشست ۱۷۸ (S178-D4) — مشاهده‌ی P3 ردیف ۱۲۶ AUDIT-PROGRESS: پیش‌نمایش «حذف همیشگی کالا» مانع‌های واقعی purge
++ * (کالای هنوز فعال، مهلت ۷۳۰ روز سطل آشغال، حرکت انبار) را به‌صورت تصمیم نمی‌گفت؛ پیش‌نمایش کالای تازه‌حذف را بی‌هیچ
++ * هشداری فهرست می‌کرد و دکمه‌ی «بله، برای همیشه پاک کن» فعال بود، ولی purge رد می‌کرد (پیش‌نمایش ≠ عملیات، D53/D59).
++ * رفع: preview برای هر ردیف blockedReason فارسی و در کل blockers + canPurge برمی‌گرداند؛ همان شرط‌های purge.
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label}`) }
++  else { bad++; console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)?.slice(0, 300)} · انتظار ${JSON.stringify(want)}`) }
++}
++const root = process.env.MAHAK_ROOT ? resolve(process.env.MAHAK_ROOT) : resolve('.')
++process.env.HARNESS_DIR = mkdtempSync(join(tmpdir(), 'mahak-s178vp-'))
++process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
++const { harnessClient } = await import(join(root, 'test/harness/stubs/prismaClient.mjs'))
++const { makeSeeder } = await import(join(root, 'test/harness/seed.mjs'))
++const { variantPurgeService } = await import(join(root, 'src/main/services/VariantPurgeService.ts'))
++const { DEFAULT_MANAGER_PASSWORD: PW } = await import(join(root, 'src/shared/receipt.ts'))
++const db = harnessClient(); const seed = makeSeeder(db); const sql = db.$harness.db
++const safe = async (fn) => { try { return await fn() } catch (e) { return { __error: String(e?.message ?? e).slice(0, 400) } } }
++const DAY = 86400000
++const p = seed.product('جین', seed.category('پوشاک'))
++const mk = (size, deletedAt, active = 0) => { const id = seed.variant(p, size); sql.prepare('UPDATE "ProductVariant" SET isActive = ?, deletedAt = ? WHERE id = ?').run(active, deletedAt, id); return id }
++const vActive = mk('۲۸', null, 1)
++const vRecent = mk('۳۰', Date.now() - 10 * DAY)
++const vNull = mk('۳۱', null)
++const vOk = mk('۳۲', Date.now() - 731 * DAY)
++const vMove = mk('۳۴', Date.now() - 731 * DAY)
++seed.insert('StockMovement', { variantId: vMove, delta: 1, reason: 'INITIAL', createdAt: Date.now() - 800 * DAY })
++const line = (pv, id) => (pv?.lines ?? []).find((l) => l.variantId === id)
++
++console.log('— ۱) پیش‌نمایش مانع‌ها را همان‌طور می‌گوید که purge رد می‌کند')
++const pRecent = await safe(() => variantPurgeService.preview({ variantIds: [vRecent] }))
++eq('تازه‌حذف (۱۰ روز): canPurge = false', pRecent?.canPurge, false)
++eq('تازه‌حذف: مانع ردیف پیام مهلت ۷۳۰ روز دارد', /۷۳۰ روز/.test(line(pRecent, vRecent)?.blockedReason ?? ''), true)
++eq('تازه‌حذف: blockers کل پیش‌نمایش پیام فارسی مهلت دارد', (pRecent?.blockers ?? []).some((b) => /۱ کالا.*۷۳۰ روز/.test(b)), true)
++const rRecent = await safe(() => variantPurgeService.purge({ variantIds: [vRecent], managerPassword: PW }))
++eq('purge همان کالا رد می‌شود (پیش‌نمایش = عملیات)', /روز کامل در سطل آشغال نمانده/.test(rRecent?.__error ?? ''), true)
++const pNull = await safe(() => variantPurgeService.preview({ variantIds: [vNull] }))
++eq('بدون deletedAt: canPurge = false با پیام مهلت', [pNull?.canPurge, /۷۳۰ روز/.test(line(pNull, vNull)?.blockedReason ?? '')], [false, true])
++const pActive = await safe(() => variantPurgeService.preview({ variantIds: [vActive] }))
++eq('کالای فعال: canPurge = false و پیام «هنوز در فهرست کالاهای فعال»', [pActive?.canPurge, /فعال/.test(line(pActive, vActive)?.blockedReason ?? '')], [false, true])
++const pMove = await safe(() => variantPurgeService.preview({ variantIds: [vMove] }))
++eq('دارای حرکت انبار: canPurge = false و پیام دفتر گردش', [pMove?.canPurge, /حرکت انبار/.test(line(pMove, vMove)?.blockedReason ?? '')], [false, true])
++const rMove = await safe(() => variantPurgeService.purge({ variantIds: [vMove], managerPassword: PW }))
++eq('purge کالای دارای حرکت رد می‌شود', typeof rMove?.__error === 'string', true)
++const pMixed = await safe(() => variantPurgeService.preview({ variantIds: [vOk, vRecent] }))
++eq('مخلوط (مجاز + تازه): canPurge = false (همه یا هیچ) و فقط ردیف تازه مانع دارد', [pMixed?.canPurge, line(pMixed, vOk)?.blockedReason ?? null, !!line(pMixed, vRecent)?.blockedReason], [false, null, true])
++const pMissing = await safe(() => variantPurgeService.preview({ variantIds: [vOk, 999999] }))
++eq('شناسه‌ی ناموجود: هشدار «پیدا نشد» ولی مانع حذف موارد موجود نیست (purge هم فقط موجودها را می‌گیرد)', [pMissing?.canPurge, (pMissing?.blockers ?? []).length, (pMissing?.notices ?? []).some((b) => /پیدا نشد/.test(b))], [true, 0, true])
++
++console.log('\n— ۲) مسیر مجاز')
++const pOk = await safe(() => variantPurgeService.preview({ variantIds: [vOk] }))
++eq('۷۳۱ روز بی‌حرکت: canPurge = true، بدون مانع', [pOk?.canPurge, pOk?.blockers, line(pOk, vOk)?.blockedReason ?? null], [true, [], null])
++eq('فیلدهای قبلی پیش‌نمایش حفظ شد', [pOk?.lines?.length, pOk?.historyRows, pOk?.movements], [1, 0, 0])
++const rOk = await safe(() => variantPurgeService.purge({ variantIds: [vOk], managerPassword: PW }))
++eq('purge همان کالا انجام می‌شود', rOk?.deleted, 1)
++const pEmpty = await safe(() => variantPurgeService.preview({ variantIds: [] }))
++eq('انتخاب خالی: canPurge = false با پیام انتخاب', [pEmpty?.canPurge, (pEmpty?.blockers ?? []).some((b) => /حداقل یک کالا/.test(b))], [false, true])
++console.log(`\n${bad ? '✗' : '✓'} ${ok} بررسی موفق · ${bad} ناموفق`)
++if (bad) process.exit(1)

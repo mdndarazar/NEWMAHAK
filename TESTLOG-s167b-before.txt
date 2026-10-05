@@ -1,0 +1,22 @@
+(node:8108) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:8108) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) تابع مشترک scaleLineDiscounts
+  ✗ scaleLineDiscounts در @shared/priceAdjust وجود دارد
+
+۲) سرور: فرمول قدیم Math.round رد می‌شد؛ توزیع تازه پذیرفته می‌شود (بدون tolerance سمت سرور)
+  ✓ سقف ۲۰٪ روی ۲٬۵۰۰ = ۵۰۰ = 500
+  ✓ فرمول قدیم جمع ۵۰۱ می‌داد (بازتولید Y11) = 501
+  ✓ سرور فرمول قدیم (۵۰۱) را رد می‌کند (بند ۴-۲۶، بدون tolerance) (رد شد: جمع تخفیف این فاکتور ۵۰۱ ریال است (تخفیف ردیف ۵۰۱ ریال، تخفیف کل فاکتور ۰ ریال و کاهش قیمت زیر قیمت مرجع ۰ ریا)
+  ✗ سرور توزیع تازه — تابع وجود ندارد
+
+۳) Pos.tsx همین تابع را در سند و عوارض می‌خواند
+  ✗ دیگر Math.round(l.discount * lineScale) / totals.lineScale در کد نیست
+  ✗ scaleLineDiscounts از @shared/priceAdjust import شده
+  ✗ lineDiscountOf از نقشه‌ی مقیاس‌شده می‌خواند
+
+✗ 3 بررسی موفق · 5 ناموفق

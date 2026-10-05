@@ -1,0 +1,24 @@
+(node:6185) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6185) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/s160/src/main/ipc/index.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/s160/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) shiftOpen بدون نشست باز، با userId جعلی ⇒ actor = کارمند انتخاب‌شده (staffId)
+  ✓ shiftOpen
+  ✓ نشست باز شد
+  ✓ actor Audit SHIFT_OPEN = 1
+
+۲) staffSave با نشست باز و userId جعلی ⇒ actor نشست
+  ✓ staffSave (ثبت تازه)
+  ✓ actor Audit STAFF_CREATE = 1
+  ✓ staffSave (غیرفعال‌سازی)
+  ✓ actor Audit STAFF_UPDATE = 1
+
+۳) ساختار: هیچ کانالی در ipc/index.ts دیگر withUser نمی‌گیرد
+  ✓ shiftOpen ⇒ withOptionalSessionActor
+  ✓ staffSave ⇒ withOptionalSessionActor
+  ✓ هیچ فراخوانی await withUser( نمانده
+
+نتیجه: 10 موفق · 0 ناموفق

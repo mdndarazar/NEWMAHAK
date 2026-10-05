@@ -1,0 +1,51 @@
+(node:5429) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5429) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) پل بدون فیلتر (۵۲۰ اعتبار باطل در بازه)
+  ✗ کل: گزارش بی‌خطا — انتظار null، دریافت "HARNESS: سقف IN برابر ۵۰۰ است"
+  ✗ کل: صادرشده — انتظار 3400، دریافت null
+  ✗ کل: تعداد صادرشده — انتظار 6، دریافت null
+  ✗ کل: سند‌دار — انتظار 1500، دریافت null
+  ✗ کل: بی‌سند — انتظار 1600، دریافت null
+  ✗ کل: از اضافه‌دریافت — انتظار 300، دریافت null
+  ✗ کل: وضعیت باطل (ستون جدا) = ۵۲۰ × ۱٬۰۰۰ — انتظار 520000، دریافت null
+  ✗ هیچ in/notIn بالای ۵۰۰ نبود (کل) — انتظار true، دریافت false
+
+۲) پل با فیلتر کارمند الف و ب
+  ✗ الف: گزارش بی‌خطا — انتظار null، دریافت "HARNESS: سقف IN برابر ۵۰۰ است"
+  ✗ الف: صادرشده — انتظار 2500، دریافت null
+  ✗ الف: تعداد صادرشده — انتظار 5، دریافت null
+  ✗ الف: سند‌دار — انتظار 1500، دریافت null
+  ✗ الف: بی‌سند — انتظار 700، دریافت null
+  ✗ الف: از اضافه‌دریافت — انتظار 300، دریافت null
+  ✗ ب: گزارش بی‌خطا — انتظار null، دریافت "HARNESS: سقف IN برابر ۵۰۰ است"
+  ✗ ب: صادرشده — انتظار 900، دریافت null
+  ✗ ب: تعداد صادرشده — انتظار 1، دریافت null
+  ✗ ب: سند‌دار — انتظار 0، دریافت null
+  ✗ ب: بی‌سند — انتظار 900، دریافت null
+  ✗ ب: از اضافه‌دریافت — انتظار 0، دریافت null
+  ✗ هیچ in/notIn بالای ۵۰۰ نبود (فیلتر) — انتظار true، دریافت false
+
+۳) drill ردیف «اعتبار صادرشده» (فقط سند‌دار)
+  ✗ کل: drill بی‌خطا — انتظار null، دریافت "HARNESS: سقف IN برابر ۵۰۰ است"
+  ✗ کل: totalCount — انتظار 3، دریافت null
+  ✓ کل: بدون هشدار خواندن‌نشد = false
+  ✓ کل: هیچ اعتبار باطل در drill نیست = false
+  ✗ کل: جمع drill = 1500 — انتظار 1500، دریافت 0
+  ✗ الف: drill بی‌خطا — انتظار null، دریافت "HARNESS: سقف IN برابر ۵۰۰ است"
+  ✗ الف: totalCount — انتظار 3، دریافت null
+  ✓ الف: بدون هشدار خواندن‌نشد = false
+  ✓ الف: هیچ اعتبار باطل در drill نیست = false
+  ✗ الف: جمع drill = 1500 — انتظار 1500، دریافت 0
+  ✗ ب: drill بی‌خطا — انتظار null، دریافت "HARNESS: سقف IN برابر ۵۰۰ است"
+  ✗ ب: totalCount — انتظار 0، دریافت null
+  ✓ ب: بدون هشدار خواندن‌نشد = false
+  ✓ ب: هیچ اعتبار باطل در drill نیست = false
+  ✓ ب: جمع drill = 0 = 0
+  ✗ هیچ in/notIn بالای ۵۰۰ نبود (drill) — انتظار true، دریافت false
+
+نتیجه: 7 موفق · 30 ناموفق

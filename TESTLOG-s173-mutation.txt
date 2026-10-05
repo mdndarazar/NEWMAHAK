@@ -1,0 +1,3 @@
+M1 no-chunk: 21/7; M2 no-failed: 24/4; M3 no-rial: 27/1; M4 reversed-chunks-no-sort: 27/1
+M5 only-store-credit (EXCHANGE_CREDIT نه): 8/4; M6 no-filter: 3/9
+M7 voided-not-mapped: نتیجه: 8 موفق · 2 ناموفق

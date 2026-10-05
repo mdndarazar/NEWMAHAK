@@ -1,0 +1,191 @@
+--- a/DECISIONS.md
++++ b/DECISIONS.md
+@@ -245,3 +245,7 @@
+ S85-2 — سؤال: actor تغییر خام تنظیمات و purge از payload بیاید یا نشست؟ انتخاب من: فقط `shiftService.currentStaffId()`؛ payload نادیده گرفته شود. دلیل: renderer قابل جعل است و بند ۴-۳۰ ثبت actor واقعی را می‌خواهد؛ اگر نشست باز نباشد purge اصلاً اجرا نشود و تنظیم خام فقط با actor تهی، بدون جعل، ثبت شود.
+ S85-3 — سؤال: پاک‌سازی گزارش فروش فیزیکی حذف کند یا void؟ انتخاب من: void اتمیک روی SaleInvoice/SaleReturn/Payment/StoreCredit؛ اقلام، تخصیص مبدأ، شماره فیش و دفتر انبار بمانند. اگر اعتبار صادرشده از برگشت قبلاً مصرف شده باشد عملیات rollback و نیازمند رسیدگی مدیر است. دلیل: بند ۴-۲۲ حذف مدرک مالی را ممنوع کرده و پاک‌کردن اعتبار مصرف‌شده تعهد مشتری را پنهان می‌کند.
+ S85-4 — سؤال: قفل دوره برای purge فقط بیرون transaction سنجیده شود یا داخل هم تکرار شود؟ انتخاب من: `preverify` بیرون و `assertOpen` داخل transaction، با گیت رمز مدیر پیش از هر دو. دلیل: lockout نباید وسط transaction نوشته شود و وضعیت دوره می‌تواند بین دو مرحله عوض شود؛ fail-closed از تغییر بی‌ردپا جلوگیری می‌کند.
++
++### نشست ۸۶
++S86-1 — سؤال: ردیف جمع تب تعویض با اضافه‌شدن ستون «مبدأ برداشت» چگونه هم‌تراز بماند؟ گزینه‌ها: جابه‌جا کردن همه‌ی جمع‌ها یا گذاشتن سلول خالی دقیقاً بعد از «جمع جایگزین». انتخاب من: گزینه‌ی دوم. دلیل: مبدأ برداشت یک ستون خواندنیِ غیرمالی است؛ نباید `diffTotal` و مبالغ بعدی را به ستون اشتباه ببرد و تغییر کم‌ریسک‌تر است.
++S86-2 — سؤال: در رسید چاپی برگشت، «پول واقعاً خارج‌شده از کشو» از کدام مقدار بیاید؟ انتخاب من: فقط `refundAmount` وقتی `refundMethod === 'CASH'` است؛ برای کارت، اعتبار و کاهش بدهی صفر. دلیل: بند ۴-۲۵ و ۴-۴۹ اثر نقدی را از ارزش برگشت و روش تسویه جدا می‌کنند؛ حدس‌زدن خروج نقد از مبلغ برگشت کسری کاذب می‌سازد.
+--- a/HANDOFF-PROMPT-next.txt
++++ b/HANDOFF-PROMPT-next.txt
+@@ -216,41 +216,39 @@
+ ۱۰) وضعیت فعلی زنجیره و نقطه‌ی دقیق شروع (تنها بخشی که هر نشست به‌روز می‌کند)
+ 
+ ۱۰-۱) محیط و روش اجرای تست
+-در نشست ۸۵ هم گام ۰ کامل نشد: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه به‌دلیل `command not found` اجرا نشدند؛ شبکه در محیط نبود. `node --version` برابر `v22.23.1` است. همه‌ی تست‌ها فقط با resolver رسمی هارنس معتبرند: `node --import ./test/harness/register.mjs <فایل>`. هیچ ادعایی درباره‌ی Prisma Client تولیدی، typecheck کامل، Electron واقعی یا migration روی دیتابیس تاریخی وجود ندارد.
+-
+-۱۰-۲) نتیجه‌ی نشست ۸۵
+-- ✅ خوشه H / مسیر خام `settings:set`: allowlist سخت‌گیرانه اضافه شد؛ کلیدهای ناشناس رد می‌شوند؛ کلیدهای حساس فقط با `assertManagerPassword` پذیرفته می‌شوند؛ actor از نشست واقعی خوانده و تغییر با `AuditAction.SETTINGS_UPDATE` ثبت می‌شود؛ کلیدهای رمز مدیر و رمز پنل از این مسیر خام قابل نوشتن نیستند.
+-- ✅ خوشه H / `sale:purge`: IPC اکنون نشست باز و رمز مدیر می‌خواهد؛ `SalesService.purge` قفل دوره را با `preverify` بیرون تراکنش و `assertOpen` داخل تراکنش می‌سنجد؛ SaleInvoice/SaleReturn/Payment/StoreCredit با مهر void نگه داشته می‌شوند و delete فیزیکی در بدنه‌ی purge حذف شد؛ اعتبار برگشتیِ قبلاً مصرف‌شده باعث rollback و ارجاع به رسیدگی مدیر می‌شود.
+-- ✅ UI تنظیمات: رمز مدیر و دلیل purge به main فرستاده می‌شوند و نتیجه‌ی عملیات با برچسب «ابطال» نمایش داده می‌شود.
+-- تست قبل از رفع `fix-s85-security-gates.mjs` روی zip خام نشست ۸۴: **۲ موفق · ۱۱ ناموفق**.
+-- تست بعد از رفع `tests/audit-fixes/fix-s85-security-gates.mjs`: **۱۳ موفق · ۰ ناموفق**؛ تست ایستا است.
++در نشست ۸۶ نیز گام ۰ کامل نشد: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه به‌دلیل `command not found` اجرا نشدند؛ شبکه در محیط نبود. `node --version` برابر `v22.23.1` است. همه‌ی تست‌ها فقط با resolver رسمی هارنس معتبرند: `node --import ./test/harness/register.mjs <فایل>`. هیچ ادعایی درباره‌ی Prisma Client تولیدی، typecheck کامل، Electron واقعی، Excel واقعی یا migration روی دیتابیس تاریخی وجود ندارد.
++
++۱۰-۲) نتیجه‌ی نشست ۸۶
++- ✅ خوشه J / ردیف جمع تب تعویض: بعد از `exchangeTotal` یک سلول خالی برای ستون غیرمالی «مبدأ برداشت» اضافه شد تا `diffTotal` و مبالغ بعدی زیر سرستون درست بمانند.
++- ✅ خوشه J / رسید چاپی برگشت: خلاصه‌ی چاپی سه ستون صریح دارد: «ارزش کالای برگشتی»، «نحوه‌ی تسویه» و «پول واقعاً خارج‌شده از کشو». ستون سوم فقط برای `refundMethod === 'CASH'` برابر `refundAmount` است و برای کارت، اعتبار و کاهش بدهی صفر چاپ می‌شود.
++- تست قبل از رفع `fix-s86-exchange-return-output.mjs` روی zip خام نشست ۸۵: **۱ موفق · ۴ ناموفق**.
++- تست بعد از رفع `tests/audit-fixes/fix-s86-exchange-return-output.mjs`: **۵ موفق · ۰ ناموفق**؛ تست ساختاری است.
+ 
+ ۱۰-۳) رگرسیون کامل
+ دستور: `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done`
+-نتیجه: **۳۳ فایل PASS · ۰ فایل FAIL**. تست تازه‌ی `fix-s85-security-gates.mjs` هم در همین مجموعه است. رگرسیون فقط منطق/SQLite هارنس را اثبات می‌کند، نه Prisma/Electron تولیدی.
+-
+-۱۰-۴) فایل‌های تغییرکرده در نشست ۸۵
+-- `src/main/ipc/index.ts`: allowlist و Audit برای settings:set؛ گیت نشست/رمز مدیر برای sale:purge.
+-- `src/main/services/SalesService.ts`: گیت قفل دوره و تبدیل purge از حذف فیزیکی به void اتمیکِ اسناد؛ حفظ دفترها و رد اعتبار مصرف‌شده.
+-- `src/renderer/src/pages/Settings.tsx`: ارسال رمز مدیر/دلیل purge و نمایش نتیجه به‌عنوان ابطال.
+-- `tests/audit-fixes/fix-s85-security-gates.mjs`: تست ایستای قبل/بعد گیت‌ها و عدم حذف فیزیکی.
+-- `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md`: ثبت نشست ۸۵.
++نتیجه: **۳۴ فایل PASS · ۰ فایل FAIL**، **۶۴۵ بررسی موفق**. رگرسیون فقط منطق/SQLite هارنس را اثبات می‌کند، نه Prisma/Electron تولیدی یا چاپگر واقعی.
++
++۱۰-۴) فایل‌های تغییرکرده در نشست ۸۶
++- `src/renderer/src/pages/SalesReports.tsx`: هم‌ترازی ردیف جمع تب تعویض با ستون «مبدأ برداشت».
++- `src/main/print/templates.ts`: افزودن جدول سه‌ستونه‌ی ارزش برگشت/روش تسویه/خروج واقعی نقد در رسید برگشت.
++- `tests/audit-fixes/fix-s86-exchange-return-output.mjs`: تست قبل/بعد ساختاری برای دو اصلاح.
++- `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md`: ثبت نشست ۸۶.
+ 
+ ۱۰-۵) محدودیت‌های باز
+-race واقعی دو پردازه‌ی Electron/Prisma، `npm install`، `prisma generate`، `typecheck` کامل، crash/قطع برق وسط transaction، render واقعی Electron/React، timezone غیر Asia/Tehran، حجم ۵۰٬۰۰۰+ ردیف با Prisma واقعی، migration روی داده‌ی تاریخی واقعی و اجرای واقعی پنجره‌های چاپ/بکاپ اجرا نشدند؛ دلیل: npm/npx/Electron و شبکه در محیط نبودند. پذیرش تاریخی `test/acceptance-db-session36.mjs` طبق وضعیت قبلی **۱۳۱ موفق · ۷ ناموفق** است و هر ۷ مورد مربوط به `destination=null` و سبد «نامشخص» است؛ دست نخورد. چون typecheck اجرا نشد، importهای تازه در `src/main/ipc/index.ts` و نوع `status` در updateMany باید با اولین `npm run typecheck` تأیید شوند.
++race واقعی دو پردازه‌ی Electron/Prisma، `npm install`، `prisma generate`، `typecheck` کامل، crash/قطع برق وسط transaction، render واقعی Electron/React، چاپگر واقعی، Excel واقعی، timezone غیر Asia/Tehran، حجم ۵۰٬۰۰۰+ ردیف با Prisma واقعی، migration روی داده‌ی تاریخی واقعی و اجرای واقعی پنجره‌های پنهان چاپ/بکاپ اجرا نشدند؛ دلیل: npm/npx/Electron در محیط نبودند. پذیرش تاریخی `test/acceptance-db-session36.mjs` طبق وضعیت قبلی **۱۳۱ موفق · ۷ ناموفق** است و هر ۷ مورد مربوط به `destination=null` و سبد «نامشخص» است؛ دست نخورد. چون typecheck اجرا نشد، تغییرات نشست ۸۶ باید با اولین `npm run typecheck` تأیید شوند.
+ 
+ ۱۰-۶) وضعیت خوشه‌ها
+-- A: در سطح کد و SQLite هارنس جلو آمده (گیت تکرار بستن، اتمیک close، گیت تعویض اجباری، idempotency نشست، race دو اتصال)، ولی در Prisma/Electron واقعی اثبات‌نشده.
++- A: در سطح کد و SQLite هارنس جلو آمده، ولی در Prisma/Electron واقعی اثبات‌نشده.
+ - B، C، E، F، G، K، L، M: رفع‌نشده یا نیمه‌کاره طبق نشست‌های قبل؛ C همچنان فقط با یک تست یکپارچه‌ی واحد ادامه یابد و تکه‌تکه نشود.
+ - D: بخش‌هایی از اعتبار خرید و ledger رفع شده، اما cross-check یکپارچه‌ی اعتبار/برگشت/تعویض/گزارش باقی است.
+-- H: نیمه‌کاره؛ DevTools، allowlist settings:set، گیت نشست/رمز مدیر purge، قفل دوره و void اسناد purge رفع شدند. پنجره‌های پنهان چاپ/بکاپ با Electron واقعی و پاک‌سازی archive/vacuum هنوز جداگانه بررسی نشده‌اند.
+-- I: نیمه‌کاره؛ ستون AuditLog به `at` رفع شد؛ فرمول نرخ برگشت غیرعادی با تعداد کم فروشنده، بازه‌ی «امروز» در StaffReportService، outOfShift با shiftId واقعی، ستون تعویض و مصرف اعتبار در پنل کارمند باقی‌اند.
+-- J: نیمه‌کاره؛ regex خط‌تیره رفع شد؛ ردیف جمع تب تعویض، `pick()` برای آرایه‌ی خام، شاخه‌ی چاپ اختصاصی هر تب و سه ستون چاپ برگشت باقی‌اند.
++- H: DevTools، allowlist `settings:set`، گیت نشست/رمز مدیر purge، قفل دوره و void اسناد purge رفع شده‌اند؛ پنجره‌های پنهان چاپ/بکاپ و archive/vacuum با Electron واقعی بررسی نشده‌اند.
++- I: ستون AuditLog به `at` رفع شد؛ نرخ برگشت غیرعادی با تعداد کم فروشنده، بازه‌ی «امروز» StaffReportService، outOfShift، ستون تعویض و مصرف اعتبار در پنل کارمند باقی‌اند.
++- J: xlsx و بخشی از چاپ/جمع اصلاح شده‌اند؛ ردیف جمع تعویض و سه ستون رسید برگشت در نشست ۸۶ اصلاح شدند. `pick()` در `ReportExtraTables` اکنون آرایه‌ی خام و آبجکت را می‌پذیرد؛ شاخه‌های چاپ اختصاصی همه‌ی تب‌ها و تأیید Excel واقعی هنوز باقی‌اند. ⚠️ خوشه J کامل اعلام نمی‌شود.
+ 
+ ۱۰-۷) نقطه‌ی دقیق شروع نشست بعد
+-۱) ابتدا گام ۰ را در محیط دارای npm/Prisma اجرا کن و خروجی هر سه دستور را دقیق در سه فایل زنده ثبت کن؛ سپس typecheck تغییرات نشست ۸۵ را تأیید کن.
+-۲) با Prisma واقعی، migration و تست void purge را روی دیتابیس تازه‌ساخته از تمام migrationها اجرا کن؛ سپس روی کپی داده‌ی تاریخی، بدون نوشتن روی اصل، بررسی کن که فاکتور/پرداخت/برگشت/اعتبار و شماره فیش باقی می‌مانند و گزارش فعال دوباره‌شماری نمی‌کند.
+-۳) اگر محیط باز هم ناقص بود، خوشه J را فقط در یک مسیر منسجم جلو ببر: ابتدا `pick()` و ردیف جمع تعویض، سپس چاپ/Excel برگشت با سه ستون؛ قبل/بعد و رگرسیون کامل را ثبت کن.
+-۴) پنجره‌های پنهان چاپ/بکاپ را با Electron واقعی بررسی کن و DevTools را در build نهایی قطعی کن؛ ادعای سبز بدون اجرای Electron ممنوع.
++۱) ابتدا گام ۰ را در محیط دارای npm/Prisma اجرا کن و خروجی هر سه دستور را دقیق در سه فایل زنده ثبت کن؛ سپس typecheck تغییرات نشست‌های ۸۵ و ۸۶ را تأیید کن.
++۲) پنجره‌های پنهان چاپ/بکاپ و همه‌ی شاخه‌های چاپ تب‌های چک/اعتبار/دفتر رویداد/ضدتقلب را با Electron واقعی بررسی کن؛ برای هر ادعا تست قبل/بعد بساز و ادعای سبز بدون اجرای Electron ممنوع.
++۳) Excel تب برگشت را با داده‌ی فیلترشده‌ی واقعی اجرا کن و سه ستون «ارزش کالای برگشتی / نحوه‌ی تسویه / پول واقعاً خارج‌شده از کشو» را روی فایل واقعی تأیید کن؛ سپس ردیف جمع Excel تب تعویض را بررسی کن.
++۴) با Prisma واقعی، migration و تست void purge را روی دیتابیس تازه‌ساخته از تمام migrationها اجرا کن؛ سپس روی کپی داده‌ی تاریخی، بدون نوشتن روی اصل، ماندگاری فاکتور/پرداخت/برگشت/اعتبار و عدم دوباره‌شماری گزارش را بررسی کن.
+ ۵) بعد از بسته‌شدن A، فقط با یک تست یکپارچه به خوشه C/D برگرد: `remainingOf`، پل تطبیق، برگشت و تعویض تاریخی، refund، store credit، closed period و purge void را هم‌زمان cross-check کن.
+ ۶) هر رفع جدید را همراه تست قبل/بعد، ثبت در `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md` انجام بده و در پایان همین بند ۱۰ را برای نشست بعد به‌روز کن.
+--- a/PROGRESS.md
++++ b/PROGRESS.md
+@@ -275,3 +275,12 @@
+ - گام صفر همچنان ناقص است: `npm install`، `npx prisma generate` و `npm run typecheck` به‌دلیل نبود npm/npx اجرا نشدند. اجرای واقعی Electron/Prisma و migration داده‌ی تاریخی هنوز اثبات نشده‌اند.
+ - فایل‌های src تغییریافته: `src/main/ipc/index.ts`، `src/main/services/SalesService.ts`، `src/renderer/src/pages/Settings.tsx`؛ تست تازه: `tests/audit-fixes/fix-s85-security-gates.mjs`.
+ - ⚠️ خوشه H هنوز کامل نیست: پنجره‌های پنهان چاپ/بکاپ با Electron واقعی بررسی نشده‌اند. خوشه‌های I/J و C طبق وضعیت قبل باقی‌اند و خوشه C همچنان نباید تکه‌تکه شود.
++
++## نشست ۸۶
++- ✅ خوشه J / ردیف جمع تب تعویض: بعد از «جمع جایگزین» سلول خالیِ «مبدأ برداشت» اضافه شد تا `diffTotal`، نحوه‌ی تسویه و دریافت نقد در ستون درست بمانند؛ این اصلاح فقط نمایش است و عدد مالی را تغییر نمی‌دهد.
++- ✅ خوشه J / رسید چاپی برگشت: خلاصه‌ی چاپی اکنون سه ستون صریح دارد: ارزش کالای برگشتی، نحوه‌ی تسویه، و پول واقعاً خارج‌شده از کشو. اثر نقدی چاپی فقط برای روش `CASH` از `refundAmount` می‌آید؛ کارت/اعتبار/کاهش بدهی صفر چاپ می‌شوند.
++- تست قبل از رفع `fix-s86-exchange-return-output.mjs` روی zip خام نشست ۸۵: **۱ موفق · ۴ ناموفق**.
++- تست بعد از رفع `tests/audit-fixes/fix-s86-exchange-return-output.mjs`: **۵ موفق · ۰ ناموفق**؛ تست ساختاری است.
++- رگرسیون کامل `tests/audit-fixes/*.mjs`: **۳۴ فایل PASS · ۰ فایل FAIL**، **۶۴۵ بررسی موفق**.
++- فایل‌های src تغییریافته: `src/renderer/src/pages/SalesReports.tsx` و `src/main/print/templates.ts`; تست تازه: `tests/audit-fixes/fix-s86-exchange-return-output.mjs`.
++- ⚠️ Excel تب برگشت از قبل ستون‌های متناظر را داشت و در این نشست بازنویسی نشد؛ شاخه‌های چاپ اختصاصی تب‌ها، اجرای واقعی Electron/چاپگر، Prisma واقعی و typecheck همچنان اثبات نشده‌اند.
+--- a/TESTLOG.md
++++ b/TESTLOG.md
+@@ -654,3 +654,23 @@
+ 
+ محدودیت اثبات:
+ - تست جدید رفتار IPC را ایستا می‌سنجد؛ اجرای واقعی Electron، Prisma Client تولیدی، typecheck کامل، migration روی داده‌ی تاریخی، race دو پردازه‌ی Electron و crash وسط transaction در این محیط اجرا نشدند.
++
++## نشست ۸۶
++گام ۰:
++- `npm install` ⇒ اجرا نشد، دلیل: `npm: command not found`.
++- `npx prisma generate` ⇒ اجرا نشد، دلیل: `npx: command not found`.
++- `npm run typecheck` ⇒ اجرا نشد، دلیل: `npm: command not found`.
++- `node --version` ⇒ `v22.23.1`.
++
++قبل از رفع:
++- `MAHAK_ROOT=<zip خام نشست ۸۵> node --import ./test/harness/register.mjs tests/audit-fixes/fix-s86-exchange-return-output.mjs`
++- نتیجه: **۱ موفق · ۴ ناموفق**؛ ردیف جمع تعویض و سه ستون چاپ برگشت وجود نداشتند.
++
++بعد از رفع:
++- `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s86-exchange-return-output.mjs`
++- نتیجه: **۵ موفق · ۰ ناموفق**؛ تست ساختاری.
++- دستور رگرسیون: `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done`
++- نتیجه: **۳۴ فایل PASS · ۰ فایل FAIL**، **۶۴۵ بررسی موفق**.
++
++محدودیت اثبات:
++- اجرای واقعی React/Electron و چاپگر، Excel واقعی، Prisma Client تولیدی، typecheck کامل، migration داده‌ی تاریخی، race چندپردازه‌ای و crash وسط transaction اجرا نشدند؛ دلیل: npm/npx/Electron در محیط نیستند.
+--- a/src/main/print/templates.ts
++++ b/src/main/print/templates.ts
+@@ -695,8 +695,13 @@
+     `<table><thead>${th}</thead><tbody>${itemRows || emptyRow}</tbody></table>`
+ 
+   const sums: string[] = []
++  sums.push(
++    `<table><thead><tr><th>ارزش کالای برگشتی</th><th>نحوه‌ی تسویه</th><th>پول واقعاً خارج‌شده از کشو</th></tr></thead>` +
++      `<tbody><tr><td>${money(d.total)}</td><td>${escapeHtml(d.refundMethodLabel)}</td><td>${money(
++        d.refundMethod === 'CASH' ? d.refundAmount : 0
++      )}</td></tr></tbody></table>`
++  )
+   sums.push(`<div class="row big"><span>جمع کالای برگشتی</span><span>${money(d.total)}</span></div>`)
+-  sums.push(`<div class="msg">روش بازپرداخت: ${escapeHtml(d.refundMethodLabel)}</div>`)
+   if (d.refundAmount > 0)
+     sums.push(`<div class="row"><span>مبلغ بازپرداخت‌شده</span><span>${money(d.refundAmount)}</span></div>`)
+   if (d.refundMethod === 'NONE')
+--- a/src/renderer/src/pages/SalesReports.tsx
++++ b/src/renderer/src/pages/SalesReports.tsx
+@@ -2269,6 +2269,7 @@
+             </td>
+             <td></td>
+             <td>{money(t.exchangeTotal)}</td>
++            <td></td>
+             <td>{money(t.diffTotal)}</td>
+             <td></td>
+             <td>{money(t.cashReceivedTotal)}</td>
+--- a/tests/audit-fixes/fix-s86-exchange-return-output.mjs
++++ b/tests/audit-fixes/fix-s86-exchange-return-output.mjs
+@@ -0,0 +1,43 @@
++/**
++ * نشست ۸۶ · خوشه J · هم‌ترازی خروجی تب تعویض و رسید برگشت.
++ *
++ * این تست ساختاری است و فقط قرارداد ستون‌ها را می‌سنجد؛ اجرای Electron/React
++ * واقعی و چاپگر در این محیط در دسترس نیست.
++ */
++import { readFileSync } from 'node:fs'
++import { resolve } from 'node:path'
++
++const root = process.env.MAHAK_ROOT ? resolve(process.env.MAHAK_ROOT) : resolve('.')
++const read = (p) => readFileSync(resolve(root, p), 'utf8')
++const reports = read('src/renderer/src/pages/SalesReports.tsx')
++const templates = read('src/main/print/templates.ts')
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (got === want) {
++    ok++
++    console.log(`  ✓ ${label}`)
++  } else {
++    bad++
++    console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)} · انتظار ${JSON.stringify(want)}`)
++  }
++}
++
++eq(
++  'جمع تعویض بعد از جمع جایگزین، سلول مبدأ برداشت را خالی نگه می‌دارد',
++  /<td>\{money\(t\.exchangeTotal\)\}<\/td>\s*<td><\/td>\s*<td>\{money\(t\.diffTotal\)\}/.test(reports),
++  true
++)
++eq('خروجی رسید برگشت ستون ارزش کالای برگشتی دارد', /ارزش کالای برگشتی/.test(templates), true)
++eq('خروجی رسید برگشت ستون نحوه‌ی تسویه دارد', /نحوه‌ی تسویه/.test(templates), true)
++eq('خروجی رسید برگشت ستون پول واقعی خارج‌شده از کشو دارد', /پول واقعاً خارج‌شده از کشو/.test(templates), true)
++eq(
++  'اثر نقدی چاپی فقط برای روش CASH از refundAmount می‌آید',
++  /d\.refundMethod === 'CASH' \? d\.refundAmount : 0/.test(templates),
++  true
++)
++
++console.log('  ⓘ تست ساختاری است؛ اجرای Electron/React واقعی و چاپگر: اجرا نشد، دلیل: npm/Electron در محیط نیست.')
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++if (bad) process.exit(1)

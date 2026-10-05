@@ -1,0 +1,40 @@
+(node:4374) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:4374) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/s165/mahak/src/main/ipc/index.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/s165/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓ پیش‌شرط: امروز موعد انبارگردانی است = true
+  ✓ پیش‌شرط: یادآوری خوابانده نشده = false
+
+۱) «امروز دیدم» بی‌رمز / با رمز غلط ⇒ رد، یادآوری بیدار می‌ماند، بدون Audit
+  ✗ خواباندن بی‌رمز — بدون رمز پذیرفته شد
+  ✗ خواباندن با رمز غلط — بدون رمز پذیرفته شد
+  ✗ یادآوری هنوز بیدار است — انتظار false، دریافت true
+  ✓ هیچ Audit تازه‌ای ثبت نشد = 0
+
+۲) کانال جانبی stocktakeScheduleSet: همان برنامه + dismissedJalali=امروز بی‌رمز ⇒ خواباندن نباید رخ دهد
+  ✗ یادآوری از راه stocktakeScheduleSet خوابانده نشد — انتظار false، دریافت true
+  ✗ حتی با رمز، stocktakeScheduleSet dismissedJalali را نمی‌نویسد (فقط کانال مستقل با Audit) — انتظار false، دریافت true
+
+۳) با رمز مدیر ⇒ خوابانده و Audit با actor نشست (نه userId رندرر)
+  ✓ خواباندن با رمز مدیر
+  ✓ یادآوری امروز خوابانده شد = true
+  ✗ یک Audit تازه — انتظار 3، دریافت 2
+  ✓ Audit با actor نشست = 1
+  ✗ یادداشت Audit فارسی و صریح — انتظار true، دریافت false
+
+۴) تغییر واقعی برنامه با رمز، dismissedJalali امروز را پاک نمی‌کند (کانال‌ها مستقل)
+  ✓ ذخیره‌ی برنامه با رمز (dismissedJalali خالی در payload)
+  ✗ خواباندن امروز باقی ماند — انتظار true، دریافت false
+
+۵) قفل پنل انبارگردانی خاموش ⇒ خواباندن بی‌رمز مجاز (بند ۴-۳۹) ولی باز هم Audit
+  ✓ خواباندن بی‌رمز با قفل خاموش
+  ✓ خوابانده شد = true
+  ✗ Audit ثبت شد — انتظار 4، دریافت 3
+
+۶) UI: دکمه‌ی «امروز دیدم» رمز می‌گیرد و panelPassword می‌فرستد
+  ✗ call(CH.stocktakeDismiss, { panelPassword }) — انتظار true، دریافت false
+  ✗ کادر رمز در بنر — انتظار true، دریافت false
+
+✗ 9 بررسی موفق · 11 ناموفق

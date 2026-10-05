@@ -1,0 +1,28 @@
+(node:6203) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6203) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) ابطال بازه‌ی امروز با ۵۲۱ فاکتور، ۵۱۰ برگشت دارای اعتبار، ۵۱۰ مصرف اعتبار
+  ✓ ابطال بی‌خطا = null
+  ✓ فاکتورهای باطل‌شده = ۵۲۱ = 521
+  ✓ پرداخت‌های باطل‌شده = ۵۲۱ = 521
+  ✓ برگشت‌های باطل‌شده = ۵۱۰ = 510
+  ✓ اعتبارهای برگشت CANCELED = ۵۱۰ = 510
+  ✓ مصرف‌های اعتبار برگشت‌خورده = ۵۱۰ = 510
+  ✓ usedAmount اعتبار چندبارمصرف به ۰ برگشت = 0
+  ✓ اعتبار چندبارمصرف خودش باطل نشد = null
+  ✓ Audit: invoiceCount = ۵۲۱ = 521
+  ✓ Audit: returnCount = ۵۱۰ = 510
+  ✓ هیچ in/notIn بالای ۵۰۰ نبود (بازه) = true
+
+۲) ابطال انتخابی ۵۲۱ فاکتور (id in picked) با بازگشت موجودی
+  ✓ ابطال انتخابی بی‌خطا = null
+  ✓ فاکتورهای انتخابی باطل‌شده = ۵۲۱ = 521
+  ✓ پرداخت‌های انتخابی باطل‌شده = ۵۲۱ = 521
+  ✓ موجودی به اندازه‌ی ۵۲۱ قلم برگشت = 521
+  ✓ هیچ in/notIn بالای ۵۰۰ نبود (انتخابی) = true
+
+نتیجه: 16 موفق · 0 ناموفق

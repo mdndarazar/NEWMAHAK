@@ -1,0 +1,64 @@
+(node:5686) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5686) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/proj/mahak/src/main/services/SettingsService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/proj/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✗ تابع مشترک withFreshSale در @shared/receipt وجود دارد — انتظار "function"، دریافت "undefined"
+
+۱) تابع خالص: پیش‌فرض‌ها + sale تازه + فقط patch
+  ✗ تابع نیست ⇒ بخش ۱ اجرا نشد
+
+۲) پنل فروش باز ⇒ مدیر در تنظیمات نام صندوق‌دار را عوض می‌کند ⇒ فروشنده با رمز پنل چاپ را خاموش می‌کند
+  ✓ پیش‌شرط: تنظیمات مدیر ذخیره شد = true
+[ipc:settings:saveBundle] BusinessError: «تغییر تنظیمات فروش (عوارض/حق سرویس پیش‌فرض، کد برگشت، نام صندوق‌دار)» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.
+    at assertManagerPassword (file:///home/user/work/proj/mahak/src/main/services/AuthService.ts:557:20)
+    at async Object.saveBundle (file:///home/user/work/proj/mahak/src/main/services/SettingsService.ts:586:7)
+    at async file:///home/user/work/proj/mahak/src/main/ipc/index.ts:51:32
+    at async file:///home/user/work/proj/mahak/tests/audit-fixes/fix-s168-pos-stale-sale-toggles.mjs:76:9 {
+  isBusinessError: true
+}
+  ✗ خاموش‌کردن چاپ با رمز پنل پذیرفته شد — انتظار true، دریافت false
+    پیام سرور: «تغییر تنظیمات فروش (عوارض/حق سرویس پیش‌فرض، کد برگشت، نام صندوق‌دار)» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.
+  ✗ چاپ عوض شد — انتظار false، دریافت true
+  ✓ نام صندوق‌دار تازه‌ی مدیر بازنویسی نشد = "مدیر تازه ۱۶۸"
+  ✓ مهلت کد برگشت تازه‌ی مدیر بازنویسی نشد = 5
+
+۳) همان سناریو برای «برداشت خودکار از انبار مرکزی» (useAutoCentralWithdraw)
+[ipc:settings:saveBundle] BusinessError: «تغییر تنظیمات فروش (عوارض/حق سرویس پیش‌فرض، کد برگشت، نام صندوق‌دار)» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.
+    at assertManagerPassword (file:///home/user/work/proj/mahak/src/main/services/AuthService.ts:557:20)
+    at async Object.saveBundle (file:///home/user/work/proj/mahak/src/main/services/SettingsService.ts:586:7)
+    at async file:///home/user/work/proj/mahak/src/main/ipc/index.ts:51:32
+    at async file:///home/user/work/proj/mahak/tests/audit-fixes/fix-s168-pos-stale-sale-toggles.mjs:87:5 {
+  isBusinessError: true
+}
+  ✗ تغییر برداشت خودکار با رمز پنل پذیرفته شد — انتظار true، دریافت false
+    پیام سرور: «تغییر تنظیمات فروش (عوارض/حق سرویس پیش‌فرض، کد برگشت، نام صندوق‌دار)» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.
+  ✗ برداشت خودکار عوض شد — انتظار true، دریافت false
+  ✓ نام صندوق‌دار تازه‌تر ماند = "مدیر تازه‌تر ۱۶۸"
+
+۴) گیت سرور دست‌نخورده: تغییر فیلد مدیری با رمز پنل (نه مدیر) و بی‌رمز همچنان رد
+[ipc:settings:saveBundle] BusinessError: «تغییر تنظیمات فروش (عوارض/حق سرویس پیش‌فرض، کد برگشت، نام صندوق‌دار)» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.
+    at assertManagerPassword (file:///home/user/work/proj/mahak/src/main/services/AuthService.ts:557:20)
+    at async Object.saveBundle (file:///home/user/work/proj/mahak/src/main/services/SettingsService.ts:586:7)
+    at async file:///home/user/work/proj/mahak/src/main/ipc/index.ts:51:32
+    at async file:///home/user/work/proj/mahak/tests/audit-fixes/fix-s168-pos-stale-sale-toggles.mjs:95:12 {
+  isBusinessError: true
+}
+  ✓ تغییر نام صندوق‌دار بی‌رمز رد شد = true
+[ipc:settings:saveBundle] BusinessError: «خاموش کردن چاپ فاکتور» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.
+    at assertPanelPassword (file:///home/user/work/proj/mahak/src/main/services/AuthService.ts:599:11)
+    at async Object.saveBundle (file:///home/user/work/proj/mahak/src/main/services/SettingsService.ts:600:7)
+    at async file:///home/user/work/proj/mahak/src/main/ipc/index.ts:51:32
+    at async file:///home/user/work/proj/mahak/tests/audit-fixes/fix-s168-pos-stale-sale-toggles.mjs:97:12 {
+  isBusinessError: true
+}
+  ✓ عوض‌کردن چاپ بی‌رمز (قفل روشن) رد شد = true
+
+۵) UI: هر دو محل پیش از ذخیره sale تازه را می‌خوانند
+  ✗ Pos.tsx: sale تازه خوانده می‌شود — انتظار true، دریافت false
+  ✗ Pos.tsx: nextSale = withFreshSale(…, { printEnabled: next }) — انتظار true، دریافت false
+  ✗ useAutoCentralWithdraw: sale تازه خوانده می‌شود — انتظار true، دریافت false
+  ✗ useAutoCentralWithdraw: nextSale = withFreshSale(…, { autoCentralWithdraw: next }) — انتظار true، دریافت false
+
+✗ 6 بررسی موفق · 10 ناموفق

@@ -1,0 +1,504 @@
+diff -ruN s158/mahak/src/main/services/SalesService.ts repo/src/main/services/SalesService.ts
+--- s158/mahak/src/main/services/SalesService.ts	2026-09-27 08:32:05.000000000 +0000
++++ repo/src/main/services/SalesService.ts	2026-09-27 08:41:35.582646755 +0000
+@@ -2039,7 +2039,7 @@
+  * تنها جایی که مقصد وارد دیتابیس می‌شود همین تابع است، پس قاعده‌ی «یک منبع
+  * حقیقت» شکستنی نیست:
+  *   • مقصد **اجباری** است و پیش‌فرض ندارد (نه در UI و نه در سرور).
+- *   • با `kind` روش پرداخت سازگار است: روش نقدی ⇒ نقد یا حساب مدیر، روش کارت ⇒
++ *   • با `kind` روش پرداخت سازگار است: روش نقدی ⇒ فقط نقد در صندوق (نشست ۱۵۹، Y15، بند ۴-۱۳)، روش کارت ⇒
+  *     کارت یا حساب مدیر. پس هرگز یک ردیف با «روش = نقدی، مقصد = کارت» ساخته
+  *     نمی‌شود که دو گزارش دو عدد متفاوت بدهند.
+  *   • چک مسیر جدا دارد و فقط به حساب مدیر/بانک می‌رود؛ روش‌های CUSTOM/CREDIT
+@@ -2061,6 +2061,14 @@
+         allowed.map((d) => `«${PAYMENT_DESTINATION_LABELS[d]}»`).join(' یا ') +
+         '.\nاین کادر پیش‌فرض ندارد، چون اگر اشتباه ثبت شود هنگام بستن صندوق کسری یا اضافه‌ی بی‌دلیل ساخته می‌شود.'
+     )
++  // نشست ۱۵۸ (Y15، بند ۴-۱۳) — پیام راه درست برای نقدِ دریافتی مدیر
++  if (context === 'PAYMENT' && methodKind === PaymentKind.CASH && chosen === PaymentDestination.MANAGER)
++    throw new BusinessError(
++      `پول نقد نمی‌تواند مستقیماً به «${PAYMENT_DESTINATION_LABELS[PaymentDestination.MANAGER]}» برود؛ مقصد پول نقد فقط ` +
++        `«${PAYMENT_DESTINATION_LABELS[PaymentDestination.CASH]}» است. اگر مدیر خودش پول نقد را گرفته، اول آن را با مقصد ` +
++        `«${PAYMENT_DESTINATION_LABELS[PaymentDestination.CASH]}» ثبت کنید و سپس با «برداشت از صندوق» (رمز مدیر و دلیل اجباری) ` +
++        'از صندوق خارج کنید تا نقد مورد انتظار کشو و کسری/اضافی درست بماند.'
++    )
+   if (!allowed.includes(chosen))
+     throw new BusinessError(
+       `مقصد «${PAYMENT_DESTINATION_LABELS[chosen]}» با روش پرداخت انتخاب‌شده سازگار نیست. ` +
+diff -ruN s158/mahak/src/shared/enums.ts repo/src/shared/enums.ts
+--- s158/mahak/src/shared/enums.ts	2026-09-27 08:26:53.000000000 +0000
++++ repo/src/shared/enums.ts	2026-09-27 08:47:46.510921142 +0000
+@@ -261,10 +261,12 @@
+ 
+ /**
+  * مقصدهایی که با یک روش پرداخت سازگارند (منبع حقیقت یگانه).
+- * چک و روش‌های CUSTOM/CREDIT محدودیتی ندارند؛ نقدی و کارت فقط خودشان یا مدیر.
++ * چک و روش‌های CUSTOM/CREDIT محدودیتی ندارند؛ کارت فقط خودش یا مدیر.
++ * نشست ۱۵۸ (Y15، بند ۴-۱۳، S158-D5): پول نقد فقط به کشوی فیزیکی می‌رود، هرگز مستقیماً «حساب مدیر».
++ * اگر مدیر خودش نقد گرفت: اول «نقد در صندوق»، بعد «برداشت از صندوق» (رمز مدیر + دلیل).
+  */
+ export function allowedDestinationsFor(methodKind: string | null | undefined): readonly PaymentDestination[] {
+-  if (methodKind === PaymentKind.CASH) return [PaymentDestination.CASH, PaymentDestination.MANAGER]
++  if (methodKind === PaymentKind.CASH) return [PaymentDestination.CASH]
+   if (methodKind === PaymentKind.CARD) return [PaymentDestination.CARD, PaymentDestination.MANAGER]
+   return PAYMENT_DESTINATIONS
+ }
+diff -ruN s158/mahak/test/acceptance-db-session36.mjs repo/test/acceptance-db-session36.mjs
+--- s158/mahak/test/acceptance-db-session36.mjs	2026-09-26 14:32:03.000000000 +0000
++++ repo/test/acceptance-db-session36.mjs	2026-09-27 08:46:03.829737931 +0000
+@@ -200,8 +200,12 @@
+ }
+ 
+ // ===========================================================================
+-section('بند ۲ · چک ۱۰٫۰۰۰٫۰۰۰ ریالی پاس‌شده به «کارت»')
++section('بند ۲ · چک ۱۰٫۰۰۰٫۰۰۰ ریالی پاس‌شده به «کارت» ⇒ رد (نشست ۱۵۹، S159-D2، بند ۴-۱۲)')
+ // ===========================================================================
++/**
++ * نشست ۱۵۹ (S159-D2): جلسه‌ی ۳۶ «پاس به کارت» را مجاز می‌دانست؛ بند ۴-۱۲ مالک (و رفع نشست ۱۱۳)
++ * مقصد چک را فقط «حساب مدیر/بانک» می‌داند. این بخش حالا رد و دست‌نخوردن همه‌ی عددها را می‌سنجد.
++ */
+ {
+   const shiftId = makeShift('نشست چک به کارت')
+   const inv = await sale({ shiftId })
+@@ -212,61 +216,37 @@
+   eq('چکِ در جریان در دریافتی‌ها شمرده نمی‌شود', before.acc.cash.cashReceived, 0)
+   eq('چکِ در جریان در انتظار کارتخوان هم نیست', before.c.cardExpected, 0)
+ 
+-  const res = await salesService.setChequeStatus({
+-    id: cheque.payment.id,
+-    status: ChequeStatus.CLEARED,
+-    destination: PaymentDestination.CARD,
+-    userId
+-  })
+-  eq('مقصد ثبت‌شده برگشت داده شد', res.destination, PaymentDestination.CARD)
+-  eq('مقصد روی رکورد نشست', paymentsOf(inv.id)[0].destination, PaymentDestination.CARD)
+-
++  await throwsWith(
++    'پاس‌کردن چک با مقصد «کارت» رد شد (بند ۴-۱۲)',
++    () => salesService.setChequeStatus({ id: cheque.payment.id, status: ChequeStatus.CLEARED, destination: PaymentDestination.CARD, userId }),
++    PAYMENT_DESTINATION_LABELS.MANAGER
++  )
++  const row = paymentsOf(inv.id)[0]
++  eq('چک همچنان «در جریان» ماند', row.chequeStatus, ChequeStatus.PENDING)
++  eq('مقصدی روی رکورد ننشست', row.destination, null)
+   const v = await viewOf(shiftId)
+-  eq('چکِ پاس‌شده در سبد چکِ کارتی نشست', v.acc.cheques.clearedToCard, CHEQUE_AMOUNT)
+-  eq('در سبد چکِ نقدی نیامد', v.acc.cheques.clearedToCash, 0)
+-  eq('کل چکِ پاس‌شده‌ی بازه درست است', v.acc.cheques.cleared, CHEQUE_AMOUNT)
+-  eq('انتظار کارتخوان مبلغ چک را گرفت', v.c.cardExpected, CHEQUE_AMOUNT)
+-  eq('نقد مورد انتظار دست‌نخورده ماند (باگ شمارش دوباره)', v.expected.expectedCash, 0)
+-  eq('ردیف «چکِ پاس‌شده به کارت» در اجزای صندوق جداست', v.c.clearedCardCheques, CHEQUE_AMOUNT)
+-  eq('ردیف چکِ نقدی صفر است', v.c.clearedCashCheques, 0)
+-  eq('ردیف «حساب مدیر» صفر است', v.expected.managerAccountReceived, 0)
+-  eq('فاکتور با مبلغ چک بدهی‌اش کم شد', res.paidTotal, CHEQUE_AMOUNT)
+-  eq('باقی‌ماندهٔ بدهی درست حساب شد', res.remaining, INVOICE_TOTAL - CHEQUE_AMOUNT)
+-  const log = auditRows(AuditAction.CHEQUE_STATUS, cheque.payment.id)
+-  ok('مقصد در AuditLog ثبت شد', /مقصد پول: .*کارتخوان|مقصد پول/.test(log.at(-1)?.note ?? ''), log.at(-1)?.note)
+-  ok(
+-    'مقصد در after سند حسابرسی هم هست',
+-    JSON.parse(log.at(-1)?.after ?? '{}').destination === PaymentDestination.CARD,
+-    log.at(-1)?.after
+-  )
++  eq('انتظار کارتخوان دست‌نخورده', v.c.cardExpected, 0)
++  eq('نقد مورد انتظار دست‌نخورده', v.expected.expectedCash, 0)
++  eq('کل چکِ پاس‌شده‌ی بازه صفر', v.acc.cheques.cleared, 0)
+ }
+ 
+ // ===========================================================================
+-section('بند ۳ · همان چک پاس‌شده به «نقد»')
++section('بند ۳ · همان چک پاس‌شده به «نقد» ⇒ رد (نشست ۱۵۹، S159-D2، بند ۴-۱۲)')
+ // ===========================================================================
+ {
+   const shiftId = makeShift('نشست چک به نقد')
+   const inv = await sale({ shiftId })
+   const cheque = await addCheque(inv.id)
+-  await salesService.setChequeStatus({
+-    id: cheque.payment.id,
+-    status: ChequeStatus.CLEARED,
+-    destination: PaymentDestination.CASH,
+-    userId
+-  })
+-
+-  const v = await viewOf(shiftId)
+-  eq('چک در سبد چکِ نقدی نشست', v.acc.cheques.clearedToCash, CHEQUE_AMOUNT)
+-  eq('در سبد چکِ کارتی نیامد', v.acc.cheques.clearedToCard, 0)
+-  eq('نقد مورد انتظار مبلغ چک را گرفت', v.expected.expectedCash, CHEQUE_AMOUNT)
+-  eq('انتظار کارتخوان صفر ماند', v.c.cardExpected, 0)
+-  eq('سهمِ «نامشخص» داخل انتظار نقد صفر است', v.expected.unknownDestinationInExpected, 0)
+-  eq('ردیف چکِ نقدی در اجزای صندوق', v.c.clearedCashCheques, CHEQUE_AMOUNT)
+-  eq(
+-    'کسری صندوق فقط به اندازه‌ی همان چکِ نقد است',
+-    v.expected.cashDifference,
+-    -CHEQUE_AMOUNT
++  await throwsWith(
++    'پاس‌کردن چک با مقصد «نقد» رد شد (بند ۴-۱۲)',
++    () => salesService.setChequeStatus({ id: cheque.payment.id, status: ChequeStatus.CLEARED, destination: PaymentDestination.CASH, userId }),
++    PAYMENT_DESTINATION_LABELS.MANAGER
+   )
++  const v = await viewOf(shiftId)
++  eq('در سبد چکِ نقدی چیزی ننشست', v.acc.cheques.clearedToCash, 0)
++  eq('نقد مورد انتظار دست‌نخورده', v.expected.expectedCash, 0)
++  eq('کسری صندوق ساخته نشد', v.expected.cashDifference, 0)
++  eq('چک همچنان «در جریان»', paymentsOf(inv.id)[0].chequeStatus, ChequeStatus.PENDING)
+ }
+ 
+ // ===========================================================================
+@@ -428,11 +408,12 @@
+   eq('هیچ‌کدام از تلاش‌های ردشده ردیفی نساختند', paymentsOf(inv.id).length, 1)
+ 
+   // قاعده‌ی «یک منبع حقیقت» در سطح تابع خالص هم سنجیده می‌شود
+-  eq('روش نقدی فقط نقد یا حساب مدیر را می‌پذیرد', allowedDestinationsFor('CASH').join(','), 'CASH,MANAGER')
++  // نشست ۱۵۹ (S159-D2): بند ۴-۱۳ ⇒ نقد فقط کشو؛ بند ۴-۱۲ + رفع ۱۱۳ ⇒ چک با مقصد نقد/کارت سبد «نامشخص»
++  eq('روش نقدی فقط «نقد در صندوق» را می‌پذیرد (بند ۴-۱۳)', allowedDestinationsFor('CASH').join(','), 'CASH')
+   eq('روش کارت فقط کارت یا حساب مدیر را می‌پذیرد', allowedDestinationsFor('CARD').join(','), 'CARD,MANAGER')
+   eq('روش CUSTOM (چک) هر سه را می‌پذیرد', allowedDestinationsFor('CUSTOM').length, 3)
+-  eq('سبدبندی نقد', receiptBucketOf({ isCheque: true, destination: 'CASH', methodKind: 'CUSTOM' }), 'cash')
+-  eq('سبدبندی کارت', receiptBucketOf({ isCheque: true, destination: 'CARD', methodKind: 'CUSTOM' }), 'card')
++  eq('چکِ قدیمی با مقصد نقد ⇒ «نامشخص» (نه نقد کشو)', receiptBucketOf({ isCheque: true, destination: 'CASH', methodKind: 'CUSTOM' }), 'unknown')
++  eq('چکِ قدیمی با مقصد کارت ⇒ «نامشخص» (نه کارتخوان)', receiptBucketOf({ isCheque: true, destination: 'CARD', methodKind: 'CUSTOM' }), 'unknown')
+   eq(
+     'سبدبندی حساب مدیر',
+     receiptBucketOf({ isCheque: true, destination: 'MANAGER', methodKind: 'CUSTOM' }),
+@@ -448,6 +429,7 @@
+ // ===========================================================================
+ section('بند ۷ · برگشت از «پاس شد» مقصد را پاک می‌کند')
+ // ===========================================================================
++// نشست ۱۵۹ (S159-D2): مقصد مجاز چک فقط «حساب مدیر» است؛ همان سناریو با مقصد مدیر.
+ {
+   const shiftId = makeShift('نشست برگشت از پاس شد')
+   const inv = await sale({ shiftId })
+@@ -455,40 +437,39 @@
+   await salesService.setChequeStatus({
+     id: cheque.payment.id,
+     status: ChequeStatus.CLEARED,
+-    destination: PaymentDestination.CASH,
++    destination: PaymentDestination.MANAGER,
+     userId
+   })
+-  eq('اول مقصد نقد ثبت شد', paymentsOf(inv.id)[0].destination, PaymentDestination.CASH)
++  eq('اول مقصد حساب مدیر ثبت شد', paymentsOf(inv.id)[0].destination, PaymentDestination.MANAGER)
+ 
+   const back = await salesService.setChequeStatus({ id: cheque.payment.id, status: ChequeStatus.PENDING, userId })
+   eq('برگشت به «در جریان» مقصد را پاک کرد', paymentsOf(inv.id)[0].destination, null)
+   eq('و تاریخ پاس شدن هم پاک شد', paymentsOf(inv.id)[0].clearedAt, null)
+   eq('خروجی سرویس هم مقصد null می‌دهد', back.destination, null)
+   const v1 = await viewOf(shiftId)
+-  eq('انتظار نقد به صفر برگشت', v1.expected.expectedCash, 0)
+-  eq('هیچ سبد چکی پر نماند', v1.acc.cheques.clearedToCash + v1.acc.cheques.clearedUnknown, 0)
++  eq('ردیف حساب مدیر به صفر برگشت', v1.expected.managerAccountReceived, 0)
++  eq('هیچ سبد چکی پر نماند', v1.acc.cheques.clearedToManager + v1.acc.cheques.clearedUnknown, 0)
+ 
+   await throwsWith(
+     'بار بعد که پاس شود، مقصد دوباره پرسیده می‌شود',
+     () => salesService.setChequeStatus({ id: cheque.payment.id, status: ChequeStatus.CLEARED, userId }),
+     'مقصد پول را انتخاب کنید'
+   )
+-  // و مقصد تازه (این بار کارت) بی‌صدا از مقصد کهنه استفاده نمی‌کند
+   await salesService.setChequeStatus({
+     id: cheque.payment.id,
+     status: ChequeStatus.CLEARED,
+-    destination: PaymentDestination.CARD,
++    destination: PaymentDestination.MANAGER,
+     userId
+   })
+   const v2 = await viewOf(shiftId)
+-  eq('مقصد تازه اثر کرد (کارت)', v2.c.cardExpected, CHEQUE_AMOUNT)
+-  eq('مقصد کهنه (نقد) برنگشت', v2.expected.expectedCash, 0)
++  eq('پاس دوباره فقط یک‌بار شمرده شد', v2.expected.managerAccountReceived, CHEQUE_AMOUNT)
++  eq('نقد و کارتخوان دست‌نخورده', v2.expected.expectedCash + v2.c.cardExpected, 0)
+ 
+   // «برگشت خورد» هم مقصد را پاک می‌کند
+   await salesService.setChequeStatus({ id: cheque.payment.id, status: ChequeStatus.BOUNCED, userId })
+   eq('برگشت‌خوردن چک مقصد را پاک کرد', paymentsOf(inv.id)[0].destination, null)
+   const v3 = await viewOf(shiftId)
+-  eq('چکِ برگشت‌خورده در انتظار کارتخوان نمی‌ماند', v3.c.cardExpected, 0)
++  eq('چکِ برگشت‌خورده در ردیف حساب مدیر نمی‌ماند', v3.expected.managerAccountReceived, 0)
+ }
+ 
+ // ===========================================================================
+@@ -541,7 +522,10 @@
+     paidAtJalali: toJalaliDate(new Date(now)),
+     clearedAt: now,
+     clearedAtJalali: toJalaliDate(new Date(now)),
+-    destination: null
++    destination: null,
++    // نشست ۱۵۹ (S159-D2): از نشست ۶۷/۶۸ پرداخت به شیفتِ ثبت نسبت داده می‌شود (بند ۴-۲)؛ داده‌ی قدیمی هم شیفت ثبت دارد
++    createdShiftId: shiftId,
++    clearedShiftId: shiftId
+   })
+   const legacyCash = seed.insert('Payment', {
+     invoiceId: inv.id,
+@@ -551,7 +535,8 @@
+     seq: 2,
+     paidAt: now,
+     paidAtJalali: toJalaliDate(new Date(now)),
+-    destination: null
++    destination: null,
++    createdShiftId: shiftId
+   })
+ 
+   eq('هیچ مقصدی برای داده‌ی قدیمی حدس زده نشد', seed.one('SELECT destination FROM "Payment" WHERE id = ?', legacyCheque).destination, null)
+diff -ruN s158/mahak/test/acceptance-db-session47.mjs repo/test/acceptance-db-session47.mjs
+--- s158/mahak/test/acceptance-db-session47.mjs	2026-09-26 14:32:03.000000000 +0000
++++ repo/test/acceptance-db-session47.mjs	2026-09-27 08:46:30.050040065 +0000
+@@ -407,7 +407,15 @@
+   eq('سهم انبار به همان انبار برگشت', rowQty(r), 6)
+   eq('سهم فروشگاه به فروشگاه برگشت (نه بیشتر)', stockOf(v), 5)
+   eq('تعداد برگشتی به انبارها گزارش شد', res.restoredToWarehouses, 1)
+-  eq('دفتر مبدأ هم پاک شد', seed.count('SaleItemStockAllocation', 'invoiceId = ?', inv.id), 0)
++  /**
++   * نشست ۱۵۹ (S159-D3): جلسه‌ی ۴۷ انتظار داشت purge دفتر مبدأ را حذف فیزیکی کند. از بند ۴-۲۲ و قاعده‌ی پایه‌ی
++   * «اسناد مالی و دفتر انبار حذف فیزیکی ندارند» (رفع نشست‌های ۶۴ و ۱۲۶)، purge فقط void می‌کند و ردیف‌های
++   * تخصیص مبدأ برای حسابرسی می‌مانند. پس به‌جای «۰ ردیف»، ماندن ردیف‌ها + برگشت کامل هر سهم سنجیده می‌شود.
++   */
++  const allocRows = seed.rows('SELECT qty, restoredQty FROM "SaleItemStockAllocation" WHERE invoiceId = ? ORDER BY id', inv.id)
++  ok('دفتر مبدأ برای حسابرسی ماند (حذف فیزیکی نشد)', allocRows.length > 0, String(allocRows.length))
++  ok('هر سهم دفتر مبدأ کامل برگشت‌خورده علامت خورد (دوباره‌برگشت ممکن نیست)', allocRows.every((x) => Number(x.restoredQty) === Number(x.qty)), JSON.stringify(allocRows))
++  ok('خود فاکتور void شد، نه حذف', seed.one('SELECT voidedAt FROM "SaleInvoice" WHERE id = ?', inv.id)?.voidedAt != null)
+ }
+ 
+ // ===========================================================================
+diff -ruN s158/mahak/test/acceptance-session25.mjs repo/test/acceptance-session25.mjs
+--- s158/mahak/test/acceptance-session25.mjs	2026-09-26 14:32:03.000000000 +0000
++++ repo/test/acceptance-session25.mjs	2026-09-27 08:47:03.794428901 +0000
+@@ -313,7 +313,9 @@
+   // همان سقف روی ids دستیِ نقشه‌ی چاپ هم می‌نشیند (یک قاعده، دو مسیر)
+   const plan = printRules.creditPrintPlan({ ids: many }, { widthMm: 210, heightMm: 297 })
+   if (plan.ids.length !== max || plan.capped !== true) throw new Error('سقف مسیر ids دستی اعمال نشد')
+-  return /applyCreditPrintCap\(list\)/.test(printSvc)
++  // نشست ۱۵۹ (S159-D4): از نشست ۱۰۷ مسیر دسته با count واقعی بازنویسی شد (متغیر list دیگر نیست)؛
++  // قاعده همان است: هر دو مسیر (ids دستی و کل دسته) از applyCreditPrintCap می‌گذرند.
++  return /applyCreditPrintCap\(explicit\)/.test(printSvc) && /applyCreditPrintCap\(listed\.map\(/.test(printSvc)
+ })
+ /**
+  * جلسه ۳۴ — REAL شد از دو سر: *شکلِ خروجی* سرویس (`creditPrintBatchResult`) و
+diff -ruN s158/mahak/test/stock-source-display-session53.mjs repo/test/stock-source-display-session53.mjs
+--- s158/mahak/test/stock-source-display-session53.mjs	2026-09-26 14:32:03.000000000 +0000
++++ repo/test/stock-source-display-session53.mjs	2026-09-27 08:47:35.070789314 +0000
+@@ -113,7 +113,9 @@
+ section('گزارش فروش — جدول + چاپ A4 + اکسل، همان الگوی تب تعویض')
+ has('عنوان ستون به هدرها اضافه شد', REP, 'STOCK_PICK_TEXT.columnTitle\n]')
+ has('ردیف آرایه‌ای پارامتر source گرفت', REP, 'const summaryRowValues = (r: SaleReportRow, source = \'\') => [')
+-ok('چاپ A4 و اکسل هر دو همان متن را می‌فرستند', count(REP, 'summaryRowValues(r, stockSources.shortOf(r.id))') === 2)
++// نشست ۱۵۹ (S159-D4): از نشست ۱۲۸ (قفل فیلتر خروجی) چاپ و اکسل از snapshot «output» می‌خوانند که
++// stockSourceShort آن همان stockSources.shortOf صفحه (یا نقشه‌ی کامل بازه) است؛ قاعده همان: هر دو یک متن.
++ok('چاپ A4 و اکسل هر دو همان متن را می‌فرستند', count(REP, 'summaryRowValues(r, output.stockSourceShort(r.id))') === 2 && REP.includes('stockSourceShort: stockSources.shortOf'))
+ has('جدول روی صفحه همان متن را می‌دهد', REP, 'source={stockSources.shortOf(r.id)}')
+ has('تفکیک شیفت هم از همان نقشه می‌خواند', REP, 'sourceOf={stockSources.shortOf}')
+ ok('هر دو ردیفِ تفکیک شیفت source می‌گیرند', count(REP, "source={sourceOf?.(r.id) ?? ''}") === 2)
+diff -ruN s158/mahak/test/stock-source-pick-session51.mjs repo/test/stock-source-pick-session51.mjs
+--- s158/mahak/test/stock-source-pick-session51.mjs	2026-09-26 14:32:03.000000000 +0000
++++ repo/test/stock-source-pick-session51.mjs	2026-09-27 08:47:35.070789314 +0000
+@@ -280,7 +280,9 @@
+ ok('گیت سرور دست‌نخورده است (برنامه + تیک روشن با هم رد می‌شوند)',
+   service.includes('if (stockPlan && input.autoCentralWithdraw === true)'))
+ ok('`coverShortage` مسیر خودکار سر جای خودش است', service.includes('secondaryStockService.coverShortage'))
+-ok('مرحله ۴ (ستون «مبدأ کسر» فهرست) عمداً شروع نشده', page.includes('colSpan={12}'))
++// نشست ۱۵۹ (S159-D4): این بند در جلسه‌ی ۵۱ «هنوز شروع نشده» را می‌سنجید؛ جلسه‌ی ۵۳ مرحله ۴ را انجام داد
++// (ستون «مبدأ کسر» ⇒ ۱۳ ستون، تست stock-source-display-session53). حالا انجام‌شدنش سنجیده می‌شود.
++ok('مرحله ۴ (ستون «مبدأ کسر» فهرست) در جلسه‌ی ۵۳ انجام شد', page.includes('colSpan={13}') && !page.includes('colSpan={12}'))
+ 
+ console.log(`\n${failures.length ? '✗' : '✔'} منطق خالص «انتخاب انبار مبدأ کسر» (جلسه ۵۱ · مرحله ۲-الف + ۲-ب): ${pass} PASS · ${failures.length} FAIL`)
+ if (failures.length) { failures.forEach((f) => console.log(`  - ${f}`)); process.exitCode = 1 }
+diff -ruN s158/mahak/tests/audit-fixes/fix-y15-cash-destination.mjs repo/tests/audit-fixes/fix-y15-cash-destination.mjs
+--- s158/mahak/tests/audit-fixes/fix-y15-cash-destination.mjs	1970-01-01 00:00:00.000000000 +0000
++++ repo/tests/audit-fixes/fix-y15-cash-destination.mjs	2026-09-27 08:42:17.415128857 +0000
+@@ -0,0 +1,97 @@
++/**
++ * ===========================================================================
++ * نشست ۱۵۸ (تست) / ۱۵۹ (رفع) · خوشه E/K · Y15 · مقصد پول نقد فقط «نقد در صندوق» (بند ۴-۱۳)
++ *
++ * قبل از رفع: allowedDestinationsFor(CASH) = [CASH, MANAGER] ⇒ روش «نقدی» با مقصد «حساب مدیر»
++ * در فروش (پرداخت اولیه)، addPayment و updatePayment پذیرفته می‌شد؛ پول نقد بی‌آنکه از کشو رد شود
++ * از «نقد مورد انتظار» بیرون می‌ماند (مسیر پنهان‌کردن کسری کشو).
++ * بعد از رفع: نقد فقط CASH؛ پیام فارسی راه درست را می‌گوید (ثبت در صندوق + «برداشت از صندوق» با رمز مدیر و دلیل).
++ * کارت و روش‌های بانکی/سفارشی و چک دست نخورده‌اند؛ ردیف قدیمی نقد⇐مدیر با ویرایش بی‌ربط مجبور به تغییر نمی‌شود.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-y15-cash-destination.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-y15-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const db = harnessClient()
++const seed = makeSeeder(db)
++const { salesService } = await import('../../src/main/services/SalesService.ts')
++const { allowedDestinationsFor } = await import('@shared/enums')
++const { jalaliToday } = await import('@shared/jalali')
++
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
++}
++const rejects = async (label, fn, needle) => {
++  try { await fn(); bad++; console.log(`  ✗ ${label} — بدون رد پذیرفته شد`) }
++  catch (e) {
++    const m = String(e?.message ?? e)
++    if (!m.startsWith('HARNESS:') && /[\u0600-\u06FF]/.test(m) && (!needle || m.includes(needle))) { ok++; console.log(`  ✓ ${label} (رد شد: ${m.split('\n')[0].slice(0, 160)})`) }
++    else { bad++; console.log(`  ✗ ${label} — پیام نامنتظره: ${m.split('\n')[0].slice(0, 200)}`) }
++  }
++}
++const safe = async (label, fn) => {
++  try { const r = await fn(); ok++; console.log(`  ✓ ${label}`); return r } catch (e) { bad++; console.log(`  ✗ ${label} — خطای نامنتظره: ${String(e?.message ?? e).split('\n')[0].slice(0, 200)}`); return null }
++}
++
++const today = jalaliToday()
++const A = seed.user('فروشنده ۱۵۸')
++const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
++const card = seed.insert('PaymentMethod', { key: 'CARD', label: 'کارتخوان', kind: 'CARD', isActive: 1, sortOrder: 2 })
++const bank = seed.insert('PaymentMethod', { key: 'C2C', label: 'کارت‌به‌کارت', kind: 'CUSTOM', isActive: 1, sortOrder: 3 })
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - 3600_000, userId: A, staffConfirmed: 1 })
++const product = seed.product('شلوار ۱۵۸', seed.category('پوشاک ۱۵۸'))
++const v1 = seed.insert('ProductVariant', { productId: product, code: 'Y15', barcode: 'BY15', salePrice: 500_000, stock: 50 })
++const line = () => ({ variantId: v1, code: 'Y15', barcode: 'BY15', name: 'شلوار ۱۵۸', qty: 1, unitPrice: 500_000, discount: 0, tax: 0 })
++const payCount = (id) => seed.count('Payment', 'invoiceId = ?', id)
++const paid = (id) => Number(seed.one('SELECT paidTotal FROM "SaleInvoice" WHERE id = ?', id).paidTotal)
++const HINT = 'برداشت از صندوق'
++
++console.log('\n۱) قاعده‌ی مشترک UI و main')
++eq('allowedDestinationsFor(CASH) فقط نقد در صندوق', [...allowedDestinationsFor('CASH')], ['CASH'])
++eq('کارت: کارتخوان یا حساب مدیر (بدون تغییر)', [...allowedDestinationsFor('CARD')], ['CARD', 'MANAGER'])
++eq('روش سفارشی/بانکی: هر سه (بدون تغییر)', [...allowedDestinationsFor('CUSTOM')].sort(), ['CARD', 'CASH', 'MANAGER'])
++
++console.log('\n۲) پرداخت اولیه‌ی فروش: نقدی ⇐ حساب مدیر')
++let before = seed.count('SaleInvoice')
++await rejects('فروش با پرداخت نقدی به مقصد حساب مدیر ⇒ رد', () => salesService.create({ userId: A, shiftId, lines: [line()], payments: [{ methodId: cash, amount: 500_000, destination: 'MANAGER' }] }), HINT)
++eq('هیچ فاکتوری ساخته نشد', seed.count('SaleInvoice'), before)
++const s1 = await safe('کنترل: نقدی ⇐ نقد در صندوق پذیرفته', () => salesService.create({ userId: A, shiftId, lines: [line()], payments: [{ methodId: cash, amount: 500_000, destination: 'CASH' }] }))
++await safe('کنترل: کارت‌به‌کارت ⇐ حساب مدیر پذیرفته', () => salesService.create({ userId: A, shiftId, lines: [line()], payments: [{ methodId: bank, amount: 500_000, destination: 'MANAGER' }] }))
++
++console.log('\n۳) addPayment (مسیر عمومی دریافت)')
++const inv = await salesService.create({ userId: A, shiftId, lines: [line()], payments: [] })
++await rejects('addPayment نقدی ⇐ حساب مدیر ⇒ رد', () => salesService.addPayment({ invoiceId: inv.id, amount: 200_000, methodId: cash, destination: 'MANAGER', userId: A }), HINT)
++eq('هیچ ردیف پرداختی ساخته نشد', payCount(inv.id), 0)
++eq('بدهی دست‌نخورده', paid(inv.id), 0)
++await safe('کنترل: addPayment نقدی ⇐ صندوق پذیرفته', () => salesService.addPayment({ invoiceId: inv.id, amount: 200_000, methodId: cash, destination: 'CASH', userId: A }))
++await safe('کنترل: addPayment کارتخوان ⇐ حساب مدیر پذیرفته (بدون تغییر)', () => salesService.addPayment({ invoiceId: inv.id, amount: 100_000, methodId: card, destination: 'MANAGER', userId: A }))
++eq('paidTotal = ۳۰۰٬۰۰۰', paid(inv.id), 300_000)
++
++console.log('\n۴) updatePayment')
++const p1 = Number(seed.one('SELECT id FROM "Payment" WHERE invoiceId = ?', s1.id).id)
++await rejects('ویرایش مقصد پرداخت نقدی به حساب مدیر ⇒ رد', () => salesService.updatePayment({ id: p1, destination: 'MANAGER', userId: A }), HINT)
++eq('مقصد همان نقد ماند', seed.one('SELECT destination FROM "Payment" WHERE id = ?', p1).destination, 'CASH')
++const pc = Number(seed.one('SELECT id FROM "Payment" WHERE invoiceId = ? AND methodId = ?', inv.id, card).id)
++await rejects('تغییر روش کارتخوان⇐مدیر به «نقدی» با همان مقصد مدیر ⇒ رد', () => salesService.updatePayment({ id: pc, methodId: cash, userId: A }), HINT)
++// ردیف قدیمی نقد ⇐ مدیر (پیش از رفع) با ویرایش بی‌ربط مجبور به تغییر نمی‌شود
++const legacy = seed.insert('Payment', { invoiceId: inv.id, methodId: cash, amount: 50_000, kind: 'CASH', destination: 'MANAGER', seq: 9, paidAt: Date.now() - 60_000, paidAtJalali: today, createdAt: Date.now() - 60_000, createdShiftId: shiftId, createdByUserId: A })
++await safe('ردیف قدیمی نقد⇐مدیر: ویرایش توضیح بی‌رمز و بی‌تغییر مقصد پذیرفته', () => salesService.updatePayment({ id: legacy, note: 'اصلاح توضیح', userId: A }))
++eq('مقصد ردیف قدیمی بی‌صدا عوض نشد', seed.one('SELECT destination FROM "Payment" WHERE id = ?', legacy).destination, 'MANAGER')
++
++console.log('\n۵) ساختاری: UI همان تابع مشترک را می‌خواند')
++const read = (p) => readFileSync(resolve(p), 'utf8')
++eq('PaymentDestinationBox از allowedDestinationsFor', /allowedDestinationsFor\(methodKind\)/.test(read('src/renderer/src/components/PaymentDestinationBox.tsx')), true)
++eq('Pos.tsx از allowedDestinationsFor', /allowedDestinationsFor\(method\.kind\)/.test(read('src/renderer/src/pages/Pos.tsx')), true)
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)
+diff -ruN s158/mahak/tests/pending/fix-y15-cash-destination.mjs repo/tests/pending/fix-y15-cash-destination.mjs
+--- s158/mahak/tests/pending/fix-y15-cash-destination.mjs	2026-09-27 08:28:44.000000000 +0000
++++ repo/tests/pending/fix-y15-cash-destination.mjs	1970-01-01 00:00:00.000000000 +0000
+@@ -1,97 +0,0 @@
+-/**
+- * ===========================================================================
+- * نشست ۱۵۸ · خوشه E/K · Y15 · مقصد پول نقد فقط «نقد در صندوق» (بند ۴-۱۳)
+- *
+- * قبل از رفع: allowedDestinationsFor(CASH) = [CASH, MANAGER] ⇒ روش «نقدی» با مقصد «حساب مدیر»
+- * در فروش (پرداخت اولیه)، addPayment و updatePayment پذیرفته می‌شد؛ پول نقد بی‌آنکه از کشو رد شود
+- * از «نقد مورد انتظار» بیرون می‌ماند (مسیر پنهان‌کردن کسری کشو).
+- * بعد از رفع: نقد فقط CASH؛ پیام فارسی راه درست را می‌گوید (ثبت در صندوق + «برداشت از صندوق» با رمز مدیر و دلیل).
+- * کارت و روش‌های بانکی/سفارشی و چک دست نخورده‌اند؛ ردیف قدیمی نقد⇐مدیر با ویرایش بی‌ربط مجبور به تغییر نمی‌شود.
+- *
+- *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-y15-cash-destination.mjs
+- * ===========================================================================
+- */
+-import { mkdtempSync, readFileSync } from 'node:fs'
+-import { tmpdir } from 'node:os'
+-import { join, resolve } from 'node:path'
+-
+-const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-y15-'))
+-process.env.HARNESS_DIR = DIR
+-process.env.HARNESS_DB = join(DIR, 'shop.db')
+-const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
+-const { makeSeeder } = await import('../../test/harness/seed.mjs')
+-const db = harnessClient()
+-const seed = makeSeeder(db)
+-const { salesService } = await import('../../src/main/services/SalesService.ts')
+-const { allowedDestinationsFor } = await import('@shared/enums')
+-const { jalaliToday } = await import('@shared/jalali')
+-
+-let ok = 0, bad = 0
+-const eq = (label, got, want) => {
+-  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
+-  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
+-}
+-const rejects = async (label, fn, needle) => {
+-  try { await fn(); bad++; console.log(`  ✗ ${label} — بدون رد پذیرفته شد`) }
+-  catch (e) {
+-    const m = String(e?.message ?? e)
+-    if (!m.startsWith('HARNESS:') && /[\u0600-\u06FF]/.test(m) && (!needle || m.includes(needle))) { ok++; console.log(`  ✓ ${label} (رد شد: ${m.split('\n')[0].slice(0, 160)})`) }
+-    else { bad++; console.log(`  ✗ ${label} — پیام نامنتظره: ${m.split('\n')[0].slice(0, 200)}`) }
+-  }
+-}
+-const safe = async (label, fn) => {
+-  try { const r = await fn(); ok++; console.log(`  ✓ ${label}`); return r } catch (e) { bad++; console.log(`  ✗ ${label} — خطای نامنتظره: ${String(e?.message ?? e).split('\n')[0].slice(0, 200)}`); return null }
+-}
+-
+-const today = jalaliToday()
+-const A = seed.user('فروشنده ۱۵۸')
+-const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
+-const card = seed.insert('PaymentMethod', { key: 'CARD', label: 'کارتخوان', kind: 'CARD', isActive: 1, sortOrder: 2 })
+-const bank = seed.insert('PaymentMethod', { key: 'C2C', label: 'کارت‌به‌کارت', kind: 'CUSTOM', isActive: 1, sortOrder: 3 })
+-const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - 3600_000, userId: A, staffConfirmed: 1 })
+-const product = seed.product('شلوار ۱۵۸', seed.category('پوشاک ۱۵۸'))
+-const v1 = seed.insert('ProductVariant', { productId: product, code: 'Y15', barcode: 'BY15', salePrice: 500_000, stock: 50 })
+-const line = () => ({ variantId: v1, code: 'Y15', barcode: 'BY15', name: 'شلوار ۱۵۸', qty: 1, unitPrice: 500_000, discount: 0, tax: 0 })
+-const payCount = (id) => seed.count('Payment', 'invoiceId = ?', id)
+-const paid = (id) => Number(seed.one('SELECT paidTotal FROM "SaleInvoice" WHERE id = ?', id).paidTotal)
+-const HINT = 'برداشت از صندوق'
+-
+-console.log('\n۱) قاعده‌ی مشترک UI و main')
+-eq('allowedDestinationsFor(CASH) فقط نقد در صندوق', [...allowedDestinationsFor('CASH')], ['CASH'])
+-eq('کارت: کارتخوان یا حساب مدیر (بدون تغییر)', [...allowedDestinationsFor('CARD')], ['CARD', 'MANAGER'])
+-eq('روش سفارشی/بانکی: هر سه (بدون تغییر)', [...allowedDestinationsFor('CUSTOM')].sort(), ['CARD', 'CASH', 'MANAGER'])
+-
+-console.log('\n۲) پرداخت اولیه‌ی فروش: نقدی ⇐ حساب مدیر')
+-let before = seed.count('SaleInvoice')
+-await rejects('فروش با پرداخت نقدی به مقصد حساب مدیر ⇒ رد', () => salesService.create({ userId: A, shiftId, lines: [line()], payments: [{ methodId: cash, amount: 500_000, destination: 'MANAGER' }] }), HINT)
+-eq('هیچ فاکتوری ساخته نشد', seed.count('SaleInvoice'), before)
+-const s1 = await safe('کنترل: نقدی ⇐ نقد در صندوق پذیرفته', () => salesService.create({ userId: A, shiftId, lines: [line()], payments: [{ methodId: cash, amount: 500_000, destination: 'CASH' }] }))
+-await safe('کنترل: کارت‌به‌کارت ⇐ حساب مدیر پذیرفته', () => salesService.create({ userId: A, shiftId, lines: [line()], payments: [{ methodId: bank, amount: 500_000, destination: 'MANAGER' }] }))
+-
+-console.log('\n۳) addPayment (مسیر عمومی دریافت)')
+-const inv = await salesService.create({ userId: A, shiftId, lines: [line()], payments: [] })
+-await rejects('addPayment نقدی ⇐ حساب مدیر ⇒ رد', () => salesService.addPayment({ invoiceId: inv.id, amount: 200_000, methodId: cash, destination: 'MANAGER', userId: A }), HINT)
+-eq('هیچ ردیف پرداختی ساخته نشد', payCount(inv.id), 0)
+-eq('بدهی دست‌نخورده', paid(inv.id), 0)
+-await safe('کنترل: addPayment نقدی ⇐ صندوق پذیرفته', () => salesService.addPayment({ invoiceId: inv.id, amount: 200_000, methodId: cash, destination: 'CASH', userId: A }))
+-await safe('کنترل: addPayment کارتخوان ⇐ حساب مدیر پذیرفته (بدون تغییر)', () => salesService.addPayment({ invoiceId: inv.id, amount: 100_000, methodId: card, destination: 'MANAGER', userId: A }))
+-eq('paidTotal = ۳۰۰٬۰۰۰', paid(inv.id), 300_000)
+-
+-console.log('\n۴) updatePayment')
+-const p1 = Number(seed.one('SELECT id FROM "Payment" WHERE invoiceId = ?', s1.id).id)
+-await rejects('ویرایش مقصد پرداخت نقدی به حساب مدیر ⇒ رد', () => salesService.updatePayment({ id: p1, destination: 'MANAGER', userId: A }), HINT)
+-eq('مقصد همان نقد ماند', seed.one('SELECT destination FROM "Payment" WHERE id = ?', p1).destination, 'CASH')
+-const pc = Number(seed.one('SELECT id FROM "Payment" WHERE invoiceId = ? AND methodId = ?', inv.id, card).id)
+-await rejects('تغییر روش کارتخوان⇐مدیر به «نقدی» با همان مقصد مدیر ⇒ رد', () => salesService.updatePayment({ id: pc, methodId: cash, userId: A }), HINT)
+-// ردیف قدیمی نقد ⇐ مدیر (پیش از رفع) با ویرایش بی‌ربط مجبور به تغییر نمی‌شود
+-const legacy = seed.insert('Payment', { invoiceId: inv.id, methodId: cash, amount: 50_000, kind: 'CASH', destination: 'MANAGER', seq: 9, paidAt: Date.now() - 60_000, paidAtJalali: today, createdAt: Date.now() - 60_000, createdShiftId: shiftId, createdByUserId: A })
+-await safe('ردیف قدیمی نقد⇐مدیر: ویرایش توضیح بی‌رمز و بی‌تغییر مقصد پذیرفته', () => salesService.updatePayment({ id: legacy, note: 'اصلاح توضیح', userId: A }))
+-eq('مقصد ردیف قدیمی بی‌صدا عوض نشد', seed.one('SELECT destination FROM "Payment" WHERE id = ?', legacy).destination, 'MANAGER')
+-
+-console.log('\n۵) ساختاری: UI همان تابع مشترک را می‌خواند')
+-const read = (p) => readFileSync(resolve(p), 'utf8')
+-eq('PaymentDestinationBox از allowedDestinationsFor', /allowedDestinationsFor\(methodKind\)/.test(read('src/renderer/src/components/PaymentDestinationBox.tsx')), true)
+-eq('Pos.tsx از allowedDestinationsFor', /allowedDestinationsFor\(method\.kind\)/.test(read('src/renderer/src/pages/Pos.tsx')), true)
+-
+-console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
+-process.exit(bad ? 1 : 0)

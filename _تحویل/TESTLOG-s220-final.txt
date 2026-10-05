@@ -1,0 +1,436 @@
+start 2026-10-02T09:15:31Z
+## typecheck
+TYPECHECK_FAILED · 629 خطا
+src/main/db/client.ts(10,10): error TS2305: Module '"@prisma/client"' has no exported member 'PrismaClient'.
+src/main/ipc/index.ts(236,36): error TS7006: Parameter 'tx' implicitly has an 'any' type.
+src/main/services/AuditService.ts(7,15): error TS2305: Module '"@prisma/client"' has no exported member 'Prisma'.
+src/main/services/CardTransferService.ts(369,39): error TS7006: Parameter 'tx' implicitly has an 'any' type.
+src/main/services/CardTransferService.ts(524,39): error TS7006: Parameter 'tx' implicitly has an 'any' type.
+src/main/services/CardTransferService.ts(637,39): error TS7006: Parameter 'tx' implicitly has an 'any' type.
+src/main/services/CardTransferService.ts(671,34): error TS7006: Parameter 'sum' implicitly has an 'any' type.
+src/main/services/CardTransferService.ts(671,39): error TS7006: Parameter 'a' implicitly has an 'any' type.
+src/main/services/CashMovementService.ts(1,15): error TS2305: Module '"@prisma/client"' has no exported member 'Prisma'.
+src/main/services/CashMovementService.ts(163,39): error TS7006: Parameter 'tx' implicitly has an 'any' type.
+src/main/services/CashMovementService.ts(268,30): error TS7006: Parameter 'r' implicitly has an 'any' type.
+src/main/services/CashboxService.ts(1,15): error TS2305: Module '"@prisma/client"' has no exported member 'Prisma'.
+src/main/services/CashboxService.ts(387,54): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(419,17): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(422,37): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(423,39): error TS2345: Argument of type 'unknown' is not assignable to parameter of type '{ kind: string | null; chequeStatus: string | null; }'.
+src/main/services/CashboxService.ts(428,23): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(428,50): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(428,70): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(430,8): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(430,57): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(432,28): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(432,60): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(436,23): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(436,53): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(436,67): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(436,90): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(437,24): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(437,51): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(437,71): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(439,24): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(443,18): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(449,21): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(449,52): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(450,19): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(450,43): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(451,40): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(452,20): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(453,14): error TS18046: 'p' is of type 'unknown'.
+src/main/services/CashboxService.ts(455,35): error TS18046: 'p' is of type 'unknown'.
+## guards
+
+✓ طبقه‌بندی کامل و سازگار است
+✓ همه‌ی پوشه‌های تست در اسکریپت رگرسیون هستند
+## tests/audit-fixes/*.mjs
+PASS tests/audit-fixes/_run-all-s215.mjs
+PASS tests/audit-fixes/fix-s100-credit-list-pagination.mjs
+PASS tests/audit-fixes/fix-s101-credit-list-next-page.mjs
+PASS tests/audit-fixes/fix-s102-staff-report-scale.mjs
+PASS tests/audit-fixes/fix-s103-staff-transactions-pagination.mjs
+PASS tests/audit-fixes/fix-s104-fraud-review-scale.mjs
+PASS tests/audit-fixes/fix-s104-jalali-range-scale.mjs
+PASS tests/audit-fixes/fix-s104-report-scale-followups.mjs
+PASS tests/audit-fixes/fix-s105-report-limits-filter-propagation.mjs
+FAIL tests/audit-fixes/fix-s106-report-pagination-followups.mjs (exit 1)
+PASS tests/audit-fixes/fix-s107-credit-batch-count.mjs
+PASS tests/audit-fixes/fix-s108-bridge-drilldown-pagination.mjs
+PASS tests/audit-fixes/fix-s109-purge-preview-pagination.mjs
+PASS tests/audit-fixes/fix-s110-fraud-flags-adapter.mjs
+PASS tests/audit-fixes/fix-s111-fraud-source-pagination-contract.mjs
+PASS tests/audit-fixes/fix-s112-cash-effect-drawer-only.mjs
+PASS tests/audit-fixes/fix-s113-cheque-destination-policy.mjs
+PASS tests/audit-fixes/fix-s114-card-transfer-totals-full-range.mjs
+PASS tests/audit-fixes/fix-s114-cash-movement-totals-full-range.mjs
+PASS tests/audit-fixes/fix-s114-cashbox-history-pagination.mjs
+PASS tests/audit-fixes/fix-s115-card-transfer-event-date.mjs
+PASS tests/audit-fixes/fix-s115-customer-directory-full-range.mjs
+PASS tests/audit-fixes/fix-s115-purchase-list-full-range.mjs
+PASS tests/audit-fixes/fix-s115-stock-movements-full-ledger.mjs
+PASS tests/audit-fixes/fix-s117-credit-list-full-range.mjs
+PASS tests/audit-fixes/fix-s117-exchange-get-busy-day.mjs
+PASS tests/audit-fixes/fix-s117-sale-list-full-range.mjs
+FAIL tests/audit-fixes/fix-s117-staff-card-transfer-canceled.mjs (exit 1)
+PASS tests/audit-fixes/fix-s117-stock-discrepancy-full.mjs
+PASS tests/audit-fixes/fix-s118-price-adjust-full-scope.mjs
+PASS tests/audit-fixes/fix-s118-purge-selected-invoices.mjs
+PASS tests/audit-fixes/fix-s118-secondary-stock-history-pagination.mjs
+PASS tests/audit-fixes/fix-s119-credit-detail-batch-pagination.mjs
+PASS tests/audit-fixes/fix-s119-stockcount-pagination.mjs
+PASS tests/audit-fixes/fix-s120-price-schedule-full-range.mjs
+PASS tests/audit-fixes/fix-s120-stockcount-in-chunking.mjs
+PASS tests/audit-fixes/fix-s121-report-export-page-warning.mjs
+PASS tests/audit-fixes/fix-s122-report-excludes-invalid-invoices.mjs
+PASS tests/audit-fixes/fix-s123-stock-allocation-print-chunking.mjs
+PASS tests/audit-fixes/fix-s124-financial-variant-in-chunking.mjs
+PASS tests/audit-fixes/fix-s125-sales-product-variant-chunking.mjs
+PASS tests/audit-fixes/fix-s126-credit-remaining-full-range.mjs
+PASS tests/audit-fixes/fix-s126-variant-purge-retention-ledger.mjs
+PASS tests/audit-fixes/fix-s127-maintenance-purge-guard.mjs
+PASS tests/audit-fixes/fix-s128-maintenance-archive-gate.mjs
+PASS tests/audit-fixes/fix-s128-report-output-filter-lock.mjs
+PASS tests/audit-fixes/fix-s129-export-write-safety.mjs
+PASS tests/audit-fixes/fix-s129-print-large-cancel-destroy.mjs
+FAIL tests/audit-fixes/fix-s130-a4-layout.mjs (exit 1)
+PASS tests/audit-fixes/fix-s130-xlsx-print-layout.mjs
+PASS tests/audit-fixes/fix-s131-csv-formula-print-timeout.mjs
+PASS tests/audit-fixes/fix-s132-export-extension.mjs
+PASS tests/audit-fixes/fix-s133-report-export-full-range.mjs
+PASS tests/audit-fixes/fix-s135-maintenance-shifts-purge.mjs
+PASS tests/audit-fixes/fix-s136-payment-period-lock.mjs
+PASS tests/audit-fixes/fix-s137-multi-day-session-warning.mjs
+PASS tests/audit-fixes/fix-s138-financial-input-validation.mjs
+PASS tests/audit-fixes/fix-s139-cash-session-input-and-handover.mjs
+PASS tests/audit-fixes/fix-s140-session-actor-guard.mjs
+PASS tests/audit-fixes/fix-s141-return-exchange-integer-validation.mjs
+PASS tests/audit-fixes/fix-s142-payment-mutation-integer-validation.mjs
+PASS tests/audit-fixes/fix-s143-card-transfer-integer-validation.mjs
+PASS tests/audit-fixes/fix-s143-credit-issue-integer-validation.mjs
+PASS tests/audit-fixes/fix-s143-manual-credit-manager-gate.mjs
+PASS tests/audit-fixes/fix-s143-stock-count-integer-validation.mjs
+PASS tests/audit-fixes/fix-s144-card-transfer-adjust-gate.mjs
+PASS tests/audit-fixes/fix-s144-inventory-product-integer-validation.mjs
+PASS tests/audit-fixes/fix-s145-product-stock-gate.mjs
+PASS tests/audit-fixes/fix-s147-secondary-stock-integer-validation.mjs
+PASS tests/audit-fixes/fix-s147b-secondary-to-store-gate.mjs
+PASS tests/audit-fixes/fix-s150-price-adjust-rule-gate.mjs
+PASS tests/audit-fixes/fix-s150b-party-credit-integer-validation.mjs
+FAIL tests/audit-fixes/fix-s151-credit-customer-session-actor.mjs (exit 1)
+PASS tests/audit-fixes/fix-s151b-sale-price-override-discount-range.mjs
+PASS tests/audit-fixes/fix-s151c-gates.mjs
+PASS tests/audit-fixes/fix-s151c2-charges.mjs
+PASS tests/audit-fixes/fix-s162-c-integrated-chain.mjs
+PASS tests/audit-fixes/fix-s163-c-integrated-ext.mjs
+PASS tests/audit-fixes/fix-s165-edit-qty-price-reference.mjs
+PASS tests/audit-fixes/fix-s165-staff-save-gate.mjs
+PASS tests/audit-fixes/fix-s166-print-toggle-gate.mjs
+PASS tests/audit-fixes/fix-s166-stocktake-dismiss-gate.mjs
+PASS tests/audit-fixes/fix-s167-invoice-price-pw-box.mjs
+FAIL tests/audit-fixes/fix-s167-prior-overpay-label.mjs (exit 1)
+PASS tests/audit-fixes/fix-s167-y11-line-discount-scale.mjs
+PASS tests/audit-fixes/fix-s168-pos-stale-sale-toggles.mjs
+PASS tests/audit-fixes/fix-s168-purchase-integer-lines.mjs
+PASS tests/audit-fixes/fix-s168-settings-stale-pos-toggles.mjs
+PASS tests/audit-fixes/fix-s169-inventory-apply-audit-tx.mjs
+PASS tests/audit-fixes/fix-s169-variant-code-keep.mjs
+PASS tests/audit-fixes/fix-s170-bridge-unbacked-credit.mjs
+PASS tests/audit-fixes/fix-s170b-overpay-remainder-hint.mjs
+PASS tests/audit-fixes/fix-s171-cancelled-status-statements.mjs
+PASS tests/audit-fixes/fix-s171-s121-bridge-exitcode.mjs
+PASS tests/audit-fixes/fix-s172-bridge-drill-in-chunk.mjs
+PASS tests/audit-fixes/fix-s173-credit-print-voided-banner.mjs
+PASS tests/audit-fixes/fix-s173-ledger-prior-credit-count.mjs
+FAIL tests/audit-fixes/fix-s173-payment-drill-in-chunk.mjs (exit 1)
+PASS tests/audit-fixes/fix-s174-credit-scope-in-chunk.mjs
+PASS tests/audit-fixes/fix-s174-debt-c2c-in-chunk.mjs
+PASS tests/audit-fixes/fix-s174-stale-response-panels.mjs
+PASS tests/audit-fixes/fix-s175-consolidate-in-chunk.mjs
+PASS tests/audit-fixes/fix-s175-credit-list-in-chunk.mjs
+PASS tests/audit-fixes/fix-s175-purge-in-chunk.mjs
+PASS tests/audit-fixes/fix-s175-voided-credit-notin.mjs
+PASS tests/audit-fixes/fix-s176-price-adjust-in-chunk.mjs
+PASS tests/audit-fixes/fix-s176-schedule-end-failure.mjs
+PASS tests/audit-fixes/fix-s177-product-remove-in-chunk.mjs
+PASS tests/audit-fixes/fix-s178-purge-keeps-ledger-consolidation.mjs
+PASS tests/audit-fixes/fix-s178-return-rate-zero-peers.mjs
+PASS tests/audit-fixes/fix-s178-variant-purge-preview-blockers.mjs
+PASS tests/audit-fixes/fix-s179-credit-form-strict-integer.mjs
+PASS tests/audit-fixes/fix-s179-fraud-actor-duplicate-cheque.mjs
+PASS tests/audit-fixes/fix-s181-backup-apply-gate.mjs
+PASS tests/audit-fixes/fix-s181-bigint-end-to-end.mjs
+PASS tests/audit-fixes/fix-s181-bigint-json-audit.mjs
+FAIL tests/audit-fixes/fix-s181-bigint-migration.mjs (exit 1)
+PASS tests/audit-fixes/fix-s181-merge-maintenance-bigint.mjs
+PASS tests/audit-fixes/fix-s181-money-helpers.mjs
+PASS tests/audit-fixes/fix-s182-critical-three.mjs
+FAIL tests/audit-fixes/fix-s182-high-priority.mjs (exit 1)
+PASS tests/audit-fixes/fix-s183-credit-remainder-and-passwords.mjs
+PASS tests/audit-fixes/fix-s184-review-high.mjs
+PASS tests/audit-fixes/fix-s185-review-critical.mjs
+FAIL tests/audit-fixes/fix-s186-review-high2.mjs (exit 1)
+PASS tests/audit-fixes/fix-s187-return-credit-in-report.mjs
+PASS tests/audit-fixes/fix-s187-settings-second-third-password.mjs
+PASS tests/audit-fixes/fix-s188-review-186.mjs
+PASS tests/audit-fixes/fix-s189-cash-shift-atomic.mjs
+FAIL tests/audit-fixes/fix-s189-claude-review.mjs (exit 1)
+PASS tests/audit-fixes/fix-s189-remaining-bugs.mjs
+PASS tests/audit-fixes/fix-s189-return-overpay-flow.mjs
+PASS tests/audit-fixes/fix-s189-shift-payments-by-shift.mjs
+FAIL tests/audit-fixes/fix-s190-audit14.mjs (exit 1)
+FAIL tests/audit-fixes/fix-s191-audit-report.mjs (exit 1)
+PASS tests/audit-fixes/fix-s192-idle-lock.mjs
+PASS tests/audit-fixes/fix-s192-receipt-gaps.mjs
+PASS tests/audit-fixes/fix-s193-prior-credit-stories.mjs
+PASS tests/audit-fixes/fix-s194-item-return-columns.mjs
+PASS tests/audit-fixes/fix-s194-prior-cheque-shift.mjs
+PASS tests/audit-fixes/fix-s195-report-live-name.mjs
+PASS tests/audit-fixes/fix-s196-debt-payment-receipt.mjs
+PASS tests/audit-fixes/fix-s197-exchange-nasiyeh-cash-refund.mjs
+FAIL tests/audit-fixes/fix-s198-debt-cheque-reminder.mjs (exit 1)
+PASS tests/audit-fixes/fix-s199-exchange-return-parent-debt.mjs
+PASS tests/audit-fixes/fix-s200-cheque-status-password.mjs
+PASS tests/audit-fixes/fix-s201-return-update-password-outside-tx.mjs
+PASS tests/audit-fixes/fix-s202-cleared-cheque-delete-password.mjs
+PASS tests/audit-fixes/fix-s203-prior-settlement-not-double-counted.mjs
+PASS tests/audit-fixes/fix-s204-exchange-ledger-cash-once.mjs
+PASS tests/audit-fixes/fix-s205-voided-payment-hides-overpay.mjs
+PASS tests/audit-fixes/fix-s206-backup-forget-gate.mjs
+PASS tests/audit-fixes/fix-s207-credit-last-payment-received.mjs
+PASS tests/audit-fixes/fix-s208-full-refund-list-price.mjs
+PASS tests/audit-fixes/fix-s209-print-not-return-fallback.mjs
+FAIL tests/audit-fixes/fix-s210-invoice-item-name-from-db.mjs (exit 1)
+PASS tests/audit-fixes/fix-s211-payment-edit-theft.mjs
+PASS tests/audit-fixes/fix-s212-canceled-pay-and-credit-replay.mjs
+PASS tests/audit-fixes/fix-s213-backdated-cash-shift.mjs
+PASS tests/audit-fixes/fix-s213-med-adjust-and-order-type.mjs
+PASS tests/audit-fixes/fix-s214-auditor-pocs.mjs
+PASS tests/audit-fixes/fix-s214-default-password.mjs
+PASS tests/audit-fixes/fix-s214-invoice-edit-payment-bypass.mjs
+PASS tests/audit-fixes/fix-s214-return-update-cheque-policy.mjs
+PASS tests/audit-fixes/fix-s215-full-matrix.mjs
+PASS tests/audit-fixes/fix-s215-sale-readiness-e2e.mjs
+PASS tests/audit-fixes/fix-s57-returns.mjs
+FAIL tests/audit-fixes/fix-s58-remaining.mjs (exit 1)
+PASS tests/audit-fixes/fix-s59-bridge-exchange.mjs
+PASS tests/audit-fixes/fix-s60-exchange-debt.mjs
+PASS tests/audit-fixes/fix-s61-overpay-credit.mjs
+PASS tests/audit-fixes/fix-s62-overpay-flow.mjs
+PASS tests/audit-fixes/fix-s63-edit-overpay-lock.mjs
+PASS tests/audit-fixes/fix-s64-return-void.mjs
+PASS tests/audit-fixes/fix-s65-exchange-void.mjs
+PASS tests/audit-fixes/fix-s66-payment-void.mjs
+PASS tests/audit-fixes/fix-s67-payment-actor.mjs
+PASS tests/audit-fixes/fix-s68-payment-provenance.mjs
+PASS tests/audit-fixes/fix-s69-cash-close-atomic.mjs
+PASS tests/audit-fixes/fix-s69-cheque-history.mjs
+PASS tests/audit-fixes/fix-s69-consolidation-retry.mjs
+PASS tests/audit-fixes/fix-s69-day-boundary.mjs
+PASS tests/audit-fixes/fix-s70-event-scope.mjs
+PASS tests/audit-fixes/fix-s71-event-owner.mjs
+PASS tests/audit-fixes/fix-s72-shift-number.mjs
+PASS tests/audit-fixes/fix-s73-full-refund.mjs
+PASS tests/audit-fixes/fix-s74-cluster-a.mjs
+PASS tests/audit-fixes/fix-s75-shift-atomic.mjs
+PASS tests/audit-fixes/fix-s76-card-transfer-day-boundary.mjs
+PASS tests/audit-fixes/fix-s77-cash-close-repeat.mjs
+PASS tests/audit-fixes/fix-s78-open-session-gate.mjs
+FAIL tests/audit-fixes/fix-s79-cash-close-race.mjs (exit 1)
+PASS tests/audit-fixes/fix-s80-open-session-idempotency.mjs
+PASS tests/audit-fixes/fix-s81-cash-close-two-connections.mjs
+PASS tests/audit-fixes/fix-s82-open-session-two-connections.mjs
+PASS tests/audit-fixes/fix-s84-devtools-lock.mjs
+PASS tests/audit-fixes/fix-s84-fraud-audit-column.mjs
+PASS tests/audit-fixes/fix-s84-xlsx-dash.mjs
+PASS tests/audit-fixes/fix-s85-security-gates.mjs
+PASS tests/audit-fixes/fix-s86-exchange-return-output.mjs
+PASS tests/audit-fixes/fix-s87-report-export-columns.mjs
+PASS tests/audit-fixes/fix-s88-staff-report-integrity.mjs
+PASS tests/audit-fixes/fix-s89-return-rate.mjs
+PASS tests/audit-fixes/fix-s90-printer-cleanup.mjs
+PASS tests/audit-fixes/fix-s91-report-filter-propagation.mjs
+PASS tests/audit-fixes/fix-s92-cash-filter-merge.mjs
+PASS tests/audit-fixes/fix-s93-dedicated-extra-report-print.mjs
+PASS tests/audit-fixes/fix-s94-dedicated-extra-report-export.mjs
+PASS tests/audit-fixes/fix-s95-tsx-parser-template-literal.mjs
+PASS tests/audit-fixes/fix-s96-cheque-filter-propagation.mjs
+PASS tests/audit-fixes/fix-s97-credit-filter-propagation.mjs
+PASS tests/audit-fixes/fix-s98-credit-filter-scale.mjs
+PASS tests/audit-fixes/fix-s99-report-pagination.mjs
+PASS tests/audit-fixes/fix-y12-sale-shift.mjs
+PASS tests/audit-fixes/fix-y13-settings-side-channels.mjs
+PASS tests/audit-fixes/fix-y14-y16-exchange-pricing.mjs
+PASS tests/audit-fixes/fix-y15-cash-destination.mjs
+PASS tests/audit-fixes/fix-y18-unknown-destination-outside-expected.mjs
+PASS tests/audit-fixes/fix-y19-prior-manager-bridge.mjs
+PASS tests/audit-fixes/fix-y23-settled-current.mjs
+PASS tests/audit-fixes/fix-y7-credit-delete-void.mjs
+PASS tests/audit-fixes/fix-y9-shift-open-staff-save-actor.mjs
+TOTAL=222 PASS=206 FAIL=16
+FAILED: fix-s106-report-pagination-followups.mjs fix-s117-staff-card-transfer-canceled.mjs fix-s130-a4-layout.mjs fix-s151-credit-customer-session-actor.mjs fix-s167-prior-overpay-label.mjs fix-s173-payment-drill-in-chunk.mjs fix-s181-bigint-migration.mjs fix-s182-high-priority.mjs fix-s186-review-high2.mjs fix-s189-claude-review.mjs fix-s190-audit14.mjs fix-s191-audit-report.mjs fix-s198-debt-cheque-reminder.mjs fix-s210-invoice-item-name-from-db.mjs fix-s58-remaining.mjs fix-s79-cash-close-race.mjs 
+## tests/audit/*.mjs
+PASS tests/audit/audit-a100-01-credit-limit-counter.mjs
+PASS tests/audit/audit-a101-01-credit-list-paging.mjs
+PASS tests/audit/audit-a102-01-staff-report-status-gate.mjs
+PASS tests/audit/audit-a103-01-staff-drill-paging.mjs
+PASS tests/audit/audit-a104-01-fraud-days-dates.mjs
+PASS tests/audit/audit-a105-01-credit-limit-counter.mjs
+PASS tests/audit/audit-a106-01-shift-list-dates.mjs
+PASS tests/audit/audit-a106-02-ledger-truncated-total.mjs
+PASS tests/audit/audit-a107-01-credit-batch-scope.mjs
+PASS tests/audit/audit-a108-01-bridge-drill-sources.mjs
+PASS tests/audit/audit-a108-03-bridge-drill-last-page.mjs
+PASS tests/audit/audit-a109-01-purge-preview-dates.mjs
+PASS tests/audit/audit-a110-01-fraud-source-receipt.mjs
+PASS tests/audit/audit-a112-01-ledger-drawer-cash.mjs
+PASS tests/audit/audit-a114-01-cash-lists-dates.mjs
+PASS tests/audit/audit-a114-02-cash-destructive-dates.mjs
+PASS tests/audit/audit-a115-01-card-transfer-adjust-cancel-state.mjs
+PASS tests/audit/audit-a115-02-purchase-list-applied-range.mjs
+PASS tests/audit/audit-a117-01-credit-list-scope.mjs
+PASS tests/audit/audit-a117-02-date-only-tab-notice.mjs
+PASS tests/audit/audit-a117-03-sale-list-paging.mjs
+PASS tests/audit/audit-a117-04-stock-discrepancy.mjs
+PASS tests/audit/audit-a118-01-purge-selected-scope.mjs
+PASS tests/audit/audit-a118-02-secondary-history-paging.mjs
+PASS tests/audit/audit-a119-01-credit-batches-stocktake-paging.mjs
+PASS tests/audit/audit-a119-04-ledger-credit-used.mjs
+PASS tests/audit/audit-a120-01-stockcount-date-gate.mjs
+PASS tests/audit/audit-a121-01-page-output-endpoint.mjs
+PASS tests/audit/audit-a121-02-thermal-summary-meta.mjs
+PASS tests/audit/audit-a122-01-purge-draft-scope.mjs
+PASS tests/audit/audit-a69-01-opening-float-override.mjs
+PASS tests/audit/audit-a71-01-cheque-cleared-owner.mjs
+PASS tests/audit/audit-a72-01-shift-number-consistency.mjs
+FAIL tests/audit/audit-a73-01-full-refund-cap.mjs (exit 1)
+PASS tests/audit/audit-a75-01-shift-audit-atomic.mjs
+PASS tests/audit/audit-a77-01-repeat-close-confirmable.mjs
+PASS tests/audit/audit-a77-02-opening-float-window.mjs
+PASS tests/audit/audit-a80-01-open-key-race-and-reset.mjs
+PASS tests/audit/audit-a85-01-purge-void-integrity.mjs
+PASS tests/audit/audit-a88-01-staff-report-dates.mjs
+PASS tests/audit/audit-a88-02-credit-payment-void.mjs
+PASS tests/audit/audit-a88-03-voided-payment-leak.mjs
+PASS tests/audit/audit-a89-01-return-rate-denominator.mjs
+PASS tests/audit/audit-a91-01-return-shift-owner.mjs
+PASS tests/audit/audit-a91-02-credit-prior-filter.mjs
+PASS tests/audit/audit-a92-01-cross-midnight-shift-movements.mjs
+PASS tests/audit/audit-a93-01-store-credit-output.mjs
+PASS tests/audit/audit-a94-01-extra-report-output.mjs
+PASS tests/audit/audit-a96-01-cheque-list-event-owner.mjs
+PASS tests/audit/audit-a97-01-credit-tab-event-owner.mjs
+PASS tests/audit/audit-a99-01-report-page-scope.mjs
+PASS tests/audit/audit-s111-fraud-source-cap.mjs
+PASS tests/audit/audit-s113-cheque-destination.mjs
+PASS tests/audit/audit-s115-purchase-party-verify.mjs
+PASS tests/audit/audit-s116-stock-movements-verify.mjs
+PASS tests/audit/audit-s117-exchange-get-sale-list.mjs
+PASS tests/audit/audit-s118-price-adjust-full-scope.mjs
+PASS tests/audit/audit-s120-price-schedule-verify.mjs
+PASS tests/audit/audit-s120-stockcount-submit-verify.mjs
+PASS tests/audit/audit-s122-invalid-invoice-scope.mjs
+FAIL tests/audit/audit-s123-allocation-print-chunk-verify.mjs (exit 1)
+PASS tests/audit/audit-s124-variant-chunk-effect-verify.mjs
+FAIL tests/audit/audit-s125-return-exchange-chunk-verify.mjs (exit 1)
+PASS tests/audit/audit-s126-credit-scan-variant-purge-verify.mjs
+PASS tests/audit/audit-s127-maintenance-retention-verify.mjs
+PASS tests/audit/audit-s128-archive-gate-ipc-verify.mjs
+PASS tests/audit/audit-s129-print-export-verify.mjs
+PASS tests/audit/audit-s130-xlsx-ooxml-order.mjs
+PASS tests/audit/audit-s132-export-extension-verify.mjs
+PASS tests/audit/audit-s133-export-full-range-verify.mjs
+PASS tests/audit/audit-s135-shift-purge-scope.mjs
+PASS tests/audit/audit-s136-period-lock-verify.mjs
+PASS tests/audit/audit-s137-138-input-multiday-verify.mjs
+FAIL tests/audit/audit-s139-cash-input-handover-verify.mjs (exit 1)
+PASS tests/audit/audit-s140-session-actor-verify.mjs
+FAIL tests/audit/audit-s141-return-exchange-integer-verify.mjs (exit 1)
+FAIL tests/audit/audit-s141-return-ipc-actor-verify.mjs (exit 1)
+PASS tests/audit/audit-s142-credit-method-gate.mjs
+FAIL tests/audit/audit-s142b-cheque-method-gate.mjs (exit 1)
+PASS tests/audit/audit-s143-manual-credit-server-fields.mjs
+FAIL tests/audit/audit-s144-card-transfer-adjust-bounds.mjs (exit 1)
+PASS tests/audit/audit-s145-inventory-purge-verify.mjs
+FAIL tests/audit/audit-s172-stale-observations-verify.mjs (exit 1)
+PASS tests/audit/audit-s88-staff-report-e2e.mjs
+TOTAL=84 PASS=75 FAIL=9
+FAILED: audit-a73-01-full-refund-cap.mjs audit-s123-allocation-print-chunk-verify.mjs audit-s125-return-exchange-chunk-verify.mjs audit-s139-cash-input-handover-verify.mjs audit-s141-return-exchange-integer-verify.mjs audit-s141-return-ipc-actor-verify.mjs audit-s142b-cheque-method-gate.mjs audit-s144-card-transfer-adjust-bounds.mjs audit-s172-stale-observations-verify.mjs 
+## tests/management/*.mjs
+PASS tests/management/mgmt-abc-defective-return.mjs
+PASS tests/management/mgmt-backorder-partial-unknown.mjs
+PASS tests/management/mgmt-category-seller-returns.mjs
+PASS tests/management/mgmt-category-shown-sum.mjs
+PASS tests/management/mgmt-cost-backorder.mjs
+PASS tests/management/mgmt-cost-directions.mjs
+PASS tests/management/mgmt-cost-edit-warehouse-share.mjs
+PASS tests/management/mgmt-cost-merge.mjs
+PASS tests/management/mgmt-cost-no-deduct.mjs
+PASS tests/management/mgmt-cost-purchase-price-edit.mjs
+PASS tests/management/mgmt-cost-rebuild.mjs
+PASS tests/management/mgmt-cost-report-delete.mjs
+PASS tests/management/mgmt-cost-reprice-replacement.mjs
+PASS tests/management/mgmt-cost-sale-edit.mjs
+PASS tests/management/mgmt-cost-warehouse-share.mjs
+PASS tests/management/mgmt-date-normalize.mjs
+PASS tests/management/mgmt-golden-phase1.mjs
+PASS tests/management/mgmt-jalali-buckets.mjs
+PASS tests/management/mgmt-losses-net-adjust.mjs
+PASS tests/management/mgmt-profit-filter-returns.mjs
+PASS tests/management/mgmt-profit-inflation.mjs
+PASS tests/management/mgmt-profit-lock.mjs
+PASS tests/management/mgmt-profit-supplier.mjs
+PASS tests/management/mgmt-profit-tax.mjs
+PASS tests/management/mgmt-rebuild-guard.mjs
+PASS tests/management/mgmt-reconcile-budget.mjs
+PASS tests/management/mgmt-reconcile-chunked.mjs
+PASS tests/management/mgmt-reconcile-draft-cancel.mjs
+PASS tests/management/mgmt-replacement-asof-lock.mjs
+PASS tests/management/mgmt-replacement-invoice-date.mjs
+PASS tests/management/mgmt-reprice-cross-lot.mjs
+PASS tests/management/mgmt-reprice-idempotent.mjs
+PASS tests/management/mgmt-reprice-old-invoice-replacement.mjs
+PASS tests/management/mgmt-return-mixed-line-share.mjs
+PASS tests/management/mgmt-return-no-restock.mjs
+PASS tests/management/mgmt-return-split-restock.mjs
+PASS tests/management/mgmt-s220-small-items.mjs
+PASS tests/management/mgmt-sales-target.mjs
+PASS tests/management/mgmt-stock-assof-sellthrough.mjs
+PASS tests/management/mgmt-stock-negative-visible.mjs
+PASS tests/management/mgmt-stock-phase2.mjs
+PASS tests/management/mgmt-stock-reorder-zero.mjs
+PASS tests/management/mgmt-stock-sleep-voided-sale.mjs
+PASS tests/management/mgmt-supplier-ensure.mjs
+PASS tests/management/mgmt-supplier-yeh-merge.mjs
+PASS tests/management/mgmt-voided-return-double.mjs
+PASS tests/management/mgmt-zero-cost-lot-unknown.mjs
+TOTAL=47 PASS=47 FAIL=0
+FAILED: 
+## test/*.mjs
+PASS test/acceptance-db-session35.mjs
+FAIL test/acceptance-db-session36.mjs (exit 1)
+PASS test/acceptance-db-session40.mjs
+PASS test/acceptance-db-session47.mjs
+PASS test/acceptance-db-session48.mjs
+PASS test/acceptance-db-session54.mjs
+PASS test/acceptance-session14.mjs
+FAIL test/acceptance-session21.mjs (exit 1)
+FAIL test/acceptance-session25.mjs (exit 1)
+PASS test/acceptance-src-session46.mjs
+PASS test/fix-s56-harness.mjs
+PASS test/fix-s56-reports.mjs
+PASS test/stock-source-display-session53.mjs
+PASS test/stock-source-logic-session47.mjs
+PASS test/stock-source-note-session50.mjs
+PASS test/stock-source-pick-session51.mjs
+PASS test/stock-source-pos-session52.mjs
+TOTAL=17 PASS=14 FAIL=3
+FAILED: acceptance-db-session36.mjs acceptance-session21.mjs acceptance-session25.mjs 
+## esbuild
+esbuild syntax: 165 OK · 0 FAIL
+BUNDLE-OK main (2111744 bytes, warnings: 0)
+BUNDLE-OK preload (35760 bytes, warnings: 0)
+BUNDLE-OK renderer (2283959 bytes, warnings: 0)
+end 2026-10-02T09:28:07Z
+DONE

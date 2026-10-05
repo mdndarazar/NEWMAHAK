@@ -1,0 +1,58 @@
+import { useEffect, type ReactNode } from 'react'
+
+/**
+ * modal پایه‌ی پروژه. RTL، بستن با Esc یا کلیک روی بک‌دراپ.
+ * سبک ظاهری عیناً از Pos.tsx/Products.tsx گرفته شده (bg-white rounded shadow + رنگ brand).
+ * توجه: تا وقتی modal باز است، صفحه‌ی میزبان باید hotkeyهای خودش را با
+ * enabled=false غیرفعال کند تا F4..F7 دوباره اجرا نشوند.
+ */
+export default function Modal({
+  open,
+  title,
+  onClose,
+  children,
+  footer,
+  width = 'max-w-4xl'
+}: {
+  open: boolean
+  title: string
+  onClose: () => void
+  children: ReactNode
+  footer?: ReactNode
+  width?: string
+}) {
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [open, onClose])
+
+  if (!open) return null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/40 overflow-auto p-4 flex items-start justify-center"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div dir="rtl" className={`w-full ${width} bg-white rounded shadow-lg my-4`}>
+        <div className="flex items-center justify-between px-4 h-11 bg-brand text-white rounded-t">
+          <div className="font-bold">{title}</div>
+          <button className="text-white/90 hover:text-white text-lg leading-none" onClick={onClose} title="بستن (Esc)">
+            ✕
+          </button>
+        </div>
+        <div className="p-4 space-y-3">{children}</div>
+        {footer && <div className="px-4 py-3 border-t bg-slate-50 rounded-b flex gap-2 justify-end">{footer}</div>}
+      </div>
+    </div>
+  )
+}

@@ -1,0 +1,238 @@
+(node:5864) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5864) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/SettingsService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) settingsSaveBundle: بخش‌های حساس تغییرکرده بی‌رمز مدیر ⇒ رد، پیش از هر نوشتن
+[ipc:settings:saveBundle] BusinessError: «تغییر تنظیمات امنیتی (قفل موقت)» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.
+    at assertManagerPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:557:20)
+    at async Object.saveBundle (file:///home/user/work/mahak/src/main/services/SettingsService.ts:564:7)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:80:1 {
+  isBusinessError: true
+}
+  ✓ security تغییرکرده بی‌رمز (رد شد: «تغییر تنظیمات امنیتی (قفل موقت)» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.)
+  ✓ securityConfig دست‌نخورده = null
+[ipc:settings:saveBundle] BusinessError: «تغییر تنظیمات امنیتی (قفل موقت)» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.
+    at assertManagerPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:557:20)
+    at async Object.saveBundle (file:///home/user/work/mahak/src/main/services/SettingsService.ts:564:7)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:83:1 {
+  isBusinessError: true
+}
+  ✓ receipt + security تغییرکرده بی‌رمز (کل درخواست رد) (رد شد: «تغییر تنظیمات امنیتی (قفل موقت)» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.)
+  ✓ receiptTemplate هم نوشته نشد (گیت پیش از هر نوشتن) = null
+[ipc:settings:saveBundle] BusinessError: رمز مدیر درست نیست.
+۲ تلاش دیگر باقی مانده است؛ بعد از آن ورود رمز برای ۱۰ دقیقه قفل می‌شود.
+    at assertManagerPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:560:11)
+    at async Object.saveBundle (file:///home/user/work/mahak/src/main/services/SettingsService.ts:564:7)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:85:1 {
+  isBusinessError: true
+}
+  ✓ security تغییرکرده با رمز غلط (رد شد: رمز مدیر درست نیست.
+۲ تلاش دیگر باقی مانده است؛ بعد از آن ورود رمز برای ۱۰ دقیقه قفل می‌شود.)
+  ✓ security بدون تغییر بی‌رمز ⇒ پذیرفته
+  ✓ security تغییرکرده با رمز مدیر و userId جعلی ⇒ پذیرفته
+  ✓ maxAttempts ذخیره شد = 7
+  ✓ Audit نوشته شد
+  ✓ actor Audit ذخیره‌ی کلی = کارمند نشست = 1
+[ipc:settings:saveBundle] BusinessError: «تغییر تنظیمات شیفت» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.
+    at assertManagerPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:557:20)
+    at async Object.saveBundle (file:///home/user/work/mahak/src/main/services/SettingsService.ts:564:7)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:94:1 {
+  isBusinessError: true
+}
+  ✓ shift تغییرکرده بی‌رمز (رد شد: «تغییر تنظیمات شیفت» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.)
+  ✓ shiftConfig دست‌نخورده = null
+  ✓ shift تغییرکرده با رمز مدیر ⇒ پذیرفته
+[ipc:settings:saveBundle] BusinessError: «تغییر افست ساعت رسمی» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.
+    at assertManagerPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:557:20)
+    at async Object.saveBundle (file:///home/user/work/mahak/src/main/services/SettingsService.ts:564:7)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:99:1 {
+  isBusinessError: true
+}
+  ✓ time تغییرکرده بی‌رمز (رد شد: «تغییر افست ساعت رسمی» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.)
+  ✓ officialTime دست‌نخورده = null
+  ✓ time تغییرکرده با رمز مدیر ⇒ پذیرفته
+[ipc:settings:saveBundle] BusinessError: «تغییر تنظیمات فروش (عوارض/حق سرویس پیش‌فرض، کد برگشت، نام صندوق‌دار)» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.
+    at assertManagerPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:557:20)
+    at async Object.saveBundle (file:///home/user/work/mahak/src/main/services/SettingsService.ts:564:7)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:104:1 {
+  isBusinessError: true
+}
+  ✓ sale (مهلت کد برگشت) تغییرکرده بی‌رمز (رد شد: «تغییر تنظیمات فروش (عوارض/حق سرویس پیش‌فرض، کد برگشت، نام صندوق‌دار)» تایید مدیر لازم دارد. رمز مدیر را وارد )
+  ✓ saleDefaults دست‌نخورده = null
+[ipc:settings:saveBundle] BusinessError: «تغییر تنظیمات فروش (عوارض/حق سرویس پیش‌فرض، کد برگشت، نام صندوق‌دار)» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.
+    at assertManagerPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:557:20)
+    at async Object.saveBundle (file:///home/user/work/mahak/src/main/services/SettingsService.ts:564:7)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:106:1 {
+  isBusinessError: true
+}
+  ✓ sale (درصد عوارض قدیمی) تغییرکرده بی‌رمز (رد شد: «تغییر تنظیمات فروش (عوارض/حق سرویس پیش‌فرض، کد برگشت، نام صندوق‌دار)» تایید مدیر لازم دارد. رمز مدیر را وارد )
+  ✓ sale تغییرکرده با رمز مدیر ⇒ پذیرفته
+  ✓ returnCodeDays ذخیره شد = 9
+
+۲) مسیرهای رسمی POS که فقط sale می‌فرستند (Pos.tsx ~۳۰۳، useAutoCentralWithdraw ~۸۶)
+  ✓ فقط printEnabled عوض شد بی‌رمز ⇒ پذیرفته (S155-D2)
+  ✓ printEnabled ذخیره شد = false
+[ipc:settings:saveBundle] BusinessError: «تغییر تنظیمات فروش (عوارض/حق سرویس پیش‌فرض، کد برگشت، نام صندوق‌دار)» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.
+    at assertManagerPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:557:20)
+    at async Object.saveBundle (file:///home/user/work/mahak/src/main/services/SettingsService.ts:564:7)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:115:1 {
+  isBusinessError: true
+}
+  ✓ printEnabled + returnCodeDays بی‌رمز ⇒ رد (میان‌بر نیست) (رد شد: «تغییر تنظیمات فروش (عوارض/حق سرویس پیش‌فرض، کد برگشت، نام صندوق‌دار)» تایید مدیر لازم دارد. رمز مدیر را وارد )
+[ipc:settings:saveBundle] BusinessError: «تغییر گزینه‌ی «برداشت خودکار از انبار مرکزی هنگام کمبود موجودی»» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.
+    at assertPanelPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:599:11)
+    at async Object.saveBundle (file:///home/user/work/mahak/src/main/services/SettingsService.ts:566:7)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:117:1 {
+  isBusinessError: true
+}
+  ✓ autoCentralWithdraw بی‌رمز با قفل روشن ⇒ رد (رد شد: «تغییر گزینه‌ی «برداشت خودکار از انبار مرکزی هنگام کمبود موجودی»» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم ه)
+  ✓ autoCentralWithdraw دست‌نخورده = false
+  ✓ autoCentralWithdraw با رمز (panelPassword) ⇒ پذیرفته
+  ✓ autoCentralWithdraw ذخیره شد = true
+  ✓ autoCentralWithdraw بی‌رمز با قفل خاموش ⇒ پذیرفته
+  ✓ sale بدون تغییر بی‌رمز ⇒ پذیرفته
+  ✓ فقط receipt و label (غیرحساس) بی‌رمز ⇒ پذیرفته
+
+۳) charges از ذخیره‌ی کلی: رمز پنل همان kind/scope
+[ipc:settings:saveBundle] BusinessError: «تغییر «عوارض و مالیات · پنل فروش (خرده)»» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.
+    at assertPanelPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:599:11)
+    at async Object.saveBundle (file:///home/user/work/mahak/src/main/services/SettingsService.ts:573:9)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:132:1 {
+  isBusinessError: true
+}
+  ✓ charges.pos.tax تغییرکرده بی‌رمز (رد شد: «تغییر «عوارض و مالیات · پنل فروش (خرده)»» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.)
+  ✓ کلید عوارض دست‌نخورده = "{\"enabled\":true,\"rules\":[],\"fallback\":null}"
+  ✓ charges بدون تغییر بی‌رمز ⇒ پذیرفته
+  ✓ charges.pos.tax تغییرکرده با panelPassword ⇒ پذیرفته
+
+۴) chargesSave: گیت سرور با کلید kind/scope و actor نشست
+[ipc:charges:save] BusinessError: «ذخیره‌ی «حق سرویس · فاکتور فروش عمده»» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.
+    at assertPanelPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:599:11)
+    at async Object.saveCharge (file:///home/user/work/mahak/src/main/services/SettingsService.ts:370:5)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:140:1 {
+  isBusinessError: true
+}
+  ✓ chargesSave (حق سرویس عمده) بی‌رمز با قفل روشن (رد شد: «ذخیره‌ی «حق سرویس · فاکتور فروش عمده»» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.)
+  ✓ کلید حق سرویس عمده دست‌نخورده = "{\"enabled\":true,\"rules\":[],\"fallback\":null}"
+[ipc:charges:save] BusinessError: رمز درست نیست؛ دوباره تلاش کنید.
+۶ تلاش دیگر باقی مانده است؛ بعد از آن ورود رمز برای ۱۰ دقیقه قفل می‌شود.
+    at Object.verifyPanel (file:///home/user/work/mahak/src/main/services/AuthService.ts:892:11)
+    at async assertPanelPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:603:15)
+    at async Object.saveCharge (file:///home/user/work/mahak/src/main/services/SettingsService.ts:370:5)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:142:1 {
+  isBusinessError: true
+}
+  ✓ chargesSave با رمز غلط (رد شد: رمز درست نیست؛ دوباره تلاش کنید.
+۶ تلاش دیگر باقی مانده است؛ بعد از آن ورود رمز برای ۱۰ دقیقه قفل می‌شود.)
+  ✓ chargesSave با رمز مدیر و userId جعلی ⇒ پذیرفته
+  ✓ actor Audit chargesSave = کارمند نشست = 1
+  ✓ chargesSave عوارض عمده بی‌رمز با قفل همان پنل خاموش ⇒ پذیرفته
+[ipc:charges:save] BusinessError: «ذخیره‌ی «حق سرویس · پنل فروش (خرده)»» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.
+    at assertPanelPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:599:11)
+    at async Object.saveCharge (file:///home/user/work/mahak/src/main/services/SettingsService.ts:370:5)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:147:1 {
+  isBusinessError: true
+}
+  ✓ قفل پنل دیگر خاموش ⇒ حق سرویس خرده همچنان رمز می‌خواهد (رد شد: «ذخیره‌ی «حق سرویس · پنل فروش (خرده)»» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.)
+
+۵) purchaseCreate/Update: گیت پنل خرید و actor نشست
+[ipc:purchase:create] BusinessError: «ثبت فاکتور خرید (افزایش موجودی و قیمت خرید)» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.
+    at assertPanelPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:599:11)
+    at async Object.create (file:///home/user/work/mahak/src/main/services/PurchaseService.ts:64:5)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:155:1 {
+  isBusinessError: true
+}
+  ✓ purchaseCreate بی‌رمز با قفل خرید روشن (رد شد: «ثبت فاکتور خرید (افزایش موجودی و قیمت خرید)» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنی)
+  ✓ فاکتور خریدی ثبت نشد = 0
+  ✓ موجودی دست‌نخورده = 0
+  ✓ purchaseCreate با رمز و userId جعلی ⇒ پذیرفته
+  ✓ actor PURCHASE_CREATE = کارمند نشست = 1
+[ipc:purchase:update] BusinessError: «ویرایش فاکتور خرید (اصلاح موجودی و قیمت خرید)» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.
+    at assertPanelPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:599:11)
+    at async Object.update (file:///home/user/work/mahak/src/main/services/PurchaseService.ts:155:5)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:160:1 {
+  isBusinessError: true
+}
+  ✓ purchaseUpdate بی‌رمز (رد شد: «ویرایش فاکتور خرید (اصلاح موجودی و قیمت خرید)» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد ک)
+  ✓ اقلام خرید دست‌نخورده = 2
+  ✓ purchaseUpdate با رمز ⇒ پذیرفته
+  ✓ actor PURCHASE_UPDATE = کارمند نشست = 1
+  ✓ purchaseCreate بی‌رمز با قفل خرید خاموش ⇒ پذیرفته
+
+۶) customerDelete: دارای فاکتور + force ⇒ رمز؛ بدهکار ⇒ رد کامل؛ پیوند بدهی null نشود
+  ✓ بدون force ⇒ فقط هشدار (مثل قبل)
+  ✓ هشدار بدون حذف = false
+[ipc:customer:delete] BusinessError: «حذف مشتری «مشتری تسویه ۱۵۵» که ۱ فاکتور ثبت‌شده دارد» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.
+    at assertPanelPassword (file:///home/user/work/mahak/src/main/services/AuthService.ts:599:11)
+    at async Object.deleteCustomer (file:///home/user/work/mahak/src/main/services/PartyService.ts:457:7)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:177:1 {
+  isBusinessError: true
+}
+  ✓ دارای فاکتور + force بی‌رمز ⇒ رد (رد شد: «حذف مشتری «مشتری تسویه ۱۵۵» که ۱ فاکتور ثبت‌شده دارد» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را)
+  ✓ مشتری باقی ماند = 1
+  ✓ customerId فاکتور تسویه دست‌نخورده = 1
+[ipc:customer:delete] BusinessError: «مشتری بدهکار ۱۵۵» ۱ فاکتور با بدهی باز دارد (فیش ۹۱۵۵۰۲). تا بدهی تسویه یا فاکتور باطل نشود، این مشتری حذف نمی‌شود؛ حذف او پیوند بدهی نسیه را از بین می‌برد. این قاعده با رمز مدیر هم باز نمی‌شود.
+    at Object.deleteCustomer (file:///home/user/work/mahak/src/main/services/PartyService.ts:449:15)
+    at async file:///home/user/work/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:52:13)
+    at async file:///home/user/work/mahak/tests/audit-fixes/fix-s151c-gates.mjs:180:1 {
+  isBusinessError: true
+}
+  ✓ بدهکار + force + رمز مدیر ⇒ رد کامل (رد شد: «مشتری بدهکار ۱۵۵» ۱ فاکتور با بدهی باز دارد (فیش ۹۱۵۵۰۲). تا بدهی تسویه یا فاکتور باطل نشود، این مشتری حذف نم)
+  ✓ مشتری بدهکار باقی ماند = 1
+  ✓ پیوند بدهی فاکتور نسیه null نشد = 2
+  ✓ تسویه‌شده + force + رمز و userId جعلی ⇒ حذف
+  ✓ حذف شد = true
+  ✓ actor Audit حذف = کارمند نشست = 1
+  ✓ شناسه‌ی فاکتورهای جداشده در Audit ثبت شد (مدرک قابل بازسازی)
+  ✓ مشتری بی‌فاکتور بی‌رمز ⇒ حذف (رفتار قبل)
+  ✓ مشتری بی‌فاکتور حذف شد = 0
+
+۷) ساختاری: اتمیک بودن و سیم‌کشی UI
+  ✓ deleteCustomer داخل $transaction (updateMany + delete + audit)
+  ✓ IPC.chargesSave ⇒ withOptionalSessionActor
+  ✓ IPC.purchaseCreate ⇒ withOptionalSessionActor
+  ✓ IPC.purchaseUpdate ⇒ withOptionalSessionActor
+  ✓ Settings: ذخیره‌ی کلی managerPassword می‌فرستد
+  ✓ Settings: saveSecurity managerPassword می‌فرستد
+  ✓ Settings: حذف مشتری panelPassword می‌فرستد
+  ✓ CategoryCharges: chargesSave با panelPassword
+  ✓ PurchaseInvoice: ثبت/ویرایش خرید با panelPassword
+  ✓ useAutoCentralWithdraw: panelPassword می‌فرستد
+
+نتیجه: 76 موفق · 0 ناموفق

@@ -1,0 +1,373 @@
+diff -ruN mahak/DECISIONS.md ../b/mahak/DECISIONS.md
+--- a/DECISIONS.md	2026-09-23 14:01:15.661687703 +0000
++++ b/DECISIONS.md	2026-09-23 14:01:15.685687849 +0000
+@@ -233,3 +233,9 @@
+ ### نشست ۸۳
+ S83-1 — سؤال: وقتی تست مرز روز بدون اجرای مستقیم هارنس به‌خاطر نبود `jalaali-js` شکست می‌خورد، نتیجه سبز اعلام شود یا با resolver رسمی هارنس دوباره اجرا شود؟ انتخاب من: فقط اجرای دوم با `node --import ./test/harness/register.mjs` معتبر است و شکست اجرای خام باید به‌عنوان محدودیت وابستگی ثبت شود. دلیل: هارنس جایگزین `jalaali-js` را عمداً فراهم می‌کند؛ سبز اعلام‌کردن اجرای خام یا حذف تست، گزارش را گمراه‌کننده می‌کند.
+ S83-2 — سؤال: آیا رگرسیون ۲۹ تست هارنس را معادل Prisma/Electron واقعی اعلام کنم؟ انتخاب من: نه؛ آن را فقط «۲۹ فایل تست PASS در SQLite هارنس» گزارش می‌کنم و Prisma Client تولیدی، Electron واقعی و migration داده‌ی تاریخی را اثبات‌نشده نگه می‌دارم. دلیل: هارنس race دو اتصال و منطق سرویس را می‌سنجد، اما جای اجرای تولیدی را نمی‌گیرد.
++
++### نشست ۸۴
++S84-1 — سؤال: وقتی گام ۰ (npm/Prisma) باز هم ممکن نیست و خوشه A بدون محیط واقعی پیش نمی‌رود، نشست را خالی ببندم یا سراغ خوشه‌ی بعد بروم؟ گزینه‌ها: فقط بازاجرای رگرسیون (مثل نشست ۸۳)، شروع تکه‌ای خوشه C، یا رفع باگ‌های کاملاً مستقل از خوشه‌های I/J/H. انتخاب من: گزینه‌ی سوم. دلیل: خوشه C طبق قاعده نباید تکه‌تکه شود؛ ولی ستون غلط AuditLog، regex خط‌تیره‌ی Excel و DevTools هیچ گره مالی با باگ دیگری ندارند و رفعشان هیچ عدد پولی را جابه‌جا نمی‌کند، پس ریسک کسری کاذب صفر است.
++S84-2 — سؤال: کاراکتر NUL در regex چطور نوشته شود؟ گزینه‌ها: شکل «بک‌اسلش + u + چهار صفر» یا `\x00`. انتخاب من: `\x00`. دلیل: در زنجیره‌ی انتقال متن، رشته‌ی «بک‌اسلش + u + چهار صفر» حذف می‌شد (ریشه‌ی احتمالی خود باگ)؛ `\x00` هم‌معنی و مقاوم است. کلاس کامل: `[\x00-\x08\x0b\x0c\x0e-\x1f]` (تب، LF و CR مجاز می‌مانند).
++S84-3 — سؤال: منوی build نهایی کاملاً null شود یا منوی سفارشی؟ انتخاب من: منوی سفارشی فقط با undo/redo/cut/copy/paste/selectAll. دلیل: بند ۴-۳۶ «منوی سفارشی بدون DevTools» خواسته؛ حذف کامل منو روی macOS میان‌برهای کپی/چسباندن را در فیلدها می‌کشد. در حالت توسعه (`!app.isPackaged`) رفتار قبلی حفظ شد.
++S84-4 — سؤال: پنجره‌های پنهان چاپ (`PrintService`/`printer.ts`/`ExportService`/`BackupService`) هم devTools:false بگیرند؟ انتخاب من: فعلاً دست نخورد. دلیل: این پنجره‌ها پنهان‌اند و فوکوس کاربر ندارند، و با منوی سفارشی میان‌بر DevTools در دسترس نیست؛ تغییر آن‌ها بدون اجرای واقعی چاپ ریسک خراب کردن چاپ دارد. در نشست دارای Electron واقعی بررسی شود.
+diff -ruN mahak/HANDOFF-PROMPT-next.txt ../b/mahak/HANDOFF-PROMPT-next.txt
+--- a/HANDOFF-PROMPT-next.txt	2026-09-23 14:01:15.661687703 +0000
++++ b/HANDOFF-PROMPT-next.txt	2026-09-23 14:01:15.685687849 +0000
+@@ -216,34 +216,37 @@
+ ۱۰) وضعیت فعلی زنجیره و نقطه‌ی دقیق شروع (تنها بخشی که هر نشست به‌روز می‌کند)
+ 
+ ۱۰-۱) محیط و روش اجرای تست
+-در این نشست گام ۰ کامل نشد: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه با `command not found` اجرا نشدند. `node --version` برابر `v22.23.1` است. `esbuild` CLI و وابستگی نصب‌شده‌ی `jalaali-js` نیز در محیط خام موجود نیستند؛ اجرای تست مرز روز فقط با resolver رسمی هارنس معتبر بود. بنابراین هیچ ادعایی درباره‌ی Prisma Client تولیدی، typecheck کامل، Electron واقعی یا migration روی دیتابیس تاریخی ندارم.
++در نشست ۸۴ هم گام ۰ کامل نشد: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه با `command not found` اجرا نشدند؛ شبکه در محیط نبود. `node --version` برابر `v22.23.1` است. همه‌ی تست‌ها فقط با resolver رسمی هارنس معتبرند: `node --import ./test/harness/register.mjs <فایل>`. هیچ ادعایی درباره‌ی Prisma Client تولیدی، typecheck کامل، Electron واقعی یا migration روی دیتابیس تاریخی وجود ندارد.
+ 
+-۱۰-۲) نتیجه‌ی نشست ۸۳
+-هیچ فایل `src` تغییر نکرد. هدف این نشست بازاجرای مستقل بسته‌ی نشست‌های ۸۱ و ۸۲ و ثبت صادقانه‌ی وضعیت بود. تست `tests/audit-fixes/fix-s81-cash-close-two-connections.mjs` با دو Worker و دو اتصال مستقل به یک فایل SQLite، رد caller دوم بدون `allowRepeatClose`، یکتایی `CashSession` و `OPENING_FLOAT` و ثابت‌ماندن `expectedCash=۱۵۰۰` را با **۷ موفق · ۰ ناموفق** تأیید کرد. تست `tests/audit-fixes/fix-s82-open-session-two-connections.mjs` نیز replay امن همان `openIdempotencyKey` و fingerprint را با **۷ موفق · ۰ ناموفق** تأیید کرد.
++۱۰-۲) نتیجه‌ی نشست ۸۴
++چون خوشه A بدون محیط Prisma/Electron واقعی جلو نمی‌رود و خوشه C نباید تکه‌تکه شود، سه باگ مستقل و بی‌گره مالی رفع شد (DECISIONS S84-1):
++- خوشه I: `FraudService.review` روی `AuditLog` با ستون ناموجود `createdAt` فیلتر می‌کرد و کل تب ضدتقلب throw می‌کرد؛ به ستون واقعی `at` اصلاح شد. تست `tests/audit-fixes/fix-s84-fraud-audit-column.mjs`: قبل ۲ موفق · ۳ ناموفق، بعد ۵ موفق · ۰ ناموفق.
++- خوشه J: regex `xmlEscape` در `src/main/services/xlsx.ts` هر خط‌تیره را فاصله می‌کرد و کنترلی‌ها را حذف نمی‌کرد؛ به `[\x00-\x08\x0b\x0c\x0e-\x1f]` اصلاح شد (هشدار: NUL را به شکل «بک‌اسلش + u + چهار صفر» ننویس، این رشته در انتقال متن حذف می‌شود؛ همیشه شکل x00 را بنویس؛ S84-2). تست `tests/audit-fixes/fix-s84-xlsx-dash.mjs`: قبل ۱ موفق · ۵ ناموفق، بعد ۶ موفق · ۰ ناموفق.
++- خوشه H (فقط DevTools، بند ۴-۳۶): در `src/main/index.ts` پرچم `DEVTOOLS_ALLOWED = !app.isPackaged`، `devTools: DEVTOOLS_ALLOWED` روی پنجره‌ی اصلی و منوی سفارشی فارسی فقط با نقش‌های ویرایش در build نهایی. تست ایستای `tests/audit-fixes/fix-s84-devtools-lock.mjs`: قبل ۲ موفق · ۵ ناموفق، بعد ۷ موفق · ۰ ناموفق. اجرای واقعی Electron: اجرا نشد.
+ 
+ ۱۰-۳) رگرسیون کامل
+-دستور معتبر:
+-`for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done`
++دستور: `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done`
++نتیجه: **۳۲ فایل PASS · ۰ فایل FAIL**، جمعاً **۶۲۷ علامت ✓** (شمارش با `grep -c ✓`). فهرست تست‌ها: fix-s57-returns، fix-s58-remaining، fix-s59-bridge-exchange، fix-s60-exchange-debt، fix-s61-overpay-credit، fix-s62-overpay-flow، fix-s63-edit-overpay-lock، fix-s64-return-void، fix-s65-exchange-void، fix-s66-payment-void، fix-s67-payment-actor، fix-s68-payment-provenance، fix-s69-cash-close-atomic، fix-s69-cheque-history، fix-s69-consolidation-retry، fix-s69-day-boundary، fix-s70-event-scope، fix-s71-event-owner، fix-s72-shift-number، fix-s73-full-refund، fix-s74-cluster-a، fix-s75-shift-atomic، fix-s76-card-transfer-day-boundary، fix-s77-cash-close-repeat، fix-s78-open-session-gate، fix-s79-cash-close-race، fix-s80-open-session-idempotency، fix-s81-cash-close-two-connections، fix-s82-open-session-two-connections، fix-s84-fraud-audit-column، fix-s84-xlsx-dash، fix-s84-devtools-lock (همه در `tests/audit-fixes/`).
+ 
+-نتیجه: **۲۹ فایل PASS · ۰ فایل FAIL** و جمعاً **۵۸۰ بررسی موفق**. اجرای خام `fix-s69-day-boundary.mjs` به‌علت نبود `jalaali-js` شکست محیطی داشت؛ اجرای معتبر همان تست با `node --import ./test/harness/register.mjs` سبز شد. هشدارهای experimental SQLite و module type فقط هشدار بودند.
+-
+-۱۰-۴) فایل‌های تغییرکرده در این نشست
+-- `PROGRESS.md`: ثبت نتیجه‌ی بازاجرای نشست ۸۳ و محدودیت‌ها.
+-- `DECISIONS.md`: ثبت تصمیم درباره‌ی اعتبار اجرای تست مرز روز و سطح ادعای رگرسیون.
+-- `TESTLOG.md`: ثبت دستورها و خروجی واقعی نشست ۸۳.
+-- `HANDOFF-PROMPT-next.txt`: همین پرامپت کامل با بند ۱۰ به‌روز‌شده.
+-
+-هیچ فایل `src` جدیدی تغییر نکرد؛ پس فهرست فایل‌های src تغییرکرده در این نشست خالی است.
++۱۰-۴) فایل‌های تغییرکرده در نشست ۸۴
++- `src/main/services/FraudService.ts`: فیلتر زمان AuditLog از `createdAt` به `at`.
++- `src/main/services/xlsx.ts`: کلاس کاراکتر کنترلی درست در `xmlEscape`؛ خط‌تیره‌ی متنی دیگر خراب نمی‌شود.
++- `src/main/index.ts`: قفل DevTools و منوی سفارشی در build نهایی.
++- سه تست تازه در `tests/audit-fixes/`، و به‌روزرسانی `PROGRESS.md`، `DECISIONS.md`، `TESTLOG.md` و همین پرامپت.
+ 
+ ۱۰-۵) محدودیت‌های باز
+-race واقعی دو پردازه‌ی Electron/Prisma تولیدی، اجرای `npm install`، `prisma generate`، `typecheck` کامل، crash/قطع برق وسط transaction، render واقعی Electron/React، timezone غیر Asia/Tehran، حجم ۵۰٬۰۰۰+ ردیف با Prisma واقعی و migration روی داده‌ی تاریخی واقعی اجرا نشدند؛ دلیل: ابزارهای npm/npx/esbuild و محیط تولیدی در دسترس نبودند. پذیرش تاریخی `test/acceptance-db-session36.mjs` نیز طبق وضعیت قبلی **۱۳۱ موفق · ۷ ناموفق** است؛ هر ۷ شکست مربوط به بدهی قدیمی `destination=null` و سبد «نامشخص» است و در این نشست تغییر داده نشد.
++race واقعی دو پردازه‌ی Electron/Prisma، `npm install`، `prisma generate`، `typecheck` کامل، crash/قطع برق وسط transaction، render واقعی Electron/React، timezone غیر Asia/Tehran، حجم ۵۰٬۰۰۰+ ردیف با Prisma واقعی و migration روی داده‌ی تاریخی واقعی اجرا نشدند؛ دلیل: npm/npx/Electron و شبکه در محیط نبودند. پذیرش تاریخی `test/acceptance-db-session36.mjs` طبق وضعیت قبلی **۱۳۱ موفق · ۷ ناموفق** است (هر ۷ مربوط به `destination=null` و سبد «نامشخص»؛ دست نخورد). چون typecheck اجرا نشد، نوع `Electron.MenuItemConstructorOptions` در `src/main/index.ts` باید با اولین `npm run typecheck` تأیید شود.
+ 
+ ۱۰-۶) وضعیت خوشه‌ها
+-خوشه A در سطح کد و SQLite هارنس شامل گیت تکرار بستن صندوق، اتمیک بودن close، گیت تعویض اجباری، idempotency بازکردن نشست و race دو اتصال مستقل جلو آمده است، اما در Prisma/Electron واقعی کامل و اثبات‌شده نیست. خوشه C همچنان نباید تکه‌تکه ادامه داده شود؛ `remainingOf`، پل تطبیق، برگشت/تعویض تاریخی، بازپرداخت، اعتبار و دوره‌ی بسته باید در یک تست یکپارچه‌ی واحد cross-check شوند.
++- A: در سطح کد و SQLite هارنس جلو آمده (گیت تکرار بستن، اتمیک close، گیت تعویض اجباری، idempotency نشست، race دو اتصال)، ولی در Prisma/Electron واقعی اثبات‌نشده.
++- B، C، D، E، F، G، K، L، M: رفع‌نشده یا نیمه‌کاره طبق نشست‌های قبل؛ C همچنان فقط با یک تست یکپارچه‌ی واحد ادامه یابد.
++- H: نیمه‌کاره؛ DevTools رفع شد؛ allowlist سخت‌گیرانه‌ی `settingsSet` (با گیت رمز مدیر و AuditLog، بند ۴-۲۹) و گیت `sale:purge` (ManagerGate + `periodLockService.assertOpen` + actor از session + فقط void، بند ۴-۲۲) باقی‌اند.
++- I: نیمه‌کاره؛ ستون `at` رفع شد؛ فرمول «نرخ برگشت غیرعادی» با تعداد کم فروشنده، بازه‌ی «امروز» در StaffReportService، outOfShift با shiftId واقعی و ستون تعویض پنل کارمند باقی‌اند.
++- J: نیمه‌کاره؛ regex خط‌تیره رفع شد؛ ردیف جمع تب تعویض (ستون جابه‌جا + نبود در Excel)، `pick()` برای آرایه‌ی خام در تب‌های چک/اعتبار، شاخه‌ی چاپ اختصاصی هر تب و سه ستون چاپ برگشت (بند ۴-۲۵) باقی‌اند.
+ 
+ ۱۰-۷) نقطه‌ی دقیق شروع نشست بعد
+-۱) ابتدا گام ۰ را در محیط دارای npm/Prisma اجرا کن و خروجی هر سه دستور را دقیق در سه فایل زنده ثبت کن.
+-۲) اگر Prisma واقعی در دسترس شد، s81 و s82 را با دو Prisma Client/اتصال مستقل و ترجیحاً دو پردازه‌ی واقعی Electron بازاجرا کن؛ اگر نشد، صریحاً «اجرا نشد، دلیل: ...» بنویس و ادعای race واقعی نکن.
+-۳) rollback/crash وسط transaction را روی محیط واقعی بررسی کن؛ بدون آن، اتمیک بودن فقط در SQLite هارنس اثبات‌شده است.
+-۴) بعد از بسته‌شدن A، فقط با یک تست یکپارچه به خوشه C برگرد: `remainingOf`، bridge/پل تطبیق، برگشت و تعویض تاریخی، refund، store credit و closed period را هم‌زمان cross-check کن. تغییر تکه‌ای در یک زیرمسیر ممنوع است.
++۱) ابتدا گام ۰ را در محیط دارای npm/Prisma اجرا کن و خروجی هر سه دستور را دقیق در سه فایل زنده ثبت کن؛ اگر شد، اول typecheck تغییرات نشست ۸۴ را تأیید کن.
++۲) اگر Prisma واقعی در دسترس شد، s81 و s82 را با دو Prisma Client/اتصال مستقل و ترجیحاً دو پردازه‌ی واقعی Electron بازاجرا کن و rollback/crash وسط transaction را بسنج؛ اگر نشد، صریحاً «اجرا نشد، دلیل: ...» بنویس.
++۳) اگر محیط باز هم ناقص بود، باقی‌مانده‌ی مستقل خوشه H را ببند: allowlist `settingsSet` و گیت `sale:purge` (اولی با `src/main/ipc/index.ts` و `AuthService.ts` شروع شود)، هر کدام با تست قبل/بعد در هارنس. سپس `pick()` و ردیف جمع تعویض خوشه J.
++۴) بعد از بسته‌شدن A، فقط با یک تست یکپارچه به خوشه C برگرد: `remainingOf`، پل تطبیق، برگشت و تعویض تاریخی، refund، store credit و closed period را هم‌زمان cross-check کن. تغییر تکه‌ای در یک زیرمسیر ممنوع است.
+ ۵) هر رفع جدید را همراه تست قبل/بعد، ثبت در `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md` انجام بده و در پایان همین بند ۱۰ را برای نشست بعد به‌روز کن.
+diff -ruN mahak/PROGRESS.md ../b/mahak/PROGRESS.md
+--- a/PROGRESS.md	2026-09-23 14:01:15.661687703 +0000
++++ b/PROGRESS.md	2026-09-23 14:01:15.685687849 +0000
+@@ -254,3 +254,13 @@
+ - هیچ فایل `src` تغییر نکرد. این نشست فقط صحت بسته‌ی نشست‌های ۸۱ و ۸۲ و قابلیت بازتولید تست‌ها را دوباره کنترل کرد؛ بنابراین خوشه A هنوز در Prisma/Electron واقعی کامل و اثبات‌شده اعلام نمی‌شود و خوشه C نیز تکه‌تکه نشده است.
+ - محدودیت‌های باز: Prisma generate/typecheck واقعی، race دو پردازه‌ی Electron/Prisma، crash/قطع برق وسط transaction، رندر واقعی Electron/React، timezone غیر Asia/Tehran، حجم ۵۰٬۰۰۰+ با Prisma واقعی و migration روی داده‌ی تاریخی واقعی.
+ - نقطه‌ی ادامه: ابتدا گام ۰ را در محیط دارای npm/Prisma اجرا کن؛ سپس s81 و s82 را با دو Prisma Client واقعی بازاجرا کن؛ بعد تنها با یک تست یکپارچه سراغ `remainingOf`، پل تطبیق، برگشت/تعویض تاریخی، بازپرداخت، اعتبار و دوره‌ی بسته برو.
++
++## نشست ۸۴
++- گام ۰ دوباره اجرا نشد: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه `command not found`؛ `node --version` = `v22.23.1`؛ شبکه در محیط نیست.
++- چون خوشه A فقط در محیط Prisma/Electron واقعی قابل پیشروی است و خوشه C نباید تکه‌تکه شود، سه باگ **مستقل و غیرگره‌خورده** (که رفعشان هیچ کسری کاذب یا دوباره‌شماری نمی‌سازد) رفع شد (دلیل در DECISIONS S84-1):
++- ✅ خوشه I / FraudService: کوئری override روی `AuditLog` با ستون ناموجود `createdAt` فیلتر می‌کرد و کل `review` throw می‌کرد (تب ضدتقلب همیشه کور). به ستون واقعی `at` اصلاح شد. تست `fix-s84-fraud-audit-column.mjs`: قبل **۲ موفق · ۳ ناموفق**، بعد **۵ موفق · ۰ ناموفق**.
++- ✅ خوشه J / xlsx: کلاس regex در `xmlEscape` با «-» شروع می‌شد (بازه‌ی NUL گم شده بود) و هر خط‌تیره‌ی متنی (شماره فیش، کد رهگیری، کد رنگ) را فاصله می‌کرد و کاراکترهای کنترلی واقعی را هم حذف نمی‌کرد. به `[\x00-\x08\x0b\x0c\x0e-\x1f]` اصلاح شد. تست `fix-s84-xlsx-dash.mjs`: قبل **۱ موفق · ۵ ناموفق**، بعد **۶ موفق · ۰ ناموفق**.
++- ✅ خوشه H (بخش DevTools، تصمیم ۴-۳۶): `devTools: !app.isPackaged` روی پنجره‌ی اصلی و منوی سفارشی فارسی فقط با نقش‌های ویرایش (بدون reload/toggleDevTools) در build نهایی. تست ایستای `fix-s84-devtools-lock.mjs`: قبل **۲ موفق · ۵ ناموفق**، بعد **۷ موفق · ۰ ناموفق**. اجرای واقعی Electron: اجرا نشد، دلیل: Electron/npm در محیط نیست.
++- ⚠️ خوشه H نیمه‌کاره است: `settingsSet` allowlist و گیت `sale:purge` هنوز رفع نشده‌اند. خوشه J نیمه‌کاره است: ردیف جمع تعویض، `pick()`، شاخه‌ی چاپ اختصاصی هر تب و سه ستون چاپ برگشت باقی‌اند. خوشه I نیمه‌کاره است: فرمول نرخ برگشت، بازه‌ی «امروز» کارمند، outOfShift و ستون تعویض باقی‌اند.
++- رگرسیون کامل: **۳۲ فایل PASS · ۰ فایل FAIL**، جمعاً **۶۲۷ علامت ✓** (شمارش با `grep -c ✓` روی خروجی هر فایل).
++- فایل‌های src تغییریافته: `src/main/services/FraudService.ts`، `src/main/services/xlsx.ts`، `src/main/index.ts`.
+diff -ruN mahak/TESTLOG.md ../b/mahak/TESTLOG.md
+--- a/TESTLOG.md	2026-09-23 14:01:15.661687703 +0000
++++ b/TESTLOG.md	2026-09-23 14:01:15.685687849 +0000
+@@ -609,3 +609,27 @@
+ 
+ محدودیت اثبات:
+ - این خروجی جای Prisma Client تولیدی، typecheck کامل TypeScript، Electron/React واقعی، race دو پردازه‌ی Electron، crash/قطع برق، migration داده‌ی تاریخی، timezone غیر Asia/Tehran و حجم ۵۰٬۰۰۰+ با Prisma واقعی را نمی‌گیرد.
++
++## نشست ۸۴
++گام ۰:
++- `npm install` ⇒ `bash: npm: command not found`
++- `npx prisma generate` ⇒ `bash: npx: command not found`
++- `npm run typecheck` ⇒ `bash: npm: command not found`
++- `node --version` ⇒ `v22.23.1`
++
++رگرسیون اولیه (قبل از هر تغییر): **۲۹ فایل PASS · ۰ FAIL**.
++
++بازتولید قبل از رفع (روی کپی دست‌نخورده‌ی zip نشست ۸۳):
++- `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s84-fraud-audit-column.mjs` ⇒ **۲ موفق · ۳ ناموفق**؛ خطا: `HARNESS: ستون ناشناخته «createdAt» در where روی AuditLog`.
++- `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s84-xlsx-dash.mjs` ⇒ **۱ موفق · ۵ ناموفق**؛ `INV-1405-0012`، `TRK-77-ABC`، `A-12-B` خراب شدند و کاراکتر کنترلی در XML ماند.
++- `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s84-devtools-lock.mjs` ⇒ **۲ موفق · ۵ ناموفق**.
++
++بعد از رفع:
++- `fix-s84-fraud-audit-column.mjs` ⇒ **۵ موفق · ۰ ناموفق**.
++- `fix-s84-xlsx-dash.mjs` ⇒ **۶ موفق · ۰ ناموفق**.
++- `fix-s84-devtools-lock.mjs` ⇒ **۷ موفق · ۰ ناموفق** (ایستا؛ Electron واقعی: اجرا نشد، دلیل: در محیط نیست).
++
++رگرسیون کامل:
++- دستور: `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done`
++- نتیجه: **۳۲ فایل PASS · ۰ فایل FAIL**، **۶۲۷ علامت ✓**.
++- typecheck کامل TypeScript: اجرا نشد، دلیل: npm/tsc در محیط نیست.
+diff -ruN mahak/src/main/index.ts ../b/mahak/src/main/index.ts
+--- a/src/main/index.ts	2026-09-23 14:01:15.665687727 +0000
++++ b/src/main/index.ts	2026-09-23 14:01:15.685687849 +0000
+@@ -1,4 +1,4 @@
+-import { app, BrowserWindow, dialog, shell } from 'electron'
++import { app, BrowserWindow, Menu, dialog, shell } from 'electron'
+ import { join } from 'node:path'
+ import { mkdir } from 'node:fs/promises'
+ import { prisma, databaseFile } from './db/client'
+@@ -66,6 +66,36 @@
+   return true
+ }
+ 
++/**
++ * نشست ۸۴ · خوشه H · تصمیم مالک ۴-۳۶: در build نهایی (app.isPackaged) صندوق‌دار
++ * هیچ راهی به DevTools ندارد: devTools:false روی پنجره و منوی سفارشی Electron
++ * فقط با نقش‌های ویرایش متن (بدون reload/toggleDevTools). در حالت توسعه رفتار
++ * قبلی حفظ می‌شود تا کار برنامه‌نویس مختل نشود.
++ */
++export const DEVTOOLS_ALLOWED = !app.isPackaged
++
++export function productionMenuTemplate(): Electron.MenuItemConstructorOptions[] {
++  return [
++    {
++      label: 'ویرایش',
++      submenu: [
++        { role: 'undo', label: 'واگرد' },
++        { role: 'redo', label: 'انجام دوباره' },
++        { type: 'separator' },
++        { role: 'cut', label: 'برش' },
++        { role: 'copy', label: 'رونوشت' },
++        { role: 'paste', label: 'چسباندن' },
++        { role: 'selectAll', label: 'انتخاب همه' }
++      ]
++    }
++  ]
++}
++
++function installApplicationMenu() {
++  if (DEVTOOLS_ALLOWED) return
++  Menu.setApplicationMenu(Menu.buildFromTemplate(productionMenuTemplate()))
++}
++
+ function createWindow() {
+   mainWindow = new BrowserWindow({
+     width: 1440,
+@@ -78,7 +108,8 @@
+       preload: join(__dirname, '../preload/index.js'),
+       sandbox: false,
+       contextIsolation: true,
+-      nodeIntegration: false
++      nodeIntegration: false,
++      devTools: DEVTOOLS_ALLOWED
+     }
+   })
+ 
+@@ -103,6 +134,7 @@
+   scheduleBackup()
+   // زمان‌بندی خودکار تغییر قیمت گروهی (شروع/پایان سر وقت)
+   schedulePriceAdjust()
++  installApplicationMenu()
+   createWindow()
+ 
+   app.on('activate', () => {
+diff -ruN mahak/src/main/services/FraudService.ts ../b/mahak/src/main/services/FraudService.ts
+--- a/src/main/services/FraudService.ts	2026-09-23 14:01:15.665687727 +0000
++++ b/src/main/services/FraudService.ts	2026-09-23 14:01:15.689687873 +0000
+@@ -310,7 +310,9 @@
+     const overrides = await prisma.auditLog.findMany({
+       where: {
+         action: { in: [AuditAction.CLOSED_PERIOD_OVERRIDE, AuditAction.EXCHANGE_PRICE_OVERRIDE, AuditAction.STORE_CREDIT_OVER_LIMIT] },
+-        createdAt: { gte: from, lte: to }
++        // نشست ۸۴ · خوشه I: ستون زمانِ AuditLog در schema «at» است، نه createdAt؛
++        // نام غلط باعث خطای validation و کور شدن کل تب ضدتقلب می‌شد.
++        at: { gte: from, lte: to }
+       },
+       orderBy: { id: 'desc' },
+       take: 500
+diff -ruN mahak/src/main/services/xlsx.ts ../b/mahak/src/main/services/xlsx.ts
+--- a/src/main/services/xlsx.ts	2026-09-23 14:01:15.665687727 +0000
++++ b/src/main/services/xlsx.ts	2026-09-23 14:01:15.689687873 +0000
+@@ -135,7 +135,9 @@
+     .replace(/"/g, '&quot;')
+     .replace(/'/g, '&apos;')
+     // کاراکترهای کنترلی در XML مجاز نیستند و فایل را در اکسل خراب می‌کنند
+-    .replace(/[-\u0008\u000b\u000c\u000e-\u001f]/g, ' ')
++    // نشست ۸۴ · خوشه J: کلاس قبلی با «-» شروع می‌شد و خط‌تیره‌ی متنی (شماره فیش،
++    // کد رهگیری، کد رنگ) را به فاصله تبدیل می‌کرد؛ فقط بازه‌ی واقعی کنترلی حذف شود.
++    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ' ')
+ }
+ 
+ /** شماره‌ی ستون (۱-based) → حرف ستون اکسل: 1=A، 27=AA */
+diff -ruN mahak/tests/audit-fixes/fix-s84-devtools-lock.mjs ../b/mahak/tests/audit-fixes/fix-s84-devtools-lock.mjs
+--- a/tests/audit-fixes/fix-s84-devtools-lock.mjs	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/audit-fixes/fix-s84-devtools-lock.mjs	2026-09-23 14:01:15.693687897 +0000
+@@ -0,0 +1,32 @@
++/**
++ * نشست ۸۴ · خوشه H · تصمیم مالک ۴-۳۶
++ *
++ * در build نهایی DevTools باید کاملاً بسته باشد: devTools:false روی BrowserWindow
++ * اصلی و منوی سفارشی بدون toggleDevTools/reload. اجرای واقعی Electron در این
++ * محیط ممکن نیست، پس این تست ایستا (روی متن سورس) است و صریحاً همین را اعلام می‌کند.
++ *
++ * node --import ./test/harness/register.mjs tests/audit-fixes/fix-s84-devtools-lock.mjs
++ */
++import { readFileSync } from 'node:fs'
++import { resolve } from 'node:path'
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (got === want) { ok++; console.log(`  ✓ ${label}`) }
++  else { bad++; console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)} · انتظار ${JSON.stringify(want)}`) }
++}
++const src = readFileSync(resolve('src/main/index.ts'), 'utf8')
++const menuBlock = src.match(/function productionMenuTemplate[\s\S]*?\n\}/)?.[0] ?? ''
++
++eq('پرچم DevTools فقط در حالت غیر packaged روشن است', /DEVTOOLS_ALLOWED\s*=\s*!app\.isPackaged/.test(src), true)
++eq('پنجره‌ی اصلی devTools را به همان پرچم می‌بندد', /webPreferences:\s*\{[\s\S]*?devTools:\s*DEVTOOLS_ALLOWED/.test(src), true)
++eq('منوی سفارشی در build نهایی نصب می‌شود', /Menu\.setApplicationMenu\(Menu\.buildFromTemplate\(productionMenuTemplate\(\)\)\)/.test(src), true)
++eq('منو قبل از ساخت پنجره نصب می‌شود', /installApplicationMenu\(\)\s*\n\s*createWindow\(\)/.test(src), true)
++eq('منوی نهایی گزینه‌ی DevTools ندارد', /toggleDevTools|forceReload|'reload'/.test(menuBlock), false)
++eq('منوی نهایی خالی نیست (کپی/چسباندن کار کند)', /role:\s*'paste'/.test(menuBlock), true)
++eq('هیچ openDevTools صریحی در main نیست', /openDevTools\(/.test(src), false)
++console.log('  ⓘ تست ایستا است؛ اجرای واقعی Electron: اجرا نشد، دلیل: Electron/npm در محیط نیست.')
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++if (bad) process.exit(1)
+diff -ruN mahak/tests/audit-fixes/fix-s84-fraud-audit-column.mjs ../b/mahak/tests/audit-fixes/fix-s84-fraud-audit-column.mjs
+--- a/tests/audit-fixes/fix-s84-fraud-audit-column.mjs	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/audit-fixes/fix-s84-fraud-audit-column.mjs	2026-09-23 14:01:15.693687897 +0000
+@@ -0,0 +1,55 @@
++/**
++ * نشست ۸۴ · خوشه I
++ *
++ * FraudService.review روی AuditLog با ستون ناموجود createdAt فیلتر می‌کرد (ستون
++ * واقعی schema «at» است)؛ پس کل تابع throw می‌کرد و تب ضدتقلب همیشه کور بود.
++ * این تست ثابت می‌کند review بدون خطا برمی‌گردد و رکورد override داخل بازه
++ * شمرده می‌شود ولی رکورد خارج از بازه نه.
++ *
++ * node --import ./test/harness/register.mjs tests/audit-fixes/fix-s84-fraud-audit-column.mjs
++ */
++import { readFileSync, mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (got === want) { ok++; console.log(`  ✓ ${label}`) }
++  else { bad++; console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)} · انتظار ${JSON.stringify(want)}`) }
++}
++
++const schema = readFileSync(resolve('prisma/schema.prisma'), 'utf8')
++const auditModel = schema.match(/model AuditLog \{[\s\S]*?\n\}/)?.[0] ?? ''
++eq('AuditLog در schema ستون at دارد', /\n\s+at\s+DateTime/.test(auditModel), true)
++eq('AuditLog در schema ستون createdAt ندارد', /\n\s+createdAt\s/.test(auditModel), false)
++
++process.env.HARNESS_DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s84-fraud-'))
++process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { fraudService } = await import('../../src/main/services/FraudService.ts')
++const { toJalaliDate } = await import('@shared/jalali')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const today = toJalaliDate(new Date())
++const manager = seed.user('مدیر')
++seed.insert('AuditLog', { at: Date.now(), userId: manager, action: 'CLOSED_PERIOD_OVERRIDE', entity: 'SaleInvoice', entityId: 1, note: 'داخل بازه' })
++seed.insert('AuditLog', { at: Date.now() - 40 * 86400000, userId: manager, action: 'CLOSED_PERIOD_OVERRIDE', entity: 'SaleInvoice', entityId: 2, note: 'خارج بازه' })
++
++let result = null
++let error = null
++try {
++  result = await fraudService.review({ fromJalali: today, toJalali: today })
++} catch (e) {
++  error = e
++}
++eq('review بدون خطا برمی‌گردد', error ? String(error.message).slice(0, 120) : null, null)
++const flag = result?.flags?.find((f) => f.key === 'closedPeriodOverride')
++eq('override داخل بازه دقیقاً یک‌بار شمرده می‌شود', flag?.count ?? null, 1)
++eq('رکورد خارج بازه وارد نمی‌شود', flag?.sources?.some((s) => String(s.label).includes('خارج بازه')) ?? null, false)
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++if (bad) process.exit(1)
+diff -ruN mahak/tests/audit-fixes/fix-s84-xlsx-dash.mjs ../b/mahak/tests/audit-fixes/fix-s84-xlsx-dash.mjs
+--- a/tests/audit-fixes/fix-s84-xlsx-dash.mjs	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/audit-fixes/fix-s84-xlsx-dash.mjs	2026-09-23 14:01:15.693687897 +0000
+@@ -0,0 +1,60 @@
++/**
++ * نشست ۸۴ · خوشه J
++ *
++ * xmlEscape در xlsx.ts کلاس کاراکتری داشت که با «-» شروع می‌شد (بازه‌ی NUL حذف
++ * شده بود) و هر خط‌تیره‌ی متنی را به فاصله تبدیل می‌کرد: شماره فیش، کد رهگیری،
++ * کد رنگ، تاریخ «۱۴۰۵-۰۶-۳۱» در Excel خراب می‌شد. این تست فایل xlsx واقعی
++ * می‌سازد، sheet1.xml را از zip باز می‌کند و متن را بررسی می‌کند.
++ *
++ * node --import ./test/harness/register.mjs tests/audit-fixes/fix-s84-xlsx-dash.mjs
++ */
++import { inflateRawSync } from 'node:zlib'
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (got === want) { ok++; console.log(`  ✓ ${label}`) }
++  else { bad++; console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)} · انتظار ${JSON.stringify(want)}`) }
++}
++
++const { buildXlsx } = await import('../../src/main/services/xlsx.ts')
++
++/** خواندن ساده‌ی ورودی‌های zip از روی local header ها */
++function unzip(buf) {
++  const out = new Map()
++  let p = 0
++  while (p + 30 <= buf.length && buf.readUInt32LE(p) === 0x04034b50) {
++    const method = buf.readUInt16LE(p + 8)
++    const size = buf.readUInt32LE(p + 18)
++    const nameLen = buf.readUInt16LE(p + 26)
++    const extraLen = buf.readUInt16LE(p + 28)
++    const name = buf.slice(p + 30, p + 30 + nameLen).toString('utf8')
++    const start = p + 30 + nameLen + extraLen
++    const data = buf.slice(start, start + size)
++    out.set(name, method === 8 ? inflateRawSync(data).toString('utf8') : data.toString('utf8'))
++    p = start + size
++  }
++  return out
++}
++
++const ctrl = String.fromCharCode(1) + String.fromCharCode(0) + String.fromCharCode(31)
++const buf = buildXlsx({
++  name: 'برگشت',
++  title: 'گزارش برگشت — آزمایش',
++  headers: ['شماره فیش', 'کد رهگیری', 'رنگ', 'متن کنترلی'],
++  rows: [['INV-1405-0012', 'TRK-77-ABC', 'A-12-B', `x${ctrl}y`]],
++  totals: ['جمع', '-', '', '']
++})
++const files = unzip(buf)
++const sheetName = [...files.keys()].find((k) => /xl\/worksheets\/sheet\d*\.xml$/.test(k))
++const shared = files.get('xl/sharedStrings.xml') ?? ''
++const xml = (files.get(sheetName) ?? '') + shared
++eq('برگه‌ی xlsx پیدا شد', !!sheetName, true)
++eq('شماره فیش با خط‌تیره سالم می‌ماند', xml.includes('INV-1405-0012'), true)
++eq('کد رهگیری با خط‌تیره سالم می‌ماند', xml.includes('TRK-77-ABC'), true)
++eq('کد رنگ با خط‌تیره سالم می‌ماند', xml.includes('A-12-B'), true)
++eq('کاراکترهای کنترلی واقعی هنوز حذف می‌شوند', /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(xml), false)
++eq('متن کنترلی به فاصله تبدیل شد', xml.includes('x   y'), true)
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++if (bad) process.exit(1)

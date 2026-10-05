@@ -1,0 +1,22 @@
+(node:6096) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6096) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/invoiceDebt.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) ۵۲۰ برگشت کارت‌به‌کارت روی یک فاکتور، ۳ تای اول و ۲۰ تای آخر لغوشده
+  ✓ بی‌خطا = null
+  ✓ ارزش برگشتی فاکتور X = ۵۲٬۰۰۰ = 52000
+  ✓ پس‌داده از دریافتی X = ۴۹۷ × ۱۰۰ (لغوشده‌ها بیرون) = 49700
+  ✓ فاکتور Y دست‌نخورده: ارزش ۱٬۰۰۰ = 1000
+  ✓ فاکتور Y: پس‌داده ۱٬۰۰۰ = 1000
+  ✓ هیچ IN بالای ۵۰۰ نبود = true
+
+۲) بدهی واحد فاکتور X از همان تابع
+  ✓ بی‌خطا = null
+  ✓ payable = ۴۸٬۰۰۰ = 48000
+  ✓ netReceived = ۵۰٬۳۰۰ = 50300
+  ✓ اضافه‌دریافت = ۲٬۳۰۰ (سهم لغوشده‌ها) = 2300
+
+نتیجه: 10 موفق · 0 ناموفق

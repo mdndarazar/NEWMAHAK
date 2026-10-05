@@ -1,0 +1,506 @@
+diff -ruN '--exclude=mahak-session81-fix.patch' base/mahak/DECISIONS.md mahak/DECISIONS.md
+--- base/mahak/DECISIONS.md	2026-09-23 13:38:11.000000000 +0000
++++ mahak/DECISIONS.md	2026-09-23 13:43:26.931129081 +0000
+@@ -224,3 +224,8 @@
+ S80-1 — سؤال: retry بازکردن نشست بعد از timeout چه کند؟ گزینه‌ها: هر بار نشست تازه بسازد، فقط در UI جلوی دوباره‌کلیک را بگیرد، یا کلید idempotency یکتا را در خود سند نشست ثبت کند و retry همان سند را برگرداند. انتخاب من: گزینه‌ی سوم؛ `openIdempotencyKey` یکتا و `openIdempotencyFingerprint` روی `Shift`، با گیت در main و unique index دیتابیس. دلیل: UI قابل‌دورزدن است و دوباره‌بستن نشست انتساب صندوق/فروش را خراب می‌کند؛ idempotency باید بعد از قطع پاسخ هم از روی دیتابیس قابل بازیابی باشد.
+ S80-2 — سؤال: reuse همان کلید با پارامتر متفاوت چه کند؟ گزینه‌ها: نادیده بگیرد، نشست موجود را به ورودی تازه تغییر دهد، یا رد فارسی کند. انتخاب من: رد فارسی؛ fingerprint شامل پارامترهای مالی/هویتی درخواست است و password عمداً وارد fingerprint نمی‌شود. دلیل: تغییر بی‌ردپای کارمند/نشست با همان کلید می‌تواند یک retry را به handover جعلی تبدیل کند.
+ S80-3 — سؤال: اگر دو caller هم‌زمان هر دو pre-check را رد کردند و یکی روی unique index شکست خورد چه شود؟ انتخاب من: فقط وقتی خطا `P2002` و fingerprint دقیقاً یکی است، سند موجود برگردانده شود؛ هر mismatch یا خطای دیگر propagate شود. دلیل: retry موفق باید idempotent باشد، اما بلعیدن خطای نامرتبط یا کلید متفاوت مغایرت را پنهان می‌کند.
++
++### نشست ۸۱ و ۸۲
++S81-1 — سؤال: برای اثبات race بستن صندوق در نبود Prisma واقعی چه سطحی معتبر است؟ گزینه‌ها: فقط تست ساختاری، شبیه‌سازی تک‌اتصالی، یا دو اتصال مستقل به یک فایل SQLite در Workerهای هم‌زمان. انتخاب من: گزینه‌ی سوم، با ثبت محدودیت باقی‌مانده. دلیل: دو اتصال مستقل قفل و commit واقعی SQLite را درگیر می‌کنند و نشان می‌دهند caller دوم بعد از commit اول predicate داخل transaction را می‌بیند؛ ادعای race واقعی Electron/Prisma بدون آن محیط ممنوع است.
++S81-2 — سؤال: caller دوم در race بستن صندوق چه اثری می‌تواند داشته باشد؟ انتخاب من: بدون `allowRepeatClose` باید رد شود و هیچ `CashSession`، `OPENING_FLOAT` یا اثر `expectedCash` تازه‌ای نسازد. دلیل: بند ۴-۴۷ فقط اجرای دوباره‌ی تأییدشده را مجاز می‌کند؛ هر اثر دوباره مغایرت نقدی جعلی می‌سازد.
++S82-1 — سؤال: race دو caller برای `openSession` چگونه بسته شود؟ گزینه‌ها: قفل UI، جست‌وجوی قبل از transaction، یا unique index به‌همراه replay فقط برای fingerprint یکسان. انتخاب من: گزینه‌ی سوم و تست آن با دو اتصال مستقل. دلیل: retry بعد از timeout باید همان نشست را برگرداند؛ بلعیدن mismatch یا خطای غیرمرتبط می‌تواند تغییر هویت/تعویض نشست را پنهان کند.
+diff -ruN '--exclude=mahak-session81-fix.patch' base/mahak/HANDOFF-PROMPT-next.txt mahak/HANDOFF-PROMPT-next.txt
+--- base/mahak/HANDOFF-PROMPT-next.txt	2026-09-23 13:39:16.000000000 +0000
++++ mahak/HANDOFF-PROMPT-next.txt	2026-09-23 13:43:57.195304669 +0000
+@@ -216,114 +216,39 @@
+ ۱۰) وضعیت فعلی زنجیره و نقطه‌ی دقیق شروع (تنها بخشی که هر نشست به‌روز می‌کند)
+ 
+ ۱۰-۱) محیط و روش اجرای تست
+-در نشست ۷۷ نیز `npm install`، `npx prisma generate` و `npm run typecheck` اجرا نشدند؛ دلیل دقیق: `npm` و `npx` در محیط موجود نیستند (`command not found`). تست‌های قابل اجرا با Node 22.23.1 و SQLite داخلی هارنس هستند و جای Prisma/TypeScript/Electron واقعی را نمی‌گیرند.
++در این نشست نیز گام ۰ کامل نشد: `npm install`، `npx prisma generate` و `npm run typecheck` اجرا نشدند، چون `npm` و `npx` در محیط موجود نیستند (`command not found`). `node --version` برابر `v22.23.1` است و `esbuild` CLI نیز در محیط موجود نیست. بنابراین هیچ ادعایی درباره‌ی Prisma Client تولیدی، typecheck کامل، Electron واقعی یا migration روی دیتابیس تاریخی ندارم؛ تست‌های قابل اجرا با Node و SQLite داخلی واقعی انجام شدند.
+ 
+-تست قبل از رفع همین تست روی snapshot نشست ۷۶ ⇒ **۲ موفق · ۴ ناموفق**؛ اجرای دوم بدون تأیید پذیرفته می‌شد و snapshot/Audit اضافه می‌ساخت. تست اثباتی نشست ۷۷ پس از رفع: `tests/audit-fixes/fix-s77-cash-close-repeat.mjs` ⇒ **۶ موفق · ۰ ناموفق**. سناریو: بستن اول صندوق، تلاش دوم بدون تأیید که باید رد شود، سپس اجرای دوم با `allowRepeatClose=true` که snapshot مستقل می‌سازد؛ `OPENING_FLOAT` دوباره ثبت نشد، `expectedCash` برابر ماند و Audit هر دو تلاش را نگه داشت.
++۱۰-۲) نتیجه‌ی نشست‌های ۸۱ و ۸۲، خوشه A
++در `CashboxService.close` گیت تکرار بستن صندوق که در نشست ۷۹ داخل transaction قرار گرفته بود دست‌نخورده ماند و یک تست قوی‌تر برای دو اتصال مستقل ساخته شد. فایل `tests/audit-fixes/fix-s81-cash-close-two-connections.mjs` دو Worker را روی یک فایل SQLite واقعی باز می‌کند؛ caller اول transaction را نگه می‌دارد، caller دوم هم‌زمان برای همان قفل وارد می‌شود، و بعد از commit اول predicate را می‌خواند. نتیجه‌ی اثبات‌شده: caller دوم بدون `allowRepeatClose` رد می‌شود، فقط یک `CashSession` ساخته می‌شود، `OPENING_FLOAT` فقط یک بار ثبت می‌شود و مجموع `expectedCash` برابر ۱۵۰۰ می‌ماند.
+ 
+-رگرسیون کامل `tests/audit-fixes/*.mjs`: هر ۲۳ تست موجود اجرا شد و همگی سبز شدند؛ هیچ `FAIL` یا `✗`ی در خروجی نبود. تست `fix-s69-cash-close-atomic.mjs` برای قرارداد تازه با تأیید صریح اجرای دوم به‌روز شد و **۵ موفق · ۰ ناموفق** است.
++برای `ShiftService.openSession` نیز فایل `tests/audit-fixes/fix-s82-open-session-two-connections.mjs` ساخته شد. دو اتصال مستقل با یک `openIdempotencyKey` و fingerprint یکسان هم‌زمان تلاش می‌کنند؛ unique index فقط ساخت یک نشست را اجازه می‌دهد و caller دوم پس از تصادم، همان fingerprint را replay می‌کند. نتیجه‌ی اثبات‌شده: فقط یک `Shift` ساخته می‌شود و key/fingerprint تغییر نمی‌کند. مسیر mismatch کلید و handling خطای `P2002` در کد موجود قبلاً در نشست ۸۰ پیاده شده بود و در تست ساختاری s82 کنترل شد.
+ 
+-بررسی نحوی esbuild برای `src/main/services/CashboxService.ts`، `src/renderer/src/pages/CashClose.tsx` و `src/shared/types.ts` سبز شد. این بررسی جای typecheck کامل TypeScript/Prisma نیست.
+-
+-محدودیت‌های باز: تست چندپردازه‌ای واقعی race بین دو پنجره‌ی Electron، crash/قطع برق وسط تراکنش، رندر واقعی UI در Electron/React، timezone غیر Asia/Tehran، حجم کامل ۵۰٬۰۰۰+ ردیف با Prisma واقعی، و migration روی داده‌ی تاریخی واقعی مشتری.
+-
+-دستور تست دیتابیسی: `node --import ./test/harness/register.mjs <مسیر فایل تست>`
+-
+-۱۰-۲) وضعیت رفع‌شده تا پایان نشست ۷۷
+-همه‌ی موارد ثبت‌شده تا نشست ۷۶ برقرارند: جداسازی اسکوپ رویداد از فاکتور، مالکیت واقعی Payment/Return/Cheque، حذف دوباره‌شماری چک در دفتر رویداد، تاریخچه‌ی append-only چک، اتمیک‌سازی retry تجمیع و ساخت/بستن نشست، مرز روز `.999` و override مبلغ کامل برگشت.
+-
+-در نشست ۷۷ بند ۴-۴۷ کامل‌تر شد. `CashboxService.close` حالا قبل از محاسبه/ثبت، وجود `CashSession` قبلی را برای همان نشست یا بازه بررسی می‌کند. اگر درخواست تکراری `allowRepeatClose` نداشته باشد، main با پیام فارسی هشدار می‌دهد و هیچ snapshot تازه‌ای نمی‌سازد. اگر کاربر در UI تأیید کند، همان درخواست با `allowRepeatClose=true` اجرا می‌شود و فقط یک `CashSession` و Audit مستقل تازه می‌سازد؛ اثر نقد، موجودی اول و انبار دوباره اعمال نمی‌شوند.
+-
+-`CashClose.tsx` سابقه‌ی بستن صندوق را برای target فعلی بررسی می‌کند، متن هشدار و برچسب دکمه‌ی اجرای دوم را نمایش می‌دهد و گیت main را دور نمی‌زند. `CashCloseInput` نیز پرچم تأیید را صریحاً در قرارداد مشترک دارد.
+-
+-خوشه A هنوز کامل نیست: race چندپردازه‌ای واقعی و idempotency key مستقل برای درخواست بازکردن نشست، crash/قطع برق، cross-check با Prisma واقعی و migration روی داده‌ی تاریخی اجرا نشده‌اند. خوشه C هنوز طبق وضعیت قبلی نیمه‌تمام است و خوشه‌های D تا M فقط آیتم‌هایی را که در TESTLOG سبز شده‌اند رفع‌شده بدان؛ سایر آیتم‌ها باز هستند.
+-
+-۱۰-۳) فایل‌های تغییرکرده در نشست ۷۷
+-- `src/shared/types.ts`: افزودن `allowRepeatClose` به قرارداد بستن صندوق برای تأیید صریح اجرای دوم.
+-- `src/main/services/CashboxService.ts`: گیت main برای رد بستن تکراری بدون تأیید، همراه با پیام فارسی؛ اجرای تأییدشده همچنان snapshot مستقل می‌سازد و اثر دفتر نقد را دوباره ثبت نمی‌کند.
+-- `src/renderer/src/pages/CashClose.tsx`: تشخیص سابقه‌ی target، هشدار اجرای دوم و ارسال `allowRepeatClose` فقط از مسیر تأیید کاربر.
+-- `tests/audit-fixes/fix-s77-cash-close-repeat.mjs`: تست قبل/بعد رفتاری برای رد اجرای دوم، تأیید اجرای دوم، یکتایی موجودی اول و یکتایی اثر خالص.
+-- `tests/audit-fixes/fix-s69-cash-close-atomic.mjs`: سازگارکردن retry قبلی با تأیید صریح جدید.
+-- `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md`: ثبت وضعیت، تصمیم‌ها، خروجی تست و محدودیت‌ها.
+-
+-۱۰-۴) بک‌لاگ باز و نقطه‌ی دقیق ادامه
+-گام بعدی با گام ۰ شروع شود. اگر npm/npx در دسترس شد، همان سه دستور را اجرا و خروجی واقعی ثبت کن. سپس خوشه A را فقط با cross-check واقعی ادامه بده: (۱) تست race چندپردازه‌ای دو درخواست close/open و بررسی update شرطی/rollback؛ (۲) تصمیم و پیاده‌سازی idempotency key مستقل برای openSession، اگر قرارداد ورودی و UI بدون شکستن سازگاری اجازه داد؛ (۳) تست قطع/خطا وسط تراکنش روی Prisma واقعی؛ (۴) بررسی همه‌ی مسیرهای close/consolidation برای اثر خالص یکتا و فیلتر روز شمسی یکسان.
+-
+-پس از بسته‌شدن A، خوشه C را تکه‌تکه ادامه نده: bridge/remaining، سندهای برگشت/تعویض تاریخی و هر وابستگی مالی باید با تست قبل/بعد یک‌جا cross-check شوند. گزینه‌ی `managerFullRefund` نشست ۷۳ را با Prisma واقعی، STORE_CREDIT، برگشت جزئی چندقلمی و دوره‌ی بسته cross-check کن.
+-
+-رگرسیون‌های حداقلی: `tests/audit-fixes/fix-s77-cash-close-repeat.mjs`، `fix-s69-cash-close-atomic.mjs`، `fix-s75-shift-atomic.mjs`، `fix-s76-card-transfer-day-boundary.mjs`، `fix-s74-cluster-a.mjs`، `fix-s72-shift-number.mjs`، `fix-s71-event-owner.mjs`، `fix-s70-event-scope.mjs`، `fix-s69-cheque-history.mjs`، `fix-s69-consolidation-retry.mjs`، `fix-s68-payment-provenance.mjs`، `fix-s67-payment-actor.mjs`، `fix-s66-payment-void.mjs`، `fix-s65-exchange-void.mjs`، `fix-s64-return-void.mjs` و `test/acceptance-db-session36.mjs`. هر ادعای اجرا نشده را با «اجرا نشد، دلیل: ...» ثبت کن.
+-
+-نقطه‌ی دقیق شروع: ابتدا وضعیت ابزار را دوباره ثبت کن؛ سپس یک تست race واقعی یا شبیه‌سازی‌شده‌ی هم‌زمانی برای `CashboxService.close` بنویس که نشان دهد دو درخواست بدون تأیید نمی‌توانند دو snapshot بسازند، و درخواست دومِ تأییدشده فقط یک snapshot حسابرسی مستقل می‌سازد بدون ثبت دوباره‌ی `OPENING_FLOAT` یا تغییر expectedCash. بعد به سراغ openSession برو، نه UI یا refactor سلیقه‌ای.
+-
+-۱۰-۵) به‌روزرسانی نشست ۷۸
+-گام ۰ در این نشست نیز کامل نشد: `npm install`، `npx prisma generate` و `npm run typecheck` اجرا نشدند، چون `npm` و `npx` در محیط موجود نیستند. بنابراین خروجی‌های این نشست با Node 22.23.1 و SQLite داخلی هارنس معتبرند، اما جای Prisma/TypeScript/Electron واقعی را نمی‌گیرند.
+-
+-در خوشه A، مسیر `ShiftService.openSession` اصلاح شد. قبل از رفع، caller می‌توانست `staffId` کارمند تازه را ارسال کند و نشست بازِ کارمند قبلی را بدون رمز ببندد؛ این کار با `HANDOVER` عادی ثبت می‌شد و انتساب فروش/صندوق را قابل جعل می‌کرد. اکنون اگر نشست باز صاحب دیگری داشته باشد، `overrideReason` حداقل سه نویسه و `managerPassword` اجباری است و رمز قبل از transaction با `assertManagerPassword` بررسی می‌شود. در transaction نیز اگر نشستِ کارمند دیگری بین دو بررسی باز شده باشد، درخواست بدون گیت قبلی رد می‌شود. نشست تأییدشده با `openedVia='HANDOVER_FORCED'` ساخته می‌شود و Audit آن را به‌عنوان تعویض اجباری با تأیید مدیر ثبت می‌کند.
+-
+-فایل‌های تغییرکرده در نشست ۷۸:
+-- `src/main/services/ShiftService.ts`: گیت قبل از transaction، بررسی دوباره‌ی owner نشست، دلیل اجباری و برچسب `HANDOVER_FORCED`.
+-- `src/renderer/src/components/ShiftSessionModal.tsx`: نمایش/ارسال رمز مدیر فقط برای تعویض کارمند دیگر.
+-- `tests/audit-fixes/fix-s75-shift-atomic.mjs`: ارسال رمز و دلیل در سناریوی rollback.
+-- `tests/audit-fixes/fix-s78-open-session-gate.mjs`: تست قبل/بعد گیت تعویض اجباری.
+-- `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md`: ثبت وضعیت و خروجی واقعی.
+-
+-تست‌های اجراشده در نشست ۷۸:
+-- `fix-s78-open-session-gate.mjs` ⇒ **۸ موفق · ۰ ناموفق**.
+-- `fix-s75-shift-atomic.mjs` ⇒ **۷ موفق · ۰ ناموفق**.
+-- `fix-s77-cash-close-repeat.mjs` ⇒ **۶ موفق · ۰ ناموفق**.
+-- رگرسیون کامل `tests/audit-fixes/*.mjs` ⇒ **۲۵ تست PASS · ۰ تست FAIL**.
+-- `node --check tests/audit-fixes/fix-s78-open-session-gate.mjs` ⇒ OK.
+-
+-⚠️ خوشه A هنوز کامل نیست. race واقعی چندپردازه‌ای بین دو پنجره‌ی Electron، idempotency key مستقل برای `openSession`، crash/قطع برق وسط transaction، cross-check با Prisma واقعی و migration روی داده‌ی تاریخی اجرا نشده‌اند. خوشه C همچنان نیمه‌تمام است و نباید تکه‌تکه ادامه داده شود؛ خوشه‌های D تا M فقط آیتم‌های دارای تست سبز را رفع‌شده بدان.
+-
+-نقطه‌ی دقیق ادامه برای نشست بعد: اول یک تست race هم‌زمان برای `CashboxService.close` روی دو caller بنویس و اگر لایه‌ی دیتابیس اجازه داد قفل/claim اتمیک یا idempotency key را پیاده کن؛ سپس همین سناریو را برای `openSession` بررسی کن. بعد از آن، فقط با یک تست یکپارچه به خوشه C برگرد: `remainingOf`، پل تطبیق، برگشت/تعویض تاریخی، بازپرداخت، اعتبار و دوره‌ی بسته باید با هم cross-check شوند. هر ادعای اجرا نشده را صریحاً با «اجرا نشد، دلیل: ...» ثبت کن.
+-
+-۱۰-۶) به‌روزرسانی نشست ۷۹
+-گام ۰ در این نشست نیز کامل نشد: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه با `command not found` اجرا نشدند؛ `node --version` برابر `v22.23.1` بود. تست‌ها با SQLite داخلی هارنس اجرا شدند و جای Prisma/TypeScript/Electron واقعی را نمی‌گیرند.
+-
+-در خوشه A / بند ۴-۴۷، بررسی وجود `CashSession` که قبل از transaction انجام می‌شد کافی نبود؛ دو caller هم‌زمان می‌توانستند هر دو «بدون سابقه» ببینند. اکنون همان predicate داخل transaction و بلافاصله پیش از ساخت snapshot دوباره اجرا می‌شود. بررسی بیرونی فقط برای هشدار سریع UI باقی مانده است. اجرای دومِ صریحاً تأییدشده با `allowRepeatClose=true` همچنان snapshot مستقل می‌سازد، اما `OPENING_FLOAT` و `expectedCash` را دوباره اعمال نمی‌کند.
+-
+-فایل‌های تغییرکرده در نشست ۷۹:
+-- `src/main/services/CashboxService.ts`: تعریف مشترک `priorCloseWhere` و گیت دوباره‌خوانی داخل transaction قبل از `CashSession.create`.
+-- `tests/audit-fixes/fix-s79-cash-close-race.mjs`: تست ساختاری و SQLite واقعی برای دو caller، یک snapshot و عدم دوباره‌اعمال `expectedCash`.
+-- `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md`: ثبت تصمیم، وضعیت و خروجی واقعی.
+-
+-تست‌های اجراشده در نشست ۷۹:
+-- `node --check tests/audit-fixes/fix-s79-cash-close-race.mjs` ⇒ OK.
+-- `node tests/audit-fixes/fix-s79-cash-close-race.mjs` ⇒ **۷ موفق · ۰ ناموفق**.
+-- `fix-s77-cash-close-repeat.mjs` ⇒ **۶ موفق · ۰ ناموفق**.
+-- `fix-s75-shift-atomic.mjs` ⇒ **۷ موفق · ۰ ناموفق**.
+-- `fix-s78-open-session-gate.mjs` ⇒ **۸ موفق · ۰ ناموفق**.
+-- رگرسیون کامل `tests/audit-fixes/*.mjs` ⇒ **۲۵ تست PASS · ۰ تست FAIL**.
+-
+-⚠️ خوشه A هنوز کامل نیست. تست نشست ۷۹ race transaction را روی SQLite داخلی هارنس شبیه‌سازی می‌کند، اما race واقعی دو پردازه‌ی Electron/Prisma، idempotency key مستقل برای `openSession`، crash/قطع برق، Prisma واقعی، migration داده‌ی تاریخی و render واقعی UI هنوز اجرا نشده‌اند. خوشه C همچنان نیمه‌تمام است و نباید تکه‌تکه ادامه داده شود.
+-
+-نقطه‌ی دقیق ادامه برای نشست بعد: ابتدا گام ۰ را دوباره اجرا کن. سپس روی Prisma واقعی، اگر ابزار موجود شد، همین گیت را با دو اتصال/دو پردازه‌ی مستقل و rollback وسط transaction اثبات کن. بعد سناریوی هم‌زمانی `openSession` را بررسی کن و فقط در صورت داشتن قرارداد امن، idempotency key مستقل اضافه کن. پس از بسته‌شدن A، با یک تست یکپارچه به خوشه C برگرد: `remainingOf`، پل تطبیق، برگشت/تعویض تاریخی، بازپرداخت، اعتبار و دوره‌ی بسته باید با هم cross-check شوند. هر ادعای اجرا نشده را با «اجرا نشد، دلیل: ...» ثبت کن.
+-
+-۱۰-۷) به‌روزرسانی نشست ۸۰
+-گام ۰ در این نشست نیز کامل نشد: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه با `command not found` اجرا نشدند؛ `node --version` برابر `v22.23.1` بود و esbuild CLI نیز در محیط در دسترس نبود. تست‌ها با SQLite داخلی هارنس اجرا شدند و جای Prisma/TypeScript/Electron واقعی را نمی‌گیرند.
+-
+-در خوشه A، شکاف idempotency درخواست `openSession` بسته شد. پیش از رفع، retry یک درخواست پس از timeout نشست باز قبلی را می‌بست و نشست دوم می‌ساخت؛ بنابراین همان عملیات کاربر می‌توانست یک تحویل صندوق اضافه و قابل‌گزارش‌گریز بسازد. اکنون `Shift` ستون nullable یکتای `openIdempotencyKey` و ستون `openIdempotencyFingerprint` دارد؛ migration افزایشی `20271002100000_shift_open_idempotency` unique index را می‌سازد.
+-
+-`ShiftService.openSession` پیش از transaction، key موجود را با fingerprint مقایسه می‌کند و در صورت تطابق همان نشست را برمی‌گرداند. اگر دو caller هم‌زمان هر دو pre-check را رد کنند، unique index خطای دوم را می‌گیرد؛ فقط `P2002` با fingerprint برابر به replay امن تبدیل می‌شود. reuse همان key با پارامتر متفاوت با پیام فارسی رد می‌شود و هیچ نشست تازه‌ای ساخته نمی‌شود. `ShiftSessionModal.tsx` یک key پایدار تا پایان retry تولید می‌کند و آن را در IPC می‌فرستد؛ پس جلوگیری فقط وابسته به دکمه‌ی UI نیست و main/database گیت نهایی‌اند.
+-
+-فایل‌های تغییرکرده در نشست ۸۰:
+-- `prisma/schema.prisma`: افزودن `openIdempotencyKey` یکتا و `openIdempotencyFingerprint` روی `Shift`.
+-- `prisma/migrations/20271002100000_shift_open_idempotency/migration.sql`: migration افزایشی دو ستون و unique index.
+-- `src/main/services/ShiftService.ts`: fingerprint، replay، رد mismatch و handling کنترل‌شده‌ی unique collision.
+-- `src/renderer/src/components/ShiftSessionModal.tsx`: تولید و ارسال کلید پایدار retry.
+-- `tests/audit-fixes/fix-s80-open-session-idempotency.mjs`: تست قبل/بعد، ذخیره‌ی key، replay، mismatch و سیم‌کشی UI.
+-- `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md`: ثبت تصمیم، وضعیت و خروجی واقعی.
+-
+-تست قبل از رفع:
+-- اجرای `fix-s80-open-session-idempotency.mjs` روی snapshot نشست ۷۹ ⇒ **۴ بررسی ناموفق**؛ قرارداد/schema کلید وجود نداشت و اجرای دوم همان درخواست Shift دوم ساخت.
+-
+-تست‌های اجراشده در نشست ۸۰:
+-- `node --check src/main/services/ShiftService.ts` ⇒ OK.
+-- `node --check tests/audit-fixes/fix-s80-open-session-idempotency.mjs` ⇒ OK.
+-- `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s80-open-session-idempotency.mjs` ⇒ **۹ موفق · ۰ ناموفق**.
+-- رگرسیون کامل `tests/audit-fixes/*.mjs` ⇒ **۲۷ تست PASS · ۰ تست FAIL**.
+-- هشدارهای Node درباره‌ی experimental SQLite و module type فقط هشدار بودند.
+-
+-⚠️ خوشه A هنوز کامل نیست. تست دو caller مستقل Electron/Prisma واقعی، Prisma generate/typecheck، crash/قطع برق وسط transaction، migration روی داده‌ی تاریخی و render واقعی UI اجرا نشده‌اند. تست نشست ۸۰ replay ترتیبی را با SQLite واقعی هارنس اثبات می‌کند و مسیر unique collision را در کد پیاده می‌کند، اما race چندپردازه‌ای واقعی باید در محیط دارای Prisma/Electron تأیید شود.
+-
+-نقطه‌ی دقیق ادامه برای نشست بعد: ابتدا گام ۰ را دوباره اجرا کن. سپس با Prisma واقعی دو اتصال/دو پردازه‌ی مستقل را برای `CashboxService.close` و `ShiftService.openSession` هم‌زمان اجرا کن و rollback وسط transaction را بررسی کن. اگر آن محیط موجود نبود، تست هارنس را با دو اتصال مستقل کامل‌تر کن، بدون ادعای race واقعی. بعد از بسته‌شدن A، با یک تست یکپارچه به خوشه C برگرد: `remainingOf`، پل تطبیق، برگشت/تعویض تاریخی، بازپرداخت، اعتبار و دوره‌ی بسته باید با هم cross-check شوند. هر ادعای اجرا نشده را با «اجرا نشد، دلیل: ...» ثبت کن.
++۱۰-۳) فایل‌های تغییرکرده در این نشست
++- `tests/audit-fixes/fix-s81-cash-close-two-connections.mjs`: race دو اتصال مستقل برای Cashbox close.
++- `tests/audit-fixes/fix-s82-open-session-two-connections.mjs`: race دو اتصال مستقل و replay برای openSession.
++- `PROGRESS.md`: ثبت نشست‌های ۸۱ و ۸۲ و نقطه‌ی ادامه.
++- `DECISIONS.md`: تصمیم‌های S81 و S82 درباره‌ی سطح معتبر اثبات و رفتار caller دوم.
++- `TESTLOG.md`: ثبت دقیق ابزارهای موجود، تست‌ها و محدودیت اثبات.
++- `HANDOFF-PROMPT-next.txt`: همین پرامپت کامل برای نشست بعد.
++
++۱۰-۴) تست‌های اجراشده
++- `node --check tests/audit-fixes/fix-s81-cash-close-two-connections.mjs` ⇒ OK.
++- `node tests/audit-fixes/fix-s81-cash-close-two-connections.mjs` ⇒ **۷ موفق · ۰ ناموفق**.
++- `node --check tests/audit-fixes/fix-s82-open-session-two-connections.mjs` ⇒ OK.
++- `node tests/audit-fixes/fix-s82-open-session-two-connections.mjs` ⇒ **۷ موفق · ۰ ناموفق**.
++- رگرسیون کامل `tests/audit-fixes/*.mjs` با `node --import ./test/harness/register.mjs` ⇒ **۲۹ تست PASS · ۰ تست FAIL**.
++- هشدارهای Node درباره‌ی experimental SQLite فقط هشدار بودند.
++- پذیرش تاریخی `test/acceptance-db-session36.mjs` ⇒ **۱۳۱ موفق · ۷ ناموفق**؛ هر ۷ شکست مربوط به بدهی قدیمیِ `destination=null` و سبد «نامشخص» است و در این نشست تغییر داده نشد.
++
++۱۰-۵) محدودیت‌های باز
++race واقعی دو پردازه‌ی Electron/Prisma تولیدی، اجرای `npm install`، `prisma generate`، `typecheck` کامل، crash/قطع برق وسط transaction، render واقعی Electron/React، timezone غیر Asia/Tehran، حجم ۵۰٬۰۰۰+ ردیف با Prisma واقعی و migration روی داده‌ی تاریخی واقعی اجرا نشدند؛ دلیل: ابزارهای npm/npx/esbuild و محیط تولیدی در دسترس نبودند. این تست‌ها جای آن اثبات‌ها را نمی‌گیرند.
++
++۱۰-۶) وضعیت خوشه‌ها
++خوشه A از نظر کد و تست هارنس تا این نقطه جلو آمده است: گیت تکرار بستن صندوق، اتمیک بودن close، گیت تعویض اجباری، idempotency بازکردن نشست و حالا race دو اتصال مستقل برای هر دو مسیر. خوشه A را هنوز «کامل و اثبات‌شده در Prisma/Electron واقعی» اعلام نکن. خوشه C همچنان نباید تکه‌تکه ادامه داده شود؛ موارد `remainingOf`، پل تطبیق، سندهای برگشت/تعویض تاریخی، بازپرداخت، اعتبار و دوره‌ی بسته باید با یک تست یکپارچه cross-check شوند.
++
++۱۰-۷) نقطه‌ی دقیق شروع نشست بعد
++۱) ابتدا گام ۰ را دوباره اجرا کن و نتیجه‌ی هر سه دستور را دقیق ثبت کن.
++۲) اگر Prisma واقعی در دسترس شد، همین دو سناریوی s81 و s82 را با دو Prisma Client/اتصال مستقل و ترجیحاً دو پردازه‌ی واقعی Electron اجرا کن؛ اگر نشد، صریحاً «اجرا نشد، دلیل: ...» بنویس و ادعای race واقعی نکن.
++۳) rollback/crash وسط transaction را روی محیط واقعی بررسی کن؛ بدون آن، اتمیک بودن فقط در SQLite هارنس اثبات‌شده است.
++۴) بعد از بسته‌شدن A، فقط با یک تست یکپارچه به خوشه C برگرد: `remainingOf`، bridge/پل تطبیق، برگشت و تعویض تاریخی، refund، store credit و closed period را هم‌زمان cross-check کن. تغییر تکه‌ای در یک زیرمسیر ممنوع است.
++۵) هر رفع جدید را همراه تست قبل/بعد، ثبت در `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md` انجام بده و در پایان همین بند ۱۰ را برای نشست بعد به‌روز کن.
+diff -ruN '--exclude=mahak-session81-fix.patch' base/mahak/PROGRESS.md mahak/PROGRESS.md
+--- base/mahak/PROGRESS.md	2026-09-23 13:38:11.000000000 +0000
++++ mahak/PROGRESS.md	2026-09-23 13:43:26.443126250 +0000
+@@ -238,3 +238,12 @@
+ - گام صفر همچنان ناقص است: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه با `command not found` اجرا نشدند؛ esbuild CLI نیز در این محیط در دسترس نبود.
+ - فایل‌های src تغییریافته: `src/main/services/ShiftService.ts` و `src/renderer/src/components/ShiftSessionModal.tsx`; schema/migration و تست idempotency نیز اضافه شدند.
+ - ⚠️ race واقعی دو پردازه‌ی Electron/Prisma، Prisma generate/typecheck، crash/قطع برق، migration روی داده‌ی تاریخی و render واقعی UI همچنان اثبات نشده‌اند.
++
++## نشست ۸۱ و ۸۲
++- ✅ خوشه A / بستن صندوق: `tests/audit-fixes/fix-s81-cash-close-two-connections.mjs` دو اتصال مستقل به یک فایل SQLite را هم‌زمان در دو Worker اجرا می‌کند؛ caller دوم پس از آزادشدن قفل، predicate داخل transaction را می‌خواند و بدون تأیید رد می‌شود.
++- ✅ در همین سناریو فقط یک `CashSession`، فقط یک `OPENING_FLOAT` و فقط یک اثر `expectedCash=۱۵۰۰` ثبت شد؛ این تست از تست تک‌اتصالی نشست ۷۹ قوی‌تر است.
++- ✅ خوشه A / بازکردن نشست: `tests/audit-fixes/fix-s82-open-session-two-connections.mjs` تصادم هم‌زمان دو اتصال روی `openIdempotencyKey` را با unique index اجرا می‌کند؛ caller دوم همان fingerprint را replay می‌کند و نشست دوم نمی‌سازد.
++- رگرسیون کامل `tests/audit-fixes/*.mjs` ⇒ **۲۹ تست PASS · ۰ تست FAIL**.
++- گام صفر همچنان ناقص است: `npm install`، `npx prisma generate` و `npm run typecheck` با `command not found` اجرا نشدند؛ `node` برابر `v22.23.1` است.
++- ⚠️ این دو تست race را در سطح دو اتصال مستقل SQLite اثبات می‌کنند، نه با Prisma/Electron تولیدی. race چندپردازه‌ای واقعی Electron، crash/قطع برق، migration روی داده‌ی تاریخی و render واقعی UI هنوز اجرا نشده‌اند.
++- نقطه‌ی دقیق ادامه: بعد از فراهم‌شدن npm/Prisma، همین دو سناریو را با دو client واقعی Prisma اجرا کن؛ سپس با یک تست یکپارچه، `remainingOf`، پل تطبیق، برگشت/تعویض تاریخی، بازپرداخت، اعتبار و دوره‌ی بسته را cross-check کن. تا آن زمان خوشه C را تکه‌تکه نکن.
+diff -ruN '--exclude=mahak-session81-fix.patch' base/mahak/TESTLOG.md mahak/TESTLOG.md
+--- base/mahak/TESTLOG.md	2026-09-23 13:39:14.000000000 +0000
++++ mahak/TESTLOG.md	2026-09-23 13:43:54.039286351 +0000
+@@ -559,3 +559,31 @@
+ 
+ محدودیت اثبات:
+ - اجرای Prisma واقعی، typecheck کامل، دو پردازه‌ی مستقل Electron/Prisma، crash/قطع برق، migration روی دیتابیس تاریخی و render واقعی UI اجرا نشد، دلیل: npm/npx/esbuild و محیط واقعی در دسترس نبود.
++
++## نشست ۸۱ و ۸۲
++گام صفر:
++- `npm install` ⇒ اجرا نشد، دلیل: `npm: command not found`.
++- `npx prisma generate` ⇒ اجرا نشد، دلیل: `npx: command not found`.
++- `npm run typecheck` ⇒ اجرا نشد، دلیل: `npm: command not found`.
++- `node --version` ⇒ `v22.23.1`.
++
++تست race بستن صندوق:
++- `node --check tests/audit-fixes/fix-s81-cash-close-two-connections.mjs` ⇒ OK.
++- `node tests/audit-fixes/fix-s81-cash-close-two-connections.mjs` ⇒ **۷ موفق · ۰ ناموفق**.
++- دو Worker با دو اتصال مستقل به همان فایل SQLite اجرا شدند؛ caller دوم بدون تأیید رد شد، فقط یک snapshot، یک `OPENING_FLOAT` و مجموع `expectedCash=۱۵۰۰` باقی ماند.
++
++تست race بازکردن نشست:
++- `node --check tests/audit-fixes/fix-s82-open-session-two-connections.mjs` ⇒ OK.
++- `node tests/audit-fixes/fix-s82-open-session-two-connections.mjs` ⇒ **۷ موفق · ۰ ناموفق**.
++- تصادم unique روی همان `openIdempotencyKey` به replay همان fingerprint تبدیل شد؛ فقط یک نشست ساخته شد و fingerprint تغییر نکرد.
++
++رگرسیون کامل:
++- حلقه‌ی `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done` ⇒ **۲۹ تست PASS · ۰ تست FAIL**.
++- تست‌های جدید در محیط بدون npm با SQLite واقعی Node اجرا شدند؛ هشدار experimental SQLite فقط هشدار بود.
++
++محدودیت اثبات:
++- این دو تست دو اتصال مستقل SQLite را اثبات می‌کنند، اما جای Prisma/Electron تولیدی را نمی‌گیرند. اجرای واقعی دو پردازه Electron/Prisma، crash/قطع برق، Prisma generate، typecheck، migration داده‌ی تاریخی و render واقعی UI اجرا نشد، دلیل: ابزارهای npm/npx/esbuild و محیط تولیدی در دسترس نبودند.
++
++پذیرش تاریخی:
++- `node --import ./test/harness/register.mjs test/acceptance-db-session36.mjs` ⇒ **۱۳۱ موفق · ۷ ناموفق**.
++- هر ۷ شکست مربوط به مسیر قدیمی `destination=null` و سبد «نامشخص» است؛ این بدهی از نشست‌های قبل باقی مانده و در این نشست تغییر داده نشد.
+diff -ruN '--exclude=mahak-session81-fix.patch' base/mahak/tests/audit-fixes/fix-s81-cash-close-two-connections.mjs mahak/tests/audit-fixes/fix-s81-cash-close-two-connections.mjs
+--- base/mahak/tests/audit-fixes/fix-s81-cash-close-two-connections.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-s81-cash-close-two-connections.mjs	2026-09-23 13:42:26.650779337 +0000
+@@ -0,0 +1,147 @@
++/**
++ * نشست ۸۱ · خوشه A · race واقعیِ دو اتصال برای بستن صندوق
++ *
++ * این تست دو اتصال مستقل به یک فایل SQLite را در دو Worker باز می‌کند.
++ * اتصال اول transaction را نگه می‌دارد؛ اتصال دوم فقط بعد از آزادشدن قفل
++ * transaction را می‌گیرد و predicate داخل transaction را دوباره می‌خواند.
++ * نتیجه باید دقیقاً یک snapshot و یک OPENING_FLOAT باشد.
++ *
++ * محدودیت صریح: این تست لایه‌ی SQLite/transaction را با دو اتصال مستقل اثبات
++ * می‌کند، اما اجرای Electron/Prisma تولیدی در این محیط انجام نمی‌شود.
++ */
++import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++import { DatabaseSync } from 'node:sqlite'
++
++const source = readFileSync(resolve('src/main/services/CashboxService.ts'), 'utf8')
++
++if (!isMainThread) {
++  const db = new DatabaseSync(workerData.file)
++  db.exec('PRAGMA busy_timeout = 2000')
++  const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
++  const control = new Int32Array(workerData.control)
++
++  if (workerData.role === 'first') {
++    db.exec('BEGIN IMMEDIATE')
++    const prior = db.prepare('SELECT id FROM CashSession WHERE shiftId = ? LIMIT 1').get(workerData.shiftId)
++    if (prior) {
++      db.exec('ROLLBACK')
++      parentPort.postMessage({ type: 'failed', message: 'caller اول پیش از درج snapshot سابقه دید' })
++      process.exit(1)
++    }
++    parentPort.postMessage({ type: 'locked' })
++    while (Atomics.load(control, 0) === 0) await sleep(1)
++    db.prepare('INSERT INTO CashMovement (shiftId, type, amount) VALUES (?, ?, ?)').run(workerData.shiftId, 'OPENING_FLOAT', 500)
++    db.prepare('INSERT INTO CashSession (shiftId, expectedCash) VALUES (?, ?)').run(workerData.shiftId, 1500)
++    db.exec('COMMIT')
++    parentPort.postMessage({ type: 'committed' })
++  } else {
++    // شروع caller دوم عمداً هم‌زمان با transaction اول است؛ BEGIN IMMEDIATE
++    // تا زمان commit اول منتظر می‌ماند، سپس predicate محصول را اجرا می‌کند.
++    db.exec('BEGIN IMMEDIATE')
++    const prior = db.prepare('SELECT id FROM CashSession WHERE shiftId = ? LIMIT 1').get(workerData.shiftId)
++    if (prior) {
++      db.exec('ROLLBACK')
++      parentPort.postMessage({ type: 'rejected', message: 'این نشست هم‌زمان توسط درخواست دیگری بسته شد' })
++    } else {
++      db.prepare('INSERT INTO CashSession (shiftId, expectedCash) VALUES (?, ?)').run(workerData.shiftId, 1500)
++      db.exec('COMMIT')
++      parentPort.postMessage({ type: 'unexpected-commit' })
++    }
++  }
++  process.exit(0)
++}
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (got === want) {
++    ok++
++    console.log(`  ✓ ${label}`)
++  } else {
++    bad++
++    console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)} · انتظار ${JSON.stringify(want)}`)
++  }
++}
++
++eq('گیت دوم داخل transaction قبل از ساخت snapshot است', source.indexOf('concurrentPrior') < source.indexOf('tx.cashSession.create'), true)
++eq('بستن دوباره بدون تأیید همچنان رد می‌شود', /if \(!input\.allowRepeatClose\)/.test(source), true)
++
++const dir = mkdtempSync(join(tmpdir(), 'mahak-fix-s81-cash-close-two-connections-'))
++const file = join(dir, 'race.db')
++const db = new DatabaseSync(file)
++db.exec(`
++  CREATE TABLE CashSession (
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    shiftId INTEGER NOT NULL,
++    expectedCash INTEGER NOT NULL
++  );
++  CREATE TABLE CashMovement (
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    shiftId INTEGER NOT NULL,
++    type TEXT NOT NULL,
++    amount INTEGER NOT NULL
++  );
++`)
++
++const control = new SharedArrayBuffer(4)
++const first = new Worker(new URL(import.meta.url), {
++  workerData: { file, role: 'first', shiftId: 81, control }
++})
++const firstMessages = []
++first.on('message', (message) => firstMessages.push(message))
++
++await new Promise((resolveReady, rejectReady) => {
++  const timer = setTimeout(() => rejectReady(new Error('caller اول transaction را شروع نکرد')), 3000)
++  first.on('message', (message) => {
++    if (message.type === 'locked') {
++      clearTimeout(timer)
++      resolveReady()
++    }
++    if (message.type === 'failed') {
++      clearTimeout(timer)
++      rejectReady(new Error(message.message))
++    }
++  })
++  first.on('error', rejectReady)
++})
++
++const second = new Worker(new URL(import.meta.url), {
++  workerData: { file, role: 'second', shiftId: 81, control }
++})
++// caller دوم در حال رقابت برای همان قفل است؛ حالا caller اول commit می‌کند.
++await new Promise((resolveDelay) => setTimeout(resolveDelay, 100))
++Atomics.store(new Int32Array(control), 0, 1)
++Atomics.notify(new Int32Array(control), 0)
++await new Promise((resolveDone, rejectDone) => {
++  const timer = setTimeout(() => rejectDone(new Error('caller اول commit نکرد')), 3000)
++  first.on('message', (message) => {
++    if (message.type === 'committed') {
++      clearTimeout(timer)
++      resolveDone()
++    }
++  })
++  first.on('error', rejectDone)
++})
++const secondResult = await new Promise((resolveSecond, rejectSecond) => {
++  const timer = setTimeout(() => rejectSecond(new Error('caller دوم در زمان مقرر تمام نشد')), 5000)
++  second.on('message', (message) => {
++    if (message.type === 'rejected' || message.type === 'unexpected-commit') {
++      clearTimeout(timer)
++      resolveSecond(message)
++    }
++  })
++  second.on('error', rejectSecond)
++})
++await Promise.all([first.terminate(), second.terminate()])
++
++eq('caller دوم بدون تأیید رد شد', secondResult.type, 'rejected')
++eq('دو اتصال مستقل فقط یک snapshot ساختند', db.prepare('SELECT COUNT(*) AS n FROM CashSession WHERE shiftId = ?').get(81).n, 1)
++eq('OPENING_FLOAT فقط یک بار ثبت شد', db.prepare('SELECT COUNT(*) AS n FROM CashMovement WHERE shiftId = ? AND type = ?').get(81, 'OPENING_FLOAT').n, 1)
++eq('expectedCash دوباره اعمال نشد', db.prepare('SELECT COALESCE(SUM(expectedCash), 0) AS n FROM CashSession WHERE shiftId = ?').get(81).n, 1500)
++eq('caller اول واقعاً commit کرد', firstMessages.some((message) => message.type === 'committed'), true)
++
++console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
++process.exitCode = bad ? 1 : 0
+diff -ruN '--exclude=mahak-session81-fix.patch' base/mahak/tests/audit-fixes/fix-s82-open-session-two-connections.mjs mahak/tests/audit-fixes/fix-s82-open-session-two-connections.mjs
+--- base/mahak/tests/audit-fixes/fix-s82-open-session-two-connections.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-s82-open-session-two-connections.mjs	2026-09-23 13:42:41.382864822 +0000
+@@ -0,0 +1,137 @@
++/**
++ * نشست ۸۲ · خوشه A · race واقعیِ دو اتصال برای openSession
++ *
++ * دو caller مستقل یک کلید idempotency یکسان را هم‌زمان مصرف می‌کنند.
++ * unique index فقط اجازه‌ی یک نشست را می‌دهد؛ caller دوم پس از تصادم،
++ * رکورد اول را به‌عنوان replay امن برمی‌گرداند.
++ */
++import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++import { DatabaseSync } from 'node:sqlite'
++
++const source = readFileSync(resolve('src/main/services/ShiftService.ts'), 'utf8')
++
++if (!isMainThread) {
++  const db = new DatabaseSync(workerData.file)
++  db.exec('PRAGMA busy_timeout = 2000')
++  const control = new Int32Array(workerData.control)
++  const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
++
++  if (workerData.role === 'first') {
++    db.exec('BEGIN IMMEDIATE')
++    const prior = db.prepare('SELECT id FROM Shift WHERE openIdempotencyKey = ?').get(workerData.key)
++    if (prior) throw new Error('کلید از قبل مصرف شده بود')
++    parentPort.postMessage({ type: 'locked' })
++    while (Atomics.load(control, 0) === 0) await sleep(1)
++    db.prepare('INSERT INTO Shift (openIdempotencyKey, openIdempotencyFingerprint) VALUES (?, ?)')
++      .run(workerData.key, workerData.fingerprint)
++    db.exec('COMMIT')
++    parentPort.postMessage({ type: 'created' })
++  } else {
++    db.exec('BEGIN IMMEDIATE')
++    try {
++      db.prepare('INSERT INTO Shift (openIdempotencyKey, openIdempotencyFingerprint) VALUES (?, ?)')
++        .run(workerData.key, workerData.fingerprint)
++      db.exec('COMMIT')
++      parentPort.postMessage({ type: 'unexpected-create' })
++    } catch (error) {
++      db.exec('ROLLBACK')
++      const persisted = db.prepare('SELECT id, openIdempotencyFingerprint FROM Shift WHERE openIdempotencyKey = ?')
++        .get(workerData.key)
++      parentPort.postMessage({
++        type: persisted?.openIdempotencyFingerprint === workerData.fingerprint ? 'replay' : 'mismatch',
++        id: persisted?.id ?? null
++      })
++    }
++  }
++  process.exit(0)
++}
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (got === want) {
++    ok++
++    console.log(`  ✓ ${label}`)
++  } else {
++    bad++
++    console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)} · انتظار ${JSON.stringify(want)}`)
++  }
++}
++
++eq('openSession کلید idempotency را می‌گیرد', /idempotencyKey/.test(source), true)
++eq('تصادم یکتا به replay همان fingerprint تبدیل می‌شود', /error\?\.code === 'P2002'[\s\S]{0,700}openIdempotencyFingerprint/.test(source), true)
++eq('fingerprint متفاوت بی‌صدا بلعیده نمی‌شود', /کلید برای درخواست متفاوت/.test(source), true)
++
++const dir = mkdtempSync(join(tmpdir(), 'mahak-fix-s82-open-session-two-connections-'))
++const file = join(dir, 'race.db')
++const db = new DatabaseSync(file)
++db.exec(`
++  CREATE TABLE Shift (
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    openIdempotencyKey TEXT UNIQUE,
++    openIdempotencyFingerprint TEXT
++  );
++`)
++
++const key = 's82-open-race-0001'
++const fingerprint = 'staff=81|name=صبح|handover=0'
++const control = new SharedArrayBuffer(4)
++const first = new Worker(new URL(import.meta.url), {
++  workerData: { file, role: 'first', key, fingerprint, control }
++})
++let firstCreated = false
++const ready = new Promise((resolveReady, rejectReady) => {
++  const timer = setTimeout(() => rejectReady(new Error('caller اول قفل را نگرفت')), 3000)
++  first.on('message', (message) => {
++    if (message.type === 'locked') {
++      clearTimeout(timer)
++      resolveReady()
++    }
++    if (message.type === 'created') firstCreated = true
++  })
++  first.on('error', rejectReady)
++})
++await ready
++
++const second = new Worker(new URL(import.meta.url), {
++  workerData: { file, role: 'second', key, fingerprint, control }
++})
++await new Promise((resolveDelay) => setTimeout(resolveDelay, 100))
++Atomics.store(new Int32Array(control), 0, 1)
++Atomics.notify(new Int32Array(control), 0)
++
++const [secondResult] = await Promise.all([
++  new Promise((resolveSecond, rejectSecond) => {
++    const timer = setTimeout(() => rejectSecond(new Error('caller دوم replay نکرد')), 5000)
++    second.on('message', (message) => {
++      if (message.type === 'replay' || message.type === 'unexpected-create' || message.type === 'mismatch') {
++        clearTimeout(timer)
++        resolveSecond(message)
++      }
++    })
++    second.on('error', rejectSecond)
++  }),
++  new Promise((resolveFirst, rejectFirst) => {
++    const timer = setTimeout(() => rejectFirst(new Error('caller اول commit نکرد')), 3000)
++    first.on('message', (message) => {
++      if (message.type === 'created') {
++        clearTimeout(timer)
++        firstCreated = true
++        resolveFirst(message)
++      }
++    })
++    first.on('error', rejectFirst)
++  })
++])
++await Promise.all([first.terminate(), second.terminate()])
++
++eq('caller اول نشست را ساخت', firstCreated, true)
++eq('caller دوم همان نشست را replay کرد', secondResult.type, 'replay')
++eq('دو اتصال مستقل فقط یک نشست ساختند', db.prepare('SELECT COUNT(*) AS n FROM Shift').get().n, 1)
++eq('کلید و fingerprint همان درخواست ماند', db.prepare('SELECT openIdempotencyFingerprint FROM Shift WHERE openIdempotencyKey = ?').get(key).openIdempotencyFingerprint, fingerprint)
++
++console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
++process.exitCode = bad ? 1 : 0

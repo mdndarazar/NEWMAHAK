@@ -1,0 +1,66 @@
+# نشست ۱۵۲ — S151-a تست قبل روی src دست‌نخورده‌ی zip ۱۵۱
+  ✓ IPC.creditSuspend با userId جعلی
+  ✗ actor در Audit CREDIT_SUSPEND — انتظار 1، دریافت 2
+  ✓ IPC.creditReactivate با userId جعلی
+  ✗ actor در Audit CREDIT_REACTIVATE — انتظار 1، دریافت 2
+  ✓ IPC.creditExpiryChange با userId جعلی
+  ✗ actor در Audit CREDIT_EXPIRY_CHANGE — انتظار 1، دریافت 2
+  ✓ IPC.creditAmountChange با userId جعلی
+  ✗ actor در Audit CREDIT_AMOUNT_CHANGE — انتظار 1، دریافت 2
+  ✓ IPC.creditUsesChange با userId جعلی
+  ✗ actor در Audit CREDIT_USES_CHANGE — انتظار 1، دریافت 2
+  ✓ IPC.creditHolderChange با userId جعلی
+  ✗ actor در Audit CREDIT_HOLDER_CHANGE — انتظار 1، دریافت 2
+  ✓ IPC.creditRestrictionChange با userId جعلی
+  ✗ actor در Audit CREDIT_RESTRICTION_CHANGE — انتظار 1، دریافت 2
+  ✓ IPC.creditVoid با userId جعلی
+  ✗ actor در Audit CREDIT_VOID — انتظار 1، دریافت 2
+  ✓ IPC.creditDelete (بی‌مصرف) با userId جعلی
+  ✗ actor در Audit CREDIT_DELETE — انتظار 1، دریافت 2
+  ✓ IPC.creditDelete (مصرف‌شده ⇒ آرشیو) با userId جعلی
+  ✗ actor در Audit CREDIT_ARCHIVE — انتظار 1، دریافت 2
+  ✓ IPC.creditMarkPrinted با userId جعلی
+  ✗ actor در Audit CREDIT_PRINT — انتظار 1، دریافت 2
+  ✓ IPC.creditReminderQueue با userId جعلی
+  ✗ actor در Audit CREDIT_REMINDER_QUEUE — انتظار 1، دریافت 2
+  ✗ actor در Audit CREDIT_REDEEM_BLOCKED (lookup کد غلط) — انتظار 1، دریافت 2
+  ✓ creditPreview کد غلط ردیف CREDIT_REDEEM_BLOCKED تازه نوشت
+  ✗ actor در Audit CREDIT_REDEEM_BLOCKED (preview کد غلط) — انتظار 1، دریافت 2
+  · printCredit در هارنس اجرا نشد (انجام این عملیات ممکن نشد و چیزی ذخیره نشد. یک بار دیگر تلاش کنید؛ اگر تکرار شد،) ⇒ فقط چک ساختاری پایین
+  ✓ IPC.customerCreate (ثبت تازه) با userId جعلی
+  ✗ actor در Audit CUSTOMER_CREATE (ثبت تازه) — انتظار 1، دریافت null
+  ✓ IPC.customerCreate (ارتقای هم‌شماره به عمده) با userId جعلی
+  ✓ Audit ارتقا ثبت شد = 2
+  ✗ actor در Audit CUSTOMER_CREATE (ارتقای هم‌شماره) — انتظار 1، دریافت null
+  ✓ IPC.customerUpdate با userId جعلی
+  ✗ actor در Audit SETTINGS_UPDATE (Customer) — انتظار 1، دریافت 2
+  ✓ IPC.customerDelete با userId جعلی
+  ✗ actor در Audit DELETE (Customer) — انتظار 1، دریافت 2
+  ✓ IPC.creditSuspend بدون نشست با userId جعلی
+  ✗ userId در Audit CREDIT_SUSPEND بدون نشست — انتظار null، دریافت 2
+  ✓ IPC.creditMarkPrinted بدون نشست با userId جعلی
+  ✗ userId در Audit چاپ بدون نشست — انتظار null، دریافت 2
+  ✓ IPC.customerCreate بدون نشست با userId جعلی
+  ✓ userId در Audit CUSTOMER_CREATE بدون نشست = null
+  ✓ IPC.customerUpdate بدون نشست با userId جعلی
+  ✗ userId در Audit SETTINGS_UPDATE (Customer) بدون نشست — انتظار null، دریافت 2
+  ✗ IPC.storeCreditLookup ⇒ withOptionalSessionActor
+  ✗ IPC.creditPreview ⇒ withOptionalSessionActor
+  ✗ IPC.creditVoid ⇒ withOptionalSessionActor
+  ✗ IPC.creditSuspend ⇒ withOptionalSessionActor
+  ✗ IPC.creditReactivate ⇒ withOptionalSessionActor
+  ✗ IPC.creditExpiryChange ⇒ withOptionalSessionActor
+  ✗ IPC.creditAmountChange ⇒ withOptionalSessionActor
+  ✗ IPC.creditUsesChange ⇒ withOptionalSessionActor
+  ✗ IPC.creditHolderChange ⇒ withOptionalSessionActor
+  ✗ IPC.creditRestrictionChange ⇒ withOptionalSessionActor
+  ✗ IPC.creditDelete ⇒ withOptionalSessionActor
+  ✗ IPC.creditMarkPrinted ⇒ withOptionalSessionActor
+  ✗ IPC.creditReminderQueue ⇒ withOptionalSessionActor
+  ✗ IPC.printCredit ⇒ withOptionalSessionActor
+  ✗ IPC.printCreditBatch ⇒ withOptionalSessionActor
+  ✗ IPC.creditPdf ⇒ withOptionalSessionActor
+  ✗ IPC.customerCreate ⇒ withOptionalSessionActor
+  ✗ IPC.customerUpdate ⇒ withOptionalSessionActor
+  ✗ IPC.customerDelete ⇒ withOptionalSessionActor
+نتیجه: 23 موفق · 40 ناموفق

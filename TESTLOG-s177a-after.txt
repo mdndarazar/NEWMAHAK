@@ -1,0 +1,45 @@
+(node:9771) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:9771) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/ProductService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) حذف نرم ۶۲۰ کالا (+ شناسه‌ی تکراری) به سطل آشغال
+  ✓ تعداد حذف‌شده = 620
+  ✓ ۶۲۰ کالا غیرفعال با تاریخ حذف = 620
+  ✓ کالای کنترل دست‌نخورده = 1
+  ✓ Audit حذف: وضعیت قبلی هر ۶۲۰ کالا = 620
+  ✓ هیچ in بالای ۵۰۰ نبود (remove) = true
+
+۲) بازگردانی ۶۲۰ کالا از سطل آشغال
+  ✓ تعداد بازگردانی‌شده = 620
+  ✓ هیچ کالای غیرفعالی نماند = 0
+  ✓ Audit بازگردانی: یادداشت با شمار ۶۲۰ = true
+  ✓ Audit بازگردانی: ۶۲۰ ردیف قبلی = 620
+  ✓ هیچ in بالای ۵۰۰ نبود (restore) = true
+
+۳) حذف همیشگی: پیش‌نمایش ۶۲۰ کالای قدیمی سطل آشغال
+  ✓ پیش‌نمایش: ۶۲۰ ردیف = 620
+  ✓ پیش‌نمایش: بدون سابقه/حرکت = [0,0]
+  ✓ هیچ in بالای ۵۰۰ نبود (preview) = true
+
+۴) حذف همیشگی رد می‌شود اگر یکی از کالاهای دسته‌ی دوم حرکت انبار داشته باشد (همه یا هیچ)
+  ✓ رد با پیام حرکت انبار = true
+  ✓ هیچ کالایی پاک نشد = 621
+  ✓ هیچ in بالای ۵۰۰ نبود (purge رد) = true
+
+۵) حذف همیشگی ۶۲۰ کالا
+  ✓ deleted = 620
+  ✓ کالاهای ۶۲۰تایی پاک شدند؛ کنترل ماند = 1
+  ✓ محصول پایه‌ی بی‌واریانت هم رفت، محصول کنترل ماند = [0,1]
+  ✓ هیچ in بالای ۵۰۰ نبود (purge) = true
+
+۶) حذف ۶۲۰ ردیف انبار مرکزی
+  ✓ تعداد حذف‌شده = 620
+  ✓ فقط ردیف کنترل ماند = ["C177-CTL"]
+  ✓ Audit انبار مرکزی: ۶۲۰ ردیف قبلی = 620
+  ✓ دفتر انبار مرکزی: ۶۲۰ ردیف حذف = 620
+  ✓ هیچ in بالای ۵۰۰ نبود (secondary remove) = true
+
+نتیجه: 25 موفق · 0 ناموفق

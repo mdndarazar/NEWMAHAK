@@ -1,0 +1,309 @@
+diff -ruN base/tests/audit-fixes/fix-s173-credit-print-voided-banner.mjs s/mahak/tests/audit-fixes/fix-s173-credit-print-voided-banner.mjs
+--- base/tests/audit-fixes/fix-s173-credit-print-voided-banner.mjs	1970-01-01 00:00:00.000000000 +0000
++++ s/mahak/tests/audit-fixes/fix-s173-credit-print-voided-banner.mjs	2026-09-27 13:50:03.775367272 +0000
+@@ -0,0 +1,71 @@
++/**
++ * ===========================================================================
++ * نشست ۱۷۳ · مشاهده‌ی باز ۱۰۶/۱۰۷ (AUDIT-PROGRESS) — چاپ دسته‌ای/تکی اعتبار باطل‌شده
++ *
++ * چاپ دسته‌ای همه‌ی اعتبارهای دسته را، از جمله باطل‌شده‌ها، چاپ می‌کند. بازخرید اعتبار باطل در
++ * main رد می‌شود، ولی روی کاغذ سند باطل دقیقاً مثل سند معتبر بود: مبلغ درشت، کد، بارکد و فقط یک
++ * ردیف کم‌رنگ «وضعیت: باطل شد». برگه‌ی چاپی که شبیه پول است ولی ارزشی ندارد ابزار فریب مشتری است.
++ * انتظار (S173-D5): سند باطل‌شده بالای برگه نوار صریح «باطل شده — غیرقابل استفاده» بگیرد (در چاپ
++ * دسته‌ای، تکی و PDF — همه از همان creditDocBody)، سند معتبر هیچ نواری نگیرد، و اعتبار باطل همچنان
++ * در دسته چاپ و شمرده شود (سابقه‌ی چاپ حذف نمی‌شود).
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s173-credit-print-voided-banner.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++process.env.HARNESS_DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s173c-'))
++process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { printService } = await import('../../src/main/services/PrintService.ts')
++const { creditBatchHtml, creditDocHtml } = await import('../../src/main/print/templates.ts')
++
++const prisma = harnessClient()
++const seed = makeSeeder(prisma)
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)?.slice(0, 200)}`) }
++}
++const BANNER = 'باطل شده — غیرقابل استفاده'
++const now = Date.now()
++const mk = (code, status, extra = {}) => seed.insert('StoreCredit', {
++  code, amount: 500_000, usedAmount: 0, status, source: 'MANUAL', issuedAt: now, issuedAtJalali: '1405/03/12', issuedAtTime: '10:00',
++  maxUses: 1, usedCount: 0, ...extra
++})
++const active = mk('S173-OK', 'ACTIVE')
++const voided = mk('S173-VOID', 'CANCELED', { voidedAt: now, voidedReason: 'برگشت باطل شد' })
++
++console.log('\n۱) چاپ دسته‌ای (مسیر واقعی سرویس) با یک اعتبار معتبر و یک باطل')
++let r
++try { r = await printService.creditBatchRender({ ids: [active, voided], perPage: 4 }) } catch (e) { r = { error: String(e?.message ?? e) } }
++eq('رندر بی‌خطا', r?.error ?? null, null)
++const html = String(r?.html ?? '')
++const docs = html.split('<div class="doc">').slice(1)
++eq('هر دو سند چاپ شدند (باطل حذف نمی‌شود)', docs.length, 2)
++eq('شناسه‌های چاپ‌شده هر دو', (r?.ids ?? []).slice().sort((a, b) => a - b), [active, voided].sort((a, b) => a - b))
++const okDoc = docs.find((d) => d.includes('S173-OK')) ?? ''
++const voidDoc = docs.find((d) => d.includes('S173-VOID')) ?? ''
++eq('سند باطل نوار «باطل شده — غیرقابل استفاده» دارد', voidDoc.includes(BANNER), true)
++eq('نوار سند باطل قبل از مبلغ آمده (بالای برگه)', voidDoc.indexOf(BANNER) >= 0 && voidDoc.indexOf(BANNER) < voidDoc.indexOf('class="amount"'), true)
++eq('سند معتبر نوار باطل ندارد', okDoc.includes(BANNER), false)
++eq('عبارت «غیرقابل نقد شدن» روی هر دو می‌ماند', [okDoc.includes('غیرقابل نقد شدن'), voidDoc.includes('غیرقابل نقد شدن')], [true, true])
++
++console.log('\n۲) تابع خالص قالب (تکی و دسته‌ای) با voided صریح')
++const base = {
++  code: 'X1', amount: 1000, usedAmount: 0, remaining: 1000, sourceLabel: 'دستی', statusLabel: 'باطل شد', issuedJalali: '1405/01/01',
++  issuedTime: '10:00', expiresJalali: null, usesLabel: 'یک‌بار', maxUses: 1, usedCount: 0, restrictLabel: null, minPurchase: 0,
++  maxPerTransaction: 0, holderName: null, holderCompany: null, holderPhone: null, holderAgent: null, holderAddress: null,
++  holderNationalId: null, barcodeDataUrl: null, rulesText: '', showRules: false, showHolder: false, showRemaining: false,
++  reprint: false, printCount: 1
++}
++eq('تکی باطل ⇒ نوار', creditDocHtml({ ...base, voided: true }).includes(BANNER), true)
++eq('تکی معتبر ⇒ بدون نوار', creditDocHtml({ ...base, statusLabel: 'فعال', voided: false }).includes(BANNER), false)
++eq('دسته‌ای باطل ⇒ نوار', creditBatchHtml([{ ...base, voided: true }]).includes(BANNER), true)
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)
+diff -ruN base/tests/audit-fixes/fix-s173-ledger-prior-credit-count.mjs s/mahak/tests/audit-fixes/fix-s173-ledger-prior-credit-count.mjs
+--- base/tests/audit-fixes/fix-s173-ledger-prior-credit-count.mjs	1970-01-01 00:00:00.000000000 +0000
++++ s/mahak/tests/audit-fixes/fix-s173-ledger-prior-credit-count.mjs	2026-09-27 13:46:52.974260277 +0000
+@@ -0,0 +1,86 @@
++/**
++ * ===========================================================================
++ * نشست ۱۷۳ · مشاهده‌ی باز ۱۰۶/۱۰۷ (AUDIT-PROGRESS) — «وصول نسیه‌ی بازه‌های قبل» در دفتر رویداد
++ *
++ * where بخش ۴ دفتر (priorPaymentWhere) پرداخت‌های روش «اعتبار خرید/اعتبار تعویض» را هم می‌گرفت؛
++ * findMany با take سقف بخش (۴٬۰۰۰) و count هر دو آن‌ها را می‌شمردند و فقط بعداً در JS کنار
++ * گذاشته می‌شدند. اثر: (۱) شمارش و متن هشدار «X وصول نسیه… فقط ۴٬۰۰۰ ردیف اول» دروغ بود؛
++ * (۲) بدتر: وقتی مصرف‌های اعتبار زودتر (paidAt کوچک‌تر) بودند، جای ردیف‌های take را پر می‌کردند و
++ * وصول نقدی واقعی دوره‌ی قبل از دفتر غیب می‌شد، با اینکه تعداد وصول واقعی زیر سقف بود.
++ * انتظار: شمارش = فقط وصول واقعی؛ همه‌ی وصول‌های واقعی دیده شوند؛ هشدار کاذب نباشد؛
++ * وقتی وصول واقعی واقعاً از سقف بگذرد، هشدار با عدد درست بیاید.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s173-ledger-prior-credit-count.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++process.env.HARNESS_DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s173b-'))
++process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { salesLedger } = await import('../../src/main/services/SalesLedger.ts')
++const { jalaliStartOfDay } = await import('../../src/shared/jalali.ts')
++
++const prisma = harnessClient()
++const seed = makeSeeder(prisma)
++const sql = prisma.$harness.db
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)?.slice(0, 200)}`) }
++}
++
++const prev = '1405/03/11'
++const day = '1405/03/12'
++const at = (d, hour) => new Date(jalaliStartOfDay(d).getTime() + hour * 3_600_000)
++const userId = seed.user('صندوقدار ۱۷۳')
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: day, userId })
++const inv = seed.invoice({ grandTotal: 50_000_000 })
++sql.prepare('UPDATE "SaleInvoice" SET issuedAt = ?, issuedAtJalali = ?, userId = ?, shiftId = ? WHERE id = ?')
++  .run(at(prev, 10).getTime(), prev, userId, shiftId, inv.id)
++
++const cashM = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
++const creditM = seed.insert('PaymentMethod', { key: 'STORE_CREDIT', label: 'اعتبار خرید', kind: 'STORE_CREDIT', isActive: 1, sortOrder: 2 })
++const exchM = seed.insert('PaymentMethod', { key: 'EXCHANGE_CREDIT', label: 'اعتبار تعویض', kind: 'EXCHANGE_CREDIT', isActive: 1, sortOrder: 3 })
++const pay = (methodId, amount, hour, destination) => seed.insert('Payment', {
++  invoiceId: inv.id, methodId, amount, kind: 'CASH', destination,
++  paidAt: at(day, hour), paidAtJalali: day, createdByUserId: userId, createdShiftId: shiftId
++})
++
++// ۴٬۰۰۰ مصرف اعتبار (۲٬۰۰۰ خرید + ۲٬۰۰۰ تعویض) صبح زود، سه وصول نقدی واقعی بعدازظهر
++const baseCredit = pay(creditM, 1_000, 8, null)
++const baseExch = pay(exchM, 1_000, 8, null)
++const cols = seed.rows('SELECT * FROM "Payment" WHERE id = ?', baseCredit).map((r) => Object.keys(r))[0].filter((c) => c !== 'id')
++const clone = sql.prepare(`INSERT INTO "Payment" (${cols.map((c) => `"${c}"`).join(',')}) SELECT ${cols.map((c) => `"${c}"`).join(',')} FROM "Payment" WHERE id = ?`)
++for (let i = 0; i < 1999; i++) { clone.run(baseCredit); clone.run(baseExch) }
++const real = [pay(cashM, 100_000, 15, 'CASH'), pay(cashM, 200_000, 16, 'CASH'), pay(cashM, 300_000, 17, 'CASH')]
++eq('داده: ۴٬۰۰۳ پرداخت روی فاکتور دوره‌ی قبل', seed.rows('SELECT COUNT(*) c FROM "Payment"')[0].c, 4003)
++
++console.log('\n۱) وصول واقعی زیر سقف، مصرف اعتبار بالای سقف')
++const r1 = await salesLedger.ledger({ fromJalali: day, toJalali: day })
++const prior1 = r1.rows.filter((r) => r.eventType === 'CREDIT_SETTLEMENT')
++eq('هر سه وصول نقدی واقعی دیده می‌شوند', prior1.map((r) => r.sourceId).sort((a, b) => a - b), real)
++eq('جمع وصول = ۶۰۰٬۰۰۰', prior1.reduce((a, r) => a + r.amount, 0), 600_000)
++eq('اثر نقدی کشو = ۶۰۰٬۰۰۰', prior1.reduce((a, r) => a + r.cashEffect, 0), 600_000)
++eq('هیچ مصرف اعتباری ردیف وصول نشد', prior1.some((r) => r.note.includes('اعتبار')), false)
++eq('totalCount صفحه‌ی وصول = ۳', r1.sections?.priorSettlements?.totalCount ?? null, 3)
++eq('truncated = false', r1.sections?.priorSettlements?.truncated ?? null, false)
++eq('هشدار کاذب «وصول نسیه… فقط ۴٬۰۰۰» نیست', (r1.warnings ?? []).some((w) => w.includes('وصول نسیه‌ی بازه‌های قبل پیدا شد')), false)
++
++console.log('\n۲) وصول واقعی واقعاً بالای سقف ⇒ هشدار با عدد درست')
++const cashCols = seed.rows('SELECT * FROM "Payment" WHERE id = ?', real[0]).map((r) => Object.keys(r))[0].filter((c) => c !== 'id')
++const cloneCash = sql.prepare(`INSERT INTO "Payment" (${cashCols.map((c) => `"${c}"`).join(',')}) SELECT ${cashCols.map((c) => `"${c}"`).join(',')} FROM "Payment" WHERE id = ?`)
++for (let i = 0; i < 3998; i++) cloneCash.run(real[0])
++const r2 = await salesLedger.ledger({ fromJalali: day, toJalali: day })
++const prior2 = r2.rows.filter((r) => r.eventType === 'CREDIT_SETTLEMENT')
++eq('totalCount = ۴٬۰۰۱ (فقط وصول واقعی)', r2.sections?.priorSettlements?.totalCount ?? null, 4001)
++eq('ردیف‌های نمایش‌داده = ۴٬۰۰۰ (سقف بخش، همه واقعی)', prior2.length, 4000)
++eq('truncated = true', r2.sections?.priorSettlements?.truncated ?? null, true)
++eq('هشدار با عدد درست ۴٬۰۰۱', (r2.warnings ?? []).some((w) => w.includes('۴۰۰۱ وصول نسیه‌ی بازه‌های قبل') || w.includes('۴٬۰۰۱ وصول نسیه‌ی بازه‌های قبل')), true)
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)
+diff -ruN base/tests/audit-fixes/fix-s173-payment-drill-in-chunk.mjs s/mahak/tests/audit-fixes/fix-s173-payment-drill-in-chunk.mjs
+--- base/tests/audit-fixes/fix-s173-payment-drill-in-chunk.mjs	1970-01-01 00:00:00.000000000 +0000
++++ s/mahak/tests/audit-fixes/fix-s173-payment-drill-in-chunk.mjs	2026-09-27 13:42:59.584906235 +0000
+@@ -0,0 +1,140 @@
++/**
++ * ===========================================================================
++ * نشست ۱۷۳ · خوشه D · ادامه‌ی الگوی S172-D3 — drill-down ردیف‌های پرداختیِ پل تطبیق
++ *
++ * paymentDrill (ردیف‌های realCash / managerAccountReceived / destinationUnknownReceived /
++ * prior* / overpayReceived) کل مجموعه‌ی سبک را درست می‌شمارد، ولی جزئیات صفحه را با
++ * where { id: { in: pageRows.map(...) } } می‌خواند. take تا ۲٬۰۰۰ مجاز است، پس صفحه‌ی بزرگ
++ * با ۵۰۱+ پرداخت از سقف IN ۵۰۰ گزارش‌ها (REPORT_IN_CHUNK) رد می‌شد؛ خطا در catch بلعیده
++ * می‌شد و drill ردیف «وجه واقعی» با totalCount ۰ و «۰ سند» برمی‌گشت ⇒ مدرک پشت عدد پل پنهان.
++ *
++ * بخش ۲ (S173-D2): هر خطای drill نباید بی‌صدا «۰ سند» شود؛ ردیف باید هشدار فارسی داشته باشد
++ * که اسناد خوانده نشد و عدد ردیف از جمع اصلی است (نه از این فهرست)، بدون متن فنی/انگلیسی.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s173-payment-drill-in-chunk.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s173-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { salesService, saleWhere } = await import('../../src/main/services/SalesService.ts')
++const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
++const { prisma } = await import('../../src/main/db/client.ts')
++const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)?.slice(0, 200)}`) }
++}
++
++// سقف IN ۵۰۰ روی Payment (همان الگوی fix-s172)
++let maxIn = 0
++let forceFail = false
++const walk = (w) => {
++  if (!w || typeof w !== 'object') return
++  for (const [k, v] of Object.entries(w)) {
++    if (k === 'in' && Array.isArray(v)) { maxIn = Math.max(maxIn, v.length); if (v.length > 500) throw new Error('HARNESS: IN limit 500 exceeded') }
++    else if (v && typeof v === 'object') walk(v)
++  }
++}
++for (const m of ['findMany', 'count', 'aggregate']) {
++  const orig = prisma.payment[m].bind(prisma.payment)
++  prisma.payment[m] = (args) => {
++    walk(args?.where)
++    if (forceFail && m === 'findMany' && args?.include) throw new Error('SQLITE_BUSY: database is locked')
++    return orig(args)
++  }
++}
++
++const userId = seed.user('مدیر تست ۱۷۳')
++const product = seed.product('پیراهن ۱۷۳', seed.category('پوشاک'))
++const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
++const today = toJalaliDate(new Date())
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - 3600_000, userId })
++const variant = seed.variant(product, 'L')
++sql.prepare('UPDATE "ProductVariant" SET stock = 100, salePrice = 1000 WHERE id = ?').run(variant)
++
++const inv = await salesService.create({ userId, shiftId, lines: [{ variantId: variant, qty: 1, unitPrice: 1000, discount: 0, tax: 0 }], payments: [{ methodId: cash, amount: 1000, destination: 'CASH' }] })
++const basePay = seed.rows('SELECT * FROM "Payment" WHERE invoiceId = ?', inv.id)[0]
++eq('پرداخت نقدی پایه ساخته شد', Number(basePay?.amount ?? 0), 1000)
++// ۵۹۹ کپی از همان پرداخت (همان فاکتور/روز/مقصد) ⇒ جمعاً ۶۰۰ سند پرداخت نقدی امروز
++const cols = Object.keys(basePay).filter((c) => c !== 'id')
++const ins = sql.prepare(`INSERT INTO "Payment" (${cols.map((c) => `"${c}"`).join(',')}) SELECT ${cols.map((c) => `"${c}"`).join(',')} FROM "Payment" WHERE id = ?`)
++for (let i = 0; i < 599; i++) ins.run(basePay.id)
++const N = 600
++
++const report = async (skip, take) => {
++  const filter = { fromJalali: today, toJalali: today }
++  try {
++    const { statements } = await buildStatements({
++      where: saleWhere(filter), from: jalaliStartOfDay(today), to: jalaliEndOfDay(today),
++      period: { fromJalali: today, toJalali: today, source: 'explicit' }, filter
++    }, { withDrillDown: true, bridgeSourceKey: 'realCash', bridgeSourceSkip: skip, bridgeSourceTake: take })
++    return statements
++  } catch (e) { return { error: String(e?.message ?? e) } }
++}
++const row = (s) => (s?.bridge?.rows ?? []).find((r) => r.key === 'realCash')
++
++console.log('\n۱) صفحه‌ی بزرگ (take ۲۰۰۰) با ۶۰۰ پرداخت نقدی')
++maxIn = 0
++const s1 = await report(0, 2000)
++eq('گزارش بی‌خطا ساخته شد', s1?.error ?? null, null)
++const r1 = row(s1)
++eq('ردیف وجه واقعی = ۶۰۰٬۰۰۰', r1?.amount ?? null, N * 1000)
++eq('totalCount صفحه = ۶۰۰', r1?.sourcesPage?.totalCount ?? null, N)
++eq('همه‌ی ۶۰۰ سند در یک صفحه', (r1?.sources ?? []).length, N)
++eq('جمع drill = مبلغ ردیف', (r1?.sources ?? []).reduce((a, x) => a + Number(x.amount), 0), r1?.amount ?? -1)
++eq('ترتیب id نزولی', (r1?.sources ?? []).every((x, i, a) => i === 0 || a[i - 1].id > x.id), true)
++eq('برچسب هر سند شماره‌ی فاکتور دارد', (r1?.sources ?? []).every((x) => String(x.label).includes(String(inv.receiptNo))), true)
++eq('بدون هشدار (همه‌ی اسناد در صفحه)', r1?.sourcesWarning ?? null, null)
++eq('هیچ IN بالای ۵۰۰ نبود', maxIn <= 500, true)
++
++console.log('\n۲) صفحه‌بندی ۲۵۰تایی (برای مقایسه؛ باید از قبل هم سبز باشد)')
++const seen = []
++for (let skip = 0; skip < N; skip += 250) {
++  const r = row(await report(skip, 250))
++  eq(`totalCount صفحه‌ی skip=${skip}`, r?.sourcesPage?.totalCount ?? null, N)
++  eq(`اندازه‌ی صفحه‌ی skip=${skip}`, (r?.sources ?? []).length, Math.min(250, N - skip))
++  seen.push(...(r?.sources ?? []).map((x) => x.id))
++}
++eq('مجموعه‌ی صفحه‌ها یکتا و کامل', [new Set(seen).size, seen.length], [N, N])
++
++console.log('\n۳) صفحه‌ی ۶۰۰تایی از skip ۰ (یک صفحه‌ی بالای ۵۰۰)')
++maxIn = 0
++const r3 = row(await report(0, 600))
++eq('اندازه‌ی صفحه = ۶۰۰', (r3?.sources ?? []).length, N)
++eq('هیچ IN بالای ۵۰۰ نبود', maxIn <= 500, true)
++
++console.log('\n۴) S173-D2 — خطای خواندن drill بی‌صدا «۰ سند» نشود')
++forceFail = true
++const s4 = await report(0, 200)
++forceFail = false
++eq('گزارش خودش از کار نیفتاد', s4?.error ?? null, null)
++const r4 = row(s4)
++eq('عدد ردیف از جمع اصلی دست‌نخورده', r4?.amount ?? null, N * 1000)
++const w4 = String(r4?.sourcesWarning ?? '')
++eq('هشدار فارسی روی ردیف هست', w4.includes('اسناد سازنده‌ی این ردیف خوانده نشد'), true)
++eq('هشدار می‌گوید عدد ردیف معتبر است', w4.includes('عدد ردیف'), true)
++eq('هشدار مبلغ ردیف را با ریال دارد', w4.includes('ریال'), true)
++eq('بدون متن فنی/انگلیسی در هشدار', /[A-Za-z]/.test(w4), false)
++eq('page.failed = true', r4?.sourcesPage?.failed ?? null, true)
++
++console.log('\n۵) بعد از رفع خطا دوباره عادی')
++const r5 = row(await report(0, 200))
++eq('بدون هشدار خطا', String(r5?.sourcesWarning ?? '').includes('خوانده نشد'), false)
++eq('failed ندارد', r5?.sourcesPage?.failed ?? null, null)
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)

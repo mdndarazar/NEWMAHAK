@@ -1,0 +1,332 @@
+diff -ruN s177/mahak/src/main/services/FraudService.ts work178/src/main/services/FraudService.ts
+--- s177/mahak/src/main/services/FraudService.ts	2026-09-27 09:08:46.000000000 +0000
++++ work178/src/main/services/FraudService.ts	2026-09-27 15:42:33.456223183 +0000
+@@ -119,7 +119,12 @@
+       returnCount: Math.max(0, Math.floor(Number(s.returnCount) || 0)),
+       salesTotal: Math.max(0, n(s.salesTotal))
+     }))
+-    .filter((s) => Number.isFinite(s.userId) && s.userId > 0 && s.returnTotal > 0 && s.returnCount > 0)
++    /**
++     * نشست ۱۷۸ (S178-D3، مشاهده‌ی ردیف ۸۹) — همتای دارای فروش هم‌دامنه ولی بدون برگشت، نرخ ۰ است و باید در میانه
++     * بیاید؛ قبلاً حذف می‌شد ⇒ baseline به بالا متمایل و برگشت ۵۵٪ کنار سه همکار ۰٪ و یک همکار ۳۰٪ بی‌هشدار می‌ماند.
++     * نامزد هشدار همچنان فقط کاربر دارای برگشت (حداقل دو برگشت) است.
++     */
++    .filter((s) => Number.isFinite(s.userId) && s.userId > 0 && (s.salesTotal > 0 || (s.returnTotal > 0 && s.returnCount > 0)))
+ 
+   const median = (values: number[]): number | null => {
+     if (!values.length) return null
+@@ -129,7 +134,7 @@
+   }
+ 
+   return normalized
+-    .filter((s) => s.returnCount >= 2)
++    .filter((s) => s.returnTotal > 0 && s.returnCount >= 2)
+     .map((s) => {
+       const rate = s.salesTotal > 0 ? s.returnTotal / s.salesTotal : null
+       const peerRates = normalized
+@@ -254,14 +259,14 @@
+       const uid = sale.userId ?? 0
+       salesByUser.set(uid, (salesByUser.get(uid) ?? 0) + n(sale.grandTotal))
+     }
+-    const rateStats: ReturnRateStat[] = [...byUser.entries()]
+-      .filter(([userId]) => userId > 0)
+-      .map(([userId, value]) => ({
+-        userId,
+-        returnTotal: value.total,
+-        returnCount: value.count,
+-        salesTotal: salesByUser.get(userId) ?? 0
+-      }))
++    // S178-D3 — همتایان = همه‌ی کاربران دارای فروش یا برگشت در همان دامنه (بازه/شیفت/کاربر)، نه فقط برگشت‌دارها
++    const rateUserIds = [...new Set([...byUser.keys(), ...salesByUser.keys()])].filter((userId) => userId > 0).sort((a, b) => a - b)
++    const rateStats: ReturnRateStat[] = rateUserIds.map((userId) => ({
++      userId,
++      returnTotal: byUser.get(userId)?.total ?? 0,
++      returnCount: byUser.get(userId)?.count ?? 0,
++      salesTotal: salesByUser.get(userId) ?? 0
++    }))
+     const outlierStats = detectReturnRateOutliers(rateStats)
+     const userIds = [...byUser.keys()].filter((x) => x > 0)
+     const users = userIds.length
+diff -ruN s177/mahak/src/main/services/MaintenanceService.ts work178/src/main/services/MaintenanceService.ts
+--- s177/mahak/src/main/services/MaintenanceService.ts	2026-09-27 09:08:46.000000000 +0000
++++ work178/src/main/services/MaintenanceService.ts	2026-09-27 15:39:47.229679667 +0000
+@@ -129,6 +129,16 @@
+ ].join('\n             AND ')
+ 
+ /**
++ * نشست ۱۷۸ (S178-D1، مشاهده‌ی P3 ردیف ۱۲۷ AUDIT-PROGRESS) — StockMovement.consolidationId با کلید خارجی
++ * ON DELETE SET NULL به Consolidation وصل است و Prisma روی SQLite کلید خارجی را روشن اجرا می‌کند؛ پس DELETE
++ * تجمیعی که حرکت انبار به آن وصل است، ستون ردیف‌های دفتر append-only را بی‌صدا NULL می‌کرد (یعنی update دفتر).
++ * چنین تجمیعی حذف نمی‌شود (ردیف کوچک است؛ مدرک قطعی‌شدن حرکت انبار مهم‌تر از چند بایت است). همین شرط در
++ * پیش‌نمایش، DELETE، unlink فاکتور و شرط شیفت به کار می‌رود تا پیش‌نمایش = عملیات بماند (D53/D59).
++ */
++const CONSOLIDATION_LEDGER_LINKED_SQL = `id IN (SELECT "consolidationId" FROM "StockMovement" WHERE "consolidationId" IS NOT NULL)`
++const CONSOLIDATION_PURGEABLE_SQL = `"toDate" < ? AND NOT (${CONSOLIDATION_LEDGER_LINKED_SQL})`
++
++/**
+  * پیش‌نمایش پیش از حذف اجرا می‌شود، پس «سند باقی‌مانده» را صریح می‌گوید (همان مجموعه‌ای که DELETE
+  * بعد از حذف فاکتور/صندوق/تجمیع قدیمی می‌بیند). پرداخت/برگشتِ فاکتور قدیمی با خود فاکتور پاک می‌شود.
+  */
+@@ -137,7 +147,7 @@
+   return `id NOT IN (SELECT "shiftId" FROM "SaleInvoice" WHERE "shiftId" IS NOT NULL AND "issuedAtJalali" >= ?)
+              AND id NOT IN (SELECT "shiftId" FROM "CashSession" WHERE "shiftId" IS NOT NULL AND "toDate" >= ?)
+              AND id NOT IN (SELECT "shiftId" FROM "SaleReturn" WHERE "shiftId" IS NOT NULL AND "invoiceId" NOT IN (${oldInv}))
+-             AND id NOT IN (SELECT "shiftId" FROM "Consolidation" WHERE "shiftId" IS NOT NULL AND "toDate" >= ?)
++             AND id NOT IN (SELECT "shiftId" FROM "Consolidation" WHERE "shiftId" IS NOT NULL AND ("toDate" >= ? OR ${CONSOLIDATION_LEDGER_LINKED_SQL}))
+              AND id NOT IN (SELECT "createdShiftId" FROM "Payment" WHERE "createdShiftId" IS NOT NULL AND "invoiceId" NOT IN (${oldInv}))
+              AND id NOT IN (SELECT "clearedShiftId" FROM "Payment" WHERE "clearedShiftId" IS NOT NULL AND "invoiceId" NOT IN (${oldInv}))
+              AND id NOT IN (SELECT h."clearedShiftId" FROM "PaymentChequeStatusHistory" h JOIN "Payment" p ON p.id = h."paymentId" WHERE h."clearedShiftId" IS NOT NULL AND p."invoiceId" NOT IN (${oldInv}))
+@@ -198,6 +208,7 @@
+       auditLogsProtected,
+       cashSessions,
+       consolidations,
++      consolidationsRetained,
+       shifts,
+       totals
+     ] = await Promise.all([
+@@ -211,7 +222,9 @@
+       // و ردیف‌هایی که به‌خاطر §۱۰ می‌مانند (کاربر بداند سابقه‌ی اعتبار دست‌نخورده ماند)
+       countRaw(`SELECT COUNT(*) AS c FROM "AuditLog" WHERE "at" < ? AND ${protectedRows.sql}`, cutoffDate, ...protectedRows.params),
+       countRaw(`SELECT COUNT(*) AS c FROM "CashSession" WHERE "toDate" < ?`, cutoffDate),
+-      countRaw(`SELECT COUNT(*) AS c FROM "Consolidation" WHERE "toDate" < ?`, cutoffDate),
++      // S178-D1 — فقط تجمیعی که واقعاً حذف می‌شود؛ تجمیع وصل به دفتر گردش انبار جدا شمرده و حفظ می‌شود
++      countRaw(`SELECT COUNT(*) AS c FROM "Consolidation" WHERE ${CONSOLIDATION_PURGEABLE_SQL}`, cutoffDate),
++      countRaw(`SELECT COUNT(*) AS c FROM "Consolidation" WHERE "toDate" < ? AND ${CONSOLIDATION_LEDGER_LINKED_SQL}`, cutoffDate),
+       countRaw(`SELECT COUNT(*) AS c FROM "Shift" WHERE "dayJalali" <> '' AND "dayJalali" < ? AND ${purgeableShiftRefsSql()}`, beforeJalali, ...purgeableShiftRefParams(beforeJalali, cutoffDate)),
+       prisma.$queryRawUnsafe<{ g: number | null }[]>(
+         `SELECT SUM("grandTotal") AS g FROM "SaleInvoice" WHERE "issuedAtJalali" < ?`,
+@@ -232,6 +245,7 @@
+       auditLogsProtected,
+       cashSessions,
+       consolidations,
++      consolidationsRetained,
+       shifts,
+       grandTotal: n(totals?.[0]?.g)
+     }
+@@ -292,6 +306,10 @@
+       warnings.push(
+         `دفتر گردش انبار شامل ${faDigits(before.stockMovements)} ردیف قدیمی است؛ این دفتر append-only است و هیچ ردیفی حذف نمی‌شود.`
+       )
++    if (before.consolidationsRetained > 0)
++      warnings.push(
++        `${faDigits(before.consolidationsRetained)} تجمیع قدیمی حفظ شد چون حرکت‌های دفتر گردش انبار به آن وصل است (دفتر انبار append-only است و پیوندش پاک نمی‌شود).`
++      )
+     // ۱) بکاپ (پیش‌فرض روشن) — آرشیو قبل از پاک‌سازی
+     let backupPath: string | null = null
+     if (input?.backup !== false) {
+@@ -323,11 +341,12 @@
+ 
+         // صندوق و تجمیع قدیمی
+         await run(`DELETE FROM "CashSession" WHERE "toDate" < ?`, cutoffDate)
++        // S178-D1 — تجمیعِ وصل به دفتر گردش انبار حذف نمی‌شود (وگرنه ON DELETE SET NULL ستون consolidationId دفتر را NULL می‌کند)
+         await run(
+-          `UPDATE "SaleInvoice" SET "consolidationId" = NULL WHERE "consolidationId" IN (SELECT id FROM "Consolidation" WHERE "toDate" < ?)`,
++          `UPDATE "SaleInvoice" SET "consolidationId" = NULL WHERE "consolidationId" IN (SELECT id FROM "Consolidation" WHERE ${CONSOLIDATION_PURGEABLE_SQL})`,
+           cutoffDate
+         )
+-        await run(`DELETE FROM "Consolidation" WHERE "toDate" < ?`, cutoffDate)
++        await run(`DELETE FROM "Consolidation" WHERE ${CONSOLIDATION_PURGEABLE_SQL}`, cutoffDate)
+ 
+         // شیفت‌های قدیمی که دیگر هیچ سندی به آن‌ها وصل نیست
+         // ممیزی AUDIT-S135-01 — همان شرط پیش‌نمایش (purgeableShiftSql)؛ شیفتی که هنوز مالک سند
+@@ -394,6 +413,9 @@
+         `آرشیو و پاک‌سازی داده‌ی قدیمی‌تر از ${beforeJalali}` +
+         ` · مهلت نگهداری ${faDigits(MAINTENANCE_RETENTION_DAYS)} روز` +
+         ` · دفتر گردش انبار append-only و دست‌نخورده ماند` +
++        (before.consolidationsRetained
++          ? ` · ${faDigits(before.consolidationsRetained)} تجمیع وصل به دفتر انبار حفظ شد`
++          : '') +
+         (before.auditLogsProtected
+           ? ` · ${faDigits(before.auditLogsProtected)} ردیف سابقه‌ی محافظت‌شده (اعتبار خرید) پاک نشد`
+           : '') +
+diff -ruN s177/mahak/src/main/services/VariantPurgeService.ts work178/src/main/services/VariantPurgeService.ts
+--- s177/mahak/src/main/services/VariantPurgeService.ts	2026-09-27 15:19:54.000000000 +0000
++++ work178/src/main/services/VariantPurgeService.ts	2026-09-27 15:45:23.826830159 +0000
+@@ -4,7 +4,7 @@
+ import { assertPanelPassword } from './AuthService'
+ import { productApprovalNote, variantIdChunksOf } from './ProductService'
+ import { BusinessError } from '../errors'
+-import { faDigits } from '@shared/jalali'
++import { faDigits, toJalaliDate } from '@shared/jalali'
+ import { PANEL_KEYS } from '@shared/panels'
+ import type { VariantPurgePreview, VariantPurgeResult } from '@shared/types'
+ 
+@@ -191,7 +191,15 @@
+    */
+   async preview(input: { variantIds?: number[] } = {}): Promise<VariantPurgePreview> {
+     const ids = (input?.variantIds ?? []).map(Number).filter((n) => Number.isInteger(n) && n > 0)
+-    if (!ids.length) return { lines: [], historyRows: 0, movements: 0 }
++    if (!ids.length)
++      return {
++        lines: [],
++        historyRows: 0,
++        movements: 0,
++        canPurge: false,
++        blockers: ['برای حذف همیشگی، حداقل یک کالا را انتخاب کنید.'],
++        notices: []
++      }
+     // نشست ۱۷۷ · S176-D3 — دسته‌های ۵۰۰تایی (سقف IN ۵۰۰)؛ UI سطل آشغال امروز حداکثر ۳۰۰ ردیف دارد.
+     const variants: any[] = []
+     for (const chunk of variantIdChunksOf(ids))
+@@ -211,7 +219,15 @@
+       purchaseItems: number
+       returnItems: number
+       movements: number
++      blockedReason: string | null
+     }[] = []
++    /**
++     * نشست ۱۷۸ (S178-D4، مشاهده‌ی ردیف ۱۲۶) — پیش‌نمایش = عملیات (D53/D59): همان سه شرطی که purge رد می‌کند
++     * (کالای فعال، مهلت ۷۳۰ روز سطل آشغال، حرکت انبار) برای هر ردیف با پیام فارسی گفته می‌شود و canPurge
++     * فقط وقتی true است که purge واقعاً انجام شدنی باشد (همه یا هیچ).
++     */
++    const cutoff = Date.now() - VARIANT_PURGE_RETENTION_MS
++    let recentCount = 0
+     for (const v of variants) {
+       const [saleItems, purchaseItems, returnItems, movements] = await Promise.all([
+         prisma.saleInvoiceItem.count({ where: { variantId: v.id } }),
+@@ -219,6 +235,18 @@
+         prisma.saleReturnItem.count({ where: { variantId: v.id } }),
+         prisma.stockMovement.count({ where: { variantId: v.id } })
+       ])
++      const deletedAt = v.deletedAt instanceof Date ? v.deletedAt.getTime() : Number(new Date(v.deletedAt ?? 0))
++      const tooRecent = !v.isActive && (!deletedAt || deletedAt > cutoff)
++      if (tooRecent) recentCount++
++      const blockedReason = v.isActive
++        ? 'هنوز در فهرست کالاهای فعال است؛ اول باید حذف (نرم) شود.'
++        : tooRecent
++          ? deletedAt
++            ? `هنوز ${faDigits(VARIANT_PURGE_RETENTION_DAYS)} روز کامل در سطل آشغال نمانده است (از ${faDigits(toJalaliDate(new Date(deletedAt + VARIANT_PURGE_RETENTION_MS)))} قابل حذف همیشگی است).`
++            : `تاریخ حذف (نرم) ندارد؛ مهلت ${faDigits(VARIANT_PURGE_RETENTION_DAYS)} روز سطل آشغال از امروز قابل سنجش نیست.`
++          : movements > 0
++            ? `${faDigits(movements)} حرکت انبار دارد؛ دفتر گردش انبار append-only است و حذف همیشگی انجام نمی‌شود.`
++            : null
+       lines.push({
+         variantId: v.id,
+         code: v.code,
+@@ -227,13 +255,30 @@
+         saleItems,
+         purchaseItems,
+         returnItems,
+-        movements
++        movements,
++        blockedReason
+       })
+     }
++    const activeCount = variants.filter((v) => v.isActive).length
++    const movementCount = lines.filter((l) => l.movements > 0).length
++    const blockers: string[] = []
++    if (!variants.length) blockers.push('این کالاها پیدا نشدند؛ فهرست سطل آشغال را تازه کنید.')
++    if (activeCount) blockers.push(`${faDigits(activeCount)} کالا هنوز در فهرست کالاهای فعال است؛ حذف همیشگی فقط برای کالاهای داخل سطل آشغال انجام می‌شود.`)
++    if (recentCount)
++      blockers.push(
++        `${faDigits(recentCount)} کالا هنوز ${faDigits(VARIANT_PURGE_RETENTION_DAYS)} روز کامل در سطل آشغال نمانده است؛ تا پایان این مهلت سابقه‌ی کالا باید قابل بازگردانی بماند.`
++      )
++    if (movementCount)
++      blockers.push(`${faDigits(movementCount)} کالا حرکت انبار دارد؛ دفتر گردش انبار پاک‌شدنی نیست، پس حذف همیشگی انجام نمی‌شود.`)
++    const missing = [...new Set(ids)].length - variants.length
++    const notices = missing > 0 ? [`${faDigits(missing)} کالای انتخاب‌شده پیدا نشد (احتمالاً قبلاً پاک شده) و در حذف شرکت نمی‌کند.`] : []
+     return {
+       lines,
+       historyRows: lines.reduce((s, l) => s + l.saleItems + l.purchaseItems + l.returnItems, 0),
+-      movements: lines.reduce((s, l) => s + l.movements, 0)
++      movements: lines.reduce((s, l) => s + l.movements, 0),
++      canPurge: blockers.length === 0,
++      blockers,
++      notices
+     }
+   },
+ 
+diff -ruN s177/mahak/src/renderer/src/pages/Products.tsx work178/src/renderer/src/pages/Products.tsx
+--- s177/mahak/src/renderer/src/pages/Products.tsx	2026-09-27 09:08:46.000000000 +0000
++++ work178/src/renderer/src/pages/Products.tsx	2026-09-27 15:45:39.039062930 +0000
+@@ -609,7 +609,11 @@
+             >
+               انصراف
+             </button>
+-            <button className="btn btn-danger" onClick={() => void doPurge()} disabled={busy || (needPurgePw && !purgePw.trim())}>
++            <button
++              className="btn btn-danger"
++              onClick={() => void doPurge()}
++              disabled={busy || purge?.canPurge === false || (needPurgePw && !purgePw.trim())}
++            >
+               {busy ? 'در حال حذف…' : 'بله، برای همیشه پاک کن'}
+             </button>
+           </>
+@@ -621,6 +625,22 @@
+           فاکتورها و جمع‌هایشان درست و خوانا می‌مانند)، اما اگر بعداً بخواهید موجودی و گردش انبار این کالا را ببینید
+           دیگر ممکن نیست.
+         </div>
++        {/* نشست ۱۷۸ (S178-D4) — مانع‌های واقعی purge پیش از زدن دکمه (پیش‌نمایش = عملیات) */}
++        {(purge?.blockers ?? []).length > 0 && (
++          <div className="bg-amber-50 border-2 border-amber-400 rounded px-3 py-2 leading-6">
++            <b>حذف همیشگی این انتخاب انجام نمی‌شود:</b>
++            <ul className="list-disc pr-5">
++              {(purge?.blockers ?? []).map((b, i) => (
++                <li key={i}>{b}</li>
++              ))}
++            </ul>
++          </div>
++        )}
++        {(purge?.notices ?? []).map((n, i) => (
++          <div key={i} className="kbd leading-6">
++            {n}
++          </div>
++        ))}
+         <ul className="max-h-48 overflow-auto border rounded p-2 space-y-1">
+           {(purge?.lines ?? []).map((l) => (
+             <li key={l.variantId}>
+@@ -629,6 +649,7 @@
+                 {faDigits(l.saleItems)} ردیف فروش · {faDigits(l.purchaseItems)} ردیف خرید · {faDigits(l.returnItems)} ردیف
+                 برگشت · {faDigits(l.movements)} حرکت انبار (حذف را مسدود می‌کند)
+               </span>
++              {l.blockedReason && <div className="text-amber-700">⛔ {l.blockedReason}</div>}
+             </li>
+           ))}
+         </ul>
+diff -ruN s177/mahak/src/renderer/src/pages/Settings.tsx work178/src/renderer/src/pages/Settings.tsx
+--- s177/mahak/src/renderer/src/pages/Settings.tsx	2026-09-27 11:40:14.000000000 +0000
++++ work178/src/renderer/src/pages/Settings.tsx	2026-09-27 15:39:55.469805748 +0000
+@@ -4145,6 +4145,9 @@
+                     value={faDigits(slimPreview.auditLogsProtected)}
+                   />
+                   <Info label="بستن صندوق / تجمیع" value={`${faDigits(slimPreview.cashSessions)} / ${faDigits(slimPreview.consolidations)}`} />
++                  {(slimPreview.consolidationsRetained ?? 0) > 0 && (
++                    <Info label="تجمیع وصل به دفتر انبار (حفظ می‌شود)" value={faDigits(slimPreview.consolidationsRetained)} />
++                  )}
+                   <Info label="جمع فروش این بازه" value={`${money(slimPreview.grandTotal)} ریال`} strong />
+                 </div>
+               )}
+diff -ruN s177/mahak/src/shared/types.ts work178/src/shared/types.ts
+--- s177/mahak/src/shared/types.ts	2026-09-27 13:43:50.000000000 +0000
++++ work178/src/shared/types.ts	2026-09-27 15:45:39.039062930 +0000
+@@ -2413,6 +2413,8 @@
+   returnItems: number
+   /** تعداد حرکات انبار؛ وجود هر حرکت حذف همیشگی را مسدود می‌کند */
+   movements: number
++  /** نشست ۱۷۸ (S178-D4) — مانع حذف همیشگی همین ردیف (فعال/مهلت ۷۳۰ روز/حرکت انبار)؛ null یعنی مانعی نیست */
++  blockedReason?: string | null
+ }
+ 
+ export interface VariantPurgePreview {
+@@ -2421,6 +2423,12 @@
+   historyRows: number
+   /** جمع حرکات انباری که مانع حذف همیشگی‌اند */
+   movements: number
++  /** نشست ۱۷۸ (S178-D4) — پیش‌نمایش = عملیات: فقط وقتی true که purge همین انتخاب انجام‌شدنی باشد */
++  canPurge?: boolean
++  /** پیام‌های فارسی مانع حذف (همان شرط‌های purge) */
++  blockers?: string[]
++  /** یادداشت‌های غیرمانع (مثلاً شناسه‌ی پیدانشده) */
++  notices?: string[]
+ }
+ 
+ export interface VariantPurgeResult {
+@@ -2594,6 +2602,8 @@
+   auditLogsProtected: number
+   cashSessions: number
+   consolidations: number
++  /** نشست ۱۷۸ (S178-D1) — تجمیع قدیمیِ وصل به دفتر گردش انبار که حذف نمی‌شود */
++  consolidationsRetained: number
+   shifts: number
+   /** جمع کل فروشِ بازه‌ای که پاک می‌شود (برای دیدن اندازه‌ی کاری که می‌کنید) */
+   grandTotal: number

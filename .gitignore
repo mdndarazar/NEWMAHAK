@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Build outputs
+dist/
+out/
+release/
+build/
+
+# Logs
+*.log
+logs/
+.logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / editor
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+
+# Test / coverage outputs
+coverage/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Electron packaging
+*.asar
+
+# Local delivery artifacts (not part of source)
+*.zip
+download-page/
+
+# نشست ۲۱۹ — پوشهٔ لاگ‌های موردیِ run-regression.sh (هر اجرا بازتولیدشان می‌کند)
+_تحویل/TESTLOG-*.logs/
+
+# نشست ۲۱۹ — خلاصهٔ ماشینِ اجراکنندهٔ تست (بازتولید می‌شود؛ برگهٔ تحویل نیست)
+_تحویل/نتیجه-*.json

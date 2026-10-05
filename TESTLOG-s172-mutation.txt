@@ -1,0 +1,8 @@
+M1 بدون دسته‌بندی ۵۰۰تایی: نتیجه: 21 موفق · 5 ناموفق
+M2 ترتیب صعودی: نتیجه: 25 موفق · 1 ناموفق
+M3 شمارش = طول صفحه: نتیجه: 20 موفق · 6 ناموفق
+--- audit-s172-stale-observations-verify (تأیید، بدون تغییر src) ---
+M-a ipc saleReturn/saleReturnDelete بدون withSessionActor: 11 موفق · 3 ناموفق
+M-b حذف preverifySalePolicy روی جایگزین تعویض: 10 موفق · 4 ناموفق
+M-c allowedDestinationsFor(CASH) = هر سه مقصد: 13 موفق · 1 ناموفق (addPayment همچنان در main رد شد؛ گیت مستقل assertDestination)
+M-s108 شمارش = طول صفحه روی fix-s108 به‌روزشده: 9 موفق · 1 ناموفق

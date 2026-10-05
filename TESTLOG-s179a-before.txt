@@ -1,0 +1,51 @@
+(node:6347) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/shared/creditUi.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓ تنظیمات پیش‌فرض اعتبار در دسترس است
+۱) صدور تکی — ارقام مخلوط/فارسی درست خوانده شوند (نه ۵ ریال بی‌صدا)
+  ✓ «5۰۰۰۰۰» ⇒ ok = true
+  ✗ «5۰۰۰۰۰» ⇒ مبلغ ۵۰۰٬۰۰۰ (نه ۵) — انتظار 500000، دریافت 5
+  ✗ «۱۲۰٬۰۰۰» فارسی با جداکننده ⇒ ok — انتظار true، دریافت false
+  ✗ «۱۲۰٬۰۰۰» ⇒ ۱۲۰٬۰۰۰ — انتظار 120000، دریافت undefined
+  ✓ «1,250,000» ⇒ ۱٬۲۵۰٬۰۰۰ = 1250000
+۲) صدور تکی — اعشار/منفی/متن/NaN/خارج از سقف ⇒ رد فارسی با نام فیلد، نه گرد بی‌صدا
+  ✗ مبلغ ۱۰۰۰۰۰٫۶ ⇒ رد (قبلاً ۱۰۰۰۰۱) — ok=true payload=100001 error=
+  ✓ مبلغ «۱۰۰۰۰۰٫۵» فارسی ⇒ رد (رد: مبلغ اعتبار را وارد کنید (باید بزرگ‌تر از صفر باشد).)
+  ✓ مبلغ NaN ⇒ رد (رد: مبلغ اعتبار را وارد کنید (باید بزرگ‌تر از صفر باشد).)
+  ✗ مبلغ ۱e21 ⇒ رد — ok=true payload=121 error=
+  ✗ مبلغ ۲^۵۳ (خارج از سقف امن) ⇒ رد — ok=true payload=9007199254740992 error=
+  ✓ مبلغ «۵۰۰هزار» ⇒ رد (رد: مبلغ اعتبار را وارد کنید (باید بزرگ‌تر از صفر باشد).)
+  ✓ مبلغ ‎-۵۰۰۰ ⇒ رد (رد: مبلغ اعتبار را وارد کنید (باید بزرگ‌تر از صفر باشد).)
+  ✓ مبلغ ۰ ⇒ همان پیام «وارد کنید» (رد: مبلغ اعتبار را وارد کنید (باید بزرگ‌تر از صفر باشد).)
+  ✗ حداقل خرید ‎-۵ ⇒ رد (قبلاً بی‌صدا ۰) — ok=true payload=500000 error=
+  ✗ سقف هر تراکنش ۲۵۰۰٫۵ ⇒ رد (قبلاً ۲۵۰۱) — ok=true payload=500000 error=
+  ✗ مدت ۷٫۵ روز ⇒ رد (قبلاً ۸) — ok=true payload=500000 error=
+  ✗ دفعات ۳٫۲ ⇒ رد (قبلاً ۳) — ok=true payload=500000 error=
+۳) صدور تکی — فیلدهای عددی فارسی درست به payload برسند
+  ✗ ok — انتظار true، دریافت false
+  ✗ days «۱۰» ⇒ ۱۰ — انتظار 10، دریافت undefined
+  ✗ maxUses «۳» ⇒ ۳ (نه ۲) — انتظار 3، دریافت undefined
+  ✗ minPurchase «۲٬۰۰۰٬۰۰۰» ⇒ ۲٬۰۰۰٬۰۰۰ — انتظار 2000000، دریافت undefined
+  ✗ maxPerTransaction «۱۰۰٬۰۰۰» ⇒ ۱۰۰٬۰۰۰ — انتظار 100000، دریافت undefined
+۴) فیلد بی‌استفاده در حالت انتخاب‌شده سنجیده نشود + مسیر عادی بدون تغییر
+  ✓ مدت/دفعات خراب ولی حالت «پیش‌فرض/یک‌بار» ⇒ ok = true
+  ✓ بدون کلید days = false
+  ✓ maxUses = ۱ = 1
+  ✓ مبلغ عادی ۵۰۰٬۰۰۰ = 500000
+  ✓ minPurchase خالی ⇒ ۰ = 0
+۵) تولید گروهی — تعداد/طول کد/مبلغ هر اعتبار
+  ✗ bulk «5۰۰۰» × «۲۰» ⇒ ok — انتظار true، دریافت false
+  ✗ amountEach ۵٬۰۰۰ (نه ۵) — انتظار 5000، دریافت undefined
+  ✗ count ۲۰ — انتظار 20، دریافت undefined
+  ✗ bulk تعداد ۱۰٫۵ ⇒ رد (قبلاً ۱۱) — ok=true payload=5000 error=
+  ✗ bulk طول کد ۸٫۵ ⇒ رد — ok=true payload=5000 error=
+  ✗ bulk مبلغ ۵۰۰۰٫۴ ⇒ رد — ok=true payload=5000 error=
+  ✗ bulk حداقل خرید ‎-۱ ⇒ رد — ok=true payload=5000 error=
+  ✗ bulk minPurchase فارسی ⇒ ۹٬۰۰۰ — انتظار 9000، دریافت undefined
+  ✗ bulk days فارسی ⇒ ۱۵ — انتظار 15، دریافت undefined
+۶) intOf نمایشی دست‌نخورده و parser تازه هم‌معنای parseGroupedInteger
+  ✓ intOf(«100000.6») هنوز ۱۰۰۰۰۱ (فقط نمایش) = 100001
+  ✗ parseFormInteger export شده
+
+نتیجه: 14 موفق، 25 ناموفق

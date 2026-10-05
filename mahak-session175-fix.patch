@@ -1,0 +1,467 @@
+diff -ruN base/src/main/services/CashboxService.ts mahak/src/main/services/CashboxService.ts
+--- base/src/main/services/CashboxService.ts	2026-09-27 14:24:14.193851049 +0000
++++ mahak/src/main/services/CashboxService.ts	2026-09-27 14:39:06.660492565 +0000
+@@ -1273,10 +1273,15 @@
+         }
+       })
+ 
+-      await tx.saleInvoice.updateMany({
+-        where: { id: { in: invoiceIds } },
+-        data: { consolidationId: consolidation.id }
+-      })
++      /**
++       * نشست ۱۷۵ · S175-D3 — invoiceIds همه‌ی فاکتورهای تجمیع‌نشده‌ی بازه است (بی‌سقف)؛ `id in` یکجا از
++       * سقف IN ۵۰۰ (S99-2) رد می‌شد. حالا دسته‌های ۵۰۰تایی داخل همین تراکنش.
++       */
++      for (const ids of chunksOf(invoiceIds))
++        await tx.saleInvoice.updateMany({
++          where: { id: { in: ids } },
++          data: { consolidationId: consolidation.id }
++        })
+ 
+       // مهر نهایی روی کسر انبار — دقیقاً روی حرکات همین فاکتورها.
+       // ⚠️ tx پاس داده می‌شود (قاعده‌ی ۶ README).
+diff -ruN base/src/main/services/InventoryService.ts mahak/src/main/services/InventoryService.ts
+--- base/src/main/services/InventoryService.ts	2026-09-27 14:24:14.193851049 +0000
++++ mahak/src/main/services/InventoryService.ts	2026-09-27 14:39:10.688540595 +0000
+@@ -130,6 +130,15 @@
+   ): Promise<{ movements: number; qty: number }>
+ }
+ 
++
++/** نشست ۱۷۵ · S175-D3 — شناسه‌های یکتا در دسته‌های ۵۰۰تایی (سقف IN پروژه، S99-2). */
++function movementRefChunks(ids: number[]): number[][] {
++  const uniq = [...new Set(ids)]
++  const out: number[][] = []
++  for (let i = 0; i < uniq.length; i += 500) out.push(uniq.slice(i, i + 500))
++  return out
++}
++
+ class LocalInventoryService implements IInventoryService {
+   async getStock(variantId: number, tx?: Prisma.TransactionClient): Promise<number> {
+     const client = tx ?? prisma
+@@ -257,11 +266,16 @@
+   ): Promise<number> {
+     if (!invoiceIds.length) return 0
+     const client = tx ?? prisma
+-    const res = await client.stockMovement.updateMany({
+-      where: { state: StockState.PENDING, refType: 'SaleInvoice', refId: { in: invoiceIds } },
+-      data: { state: StockState.FINAL, consolidationId }
+-    })
+-    return res.count
++    /** نشست ۱۷۵ · S175-D3 — دسته‌های ۵۰۰تایی (سقف IN، S99-2)؛ شمارش جمع دسته‌هاست. */
++    let count = 0
++    for (const ids of movementRefChunks(invoiceIds)) {
++      const res = await client.stockMovement.updateMany({
++        where: { state: StockState.PENDING, refType: 'SaleInvoice', refId: { in: ids } },
++        data: { state: StockState.FINAL, consolidationId }
++      })
++      count += res.count
++    }
++    return count
+   }
+ 
+   /** پیش‌نمایش: چند حرکت و چه تعدادی با تجمیع این فاکتورها قطعی می‌شود. */
+@@ -271,10 +285,15 @@
+   ): Promise<{ movements: number; qty: number }> {
+     if (!invoiceIds.length) return { movements: 0, qty: 0 }
+     const client = tx ?? prisma
+-    const rows = await client.stockMovement.findMany({
+-      where: { state: StockState.PENDING, refType: 'SaleInvoice', refId: { in: invoiceIds } },
+-      select: { delta: true }
+-    })
++    /** نشست ۱۷۵ · S175-D3 — همان دسته‌بندی finalizePendingForInvoices تا پیش‌نمایش = اجرای واقعی */
++    const rows: Array<{ delta: number }> = []
++    for (const ids of movementRefChunks(invoiceIds))
++      rows.push(
++        ...(await client.stockMovement.findMany({
++          where: { state: StockState.PENDING, refType: 'SaleInvoice', refId: { in: ids } },
++          select: { delta: true }
++        }))
++      )
+     return { movements: rows.length, qty: rows.reduce((s, r) => s + Math.abs(r.delta), 0) }
+   }
+ 
+diff -ruN base/src/main/services/SalesService.ts mahak/src/main/services/SalesService.ts
+--- base/src/main/services/SalesService.ts	2026-09-27 14:24:14.197851097 +0000
++++ mahak/src/main/services/SalesService.ts	2026-09-27 14:37:08.191079967 +0000
+@@ -2431,25 +2431,32 @@
+    * بازگشت موجودی *فقط* برای همان فاکتورها ساخته می‌شود؛ بازه‌ی تاریخی نقشی
+    * ندارد. منطق محاسبه مو‌به‌مو همان قبل است.
+    */
+-  const invoices = await prisma.saleInvoice.findMany({
+-    /**
+-     * ممیزی A85-01 — از S85 پاک‌سازی void است و سند باطل در دیتابیس می‌ماند؛
+-     * فاکتور باطل/لغوشده نباید دوباره در نقشه‌ی بازگشت موجودی بیاید، وگرنه هر
+-     * پاک‌سازی تکراری همان کالا را یک بار دیگر به انبار برمی‌گرداند.
+-     */
+-    where: {
+-      ...(invoiceIds?.length ? { id: { in: invoiceIds } } : { issuedAt: { gte: from, lte: to } }),
+-      voidedAt: null,
+-      /** ممیزی A122-01 (AUDIT-D59) — همان دروازه‌ی گزارش/پیش‌نمایش: DRAFT هم نه (کالای شبح). */
+-      status: { notIn: REPORT_EXCLUDED_SALE_STATUSES }
+-    },
+-    select: {
+-      id: true,
+-      deductInventory: true,
+-      items: { select: { variantId: true, qty: true } },
+-      returns: { where: { voidedAt: null }, select: { id: true, items: { select: { variantId: true, restockedQty: true } } } }
+-    }
+-  })
++  /**
++   * ممیزی A85-01 — از S85 پاک‌سازی void است و سند باطل در دیتابیس می‌ماند؛
++   * فاکتور باطل/لغوشده نباید دوباره در نقشه‌ی بازگشت موجودی بیاید، وگرنه هر
++   * پاک‌سازی تکراری همان کالا را یک بار دیگر به انبار برمی‌گرداند.
++   * نشست ۱۷۵ · S175-D2 — فهرست انتخابی در دسته‌های ۵۰۰تایی (سقف IN، S99-2)؛ جمع نقشه جمع‌پذیر است.
++   */
++  const planGate = {
++    voidedAt: null,
++    /** ممیزی A122-01 (AUDIT-D59) — همان دروازه‌ی گزارش/پیش‌نمایش: DRAFT هم نه (کالای شبح). */
++    status: { notIn: REPORT_EXCLUDED_SALE_STATUSES }
++  }
++  const planSelect = {
++    id: true,
++    deductInventory: true,
++    items: { select: { variantId: true, qty: true } },
++    returns: { where: { voidedAt: null }, select: { id: true, items: { select: { variantId: true, restockedQty: true } } } }
++  } as const
++  const invoices: any[] = []
++  if (invoiceIds?.length) {
++    for (const ids of reportIdChunks(invoiceIds))
++      invoices.push(...(await prisma.saleInvoice.findMany({ where: { id: { in: ids }, ...planGate }, select: planSelect })))
++  } else {
++    invoices.push(
++      ...(await prisma.saleInvoice.findMany({ where: { issuedAt: { gte: from, lte: to }, ...planGate }, select: planSelect }))
++    )
++  }
+ 
+   const net = new Map<number, number>()
+   let returnCount = 0
+@@ -8159,18 +8166,37 @@
+     })
+ 
+     /** ممیزی A85-01 — فقط سند زنده؛ فاکتور باطل/لغوشده دوباره باطل نمی‌شود و موجودی‌اش دوباره برنمی‌گردد. */
+-    const invoices = await prisma.saleInvoice.findMany({
+-      where: {
+-        ...(selective ? { id: { in: picked } } : { issuedAt: { gte: from, lte: to } }),
+-        voidedAt: null,
+-        /**
+-         * ممیزی A122-01 (AUDIT-D59، D53) — پیش‌نمایش از reportRows می‌خواند که DRAFT و CANCELED را کنار می‌گذارد؛
+-         * قبلاً اینجا فقط CANCELED ⇒ پیش‌نویس قدیمی بی‌آنکه دیده شود باطل و قلمش با restoreStock کالای شبح می‌شد.
+-         */
+-        status: { notIn: REPORT_EXCLUDED_SALE_STATUSES }
+-      },
+-      select: { id: true, receiptNo: true, grandTotal: true, issuedAt: true }
+-    })
++    /**
++     * نشست ۱۷۵ · S175-D2 — در ابطال انتخابی، `id in picked` بی‌سقف بود (انتخاب ۵۰۱+ ردیف ⇒ عبور از
++     * سقف IN ۵۰۰، S99-2). حالا دسته‌های ۵۰۰تایی و ترتیب id صعودی (همان ترتیب پیش‌فرض قبلی).
++     */
++    const purgeInvoiceSelect = { id: true, receiptNo: true, grandTotal: true, issuedAt: true } as const
++    const purgeInvoiceGate = {
++      voidedAt: null,
++      /**
++       * ممیزی A122-01 (AUDIT-D59، D53) — پیش‌نمایش از reportRows می‌خواند که DRAFT و CANCELED را کنار می‌گذارد؛
++       * قبلاً اینجا فقط CANCELED ⇒ پیش‌نویس قدیمی بی‌آنکه دیده شود باطل و قلمش با restoreStock کالای شبح می‌شد.
++       */
++      status: { notIn: REPORT_EXCLUDED_SALE_STATUSES }
++    }
++    const invoices: Array<{ id: number; receiptNo: number; grandTotal: number; issuedAt: Date }> = []
++    if (selective) {
++      for (const ids of reportIdChunks(picked))
++        invoices.push(
++          ...((await prisma.saleInvoice.findMany({
++            where: { id: { in: ids }, ...purgeInvoiceGate },
++            select: purgeInvoiceSelect
++          })) as any[])
++        )
++      invoices.sort((a, b) => a.id - b.id)
++    } else {
++      invoices.push(
++        ...((await prisma.saleInvoice.findMany({
++          where: { issuedAt: { gte: from, lte: to }, ...purgeInvoiceGate },
++          select: purgeInvoiceSelect
++        })) as any[])
++      )
++    }
+     if (!invoices.length)
+       throw new BusinessError(
+         selective
+@@ -8261,8 +8287,18 @@
+           })
+         }
+ 
+-        const returns = await tx.saleReturn.findMany({ where: { invoiceId: { in: invoiceIds } }, select: { id: true } })
+-        const returnIds = returns.map((r) => r.id)
++        /**
++         * نشست ۱۷۵ · S175-D2 — همه‌ی `in` های این تراکنش روی invoiceIds/returnIds بی‌سقف بودند (ابطال
++         * بازه‌ی ۵۰۱+ فاکتوری ⇒ عبور از سقف IN ۵۰۰، S99-2). حالا هر خواندن/نوشتن در دسته‌های ۵۰۰تایی
++         * (reportIdChunks، یکتا) و داخل همین تراکنش؛ نتیجه‌ها جمع/یکتا می‌شوند. اتمیک بودن دست نخورده.
++         */
++        const invoiceChunks = reportIdChunks(invoiceIds)
++        const returnIds: number[] = []
++        for (const ids of invoiceChunks)
++          returnIds.push(
++            ...(await tx.saleReturn.findMany({ where: { invoiceId: { in: ids } }, select: { id: true } })).map((r) => r.id)
++          )
++        returnIds.sort((a, b) => a - b)
+ 
+         /**
+          * ۱) بازگشت موجودی (اگر کاربر «بله» را انتخاب کرده باشد).
+@@ -8328,14 +8364,17 @@
+          * ردیف دفتر مصرف حذف نمی‌شود و فقط `reversedAt`/دلیل می‌خورد — سابقه‌ی
+          * حسابداری اعتبار کامل می‌ماند، دقیقاً مثل مسیر برگشت کامل فاکتور.
+          */
++        const redeemedRows: Array<{ invoiceId: number | null }> = []
++        for (const ids of invoiceChunks)
++          redeemedRows.push(
++            ...(await tx.storeCreditRedemption.findMany({
++              where: { invoiceId: { in: ids }, reversedAt: null },
++              select: { invoiceId: true }
++            }))
++          )
+         const creditInvoiceIds = [
+           ...new Set(
+-            (
+-              await tx.storeCreditRedemption.findMany({
+-                where: { invoiceId: { in: invoiceIds }, reversedAt: null },
+-                select: { invoiceId: true }
+-              })
+-            )
++            redeemedRows
+               .map((r) => r.invoiceId)
+               .filter((n): n is number => Number.isInteger(n) && (n as number) > 0)
+           )
+@@ -8363,17 +8402,23 @@
+          * پشتوانه‌اش (پرداخت) باطل می‌شود؛ اگر فعال بماند، کالا با اعتباری بی‌پول
+          * خارج می‌شود. پس همان قاعده‌ی «مصرف‌شده ⇒ رد، وگرنه void» برای آن‌ها هم.
+          */
+-        const returnCredits = await tx.storeCredit.findMany({
+-          where: {
+-            voidedAt: null,
+-            OR: [
+-              ...(returnIds.length ? [{ returnId: { in: returnIds } }] : []),
+-              { sourceInvoiceId: { in: invoiceIds } },
+-              { exchangeInvoiceId: { in: invoiceIds } }
+-            ]
+-          },
+-          select: { id: true, usedAmount: true }
+-        })
++        const returnCreditMap = new Map<number, { id: number; usedAmount: number }>()
++        const collectCredits = (rows: Array<{ id: number; usedAmount: number }>) => {
++          for (const c of rows) returnCreditMap.set(c.id, c)
++        }
++        for (const ids of reportIdChunks(returnIds))
++          collectCredits(
++            await tx.storeCredit.findMany({ where: { voidedAt: null, returnId: { in: ids } }, select: { id: true, usedAmount: true } })
++          )
++        for (const ids of invoiceChunks)
++          collectCredits(
++            await tx.storeCredit.findMany({
++              where: { voidedAt: null, OR: [{ sourceInvoiceId: { in: ids } }, { exchangeInvoiceId: { in: ids } }] },
++              select: { id: true, usedAmount: true }
++            })
++          )
++        /** ترتیب id صعودی ⇒ پیام «اعتبار مصرف‌شده» همان اعتبار قبلی (کوچک‌ترین شناسه) را نام می‌برد */
++        const returnCredits = [...returnCreditMap.values()].sort((a, b) => a.id - b.id)
+         const usedReturnCredit = returnCredits.find((c) => Math.round(c.usedAmount ?? 0) > 0)
+         if (usedReturnCredit)
+           throw new BusinessError(
+@@ -8387,24 +8432,29 @@
+           : `ابطال گزارش فروش بازه ${fromJalali} تا ${toJalali} با تایید مدیر · ${
+               input.overrideReason ?? 'بدون دلیل ثبت‌شده'
+             }`
+-        if (returnCredits.length)
++        for (const ids of reportIdChunks(returnCredits.map((c) => c.id)))
+           await tx.storeCredit.updateMany({
+-            where: { id: { in: returnCredits.map((c) => c.id) }, voidedAt: null },
++            where: { id: { in: ids }, voidedAt: null },
+             data: { status: StoreCreditStatus.CANCELED, voidedAt, voidedReason: voidReason }
+           })
+-        if (returnIds.length)
++        for (const ids of reportIdChunks(returnIds))
+           await tx.saleReturn.updateMany({
+-            where: { id: { in: returnIds }, voidedAt: null },
++            where: { id: { in: ids }, voidedAt: null },
+             data: { voidedAt, voidedByUserId: input.userId ?? null, voidReason }
+           })
+-        await tx.payment.updateMany({
+-          where: { invoiceId: { in: invoiceIds }, voidedAt: null },
+-          data: { voidedAt, voidedByUserId: input.userId ?? null, voidReason }
+-        })
+-        const voided = await tx.saleInvoice.updateMany({
+-          where: { id: { in: invoiceIds }, voidedAt: null },
+-          data: { voidedAt, voidedByUserId: input.userId ?? null, voidReason, status: SaleStatus.CANCELED }
+-        })
++        for (const ids of invoiceChunks)
++          await tx.payment.updateMany({
++            where: { invoiceId: { in: ids }, voidedAt: null },
++            data: { voidedAt, voidedByUserId: input.userId ?? null, voidReason }
++          })
++        const voided = { count: 0 }
++        for (const ids of invoiceChunks)
++          voided.count += (
++            await tx.saleInvoice.updateMany({
++              where: { id: { in: ids }, voidedAt: null },
++              data: { voidedAt, voidedByUserId: input.userId ?? null, voidReason, status: SaleStatus.CANCELED }
++            })
++          ).count
+ 
+         await audit(tx, {
+           action: AuditAction.VOID,
+diff -ruN base/src/main/services/StoreCreditService.ts mahak/src/main/services/StoreCreditService.ts
+--- base/src/main/services/StoreCreditService.ts	2026-09-27 14:24:14.197851097 +0000
++++ mahak/src/main/services/StoreCreditService.ts	2026-09-27 14:41:09.173953411 +0000
+@@ -498,11 +498,19 @@
+     )
+   ]
+   if (!ids.length) return new Map()
+-  const invoices = await client.saleInvoice.findMany({
+-    where: { id: { in: ids } },
+-    select: { id: true, receiptNo: true }
+-  })
+-  return new Map(invoices.map((i) => [i.id, i.receiptNo]))
++  /**
++   * نشست ۱۷۵ · S175-D4 — صفحه‌ی تب اعتبار تا ۵٬۰۰۰ ردیف (تا ۳ فاکتور مرجع برای هر ردیف) ⇒ `id in`
++   * یکجا از سقف IN ۵۰۰ (S99-2) رد می‌شد. حالا دسته‌های ۵۰۰تایی؛ نقشه جمع‌پذیر است.
++   */
++  const out = new Map<number, number>()
++  for (const part of chunkIds(ids)) {
++    const invoices = await client.saleInvoice.findMany({
++      where: { id: { in: part } },
++      select: { id: true, receiptNo: true }
++    })
++    for (const i of invoices) out.set(i.id, i.receiptNo)
++  }
++  return out
+ }
+ 
+ /**
+@@ -2582,12 +2590,20 @@
+         .map((r) => r.id)
+       page.totalCount = remainingIds.length
+       const ids = remainingIds.slice(page.skip, page.skip + page.take)
+-      rows = ids.length
+-        ? await prisma.storeCredit.findMany({
+-            where: withAndClause(where, { id: { in: ids } }),
+-            orderBy: CREDIT_ORDER_BY.list
+-          })
+-        : []
++      /**
++       * نشست ۱۷۵ · S175-D4 — شناسه‌های صفحه (take پیش‌فرض ۱٬۰۰۰، تا ۵٬۰۰۰) یکجا در `id in` از سقف IN
++       * ۵۰۰ رد می‌شد. حالا دسته‌های ۵۰۰تایی و بازچینی به ترتیب همان remainingIds (که خودش با
++       * CREDIT_ORDER_BY.list خوانده شده) ⇒ ترتیب و محتوای صفحه عیناً همان قبلی.
++       */
++      const byId = new Map<number, any>()
++      for (const part of chunkIds(ids)) {
++        const got = await prisma.storeCredit.findMany({
++          where: withAndClause(where, { id: { in: part } }),
++          orderBy: CREDIT_ORDER_BY.list
++        })
++        for (const r of got) byId.set(r.id, r)
++      }
++      rows = ids.map((id) => byId.get(id)).filter((r) => r != null)
+     } else {
+       page.totalCount = await prisma.storeCredit.count({ where })
+       rows = await prisma.storeCredit.findMany({
+@@ -3065,9 +3081,12 @@
+     })
+ 
+     const customerIds = [...new Set(rows.map((r) => r.customerId).filter((n): n is number => Number.isInteger(n) && n > 0))]
+-    const customers = customerIds.length
+-      ? await prisma.customer.findMany({ where: { id: { in: customerIds } }, select: { id: true, name: true, phone: true } })
+-      : []
++    /** نشست ۱۷۵ · S175-D4 — تا ۵٬۰۰۰ ردیف ⇒ شناسه‌ی مشتری‌ها در دسته‌های ۵۰۰تایی (سقف IN، S99-2) */
++    const customers: Array<{ id: number; name: string; phone: string | null }> = []
++    for (const part of chunkIds(customerIds))
++      customers.push(
++        ...(await prisma.customer.findMany({ where: { id: { in: part } }, select: { id: true, name: true, phone: true } }))
++      )
+     const phoneOf = new Map(customers.map((c) => [c.id, c.phone ?? null]))
+     const nameOf = new Map(customers.map((c) => [c.id, c.name]))
+ 
+diff -ruN base/src/main/services/accountingReport.ts mahak/src/main/services/accountingReport.ts
+--- base/src/main/services/accountingReport.ts	2026-09-27 14:24:14.197851097 +0000
++++ mahak/src/main/services/accountingReport.ts	2026-09-27 14:30:35.838401655 +0000
+@@ -714,8 +714,15 @@
+     redemptionIds = [...rd].sort((a, b) => b - a)
+   }
+ 
++  /**
++   * نشست ۱۷۵ · S174-D5 — قبلاً این فهرست بی‌سقف در `id notIn` می‌نشست (issuedWhere، issuedOverpay،
++   * baseWhere تابع creditIdsForReportScope) ⇒ با ۵۰۱+ اعتبارِ برگشت باطل‌شده در یک بازه، از سقف IN
++   * گزارش‌ها (۵۰۰) رد می‌شد و کل پل/drill صادرشده با خطا می‌افتاد. حالا هیچ where ای فهرست باطل را
++   * ندارد؛ باطل‌ها در JS از issuedIds کنار گذاشته می‌شوند (پایین) و issuedIds همیشه آرایه‌ی صریح است
++   * وقتی باطلی در بازه هست. بدون اعتبار باطل در بازه، مسیر قبلی دست‌نخورده است.
++   */
+   const voidedCreditIds = await creditIdsOfVoidedReturns(range)
+-  const notVoided = voidedCreditIds.length ? { id: { notIn: voidedCreditIds } } : {}
++  const voidedSet = new Set<number>(voidedCreditIds.map((x) => Number(x)))
+   /**
+    * ممیزی A97-01 — «صادرشده» یک رویداد است: مالکش سند برگشت/تعویض (یا صادرکننده و
+    * نشست باز لحظه‌ی ثبت)، هویت روی فاکتورهای مرتبط؛ همان helper تب اعتبار. قبلاً
+@@ -725,7 +732,7 @@
+   let issuedIds: number[] | null = scopedIds
+   if (hasInvoiceScopedFilter(scope.filter)) {
+     const f = scope.filter
+-    const ids = await creditIdsForReportScope(
++    let ids = await creditIdsForReportScope(
+       {
+         orderType: f.orderType ?? null,
+         channels: f.channels ?? null,
+@@ -738,9 +745,11 @@
+         shiftId: f.shiftId ?? null,
+         shiftNumber: f.shiftNumber ?? null
+       },
+-      { ...notVoided, ...(range ? { issuedAt: range } : {}) },
++      { ...(range ? { issuedAt: range } : {}) },
+       { overCap: 'return' }
+     )
++    /** S174-D5 — کنار گذاشتن باطل‌ها پیش از سنجش سقف (همان معنای notIn قبلی) */
++    if (ids && voidedSet.size) ids = ids.filter((id) => !voidedSet.has(Number(id)))
+     if (ids && ids.length > ID_LIST_CAP) {
+       issuedIds = null
+       notes.push('اعتبار صادرشده: تعداد اعتبارهای منطبق از سقف امن گذشت و فیلترها روی این عدد قابل تفکیک نیست — عدد نمایش‌داده‌شده کل بازه است.')
+@@ -748,10 +757,22 @@
+       issuedIds = [...new Set(ids)].sort((a, b) => b - a)
+     }
+   }
+-  const issuedWhere: any = { ...notVoided, ...(range ? { issuedAt: range } : {}) }
++  const issuedWhere: any = { ...(range ? { issuedAt: range } : {}) }
++  /**
++   * S174-D5 — اگر باطلی در بازه هست: issuedIds = شناسه‌های صادرشده‌ی بازه (یا فهرست فیلتر) منهای
++   * باطل‌ها، به‌صورت آرایه‌ی صریح؛ مصرف‌کننده‌ها (aggregateByIdChunks / liteRowsByIdChunks) روی
++   * دسته‌های ۵۰۰تایی جمع می‌زنند. خواندن بی‌فیلتر فقط where پایه‌ی بازه است (بدون هیچ فهرستی).
++   */
++  if (voidedSet.size) {
++    if (issuedIds == null) {
++      const all: Array<{ id: number }> = await prisma.storeCredit.findMany({ where: issuedWhere, select: { id: true } })
++      issuedIds = all.map((r) => Number(r.id))
++    }
++    issuedIds = [...new Set(issuedIds.filter((id) => !voidedSet.has(Number(id))))].sort((a, b) => b - a)
++  }
+   const redemptionWhere: any = redemptionBase
+   return {
+-    range, invoiceIds, scopedIds, notVoided, issuedIds, issuedWhere,
++    range, invoiceIds, scopedIds, issuedIds, issuedWhere,
+     redemptionWhere, redemptionIds
+   }
+ }
+@@ -820,7 +841,7 @@
+   scope: StatementScope,
+   notes: string[]
+ ): Promise<StoreCreditTotals> {
+-  const { range, scopedIds, notVoided, issuedIds, issuedWhere, redemptionWhere, redemptionIds } =
++  const { range, scopedIds, issuedIds, issuedWhere, redemptionWhere, redemptionIds } =
+     await storeCreditScopes(scope, notes)
+   /** نشست ۱۷۴ · S173-D3 — همه‌ی جمع‌ها روی دسته‌های ۵۰۰تایی شناسه (نه یک IN بلند) */
+   const issued = await aggregateByIdChunks('storeCredit', issuedWhere, issuedIds, ['amount'])
+@@ -832,7 +853,7 @@
+    */
+   const issuedOverpay = await aggregateByIdChunks(
+     'storeCredit',
+-    { ...notVoided, source: CreditSource.OVERPAY, ...(range ? { issuedAt: range } : {}) },
++    { ...issuedWhere, source: CreditSource.OVERPAY },
+     issuedIds,
+     ['amount']
+   )

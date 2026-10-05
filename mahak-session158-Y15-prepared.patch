@@ -1,0 +1,56 @@
+--- mahak/src/shared/enums.ts	2026-09-27 08:26:53.168943618 +0000
++++ src-new/shared/enums.ts	2026-09-27 08:28:58.493670740 +0000
+@@ -261,10 +261,12 @@
+ 
+ /**
+  * مقصدهایی که با یک روش پرداخت سازگارند (منبع حقیقت یگانه).
+- * چک و روش‌های CUSTOM/CREDIT محدودیتی ندارند؛ نقدی و کارت فقط خودشان یا مدیر.
++ * چک و روش‌های CUSTOM/CREDIT محدودیتی ندارند؛ کارت فقط خودش یا مدیر.
++ * نشست ۱۵۸ (Y15، بند ۴-۱۳، S158-D5): پول نقد فقط به کشوی فیزیکی می‌رود، هرگز مستقیماً «حساب مدیر».
++ * اگر مدیر خودش نقد گرفت: اول «نقد در صندوق»، بعد «برداشت از صندوق» (رمز مدیر + دلیل).
+  */
+ export function allowedDestinationsFor(methodKind: string | null | undefined): readonly PaymentDestination[] {
+-  if (methodKind === PaymentKind.CASH) return [PaymentDestination.CASH, PaymentDestination.MANAGER]
++  if (methodKind === PaymentKind.CASH) return [PaymentDestination.CASH]
+   if (methodKind === PaymentKind.CARD) return [PaymentDestination.CARD, PaymentDestination.MANAGER]
+   return PAYMENT_DESTINATIONS
+ }
+--- mahak/src/main/services/SalesService.ts	2026-09-27 08:32:05.470755527 +0000
++++ src-new/main/services/SalesService.ts	2026-09-27 08:28:58.497670763 +0000
+@@ -2061,6 +2061,14 @@
+         allowed.map((d) => `«${PAYMENT_DESTINATION_LABELS[d]}»`).join(' یا ') +
+         '.\nاین کادر پیش‌فرض ندارد، چون اگر اشتباه ثبت شود هنگام بستن صندوق کسری یا اضافه‌ی بی‌دلیل ساخته می‌شود.'
+     )
++  // نشست ۱۵۸ (Y15، بند ۴-۱۳) — پیام راه درست برای نقدِ دریافتی مدیر
++  if (context === 'PAYMENT' && methodKind === PaymentKind.CASH && chosen === PaymentDestination.MANAGER)
++    throw new BusinessError(
++      `پول نقد نمی‌تواند مستقیماً به «${PAYMENT_DESTINATION_LABELS[PaymentDestination.MANAGER]}» برود؛ مقصد پول نقد فقط ` +
++        `«${PAYMENT_DESTINATION_LABELS[PaymentDestination.CASH]}» است. اگر مدیر خودش پول نقد را گرفته، اول آن را با مقصد ` +
++        `«${PAYMENT_DESTINATION_LABELS[PaymentDestination.CASH]}» ثبت کنید و سپس با «برداشت از صندوق» (رمز مدیر و دلیل اجباری) ` +
++        'از صندوق خارج کنید تا نقد مورد انتظار کشو و کسری/اضافی درست بماند.'
++    )
+   if (!allowed.includes(chosen))
+     throw new BusinessError(
+       `مقصد «${PAYMENT_DESTINATION_LABELS[chosen]}» با روش پرداخت انتخاب‌شده سازگار نیست. ` +
+@@ -4621,11 +4629,7 @@
+         { invoiceDiscount: input.invoiceDiscount, invoiceTax: input.invoiceTax, serviceCharge: input.serviceCharge },
+         exchangeScope
+       )
+-      // نشست ۱۵۸ (S158-D6) — تخفیف بیش از مبلغ قلم/سند همان پیام اختصاصی S141 داخل تراکنش را بگیرد
+-      const overDiscount =
+-        preLines.some((l) => l.discount > l.unitPrice * l.qty) ||
+-        Math.round(Number(input.invoiceDiscount ?? 0)) > preLines.reduce((s, l) => s + l.unitPrice * l.qty - l.discount, 0)
+-      if (!overDiscount) exchangePricing = await preverifySalePolicy(
++      exchangePricing = await preverifySalePolicy(
+         {
+           lines: preLines.map((l) => ({ ...l, tax: 0 })),
+           invoiceDiscount: input.invoiceDiscount ?? 0,
+@@ -4633,7 +4637,7 @@
+         } as any,
+         { orderType: exchangeScope === 'wholesale' ? OrderType.WHOLESALE : OrderType.INTERNAL }
+       )
+-      if (exchangePricing?.managerApproved) exchangeManagerVerified = true
++      if (exchangePricing.managerApproved) exchangeManagerVerified = true
+     }
+     /**
+      * نشست ۶۳ (S63-2/S63-3) — هر رمز مدیری که این تعویض لازم دارد (دوره‌ی بسته،

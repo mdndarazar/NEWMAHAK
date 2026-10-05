@@ -1,0 +1,66 @@
+# نشست ۱۵۲ — S151-a تست بعد از رفع
+  ✓ IPC.creditSuspend با userId جعلی
+  ✓ actor در Audit CREDIT_SUSPEND = 1
+  ✓ IPC.creditReactivate با userId جعلی
+  ✓ actor در Audit CREDIT_REACTIVATE = 1
+  ✓ IPC.creditExpiryChange با userId جعلی
+  ✓ actor در Audit CREDIT_EXPIRY_CHANGE = 1
+  ✓ IPC.creditAmountChange با userId جعلی
+  ✓ actor در Audit CREDIT_AMOUNT_CHANGE = 1
+  ✓ IPC.creditUsesChange با userId جعلی
+  ✓ actor در Audit CREDIT_USES_CHANGE = 1
+  ✓ IPC.creditHolderChange با userId جعلی
+  ✓ actor در Audit CREDIT_HOLDER_CHANGE = 1
+  ✓ IPC.creditRestrictionChange با userId جعلی
+  ✓ actor در Audit CREDIT_RESTRICTION_CHANGE = 1
+  ✓ IPC.creditVoid با userId جعلی
+  ✓ actor در Audit CREDIT_VOID = 1
+  ✓ IPC.creditDelete (بی‌مصرف) با userId جعلی
+  ✓ actor در Audit CREDIT_DELETE = 1
+  ✓ IPC.creditDelete (مصرف‌شده ⇒ آرشیو) با userId جعلی
+  ✓ actor در Audit CREDIT_ARCHIVE = 1
+  ✓ IPC.creditMarkPrinted با userId جعلی
+  ✓ actor در Audit CREDIT_PRINT = 1
+  ✓ IPC.creditReminderQueue با userId جعلی
+  ✓ actor در Audit CREDIT_REMINDER_QUEUE = 1
+  ✓ actor در Audit CREDIT_REDEEM_BLOCKED (lookup کد غلط) = 1
+  ✓ creditPreview کد غلط ردیف CREDIT_REDEEM_BLOCKED تازه نوشت
+  ✓ actor در Audit CREDIT_REDEEM_BLOCKED (preview کد غلط) = 1
+  · printCredit در هارنس اجرا نشد (انجام این عملیات ممکن نشد و چیزی ذخیره نشد. یک بار دیگر تلاش کنید؛ اگر تکرار شد،) ⇒ فقط چک ساختاری پایین
+  ✓ IPC.customerCreate (ثبت تازه) با userId جعلی
+  ✓ actor در Audit CUSTOMER_CREATE (ثبت تازه) = 1
+  ✓ IPC.customerCreate (ارتقای هم‌شماره به عمده) با userId جعلی
+  ✓ Audit ارتقا ثبت شد = 2
+  ✓ actor در Audit CUSTOMER_CREATE (ارتقای هم‌شماره) = 1
+  ✓ IPC.customerUpdate با userId جعلی
+  ✓ actor در Audit SETTINGS_UPDATE (Customer) = 1
+  ✓ IPC.customerDelete با userId جعلی
+  ✓ actor در Audit DELETE (Customer) = 1
+  ✓ IPC.creditSuspend بدون نشست با userId جعلی
+  ✓ userId در Audit CREDIT_SUSPEND بدون نشست = null
+  ✓ IPC.creditMarkPrinted بدون نشست با userId جعلی
+  ✓ userId در Audit چاپ بدون نشست = null
+  ✓ IPC.customerCreate بدون نشست با userId جعلی
+  ✓ userId در Audit CUSTOMER_CREATE بدون نشست = null
+  ✓ IPC.customerUpdate بدون نشست با userId جعلی
+  ✓ userId در Audit SETTINGS_UPDATE (Customer) بدون نشست = null
+  ✓ IPC.storeCreditLookup ⇒ withOptionalSessionActor
+  ✓ IPC.creditPreview ⇒ withOptionalSessionActor
+  ✓ IPC.creditVoid ⇒ withOptionalSessionActor
+  ✓ IPC.creditSuspend ⇒ withOptionalSessionActor
+  ✓ IPC.creditReactivate ⇒ withOptionalSessionActor
+  ✓ IPC.creditExpiryChange ⇒ withOptionalSessionActor
+  ✓ IPC.creditAmountChange ⇒ withOptionalSessionActor
+  ✓ IPC.creditUsesChange ⇒ withOptionalSessionActor
+  ✓ IPC.creditHolderChange ⇒ withOptionalSessionActor
+  ✓ IPC.creditRestrictionChange ⇒ withOptionalSessionActor
+  ✓ IPC.creditDelete ⇒ withOptionalSessionActor
+  ✓ IPC.creditMarkPrinted ⇒ withOptionalSessionActor
+  ✓ IPC.creditReminderQueue ⇒ withOptionalSessionActor
+  ✓ IPC.printCredit ⇒ withOptionalSessionActor
+  ✓ IPC.printCreditBatch ⇒ withOptionalSessionActor
+  ✓ IPC.creditPdf ⇒ withOptionalSessionActor
+  ✓ IPC.customerCreate ⇒ withOptionalSessionActor
+  ✓ IPC.customerUpdate ⇒ withOptionalSessionActor
+  ✓ IPC.customerDelete ⇒ withOptionalSessionActor
+نتیجه: 63 موفق · 0 ناموفق

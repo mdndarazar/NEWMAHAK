@@ -1,0 +1,34 @@
+(node:6509) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6509) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/ipc/index.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+۱) actor مرور ضدتقلب
+  ✓ ردیف Audit مرور ساخته شد
+  ✓ بدون نشست: actor ≠ فیلتر کارمند (null) = null
+  ✓ فیلتر کارمند در after ثبت شده (filterUserId)
+  ✓ IPC مرور موفق
+  ✓ با نشست باز: actor = صندوق‌دار نشست (نه فیلتر، نه actorId جعلی) = 1
+  ✓ after: filterUserId = ب
+  ✓ IPC بدون فیلتر ⇒ actor همان صندوق‌دار = 1
+  ✓ IPC بدون فیلتر موفق
+۲) چک تکراری بین بازه‌ها و با رقم فارسی/فاصله
+  ✓ هشدار چک تکراری وجود دارد
+    منابع: ["شماره چک 00906 · ۲ بار","شماره چک 55501 · ۲ بار (۱ بار در این بازه، بقیه در بازه‌های دیگر)","شماره چک 77702 · ۲ بار"]
+  ✓ تعداد شماره‌های تکراری = ۳ (55501، 77702، 00906) = 3
+  ✓ 55501 (ماه قبل + امروز) گرفته شد
+  ✓ 77702 (فارسی/فاصله) گرفته شد
+  ✓ 00906 (دو بار امروز) هنوز گرفته می‌شود
+  ✓ 11103 (یک بار) هشدار ندارد
+  ✓ 33304 (تکرار فقط در گذشته) در گزارش امروز نیست
+  ✓ 44405 (دومی باطل) هشدار ندارد
+  ✓ مبلغ = جمع استفاده‌های داخل بازه (۲م + ۶م + ۰٫۸م) = 8800000
+  ✓ ترتیب منابع قطعی بر اساس شماره = ["00906","55501","77702"]
+  ✓ برچسب 55501 استفاده در بازه‌ی دیگر را می‌گوید
+  ✓ منبع 55501: مبلغ همان بازه = 2000000
+  ✓ گزارش ماه قبل: 55501 (تکرار بعدی) هم دیده می‌شود
+  ✓ گزارش ماه قبل: 33304 دیده می‌شود
+  ✓ گزارش ماه قبل: 44405 (دومی باطل) دیده نمی‌شود
+
+نتیجه: 23 موفق، 0 ناموفق

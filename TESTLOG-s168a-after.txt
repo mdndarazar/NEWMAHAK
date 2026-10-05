@@ -1,0 +1,48 @@
+(node:4666) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:4666) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/proj/mahak/src/main/services/SettingsService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/proj/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓ تابع مشترک mergeFreshPosToggles در @shared/receipt وجود دارد = "function"
+
+۱) تابع خالص: فقط printEnabled و autoCentralWithdraw از سرور؛ بقیه‌ی فیلدهای صفحه دست‌نخورده
+  ✓ printEnabled از سرور = false
+  ✓ autoCentralWithdraw از سرور = true
+  ✓ cashierName از صفحه = "صفحه"
+  ✓ returnCodeDays از صفحه = 9
+  ✓ ورودی صفحه mutate نشد = true
+
+۲) (الف) صفحه‌ی تنظیمات باز ⇒ POS چاپ را با رمز خاموش ⇒ تنظیمات با تغییر نام صندوق‌دار + رمز مدیر ذخیره
+  ✓ پیش‌شرط: چاپ روشن = true
+  ✓ POS: خاموش‌کردن چاپ با رمز پنل
+  ✓ POS: روشن‌کردن برداشت خودکار با رمز پنل
+  ✓ ذخیره‌ی تنظیمات پذیرفته شد = true
+  ✓ نام صندوق‌دار ذخیره شد = "صندوق‌دار ۱۶۸"
+  ✓ چاپ خاموش ماند (مقدار کهنه برنگشت) = false
+  ✓ برداشت خودکار روشن ماند (مقدار کهنه برنگشت) = true
+
+۳) (ب) صفحه‌ی کهنه، فقط قالب رسید عوض شده، بی‌رمز ⇒ نباید به رمز پنل چاپ/برداشت گیر کند
+  ✓ POS: عوض‌کردن چاپ با رمز پنل
+  ✓ POS: عوض‌کردن برداشت خودکار با رمز پنل
+  ✓ ذخیره‌ی بی‌رمز قالب رسید پذیرفته شد = true
+  ✓ چاپ همان مقدار POS ماند = true
+  ✓ برداشت خودکار همان مقدار POS ماند = false
+
+۴) گیت سرور دست‌نخورده: تغییر واقعی چاپ از این کانال بی‌رمز هنوز رد می‌شود
+[ipc:settings:saveBundle] BusinessError: «خاموش کردن چاپ فاکتور» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.
+    at assertPanelPassword (file:///home/user/work/proj/mahak/src/main/services/AuthService.ts:599:11)
+    at async Object.saveBundle (file:///home/user/work/proj/mahak/src/main/services/SettingsService.ts:600:7)
+    at async file:///home/user/work/proj/mahak/src/main/ipc/index.ts:51:32
+    at async file:///home/user/work/proj/mahak/tests/audit-fixes/fix-s168-settings-stale-pos-toggles.mjs:112:12 {
+  isBusinessError: true
+}
+  ✓ رد با پیام فارسی رمز = true
+
+۵) UI: Settings.tsx پیش از ذخیره تنظیمات تازه را می‌خواند و این دو فیلد را از سرور می‌گیرد
+  ✓ save() تنظیمات تازه را می‌خواند = true
+  ✓ save() از mergeFreshPosToggles استفاده می‌کند = true
+  ✓ sale ادغام‌شده فرستاده می‌شود = true
+  ✓ state صفحه هم به‌روز می‌شود = true
+
+✓ 23 بررسی موفق · 0 ناموفق

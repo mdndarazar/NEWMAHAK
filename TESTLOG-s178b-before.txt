@@ -1,0 +1,22 @@
+(node:6499) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6499) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mut/src/main/services/FraudService.ts is not specified and it doesn't parse as CommonJS.
+To eliminate this warning, add "type": "module" to /home/user/work/mut/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+— ۱) helper خالص
+  ✗ همتای بی‌برگشت در میانه می‌آید ⇒ الف (۵۵٪) و همتای ۳۰٪ هشدار · دریافت [] · انتظار [1,5]
+  ✗ baseline الف = میانه‌ی [۰،۰،۰،۳۰٪] = ۰ و آستانه = کف ۲۵٪ · دریافت [null,null] · انتظار [0,0.25]
+  ✓ فروشنده‌ی بی‌برگشت هرگز هشدار نمی‌گیرد
+  ✓ یک برگشت تنها (۴۰٪) کنار همتای ۰٪ هم هشدار نرخ نمی‌سازد
+  ✓ قرارداد قبلی fix-s89 (۴۰٪ در برابر ۱۰٪) حفظ شد
+  ✓ همتای بدون فروش و بدون برگشت نرخی ندارد و baseline نمی‌سازد (کف مطلق ۲۵٪ ⇒ ۳۰٪ هشدار)
+
+— ۲) مسیر واقعی FraudService.review
+  ✗ بدون فیلتر: هشدار نرخ برگشت برای الف (۵۵٪) و ه (۳۰٪) · دریافت [] · انتظار [1,5]
+  ✗ برچسب الف نسبت ۵۵٪ · دریافت false · انتظار true
+  ✗ مبلغ هشدار = جمع برگشت دو کاربر (۸٬۵۰۰٬۰۰۰) · دریافت undefined · انتظار 8500000
+  ✗ فیلتر شیفت صبح: همان دو هشدار (همتای بی‌برگشت همان شیفت در میانه) · دریافت [] · انتظار [1,5]
+  ✓ فیلتر فقط کاربر ه: بدون همتا ⇒ کف ۲۵٪ ⇒ ۳۰٪ هشدار (رفتار قبلی حفظ)
+  ✓ کنترل: همه‌ی همتایان ۵۰٪ ⇒ الف ۵۵٪ زیر آستانه (۱۰۰٪) ⇒ بی‌هشدار
+
+✗ 6 بررسی موفق · 6 ناموفق

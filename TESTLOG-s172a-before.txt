@@ -1,0 +1,80 @@
+(node:5679) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5679) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓ اعتبار سند‌دار پایه ساخته شد = 1000
+
+۱) صفحه‌ی بزرگ (take ۲۰۰۰) با ۵۲۱ اعتبار سند‌دار
+[accounting] bridge sources failed storeCreditIssued Error: HARNESS: سقف IN برابر ۵۰۰ است
+    at walk (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:46:104)
+    at walk (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:47:42)
+    at prisma.storeCredit.<computed> [as count] (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:52:39)
+    at bridgeSources (file:///home/user/work/mahak/src/main/services/accountingReport.ts:1170:51)
+    at async buildStatements (file:///home/user/work/mahak/src/main/services/accountingReport.ts:1513:9)
+    at async report (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:77:28)
+    at async file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:88:12
+  ✓ گزارش بی‌خطا ساخته شد = null
+  ✓ ردیف پل = −۵۲۱٬۰۰۰ = -521000
+  ✗ totalCount صفحه = ۵۲۱ — انتظار 521، دریافت 0
+  ✗ همه‌ی ۵۲۱ سند در یک صفحه — انتظار 521، دریافت 0
+  ✗ جمع drill = مبلغ ردیف — انتظار 521000، دریافت 0
+  ✓ truncated = false = false
+  ✗ هیچ IN بالای ۵۰۰ نبود — انتظار true، دریافت false
+
+۲) صفحه‌بندی ۲۰۰تایی: بی‌هم‌پوشانی، مرتب id نزولی، کامل
+[accounting] bridge sources failed storeCreditIssued Error: HARNESS: سقف IN برابر ۵۰۰ است
+    at walk (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:46:104)
+    at walk (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:47:42)
+    at prisma.storeCredit.<computed> [as count] (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:52:39)
+    at bridgeSources (file:///home/user/work/mahak/src/main/services/accountingReport.ts:1170:51)
+    at async buildStatements (file:///home/user/work/mahak/src/main/services/accountingReport.ts:1513:9)
+    at async report (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:77:28)
+    at async file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:101:13
+  ✓ صفحه‌ی skip=0 بی‌خطا = null
+  ✗ totalCount صفحه‌ی skip=0 — انتظار 521، دریافت 0
+  ✗ اندازه‌ی صفحه‌ی skip=0 — انتظار 200، دریافت 0
+  ✗ truncated صفحه‌ی skip=0 — انتظار true، دریافت false
+[accounting] bridge sources failed storeCreditIssued Error: HARNESS: سقف IN برابر ۵۰۰ است
+    at walk (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:46:104)
+    at walk (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:47:42)
+    at prisma.storeCredit.<computed> [as count] (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:52:39)
+    at bridgeSources (file:///home/user/work/mahak/src/main/services/accountingReport.ts:1170:51)
+    at async buildStatements (file:///home/user/work/mahak/src/main/services/accountingReport.ts:1513:9)
+    at async report (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:77:28)
+    at async file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:101:13
+  ✓ صفحه‌ی skip=200 بی‌خطا = null
+  ✗ totalCount صفحه‌ی skip=200 — انتظار 521، دریافت 0
+  ✗ اندازه‌ی صفحه‌ی skip=200 — انتظار 200، دریافت 0
+  ✗ truncated صفحه‌ی skip=200 — انتظار true، دریافت false
+[accounting] bridge sources failed storeCreditIssued Error: HARNESS: سقف IN برابر ۵۰۰ است
+    at walk (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:46:104)
+    at walk (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:47:42)
+    at prisma.storeCredit.<computed> [as count] (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:52:39)
+    at bridgeSources (file:///home/user/work/mahak/src/main/services/accountingReport.ts:1170:51)
+    at async buildStatements (file:///home/user/work/mahak/src/main/services/accountingReport.ts:1513:9)
+    at async report (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:77:28)
+    at async file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:101:13
+  ✓ صفحه‌ی skip=400 بی‌خطا = null
+  ✗ totalCount صفحه‌ی skip=400 — انتظار 521، دریافت 0
+  ✗ اندازه‌ی صفحه‌ی skip=400 — انتظار 121، دریافت 0
+  ✓ truncated صفحه‌ی skip=400 = false
+  ✓ همه‌ی شناسه‌ها یکتا = 0
+  ✗ مجموعه‌ی صفحه‌ها = همه‌ی ۵۲۱ — انتظار 521، دریافت 0
+  ✓ ترتیب id نزولی در کل صفحه‌ها = true
+  ✗ هیچ IN بالای ۵۰۰ نبود (کل صفحه‌ها) — انتظار true، دریافت false
+
+۳) صفحه‌ی بیرون از بازه (skip ۱۰۰۰)
+[accounting] bridge sources failed storeCreditIssued Error: HARNESS: سقف IN برابر ۵۰۰ است
+    at walk (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:46:104)
+    at walk (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:47:42)
+    at prisma.storeCredit.<computed> [as count] (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:52:39)
+    at bridgeSources (file:///home/user/work/mahak/src/main/services/accountingReport.ts:1170:51)
+    at async buildStatements (file:///home/user/work/mahak/src/main/services/accountingReport.ts:1513:9)
+    at async report (file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:77:28)
+    at async file:///home/user/work/mahak/tests/pending/fix-s172-bridge-drill-in-chunk.mjs:115:12
+  ✓ بی‌خطا = null
+  ✗ صفحه‌ی خالی با totalCount درست — انتظار [0,521]، دریافت [0,0]
+
+نتیجه: 11 موفق · 15 ناموفق

@@ -1,0 +1,73 @@
+(node:5898) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5898) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/before149/src/main/services/SecondaryStockService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/before149/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) قفل «انتقال به انبار فروشگاه» روشن: سرویس بی‌رمز/رمز غلط ⇒ رد، صفر تغییر
+  ✗ toStore بی‌رمز — بدون تأیید پذیرفته شد
+  ✗ toStore رمز خالی — بدون تأیید پذیرفته شد
+  ✗ toStore رمز غلط — بدون تأیید پذیرفته شد
+  ✗ validation عددی S147-a همچنان پیش از رمز (۲٫۵ بی‌رمز ⇒ پیام تعداد) — بدون تأیید پذیرفته شد
+  ✗ موجودی فروشگاه دست‌نخورده — انتظار 0، دریافت 8
+  ✗ ردیف مرکزی دست‌نخورده — انتظار 10، دریافت 2
+  ✗ حرکت انبار تازه‌ای ثبت نشد — انتظار 0، دریافت 4
+  ✗ Audit انتقال به فروشگاه تازه‌ای ثبت نشد — انتظار 0، دریافت 4
+
+۲) IPC: بی‌رمز ⇒ رد؛ با رمز مدیر و userId جعلی ⇒ انجام با actor نشست و scope در note
+  ✗ IPC.secondaryStockToStore بی‌رمز — بدون تأیید پذیرفته شد
+  ✗ موجودی فروشگاه پس از IPC بی‌رمز — انتظار 0، دریافت 10
+[ipc:secondaryStock:toStore] BusinessError: موجودی ردیف «شلوار جین مرکزی ۱۴۹» در انبار مرکزی ۰ عدد است و شما ۲ عدد انتقال داده‌اید. اگر عمدی است، تیک تأیید انتقال بیشتر از موجودی را بزنید (موجودی مبدأ منفی می‌شود).
+    at toStoreWithin (file:///home/user/work/before149/src/main/services/SecondaryStockService.ts:311:11)
+    at async client.$transaction (file:///home/user/work/before149/test/harness/prismaLite.mjs:766:22)
+    at async file:///home/user/work/before149/src/main/ipc/index.ts:51:32
+    at async ipcOk (file:///home/user/work/before149/tests/audit-fixes/fix-s147b-secondary-to-store-gate.mjs:69:13)
+    at async file:///home/user/work/before149/tests/audit-fixes/fix-s147b-secondary-to-store-gate.mjs:106:1 {
+  isBusinessError: true
+}
+  ✗ IPC.secondaryStockToStore با رمز مدیر — موجودی ردیف «شلوار جین مرکزی ۱۴۹» در انبار مرکزی ۰ عدد است و شما ۲ عدد انتقال داده‌اید. اگر عمدی است، تیک تأیید انتقال بیشتر از موجودی را بزنید (موجودی مبدأ منف
+  ✗ موجودی فروشگاه ۰ ⇒ ۲ — انتظار 2، دریافت 10
+  ✗ ردیف مرکزی ۱۰ ⇒ ۸ — انتظار 8، دریافت 0
+  ✗ actor در Audit SECONDARY_TO_STORE = کارمند نشست (نه userId جعلی) — انتظار 1، دریافت 2
+  ✗ scope تأیید قفل در note Audit
+  ✗ actor در سابقه‌ی انبار مرکزی = کارمند نشست — انتظار 1، دریافت 2
+
+۳) قفل خاموش ⇒ بی‌رمز باز (OPEN)، مثل سیاست «قفل ماژول‌ها»
+  ✗ toStore بی‌رمز با قفل خاموش — خطای نامنتظره: موجودی ردیف «شلوار جین مرکزی ۱۴۹» در انبار مرکزی ۰ عدد است و شما ۱ عدد انتقال داده‌اید. اگر عمدی است، تیک تأیید انتقال بیشتر از موجودی را بزنید (موجودی مبدأ منف
+  ✗ موجودی فروشگاه ۲ ⇒ ۳ — انتظار 3، دریافت 10
+  ✗ scope OPEN در note Audit
+
+۴) بقیه‌ی IPCهای تغییردهنده‌ی انبار مرکزی ⇒ actor از نشست main (userId رندرر نادیده)
+  ✓ IPC.secondaryStockUpsert (ثبت) با userId جعلی
+  ✗ actor در Audit SECONDARY_STOCK_CREATE — انتظار 1، دریافت 2
+  ✗ actor در سابقه‌ی ثبت — انتظار 1، دریافت 2
+  ✓ IPC.secondaryStockUpsert (ویرایش) با userId جعلی
+  ✗ actor در Audit SECONDARY_STOCK_UPDATE — انتظار 1، دریافت 2
+  ✓ IPC.secondaryWarehouseUpsert با userId جعلی
+  ✗ actor در Audit SECONDARY_WAREHOUSE_CREATE — انتظار 1، دریافت 2
+  ✓ IPC.secondaryStockTransfer با userId جعلی
+  ✗ actor در Audit SECONDARY_STOCK_TRANSFER — انتظار 1، دریافت 2
+  ✓ IPC.secondaryStockDelete با userId جعلی
+  ✗ actor در Audit SECONDARY_STOCK_DELETE — انتظار 1، دریافت 2
+  ✓ IPC.secondaryWarehouseDelete با userId جعلی
+  ✗ actor در Audit SECONDARY_WAREHOUSE_DELETE — انتظار 1، دریافت 2
+[ipc:secondaryStock:toStoreNew] BusinessError: موجودی ردیف «شلوار جین مرکزی ۱۴۹» در انبار مرکزی ۰ عدد است و شما ۱ عدد انتقال داده‌اید. اگر عمدی است، تیک تأیید انتقال بیشتر از موجودی را بزنید (موجودی مبدأ منفی می‌شود).
+    at toStoreWithin (file:///home/user/work/before149/src/main/services/SecondaryStockService.ts:311:11)
+    at async file:///home/user/work/before149/src/main/services/SecondaryStockService.ts:908:21
+    at async client.$transaction (file:///home/user/work/before149/test/harness/prismaLite.mjs:766:22)
+    at async file:///home/user/work/before149/src/main/ipc/index.ts:51:32
+    at async ipcOk (file:///home/user/work/before149/tests/audit-fixes/fix-s147b-secondary-to-store-gate.mjs:69:13)
+    at async file:///home/user/work/before149/tests/audit-fixes/fix-s147b-secondary-to-store-gate.mjs:135:1 {
+  isBusinessError: true
+}
+  ✗ IPC.secondaryStockToStoreNew با userId جعلی (قفل‌ها خاموش) — موجودی ردیف «شلوار جین مرکزی ۱۴۹» در انبار مرکزی ۰ عدد است و شما ۱ عدد انتقال داده‌اید. اگر عمدی است، تیک تأیید انتقال بیشتر از موجودی را بزنید (موجودی مبدأ منف
+  ✗ actor در Audit SECONDARY_TO_STORE_NEW_PRODUCT — انتظار 1، دریافت null
+
+۵) سیم‌کشی UI (ساختاری؛ رندر واقعی Electron اجرا نمی‌شود)
+  ✗ صفحه قفل را با usePanelLock(PANEL_KEYS.secondaryToStore) می‌خواند (fail-closed)
+  ✗ صفحه PasswordField دارد
+  ✗ صفحه toStorePassword را همراه انتقال به فروشگاه می‌فرستد
+  ✗ نوع SecondaryToStoreInput فیلد toStorePassword دارد
+
+✗ 6 بررسی موفق · 32 ناموفق

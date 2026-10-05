@@ -1,0 +1,662 @@
+diff -ruN mahak-orig/src/main/ipc/index.ts mahak/src/main/ipc/index.ts
+--- mahak-orig/src/main/ipc/index.ts	2026-09-26 17:19:16.259444442 +0000
++++ mahak/src/main/ipc/index.ts	2026-09-26 17:25:46.625709224 +0000
+@@ -328,8 +328,9 @@
+   handle(IPC.paymentMethods, () => prisma.paymentMethod.findMany({ where: { isActive: true }, orderBy: { sortOrder: 'asc' } }))
+ 
+   // ---- خرید ----
+-  handle(IPC.purchaseCreate, (p) => purchaseService.create(p))
+-  handle(IPC.purchaseUpdate, (p) => purchaseService.update(p))
++  // نشست ۱۵۵ (S151-c1، بند ۴-۳۹ «ثبت خرید»): actor از نشست؛ گیت رمز پنل خرید در خود سرویس
++  handle(IPC.purchaseCreate, async (p) => purchaseService.create(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.purchaseUpdate, async (p) => purchaseService.update(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.purchaseList, (p) => purchaseService.list(p ?? {}))
+   handle(IPC.purchaseGet, (p) => purchaseService.get(p.id))
+   handle(IPC.purchaseNextNo, () => purchaseService.nextNo())
+@@ -545,7 +546,8 @@
+   // ---- عوارض و مالیات / حق سرویس بر اساس دسته‌بندی کالا (اسکوپ‌دار) ----
+   /** هر چهار ترکیب: { pos: { tax, service }, wholesale: { tax, service } } */
+   handle(IPC.chargesGet, () => settingsService.charges())
+-  handle(IPC.chargesSave, (p) => settingsService.saveCharge(p))
++  // نشست ۱۵۵ (S151-c1): actor از نشست؛ گیت رمز پنل در خود سرویس
++  handle(IPC.chargesSave, async (p) => settingsService.saveCharge(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.printers, () => printService.printers())
+ 
+   // =======================================================================
+diff -ruN mahak-orig/src/main/services/PartyService.ts mahak/src/main/services/PartyService.ts
+--- mahak-orig/src/main/services/PartyService.ts	2026-09-26 17:19:16.259444442 +0000
++++ mahak/src/main/services/PartyService.ts	2026-09-26 17:26:09.621842642 +0000
+@@ -1,5 +1,7 @@
+ import { prisma } from '../db/client'
+-import { audit } from './AuditService'
++import { audit, auditOrThrow } from './AuditService'
++import { assertPanelPassword } from './AuthService'
++import { PANEL_KEYS } from '@shared/panels'
+ import { BusinessError } from '../errors'
+ import { toJalaliDate, toLatinDigits, faDigits, money } from '@shared/jalali'
+ import type {
+@@ -395,7 +397,12 @@
+    * می‌گردد. «مشتری عمومی» خودش هیچ‌وقت حذف نمی‌شود، چون فاکتورهای بی‌مشتری
+    * به او تعلق می‌گیرند.
+    */
+-  async deleteCustomer(input: { id: number; force?: boolean; userId?: number | null }): Promise<CustomerDeleteResult> {
++  async deleteCustomer(input: {
++    id: number
++    force?: boolean
++    userId?: number | null
++    panelPassword?: string | null
++  }): Promise<CustomerDeleteResult> {
+     const id = Number(input?.id)
+     if (!Number.isFinite(id) || id <= 0) throw new BusinessError('مشتری برای حذف مشخص نشده است.')
+     const c = await prisma.customer.findUnique({ where: { id } })
+@@ -415,19 +422,70 @@
+           'خریدارشان به «مشتری عمومی» تغییر می‌کند. اگر مطمئنید، حذف را تایید کنید.'
+       }
+ 
+-    const detached = invoiceCount
+-      ? (await prisma.saleInvoice.updateMany({ where: { customerId: id }, data: { customerId: null } })).count
+-      : 0
+-    await prisma.customer.delete({ where: { id } })
+-    await audit(prisma, {
+-      action: 'DELETE',
+-      entity: 'Customer',
+-      entityId: id,
+-      userId: input.userId ?? null,
+-      before: JSON.stringify({ code: c.code, name: c.name, phone: c.phone, isWholesale: c.isWholesale }),
+-      note: detached
+-        ? `حذف مشتری از پنل مشتریان · ${detached} فاکتور به «مشتری عمومی» منتقل شد`
+-        : 'حذف مشتری از پنل مشتریان'
++    /**
++     * نشست ۱۵۵ (S151-c1، یافته‌ی Y5، بند ۴-۳۹ و ۴-۲۲؛ S155-D4) — قبلاً:
++     *   • بی‌رمز: «حذف مشتری دارای فاکتور» از فهرست عملیات فقط‌مدیر است، ولی هر تماس IPC با
++     *     force انجامش می‌داد.
++     *   • پیوند بدهی گم می‌شد: customerId فاکتورهای نسیه‌ی باز null می‌شد و بدهی بی‌صاحب می‌ماند.
++     *   • غیراتمیک: updateMany + delete + audit سه نوشتن جدا بودند.
++     * حالا: (۱) مشتری دارای فاکتورِ بدهکار (غیرلغو/غیرپیش‌نویس، باطل‌نشده، تسویه‌نشده، مبلغ
++     * بیشتر از صفر) حتی با رمز مدیر حذف نمی‌شود؛ (۲) برای بقیه‌ی فاکتورها رمز پنل تنظیمات (همیشه
++     * قفل؛ بخش مشتریان داخل همین پنل است) پیش از تراکنش؛ (۳) جداکردن فاکتورها، حذف و Audit
++     * (با شناسه‌ی همه‌ی فاکتورهای جداشده و مشخصات مشتری، تا مدرک قابل بازسازی بماند) در یک
++     * $transaction با auditOrThrow.
++     */
++    if (invoiceCount > 0) {
++      const open = await prisma.saleInvoice.findMany({
++        where: {
++          customerId: id,
++          status: { notIn: ['CANCELED', 'DRAFT'] },
++          voidedAt: null,
++          settledAt: null,
++          grandTotal: { gt: 0 }
++        },
++        select: { receiptNo: true }
++      })
++      if (open.length)
++        throw new BusinessError(
++          `«${c.name}» ${faDigits(open.length)} فاکتور با بدهی باز دارد (فیش ${open
++            .slice(0, 5)
++            .map((o) => faDigits(o.receiptNo ?? 0))
++            .join('، ')}${open.length > 5 ? '، …' : ''}). ` +
++            'تا بدهی تسویه یا فاکتور باطل نشود، این مشتری حذف نمی‌شود؛ حذف او پیوند بدهی نسیه را از بین می‌برد. ' +
++            'این قاعده با رمز مدیر هم باز نمی‌شود.'
++        )
++      await assertPanelPassword(
++        PANEL_KEYS.settings,
++        (input as any)?.panelPassword ?? null,
++        `حذف مشتری «${c.name}» که ${faDigits(invoiceCount)} فاکتور ثبت‌شده دارد`
++      )
++    }
++
++    const detached = await prisma.$transaction(async (tx) => {
++      const ids = invoiceCount
++        ? (await tx.saleInvoice.findMany({ where: { customerId: id }, select: { id: true } })).map((r) => r.id)
++        : []
++      const count = ids.length
++        ? (await tx.saleInvoice.updateMany({ where: { customerId: id }, data: { customerId: null } })).count
++        : 0
++      await tx.customer.delete({ where: { id } })
++      await auditOrThrow(tx, {
++        action: 'DELETE',
++        entity: 'Customer',
++        entityId: id,
++        userId: input.userId ?? null,
++        before: JSON.stringify({
++          code: c.code,
++          name: c.name,
++          phone: c.phone,
++          isWholesale: c.isWholesale,
++          detachedInvoiceIds: ids
++        }),
++        note: count
++          ? `حذف مشتری از پنل مشتریان با تایید رمز · ${count} فاکتور (تسویه‌شده/باطل) به «مشتری عمومی» منتقل شد`
++          : 'حذف مشتری از پنل مشتریان'
++      })
++      return count
+     })
+     return {
+       deleted: true,
+diff -ruN mahak-orig/src/main/services/PurchaseService.ts mahak/src/main/services/PurchaseService.ts
+--- mahak-orig/src/main/services/PurchaseService.ts	2026-09-26 17:19:16.259444442 +0000
++++ mahak/src/main/services/PurchaseService.ts	2026-09-26 17:26:09.621842642 +0000
+@@ -5,6 +5,8 @@
+ import { BusinessError } from '../errors'
+ import { TX_OPTIONS } from '../db/tx'
+ import { AuditAction } from '@shared/enums'
++import { assertPanelPassword } from './AuthService'
++import { PANEL_KEYS } from '@shared/panels'
+ import { toJalaliDate, jalaliToDateTime, isValidJalaliDate, faDigits } from '@shared/jalali'
+ import type { CreatePurchaseInput, UpdatePurchaseInput } from '@shared/types'
+ 
+@@ -51,8 +53,15 @@
+    * فاکتور + اقلام + حرکات انبار همه در یک $transaction هستند؛ نوشتن موجودی
+    * فقط از طریق InventoryService انجام می‌شود (قاعده‌ی ۱ README).
+    */
+-  async create(input: CreatePurchaseInput) {
++  async create(input: CreatePurchaseInput & { panelPassword?: string | null }) {
+     const lines = cleanLines(input)
++    /**
++     * نشست ۱۵۵ (S151-c1، بند ۴-۳۹ «ثبت خرید» و بند ۵ «هر گیت در main») — قفل پنل خرید فقط در
++     * UI بود؛ هر تماس IPC موجودی را بی‌رمز بالا می‌برد و قیمت خرید را عوض می‌کرد. حالا بعد از
++     * اعتبارسنجی ورودی (ورودی خراب تلاش رمز مصرف نکند) و *پیش از* تراکنش (نوشتن AuthLockout
++     * وسط تراکنش = بن‌بست SQLite): رمز پنل خرید؛ رمز مدیر همه را باز می‌کند؛ قفل خاموش ⇒ OPEN.
++     */
++    await assertPanelPassword(PANEL_KEYS.purchase, input?.panelPassword ?? null, 'ثبت فاکتور خرید (افزایش موجودی و قیمت خرید)')
+ 
+     const issuedAt = input.issuedAtJalali ? jalaliToDateTime(input.issuedAtJalali) : new Date()
+     const goodsTotal = lines.reduce((s, l) => s + l.qty * l.unitPrice, 0)
+@@ -139,9 +148,11 @@
+    * همه‌چیز در یک $transaction اتمیک، با ثبت before/after در AuditLog.
+    * ---------------------------------------------------------------------
+    */
+-  async update(input: UpdatePurchaseInput) {
++  async update(input: UpdatePurchaseInput & { panelPassword?: string | null }) {
+     const lines = cleanLines(input)
+     if (!input.id) throw new BusinessError('فاکتوری برای ویرایش مشخص نشده است')
++    // نشست ۱۵۵ (S151-c1) — همان گیت ثبت خرید، پیش از تراکنش
++    await assertPanelPassword(PANEL_KEYS.purchase, input?.panelPassword ?? null, 'ویرایش فاکتور خرید (اصلاح موجودی و قیمت خرید)')
+ 
+     return prisma.$transaction(async (tx) => {
+       const current = await tx.purchaseInvoice.findUnique({
+diff -ruN mahak-orig/src/main/services/SettingsService.ts mahak/src/main/services/SettingsService.ts
+--- mahak-orig/src/main/services/SettingsService.ts	2026-09-26 17:19:16.259444442 +0000
++++ mahak/src/main/services/SettingsService.ts	2026-09-26 17:25:36.817652322 +0000
+@@ -133,6 +133,18 @@
+ const normalizeKind = (k: unknown): ChargeKind => (k === 'service' ? 'service' : 'tax')
+ const normalizeScope = (s: unknown): ChargeScope => (s === 'wholesale' ? 'wholesale' : 'pos')
+ 
++/**
++ * نشست ۱۵۵ (S151-c1، یافته‌ی Y10، بند ۴-۳۹) — کلید قفل پنلِ هر ترکیب نوع/اسکوپ عوارض.
++ * همان کلیدهایی که صفحه‌ی CategoryCharges با `ManagerGate` می‌پوشاند؛ حالا سرور هم.
++ */
++function chargePanelKey(kind: ChargeKind, scope: ChargeScope): string {
++  if (scope === 'wholesale') return kind === 'service' ? PANEL_KEYS.chargesServiceWholesale : PANEL_KEYS.chargesTaxWholesale
++  return kind === 'service' ? PANEL_KEYS.chargesServicePos : PANEL_KEYS.chargesTaxPos
++}
++
++/** مقایسه‌ی «تغییر» بر پایه‌ی مقدار نرمال‌شده (نه متن خام) تا ارسال همان مقدار قبلی رمز نخواهد. */
++const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
++
+ /** مقدارهای صفر ذخیره نمی‌شوند: «صفر کردن» همان «خاموش کردن همان دسته» است. */
+ function cleanCharge(config: unknown): CategoryChargeConfig {
+   const clean = parseCategoryCharge(config)
+@@ -346,9 +358,20 @@
+     scope: ChargeScope
+     config: CategoryChargeConfig
+     userId?: number | null
++    panelPassword?: string | null
+   }) {
+     const kind = normalizeKind(input?.kind)
+     const scope = normalizeScope(input?.scope)
++    /**
++     * نشست ۱۵۵ (S151-c1، بند ۴-۳۹ «تغییر نرخ عوارض/حق سرویس» و بند ۵ «هر گیت در main») —
++     * قفل پنل فقط در UI بود؛ هر تماس IPC نرخ را بی‌رمز عوض می‌کرد. حالا پیش از هر نوشتن،
++     * رمز پنل همان نوع/اسکوپ (رمز مدیر همه را باز می‌کند؛ قفل خاموش ⇒ OPEN).
++     */
++    await assertPanelPassword(
++      chargePanelKey(kind, scope),
++      input?.panelPassword ?? null,
++      `ذخیره‌ی «${chargeTitle(kind, scope)}»`
++    )
+     const before = await this.charge(kind, scope)
+     const clean = cleanCharge(input?.config)
+     await writeKey(chargeSettingKey(kind, scope), clean)
+@@ -489,9 +512,67 @@
+    * نشود. تغییر تنظیمات در AuditLog هم ثبت می‌گردد.
+    */
+   async saveBundle(
+-    input: Partial<SettingsBundle> & { userId?: number | null; panelPassword?: string | null }
++    input: Partial<SettingsBundle> & {
++      userId?: number | null
++      panelPassword?: string | null
++      managerPassword?: string | null
++    }
+   ): Promise<SettingsBundle> {
+     /**
++     * نشست ۱۵۵ (S151-c1، یافته‌ی Y10، بند ۴-۲۹) — بقیه‌ی بخش‌های این کانال هم بی‌گیت
++     * نوشته می‌شدند و رمز مدیرِ settings:set خام (RAW_SETTING_MANAGER_KEYS) را دور می‌زدند.
++     * حالا *پیش از هر نوشتن* (هیچ بخشی نیمه‌کاره ذخیره نمی‌شود) برای هر بخشِ واقعاً تغییرکرده:
++     *   • security / shift / time ⇒ رمز مدیر (همان کلیدهای RAW_SETTING_MANAGER_KEYS).
++     *   • sale ⇒ مقایسه‌ی فیلدبه‌فیلد (S155-D2): فقط printEnabled ⇒ بی‌رمز (سوییچ رفتاری
++     *     پنل فروش، فاکتور همیشه ثبت می‌شود؛ هیچ عددی جابه‌جا نمی‌شود)؛ autoCentralWithdraw
++     *     ⇒ رمز پنل posCentralWithdrawToggle (همان قفل UI، رمز مدیر هم بازش می‌کند)؛ هر فیلد
++     *     دیگر (عوارض/حق سرویس قدیمی، مهلت و طول کد برگشت، نام صندوق‌دار…) ⇒ رمز مدیر.
++     *   • charges ⇒ رمز پنل همان نوع/اسکوپ (مثل chargesSave).
++     * «تغییر» با مقدار parse‌شده‌ی همان بخش در برابر مقدار فعلی سنجیده می‌شود، پس Pos.tsx و
++     * useAutoCentralWithdraw که کل sale را با یک فیلد عوض‌شده می‌فرستند فقط گیت همان فیلد را می‌خورند.
++     * رمز مدیر هر درخواست حداکثر یک بار سنجیده می‌شود.
++     */
++    const managerSections: string[] = []
++    if (input?.security && !sameJson(parseSecurityConfig(input.security), await this.securityConfig()))
++      managerSections.push('تنظیمات امنیتی (قفل موقت)')
++    if (input?.shift && !sameJson(parseShiftConfig(input.shift), await this.shiftConfig()))
++      managerSections.push('تنظیمات شیفت')
++    if (input?.time && !sameJson(parseOfficialTimeConfig(input.time), await this.officialTime()))
++      managerSections.push('افست ساعت رسمی')
++    let autoCentralChanged = false
++    if (input?.sale) {
++      const curSale = await this.saleDefaults()
++      const nextSale = parseSaleDefaults(input.sale)
++      const changed = (Object.keys(curSale) as (keyof SaleDefaults)[]).filter((k) => !sameJson(curSale[k], nextSale[k]))
++      autoCentralChanged = changed.includes('autoCentralWithdraw')
++      if (changed.some((k) => k !== 'printEnabled' && k !== 'autoCentralWithdraw'))
++        managerSections.push('تنظیمات فروش (عوارض/حق سرویس پیش‌فرض، کد برگشت، نام صندوق‌دار)')
++    }
++    const chargePanels: { panel: string; title: string }[] = []
++    if (input?.charges) {
++      for (const scope of CHARGE_SCOPES) {
++        const bucket = (input.charges as any)[scope]
++        if (!bucket) continue
++        for (const kind of CHARGE_KINDS) {
++          if (!bucket[kind]) continue
++          if (!sameJson(cleanCharge(bucket[kind]), cleanCharge(await this.charge(kind, scope))))
++            chargePanels.push({ panel: chargePanelKey(kind, scope), title: chargeTitle(kind, scope) })
++        }
++      }
++    }
++    if (managerSections.length)
++      await assertManagerPassword(input?.managerPassword ?? null, 'تغییر ' + managerSections.join('، '))
++    if (autoCentralChanged && !managerSections.length)
++      await assertPanelPassword(
++        PANEL_KEYS.posCentralWithdrawToggle,
++        input?.panelPassword ?? input?.managerPassword ?? null,
++        'تغییر گزینه‌ی «برداشت خودکار از انبار مرکزی هنگام کمبود موجودی»'
++      )
++    for (const c of chargePanels)
++      if (!managerSections.length)
++        await assertPanelPassword(c.panel, input?.panelPassword ?? input?.managerPassword ?? null, `تغییر «${c.title}»`)
++
++    /**
+      * نشست ۱۵۴ (S151-b، یافته‌ی Y10) — این کانال سیاست تخفیف را بی‌گیت می‌نوشت و
+      * رمز discountPolicySave را دور می‌زد. حالا *پیش از هر نوشتن*: اگر discount
+      * آمده و با سیاست فعلی فرق دارد ⇒ رمز پنل تنظیمات. بقیه‌ی کلیدهای Y10 در S151-c.
+diff -ruN mahak-orig/src/renderer/src/components/AutoCentralPasswordBox.tsx mahak/src/renderer/src/components/AutoCentralPasswordBox.tsx
+--- mahak-orig/src/renderer/src/components/AutoCentralPasswordBox.tsx	1970-01-01 00:00:00.000000000 +0000
++++ mahak/src/renderer/src/components/AutoCentralPasswordBox.tsx	2026-09-26 17:27:24.162275098 +0000
+@@ -0,0 +1,21 @@
++import PasswordField from './PasswordField'
++import type { AutoCentralWithdraw } from '../hooks/useAutoCentralWithdraw'
++
++/**
++ * نشست ۱۵۵ (S151-c1، S155-D2) — کادر رمز کنار چک‌باکس «برداشت خودکار از انبار مرکزی».
++ * سرور تغییر این گزینه را با رمز پنل posCentralWithdrawToggle می‌سنجد (قفل خاموش ⇒ بی‌رمز)،
++ * پس وقتی قفل روشن است و چک‌باکس برای کاربر باز است، رمز همین‌جا گرفته و همراه ذخیره
++ * فرستاده می‌شود. یک کامپوننت مشترک برای هر سه پنل (فروش تکی، فاکتور عمده، انبار مرکزی).
++ */
++export default function AutoCentralPasswordBox({ box }: { box: AutoCentralWithdraw }) {
++  if (!box.needPassword || box.locked) return null
++  return (
++    <div className="mt-1 max-w-xs" title="رمز مدیر یا رمز دوم همین گزینه؛ بعد از هر تلاش پاک می‌شود">
++      <PasswordField
++        value={box.password}
++        placeholder="رمز تغییر برداشت خودکار"
++        onChange={(e) => box.setPassword(e.target.value)}
++      />
++    </div>
++  )
++}
+diff -ruN mahak-orig/src/renderer/src/hooks/useAutoCentralWithdraw.ts mahak/src/renderer/src/hooks/useAutoCentralWithdraw.ts
+--- mahak-orig/src/renderer/src/hooks/useAutoCentralWithdraw.ts	2026-09-26 17:19:16.263444465 +0000
++++ mahak/src/renderer/src/hooks/useAutoCentralWithdraw.ts	2026-09-26 17:27:01.166141686 +0000
+@@ -1,7 +1,7 @@
+ import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from 'react'
+ import { call, CH } from '../lib/api'
+ import { useManagerSession } from './useManagerSession'
+-import { usePanelOpen } from './usePanelLocks'
++import { usePanelOpen, usePanelLock } from './usePanelLocks'
+ import { PANEL_KEYS } from '@shared/panels'
+ import { broadcastSettingsChanged, type SettingsBundle } from './useSettings'
+ import type { SaleDefaults } from '@shared/receipt'
+@@ -49,6 +49,14 @@
+   toggle: (next: boolean) => Promise<void>
+   /** متن راهنمای قفل، برای نمایش کنار چک‌باکس */
+   lockHint: string
++  /**
++   * نشست ۱۵۵ (S151-c1، S155-D2) — سرور تغییر این گزینه را با رمز پنل
++   * posCentralWithdrawToggle می‌سنجد (قفل خاموش ⇒ بی‌رمز). وقتی قفل روشن است، پنل‌ها کنار
++   * چک‌باکس یک کادر رمز نشان می‌دهند؛ رمز بعد از هر تلاش پاک می‌شود.
++   */
++  needPassword: boolean
++  password: string
++  setPassword: Dispatch<SetStateAction<string>>
+ }
+ 
+ export const AUTO_CENTRAL_LOCK_MESSAGE =
+@@ -64,6 +72,9 @@
+    * نشست مدیر، یا رمز دومِ همین کلید، یا قفلی که مدیر آگاهانه خاموشش کرده.
+    */
+   const unlocked = usePanelOpen(PANEL_KEYS.posCentralWithdrawToggle) || isManager
++  const { lockEnabled, loaded } = usePanelLock(PANEL_KEYS.posCentralWithdrawToggle)
++  const needPassword = !loaded || lockEnabled
++  const [password, setPassword] = useState('')
+   const [value, setValue] = useState(sale.autoCentralWithdraw === true)
+   const [error, setError] = useState<string | null>(null)
+ 
+@@ -79,19 +90,26 @@
+         setError(AUTO_CENTRAL_LOCK_MESSAGE)
+         return
+       }
++      if (needPassword && !password.trim()) {
++        setValue(sale.autoCentralWithdraw === true)
++        setError('برای تغییر این گزینه، رمز مدیر (یا رمز دوم همین گزینه) را در کادر کنار آن وارد کنید.')
++        return
++      }
+       setError(null)
+       setValue(next) // نمایش فوری
+       const nextSale = { ...sale, autoCentralWithdraw: next }
+       try {
+-        await call(CH.settingsSaveBundle, { sale: nextSale })
++        await call(CH.settingsSaveBundle, { sale: nextSale, panelPassword: needPassword ? password : undefined })
+         setSettings((p) => ({ ...p, sale: nextSale }))
+         broadcastSettingsChanged()
+       } catch (e: any) {
+         setValue(!next)
+         setError(`ذخیره‌ی این گزینه انجام نشد: ${e.message}`)
++      } finally {
++        setPassword('')
+       }
+     },
+-    [unlocked, sale, setSettings]
++    [unlocked, sale, setSettings, needPassword, password]
+   )
+ 
+   return {
+@@ -102,6 +120,9 @@
+     error,
+     setError,
+     toggle,
++    needPassword,
++    password,
++    setPassword,
+     lockHint: unlocked
+       ? 'قفل این گزینه باز است، پس قابل تغییر است.'
+       : 'قفل است: با رمز مدیر یا رمز دوم اختصاصی همین گزینه باز می‌شود.'
+diff -ruN mahak-orig/src/renderer/src/pages/CategoryCharges.tsx mahak/src/renderer/src/pages/CategoryCharges.tsx
+--- mahak-orig/src/renderer/src/pages/CategoryCharges.tsx	2026-09-26 17:19:16.263444465 +0000
++++ mahak/src/renderer/src/pages/CategoryCharges.tsx	2026-09-26 17:28:05.006512051 +0000
+@@ -1,6 +1,7 @@
+ import { useCallback, useEffect, useMemo, useState } from 'react'
+ import { useNavigate } from 'react-router-dom'
+ import { call, CH } from '../lib/api'
++import PasswordField from '../components/PasswordField'
+ import { faDigits, money } from '@shared/jalali'
+ import {
+   CHARGE_KINDS,
+@@ -146,10 +147,12 @@
+     flash(`همه‌ی مقدارهای «${label}» صفر شد؛ برای اعمال، «ذخیره» را بزنید.`)
+   }
+ 
++  /** نشست ۱۵۵ (S151-c1) — سرور رمز پنل همین نوع/اسکوپ را می‌سنجد (قفل خاموش ⇒ بی‌رمز)؛ بعد از هر تلاش پاک می‌شود */
++  const [chargePw, setChargePw] = useState('')
+   const save = async () => {
+     setBusy(true)
+     try {
+-      const saved = await call<CategoryChargeConfig>(CH.chargesSave, { kind, scope, config })
++      const saved = await call<CategoryChargeConfig>(CH.chargesSave, { kind, scope, config, panelPassword: chargePw || undefined })
+       const clean = parseCategoryCharge(saved)
+       setDraft(toDraft(clean))
+       setEnabled(clean.enabled)
+@@ -159,6 +162,7 @@
+     } catch (e: any) {
+       setErr(e.message)
+     } finally {
++      setChargePw('')
+       setBusy(false)
+     }
+   }
+@@ -187,6 +191,9 @@
+           <button className="btn" onClick={clearAll} disabled={busy || (!activeCount && !fallback)}>
+             صفر کردن همه
+           </button>
++          <div className="w-44" title="رمز مدیر یا رمز دوم همین پنل">
++            <PasswordField value={chargePw} placeholder="رمز ذخیره" onChange={(e) => setChargePw(e.target.value)} />
++          </div>
+           <button className="btn btn-primary" onClick={() => void save()} disabled={busy}>
+             {busy ? 'در حال ذخیره…' : 'ذخیره'}
+           </button>
+diff -ruN mahak-orig/src/renderer/src/pages/Pos.tsx mahak/src/renderer/src/pages/Pos.tsx
+--- mahak-orig/src/renderer/src/pages/Pos.tsx	2026-09-26 17:19:16.263444465 +0000
++++ mahak/src/renderer/src/pages/Pos.tsx	2026-09-26 17:27:35.670341871 +0000
+@@ -6,6 +6,7 @@
+ import { broadcastSettingsChanged, useSettings } from '../hooks/useSettings'
+ import { usePanelLock, usePanelOpen } from '../hooks/usePanelLocks'
+ import { useAutoCentralWithdraw } from '../hooks/useAutoCentralWithdraw'
++import AutoCentralPasswordBox from '../components/AutoCentralPasswordBox'
+ import { useCharges } from '../hooks/useCharges'
+ import VariantSearchBox, { type VariantSearchBoxHandle } from '../components/VariantSearchBox'
+ import { ColGroup, ResizableHeaderCells, useResizableColumns } from '../components/ResizableColumns'
+@@ -1747,6 +1748,7 @@
+               </span>
+             </span>
+           </label>
++          <AutoCentralPasswordBox box={autoCentralBox} />
+           </ManagerGate>
+           {/**
+             * ============ بند ۲ — حق سرویس و عوارض: فقط‌خواندنی ============
+diff -ruN mahak-orig/src/renderer/src/pages/PurchaseInvoice.tsx mahak/src/renderer/src/pages/PurchaseInvoice.tsx
+--- mahak-orig/src/renderer/src/pages/PurchaseInvoice.tsx	2026-09-26 17:19:16.263444465 +0000
++++ mahak/src/renderer/src/pages/PurchaseInvoice.tsx	2026-09-26 17:28:05.026512168 +0000
+@@ -1,3 +1,4 @@
++import PasswordField from '../components/PasswordField'
+ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+ import { call, CH } from '../lib/api'
+ import { useHotkeys } from '../hooks/useHotkeys'
+@@ -195,6 +196,8 @@
+     [loadNextNo]
+   )
+ 
++  /** نشست ۱۵۵ (S151-c1) — رمز مدیر یا رمز دوم پنل خرید؛ بعد از ثبت موفق پاک می‌شود */
++  const [purchasePw, setPurchasePw] = useState('')
+   const doSave = useCallback(
+     async (force: boolean) => {
+       if (busy) return
+@@ -210,7 +213,9 @@
+           issuedAtJalali: dateJalali,
+           // تایید آگاهانه‌ی کاربر: قواعد نرم سمت main رد می‌شوند
+           force: force || undefined,
+-          lines: lines.map((l) => ({ variantId: l.variantId, qty: Math.round(l.qty), unitPrice: Math.round(l.unitPrice) }))
++          lines: lines.map((l) => ({ variantId: l.variantId, qty: Math.round(l.qty), unitPrice: Math.round(l.unitPrice) })),
++          // نشست ۱۵۵ (S151-c1): سرور رمز پنل خرید را می‌سنجد (قفل خاموش ⇒ بی‌رمز)
++          panelPassword: purchasePw || undefined
+         }
+         const editing = editId
+         const inv = editing
+@@ -223,6 +228,7 @@
+                 (supplier ? ` (تامین‌کننده: ${supplier.name})` : '')
+         )
+         resetForm()
++        setPurchasePw('')
+         if (editing) void loadList()
+       } catch (e: any) {
+         setErr(e.message)
+@@ -231,7 +237,7 @@
+       }
+     },
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+-    [busy, lines, dateJalali, supplier, settlementType, totals, paidTotal, note, resetForm, editId]
++    [busy, lines, dateJalali, supplier, settlementType, totals, paidTotal, note, resetForm, editId, purchasePw]
+   )
+ 
+   /**
+@@ -372,6 +378,9 @@
+           {SHORTCUTS.save} ذخیره · {SHORTCUTS.newItem} جدید · {SHORTCUTS.deleteSelected} حذف
+         </span>
+         <div className="ms-auto flex gap-1">
++          <div className="w-44" title="رمز مدیر یا رمز دوم پنل خرید (قفل خاموش ⇒ لازم نیست)">
++            <PasswordField value={purchasePw} placeholder="رمز ثبت خرید" onChange={(e) => setPurchasePw(e.target.value)} />
++          </div>
+           <button className={`btn ${tab === 'form' ? 'btn-primary' : ''}`} onClick={() => setTab('form')}>
+             ثبت فاکتور
+           </button>
+diff -ruN mahak-orig/src/renderer/src/pages/SalesInvoice.tsx mahak/src/renderer/src/pages/SalesInvoice.tsx
+--- mahak-orig/src/renderer/src/pages/SalesInvoice.tsx	2026-09-26 17:19:16.263444465 +0000
++++ mahak/src/renderer/src/pages/SalesInvoice.tsx	2026-09-26 17:27:35.674341894 +0000
+@@ -5,6 +5,7 @@
+ import { useCharges } from '../hooks/useCharges'
+ import { useSettings } from '../hooks/useSettings'
+ import { useAutoCentralWithdraw } from '../hooks/useAutoCentralWithdraw'
++import AutoCentralPasswordBox from '../components/AutoCentralPasswordBox'
+ // جلسه ۵۳ · مرحله ۴ — ستون «مبدأ کسر» فهرست فاکتورها (فقط خواندنی)
+ import { useSaleStockSources } from '../hooks/useSaleStockSources'
+ import Modal from '../components/Modal'
+@@ -1182,6 +1183,7 @@
+                 : 'همین تیک در «پنل فروش تکی» و «تنظیمات انبار مرکزی» هم مشترک است (یک تنظیم، سه پنل).'}
+             </span>
+           </div>
++          <AutoCentralPasswordBox box={autoCentralBox} />
+           </ManagerGate>
+ 
+           <div className="bg-white rounded shadow p-2 grid grid-cols-12 gap-2 items-start">
+diff -ruN mahak-orig/src/renderer/src/pages/SecondaryStock.tsx mahak/src/renderer/src/pages/SecondaryStock.tsx
+--- mahak-orig/src/renderer/src/pages/SecondaryStock.tsx	2026-09-26 17:19:16.263444465 +0000
++++ mahak/src/renderer/src/pages/SecondaryStock.tsx	2026-09-26 17:27:35.674341894 +0000
+@@ -8,6 +8,7 @@
+ import { exportTable } from '../lib/exportCsv'
+ import { useSettings } from '../hooks/useSettings'
+ import { useAutoCentralWithdraw } from '../hooks/useAutoCentralWithdraw'
++import AutoCentralPasswordBox from '../components/AutoCentralPasswordBox'
+ import ManagerGate from '../components/ManagerGate'
+ import PasswordField from '../components/PasswordField'
+ import { usePanelLock, usePanelOpen } from '../hooks/usePanelLocks'
+@@ -659,6 +660,7 @@
+           برداشت خودکار از انبار مرکزی هنگام کمبود موجودی
+           {autoCentralBox.locked && <span className="kbd">🔒 فقط مدیر</span>}
+         </label>
++        <AutoCentralPasswordBox box={autoCentralBox} />
+         <div className="kbd leading-6">
+           این گزینه با چک‌باکس «برداشت خودکار از انبار مرکزی» در <b>پنل فروش تکی</b> و <b>پنل فاکتور فروش عمده</b> یک
+           تنظیم واحد است: از هر کدام روشن/خاموش شود، در آن دو محل دیگر هم همان لحظه همان وضعیت نشان داده می‌شود.
+diff -ruN mahak-orig/src/renderer/src/pages/Settings.tsx mahak/src/renderer/src/pages/Settings.tsx
+--- mahak-orig/src/renderer/src/pages/Settings.tsx	2026-09-26 17:19:16.263444465 +0000
++++ mahak/src/renderer/src/pages/Settings.tsx	2026-09-26 17:26:47.026059649 +0000
+@@ -223,6 +223,14 @@
+   const [discountBusy, setDiscountBusy] = useState(false)
+   /** نشست ۱۵۴ (S151-b) — رمز مدیر یا رمز دوم پنل تنظیمات؛ سرور می‌سنجد، بعد از هر تلاش پاک می‌شود */
+   const [discountPw, setDiscountPw] = useState('')
++  /**
++   * نشست ۱۵۵ (S151-c1، یافته‌ی Y10) — رمز مدیر برای بخش‌های حساس ذخیره‌ی کلی (فروش، شیفت،
++   * ساعت رسمی) و ذخیره‌ی فوری تنظیمات امنیتی؛ و رمز حذف مشتری دارای فاکتور. سرور فقط وقتی
++   * بخش حساس واقعاً تغییر کرده رمز می‌خواهد؛ رمز بعد از هر تلاش پاک می‌شود.
++   */
++  const [bundlePw, setBundlePw] = useState('')
++  const [securityPw, setSecurityPw] = useState('')
++  const [custDelPw, setCustDelPw] = useState('')
+   const [printers, setPrinters] = useState<string[]>([])
+   const [preview, setPreview] = useState('')
+   /** پیش‌نمایش زنده‌ی لیبل (مثل پیش‌نمایش رسید، ولی برای برچسب کالا) */
+@@ -832,7 +840,7 @@
+   const removeCustomer = async (c: CustomerDirectoryRow, force = false) => {
+     setCustBusy(true)
+     try {
+-      const res = await call<CustomerDeleteResult>(CH.customerDelete, { id: c.id, force })
++      const res = await call<CustomerDeleteResult>(CH.customerDelete, { id: c.id, force, panelPassword: force ? custDelPw : undefined })
+       if (!res.deleted) {
+         setDelCustomer(c)
+         setDelMessage(res.message)
+@@ -847,6 +855,7 @@
+       setDelCustomer(null)
+       setErr(e.message)
+     } finally {
++      if (force) setCustDelPw('')
+       setCustBusy(false)
+     }
+   }
+@@ -915,7 +924,7 @@
+        * دکمه‌ی اختصاصی خودش (با رمز) آن را می‌نویسد. سرور هم تغییر discount از
+        * این کانال را بی‌رمز رد می‌کند.
+        */
+-      await call(CH.settingsSaveBundle, { receipt, sale, shift, label, security, time })
++      await call(CH.settingsSaveBundle, { receipt, sale, shift, label, security, time, managerPassword: bundlePw })
+       setDirty(false)
+       /**
+        * بند ۳ — پنل‌های *باز* (پنل فروش، فاکتور عمده) با این رویداد تنظیماتشان را
+@@ -927,6 +936,7 @@
+     } catch (e: any) {
+       setErr(e.message)
+     } finally {
++      setBundlePw('')
+       setBusy(false)
+     }
+   }
+@@ -942,7 +952,7 @@
+     setErr(null)
+     try {
+       const next = parseSecurityConfig(security)
+-      await call(CH.settingsSaveBundle, { security: next })
++      await call(CH.settingsSaveBundle, { security: next, managerPassword: securityPw })
+       setSecurity(next)
+       flash(
+         next.lockoutEnabled
+@@ -954,6 +964,7 @@
+     } catch (e: any) {
+       setErr(e.message)
+     } finally {
++      setSecurityPw('')
+       setSecurityBusy(false)
+     }
+   }
+@@ -1660,6 +1671,10 @@
+           <button className="btn" onClick={() => void load()} disabled={busy}>
+             بازگردانی از دیتابیس
+           </button>
++          {/* نشست ۱۵۵ (S151-c1): فقط وقتی بخش فروش/شیفت/ساعت رسمی تغییر کرده لازم است؛ سرور می‌سنجد */}
++          <div className="w-44" title="رمز مدیر — فقط اگر تنظیمات فروش، شیفت یا ساعت رسمی را تغییر داده‌اید">
++            <PasswordField value={bundlePw} placeholder="رمز مدیر (بخش حساس)" onChange={(e) => setBundlePw(e.target.value)} />
++          </div>
+           <button className="btn btn-primary" onClick={() => void save()} disabled={busy}>
+             {busy ? 'در حال ذخیره…' : 'ذخیره‌ی تنظیمات'}
+           </button>
+@@ -2357,8 +2372,15 @@
+                       onChange={(e) => setSecurity((c) => ({ ...c, lockMinutes: Math.round(+e.target.value || 0) }))}
+                     />
+                   </Field>
++                  <Field label="رمز مدیر (تغییر تنظیمات امنیتی)">
++                    <PasswordField value={securityPw} onChange={(e) => setSecurityPw(e.target.value)} />
++                  </Field>
+                   <div className="flex items-end">
+-                    <button className="btn btn-primary w-full" onClick={() => void saveSecurity()} disabled={securityBusy}>
++                    <button
++                      className="btn btn-primary w-full"
++                      onClick={() => void saveSecurity()}
++                      disabled={securityBusy || !securityPw.trim()}
++                    >
+                       {securityBusy ? 'در حال ذخیره…' : 'ذخیره‌ی تنظیمات امنیتی'}
+                     </button>
+                   </div>
+@@ -3431,7 +3453,7 @@
+                     <button
+                       className="btn btn-danger"
+                       onClick={() => (delCustomer ? void removeCustomer(delCustomer, true) : undefined)}
+-                      disabled={custBusy}
++                      disabled={custBusy || !custDelPw.trim()}
+                     >
+                       بله، حذف کن
+                     </button>
+@@ -3439,6 +3461,10 @@
+                 }
+               >
+                 <p className="leading-7 whitespace-pre-line">{delMessage}</p>
++                {/* نشست ۱۵۵ (S151-c1، Y5): حذف مشتری دارای فاکتور فقط با رمز؛ مشتری بدهکار اصلاً حذف نمی‌شود */}
++                <Field label="رمز مدیر (یا رمز دوم پنل تنظیمات) برای حذف مشتری دارای فاکتور">
++                  <PasswordField value={custDelPw} onChange={(e) => setCustDelPw(e.target.value)} />
++                </Field>
+               </Modal>
+             </section>
+           )}

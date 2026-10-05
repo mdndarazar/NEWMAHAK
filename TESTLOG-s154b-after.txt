@@ -1,0 +1,129 @@
+(node:4692) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:4692) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/s153/mahak-session131/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/s153/mahak-session131/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) گیت قیمت دستی در ثبت فروش خرده (requireManagerForPriceOverride پیش‌فرض روشن)
+  ✓ ۳۰۰٬۰۰۰ برای کالای ۱٬۰۰۰٬۰۰۰ بی‌رمز (رد شد: «قیمت کمتر از قیمت مرجع (کد P152-1: واردشده ۳۰۰٬۰۰۰ ریال، مرجع ۱٬۰۰۰٬۰۰۰ ریال)» تایید مدیر لازم دارد. رمز مدیر)
+  ✓ ۳۰۰٬۰۰۰ برای کالای ۱٬۰۰۰٬۰۰۰ با رمز غلط (رد شد: رمز مدیر درست نیست.)
+  ✓ فاکتوری ثبت نشد = 0
+  ✓ Audit قیمت دستی تازه‌ای ثبت نشد = 0
+  ✓ IPC.saleCreate با رمز مدیر و userId جعلی ⇒ پذیرفته
+  ✓ Audit SALE_PRICE_OVERRIDE ثبت شد = 1
+  ✓ Audit روی همان فاکتور = 1
+  ✓ actor Audit = کارمند نشست (نه userId جعلی) = 1
+  ✓ قیمت مرجع ۱۰۰۰۰۰۰ در before و قیمت واردشده ۳۰۰۰۰۰ در after
+  ✓ فروشنده‌ی فاکتور = کارمند نشست = 1
+  ✓ قیمت برابر قیمت فروش بی‌رمز ⇒ پذیرفته
+  ✓ بدون Audit قیمت دستی = 1
+  ✓ افزایش قیمت (۱٬۲۰۰٬۰۰۰) بی‌رمز ⇒ پذیرفته
+  ✓ افزایش قیمت هم Audit می‌شود = 2
+  ✓ گیت قیمت دستی خاموش ⇒ کاهش بی‌رمز پذیرفته
+  ✓ با گیت خاموش هم Audit می‌شود = 3
+
+۲) بازه‌ی تخفیف (FREE maxPercent=۲۰) سمت سرور، بدون دورزدن با رمز مدیر
+  ✓ تخفیف ردیف ۲۵٪ حتی با رمز مدیر (رد شد: جمع تخفیف این فاکتور ۲۵۰٬۰۰۰ ریال است (تخفیف ردیف ۲۵۰٬۰۰۰ ریال، تخفیف کل فاکتور ۰ ریال و کاهش قیمت زیر قیمت مر)
+  ✓ تخفیف ردیف ۲۰٪ ⇒ پذیرفته
+  ✓ کاهش قیمت ۱۵٪ + تخفیف فاکتور ۱۰٪ حتی با رمز مدیر (رد شد: جمع تخفیف این فاکتور ۲۵۰٬۰۰۰ ریال است (تخفیف ردیف ۰ ریال، تخفیف کل فاکتور ۱۰۰٬۰۰۰ ریال و کاهش قیمت زیر قیمت مر)
+  ✓ تخفیف فاکتور ۲۰٪ ⇒ پذیرفته
+  ✓ کاهش قیمت ۱۰٪ با رمز + تخفیف فاکتور ۱۰٪ (جمع ۲۰٪) ⇒ پذیرفته
+  ✓ فقط سه فاکتور مجاز ثبت شد = 7
+  ✓ allowLine=false ⇒ تخفیف ردیف رد (رد شد: تخفیف روی خودِ کالا (ردیف یا کاهش قیمت) در سیاست تخفیف بسته است (تخفیف ردیف ۱٬۰۰۰ ریال، تخفیف کل فاکتور ۰ ریال)
+  ✓ allowInvoice=false ⇒ تخفیف فاکتور رد (رد شد: تخفیف کل فاکتور در سیاست تخفیف بسته است؛ تخفیف ۱٬۰۰۰ ریال پذیرفته نیست. این محدودیت را مدیر در «سیاست تخفیف» ت)
+  ✓ maxAmount=۵۰٬۰۰۰ ⇒ تخفیف ۶۰٬۰۰۰ رد (رد شد: جمع تخفیف این فاکتور ۶۰٬۰۰۰ ریال است (تخفیف ردیف ۰ ریال، تخفیف کل فاکتور ۶۰٬۰۰۰ ریال و کاهش قیمت زیر قیمت مرجع)
+  ✓ maxAmount=۵۰٬۰۰۰ ⇒ تخفیف ۵۰٬۰۰۰ پذیرفته
+  ✓ OFF ⇒ هر تخفیف رد (۱ ریال) (رد شد: تخفیف در پنل فروش غیرفعال است (سیاست تخفیف: غیرفعال)؛ تخفیف ردیف ۰ ریال، تخفیف کل فاکتور ۱ ریال و کاهش قیمت زی)
+  ✓ OFF ⇒ تخفیف ردیف رد (رد شد: تخفیف در پنل فروش غیرفعال است (سیاست تخفیف: غیرفعال)؛ تخفیف ردیف ۱۰٬۰۰۰ ریال، تخفیف کل فاکتور ۰ ریال و کاهش قی)
+  ✓ OFF ⇒ بدون تخفیف پذیرفته
+  ✓ FIXED ۱۰٪ ⇒ تخفیف فاکتور دقیقاً ۱۰۰٬۰۰۰ پذیرفته
+  ✓ FIXED ۱۰٪ ⇒ بدون تخفیف پذیرفته
+  ✓ FIXED ۱۰٪ ⇒ تخفیف فاکتور ۵۰٬۰۰۰ رد (رد شد: سیاست تخفیف «فقط تخفیف ثابت مدیر» است؛ تخفیف کل فاکتور فقط صفر یا دقیقاً ۱۰۰٬۰۰۰ ریال (۱۰٪ از ۱٬۰۰۰٬۰۰۰ ریال) )
+  ✓ FIXED ۱۰٪ ⇒ تخفیف ردیف رد (رد شد: سیاست تخفیف «فقط تخفیف ثابت مدیر» است؛ تخفیف ردیف یا کاهش قیمت کالا مجاز نیست (تخفیف ردیف ۱۰۰٬۰۰۰ ریال، تخفیف )
+
+۳) فروش عمده: بازه‌ی تخفیف اعمال نمی‌شود ولی گیت قیمت دستی می‌ماند
+  ✓ WHOLESALE با تخفیف ردیف ۳۰٪ ⇒ پذیرفته
+  ✓ WHOLESALE با unitPrice زیر قیمت فروش بی‌رمز ⇒ رد (رد شد: «قیمت کمتر از قیمت مرجع (کد P152-1: واردشده ۷۰۰٬۰۰۰ ریال، مرجع ۱٬۰۰۰٬۰۰۰ ریال)» تایید مدیر لازم دارد. رمز مدیر)
+
+۴) ویرایش: مرجع = کمترین قیمت همان کالا در فاکتور اصلی
+  ✓ فاکتور پایه با قیمت ۱٬۰۰۰٬۰۰۰
+  ✓ ویرایش با قیمت اصلی پس از گران‌شدن کالا ⇒ بی‌رمز پذیرفته
+  ✓ بدون Audit قیمت دستی (قیمت اصلی فاکتور مرجع است) = 4
+  ✓ ویرایش با کاهش زیر قیمت اصلی بی‌رمز ⇒ رد (رد شد: «قیمت کمتر از قیمت مرجع (کد P152-1: واردشده ۹۰۰٬۰۰۰ ریال، مرجع ۱٬۰۰۰٬۰۰۰ ریال)» تایید مدیر لازم دارد. رمز مدیر)
+  ✓ ویرایش با کاهش زیر قیمت اصلی با رمز ⇒ پذیرفته
+  ✓ Audit SALE_PRICE_OVERRIDE ویرایش = 5
+  ✓ Audit ویرایش روی همان فاکتور = 13
+  ✓ ویرایش فروش خرده با تخفیف فاکتور بیش از بازه ⇒ رد (رد شد: جمع تخفیف این فاکتور ۱۰۰٬۰۰۰ ریال است (تخفیف ردیف ۰ ریال، تخفیف کل فاکتور ۱۰۰٬۰۰۰ ریال و کاهش قیمت زیر قیمت مر)
+
+۵) سیاست حسابداری: همیشه رمز مدیر (بند ۴-۲۹)، actor از نشست
+[ipc:settings:accountingPolicy:set] BusinessError: «تغییر سیاست حسابداری (سقف مجاز مغایرت صندوق، گیت قیمت دستی، قفل دوره‌ی بسته، سقف اعتبار خرید)» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.
+    at assertManagerPassword (file:///home/user/work/s153/mahak-session131/src/main/services/AuthService.ts:557:20)
+    at async Object.setAccountingPolicy (file:///home/user/work/s153/mahak-session131/src/main/services/SettingsService.ts:182:5)
+    at async file:///home/user/work/s153/mahak-session131/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/s153/mahak-session131/tests/pending/fix-s151b-sale-price-override-discount-range.mjs:63:13)
+    at async file:///home/user/work/s153/mahak-session131/tests/pending/fix-s151b-sale-price-override-discount-range.mjs:161:1 {
+  isBusinessError: true
+}
+  ✓ IPC.settingsAccountingPolicySet بی‌رمز (رد شد: «تغییر سیاست حسابداری (سقف مجاز مغایرت صندوق، گیت قیمت دستی، قفل دوره‌ی بسته، سقف اعتبار خرید)» تایی)
+  ✓ settingsService.setAccountingPolicy مستقیم بی‌رمز (رد شد: «تغییر سیاست حسابداری (سقف مجاز مغایرت صندوق، گیت قیمت دستی، قفل دوره‌ی بسته، سقف اعتبار خرید)» تایید مدیر لاز)
+  ✓ گیت قیمت دستی دست‌نخورده ماند = true
+  ✓ سقف مغایرت دست‌نخورده ماند = 100000
+  ✓ IPC.settingsAccountingPolicySet با رمز مدیر و userId جعلی
+  ✓ سقف مغایرت ذخیره شد = 12345
+  ✓ actor Audit سیاست حسابداری = کارمند نشست = 1
+
+۶) سیاست تخفیف: رمز پنل تنظیمات (همیشه قفل)، saveBundle هم دورش نمی‌زند
+[ipc:discountPolicy:save] BusinessError: «تغییر سیاست تخفیف پنل فروش (بازه‌ی مجاز تخفیف)» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.
+    at assertPanelPassword (file:///home/user/work/s153/mahak-session131/src/main/services/AuthService.ts:599:11)
+    at async Object.saveDiscountPolicy (file:///home/user/work/s153/mahak-session131/src/main/services/SettingsService.ts:270:5)
+    at async file:///home/user/work/s153/mahak-session131/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/s153/mahak-session131/tests/pending/fix-s151b-sale-price-override-discount-range.mjs:63:13)
+    at async file:///home/user/work/s153/mahak-session131/tests/pending/fix-s151b-sale-price-override-discount-range.mjs:172:1 {
+  isBusinessError: true
+}
+  ✓ IPC.discountPolicySave بی‌رمز (رد شد: «تغییر سیاست تخفیف پنل فروش (بازه‌ی مجاز تخفیف)» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل)
+[ipc:settings:saveBundle] BusinessError: «تغییر سیاست تخفیف پنل فروش از ذخیره‌ی کلی تنظیمات» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.
+    at assertPanelPassword (file:///home/user/work/s153/mahak-session131/src/main/services/AuthService.ts:599:11)
+    at async Object.saveBundle (file:///home/user/work/s153/mahak-session131/src/main/services/SettingsService.ts:502:9)
+    at async file:///home/user/work/s153/mahak-session131/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/s153/mahak-session131/tests/pending/fix-s151b-sale-price-override-discount-range.mjs:63:13)
+    at async file:///home/user/work/s153/mahak-session131/tests/pending/fix-s151b-sale-price-override-discount-range.mjs:173:1 {
+  isBusinessError: true
+}
+  ✓ IPC.settingsSaveBundle با discount تغییرکرده بی‌رمز (رد شد: «تغییر سیاست تخفیف پنل فروش از ذخیره‌ی کلی تنظیمات» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین )
+  ✓ سیاست تخفیف دست‌نخورده ماند = "FREE"
+  ✓ IPC.settingsSaveBundle با discount بدون تغییر بی‌رمز ⇒ پذیرفته
+  ✓ IPC.discountPolicySave با رمز و userId جعلی
+  ✓ سیاست تخفیف ذخیره شد = 30
+  ✓ actor Audit سیاست تخفیف = کارمند نشست = 1
+
+۷) تنظیمات اعتبار خرید: رمز پنل creditSettings
+[ipc:credit:settings:set] BusinessError: «ذخیره‌ی تنظیمات اعتبار خرید (طول کد، دفعات مصرف، مدت اعتبار)» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.
+    at assertPanelPassword (file:///home/user/work/s153/mahak-session131/src/main/services/AuthService.ts:599:11)
+    at async Object.saveCreditSettings (file:///home/user/work/s153/mahak-session131/src/main/services/SettingsService.ts:221:5)
+    at async file:///home/user/work/s153/mahak-session131/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/s153/mahak-session131/tests/pending/fix-s151b-sale-price-override-discount-range.mjs:63:13)
+    at async file:///home/user/work/s153/mahak-session131/tests/pending/fix-s151b-sale-price-override-discount-range.mjs:184:1 {
+  isBusinessError: true
+}
+  ✓ IPC.creditSettingsSet بی‌رمز با قفل روشن (رد شد: «ذخیره‌ی تنظیمات اعتبار خرید (طول کد، دفعات مصرف، مدت اعتبار)» تأیید مدیر لازم دارد. رمز مدیر (یا رم)
+  ✓ IPC.creditSettingsSet با رمز و userId جعلی
+  ✓ actor Audit CREDIT_SETTINGS_UPDATE = کارمند نشست = 1
+  ✓ IPC.creditSettingsSet بی‌رمز با قفل خاموش ⇒ OPEN
+
+۸) سیم‌کشی UI (ساختاری؛ رندر واقعی Electron اجرا نمی‌شود)
+  ✓ Settings: ذخیره‌ی سیاست حسابداری managerPassword می‌فرستد
+  ✓ Settings: ذخیره‌ی سیاست تخفیف panelPassword می‌فرستد
+  ✓ Settings: ذخیره‌ی کلی دیگر discount نمی‌فرستد
+  ✓ CreditManagement: ذخیره‌ی تنظیمات panelPassword می‌فرستد
+  ✓ Pos: توضیح بازه‌ی تخفیف دیگر ادعای نادرست ندارد و به S151-b ارجاع دارد
+
+۹) نشست ۱۵۴ — تکمیلی: ضدتقلب، کالای بی‌مرجع، فاکتور ناموجود (S153-D2/D3)
+  ✓ FraudService: SALE_PRICE_OVERRIDE در بخش «تغییر با تایید مدیر… یا قیمت دستی» دیده می‌شود
+  ✓ کالای ناموجود (بی‌مرجع) ⇒ رد فارسی (رد شد: کالا پیدا نشد؛ قیمت مرجع وجود ندارد (کد GHOST-154). بدون قیمت مرجع، کم‌ثبتی قیمت قابل سنجش نیست؛ کالا را دوبار)
+  ✓ فاکتوری برای کالای بی‌مرجع ثبت نشد = 13
+  ✓ ویرایش فاکتور ناموجود ⇒ همان پیام «پیدا نشد» پیش از هر رمز (رد شد: این فاکتور پیدا نشد؛ ممکن است حذف شده باشد. لیست فاکتورها را تازه کنید.)
+  ✓ note Audit فارسی با شماره فیش و حالت
+
+نتیجه: 71 موفق · 0 ناموفق

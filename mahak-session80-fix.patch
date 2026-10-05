@@ -1,0 +1,441 @@
+diff -ruN /home/user/work/mahak/baseline80/mahak/DECISIONS.md /home/user/work/mahak/repo/mahak/DECISIONS.md
+--- /home/user/work/mahak/baseline80/mahak/DECISIONS.md	2026-09-23 13:32:05.000000000 +0000
++++ /home/user/work/mahak/repo/mahak/DECISIONS.md	2026-09-23 13:38:11.683872772 +0000
+@@ -219,3 +219,8 @@
+ ### نشست ۷۹
+ S79-1 — سؤال: گیت اجرای دوم بستن صندوق فقط بیرون transaction بماند یا داخل transaction هم تکرار شود؟ انتخاب من: هر دو؛ بررسی بیرونی برای هشدار سریع UI و بررسی دوباره داخل همان transaction پیش از `CashSession.create`. دلیل: دو caller می‌توانند هم‌زمان نبود سابقه را ببینند؛ شرط داخل transaction جلوی snapshot دوم بدون تأیید را می‌گیرد، بدون این‌که اجرای دومِ صریحاً تأییدشده را ببندد.
+ S79-2 — سؤال: تست race را روی Prisma/Electron واقعی اجرا کنم یا با ادعای دروغ سبز اعلام کنم؟ انتخاب من: رفتار transaction را روی SQLite واقعی هارنس اثبات کنم و محدودیتش را صریح ثبت کنم. دلیل: npm/npx/Prisma در محیط موجود نیست؛ جعل تست چندپردازه‌ای خطرناک‌تر از اعلام محدودیت است.
++
++### نشست ۸۰
++S80-1 — سؤال: retry بازکردن نشست بعد از timeout چه کند؟ گزینه‌ها: هر بار نشست تازه بسازد، فقط در UI جلوی دوباره‌کلیک را بگیرد، یا کلید idempotency یکتا را در خود سند نشست ثبت کند و retry همان سند را برگرداند. انتخاب من: گزینه‌ی سوم؛ `openIdempotencyKey` یکتا و `openIdempotencyFingerprint` روی `Shift`، با گیت در main و unique index دیتابیس. دلیل: UI قابل‌دورزدن است و دوباره‌بستن نشست انتساب صندوق/فروش را خراب می‌کند؛ idempotency باید بعد از قطع پاسخ هم از روی دیتابیس قابل بازیابی باشد.
++S80-2 — سؤال: reuse همان کلید با پارامتر متفاوت چه کند؟ گزینه‌ها: نادیده بگیرد، نشست موجود را به ورودی تازه تغییر دهد، یا رد فارسی کند. انتخاب من: رد فارسی؛ fingerprint شامل پارامترهای مالی/هویتی درخواست است و password عمداً وارد fingerprint نمی‌شود. دلیل: تغییر بی‌ردپای کارمند/نشست با همان کلید می‌تواند یک retry را به handover جعلی تبدیل کند.
++S80-3 — سؤال: اگر دو caller هم‌زمان هر دو pre-check را رد کردند و یکی روی unique index شکست خورد چه شود؟ انتخاب من: فقط وقتی خطا `P2002` و fingerprint دقیقاً یکی است، سند موجود برگردانده شود؛ هر mismatch یا خطای دیگر propagate شود. دلیل: retry موفق باید idempotent باشد، اما بلعیدن خطای نامرتبط یا کلید متفاوت مغایرت را پنهان می‌کند.
+diff -ruN /home/user/work/mahak/baseline80/mahak/HANDOFF-PROMPT-next.txt /home/user/work/mahak/repo/mahak/HANDOFF-PROMPT-next.txt
+--- /home/user/work/mahak/baseline80/mahak/HANDOFF-PROMPT-next.txt	2026-09-23 13:32:17.000000000 +0000
++++ /home/user/work/mahak/repo/mahak/HANDOFF-PROMPT-next.txt	2026-09-23 13:39:16.784668818 +0000
+@@ -298,3 +298,32 @@
+ ⚠️ خوشه A هنوز کامل نیست. تست نشست ۷۹ race transaction را روی SQLite داخلی هارنس شبیه‌سازی می‌کند، اما race واقعی دو پردازه‌ی Electron/Prisma، idempotency key مستقل برای `openSession`، crash/قطع برق، Prisma واقعی، migration داده‌ی تاریخی و render واقعی UI هنوز اجرا نشده‌اند. خوشه C همچنان نیمه‌تمام است و نباید تکه‌تکه ادامه داده شود.
+ 
+ نقطه‌ی دقیق ادامه برای نشست بعد: ابتدا گام ۰ را دوباره اجرا کن. سپس روی Prisma واقعی، اگر ابزار موجود شد، همین گیت را با دو اتصال/دو پردازه‌ی مستقل و rollback وسط transaction اثبات کن. بعد سناریوی هم‌زمانی `openSession` را بررسی کن و فقط در صورت داشتن قرارداد امن، idempotency key مستقل اضافه کن. پس از بسته‌شدن A، با یک تست یکپارچه به خوشه C برگرد: `remainingOf`، پل تطبیق، برگشت/تعویض تاریخی، بازپرداخت، اعتبار و دوره‌ی بسته باید با هم cross-check شوند. هر ادعای اجرا نشده را با «اجرا نشد، دلیل: ...» ثبت کن.
++
++۱۰-۷) به‌روزرسانی نشست ۸۰
++گام ۰ در این نشست نیز کامل نشد: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه با `command not found` اجرا نشدند؛ `node --version` برابر `v22.23.1` بود و esbuild CLI نیز در محیط در دسترس نبود. تست‌ها با SQLite داخلی هارنس اجرا شدند و جای Prisma/TypeScript/Electron واقعی را نمی‌گیرند.
++
++در خوشه A، شکاف idempotency درخواست `openSession` بسته شد. پیش از رفع، retry یک درخواست پس از timeout نشست باز قبلی را می‌بست و نشست دوم می‌ساخت؛ بنابراین همان عملیات کاربر می‌توانست یک تحویل صندوق اضافه و قابل‌گزارش‌گریز بسازد. اکنون `Shift` ستون nullable یکتای `openIdempotencyKey` و ستون `openIdempotencyFingerprint` دارد؛ migration افزایشی `20271002100000_shift_open_idempotency` unique index را می‌سازد.
++
++`ShiftService.openSession` پیش از transaction، key موجود را با fingerprint مقایسه می‌کند و در صورت تطابق همان نشست را برمی‌گرداند. اگر دو caller هم‌زمان هر دو pre-check را رد کنند، unique index خطای دوم را می‌گیرد؛ فقط `P2002` با fingerprint برابر به replay امن تبدیل می‌شود. reuse همان key با پارامتر متفاوت با پیام فارسی رد می‌شود و هیچ نشست تازه‌ای ساخته نمی‌شود. `ShiftSessionModal.tsx` یک key پایدار تا پایان retry تولید می‌کند و آن را در IPC می‌فرستد؛ پس جلوگیری فقط وابسته به دکمه‌ی UI نیست و main/database گیت نهایی‌اند.
++
++فایل‌های تغییرکرده در نشست ۸۰:
++- `prisma/schema.prisma`: افزودن `openIdempotencyKey` یکتا و `openIdempotencyFingerprint` روی `Shift`.
++- `prisma/migrations/20271002100000_shift_open_idempotency/migration.sql`: migration افزایشی دو ستون و unique index.
++- `src/main/services/ShiftService.ts`: fingerprint، replay، رد mismatch و handling کنترل‌شده‌ی unique collision.
++- `src/renderer/src/components/ShiftSessionModal.tsx`: تولید و ارسال کلید پایدار retry.
++- `tests/audit-fixes/fix-s80-open-session-idempotency.mjs`: تست قبل/بعد، ذخیره‌ی key، replay، mismatch و سیم‌کشی UI.
++- `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md`: ثبت تصمیم، وضعیت و خروجی واقعی.
++
++تست قبل از رفع:
++- اجرای `fix-s80-open-session-idempotency.mjs` روی snapshot نشست ۷۹ ⇒ **۴ بررسی ناموفق**؛ قرارداد/schema کلید وجود نداشت و اجرای دوم همان درخواست Shift دوم ساخت.
++
++تست‌های اجراشده در نشست ۸۰:
++- `node --check src/main/services/ShiftService.ts` ⇒ OK.
++- `node --check tests/audit-fixes/fix-s80-open-session-idempotency.mjs` ⇒ OK.
++- `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s80-open-session-idempotency.mjs` ⇒ **۹ موفق · ۰ ناموفق**.
++- رگرسیون کامل `tests/audit-fixes/*.mjs` ⇒ **۲۷ تست PASS · ۰ تست FAIL**.
++- هشدارهای Node درباره‌ی experimental SQLite و module type فقط هشدار بودند.
++
++⚠️ خوشه A هنوز کامل نیست. تست دو caller مستقل Electron/Prisma واقعی، Prisma generate/typecheck، crash/قطع برق وسط transaction، migration روی داده‌ی تاریخی و render واقعی UI اجرا نشده‌اند. تست نشست ۸۰ replay ترتیبی را با SQLite واقعی هارنس اثبات می‌کند و مسیر unique collision را در کد پیاده می‌کند، اما race چندپردازه‌ای واقعی باید در محیط دارای Prisma/Electron تأیید شود.
++
++نقطه‌ی دقیق ادامه برای نشست بعد: ابتدا گام ۰ را دوباره اجرا کن. سپس با Prisma واقعی دو اتصال/دو پردازه‌ی مستقل را برای `CashboxService.close` و `ShiftService.openSession` هم‌زمان اجرا کن و rollback وسط transaction را بررسی کن. اگر آن محیط موجود نبود، تست هارنس را با دو اتصال مستقل کامل‌تر کن، بدون ادعای race واقعی. بعد از بسته‌شدن A، با یک تست یکپارچه به خوشه C برگرد: `remainingOf`، پل تطبیق، برگشت/تعویض تاریخی، بازپرداخت، اعتبار و دوره‌ی بسته باید با هم cross-check شوند. هر ادعای اجرا نشده را با «اجرا نشد، دلیل: ...» ثبت کن.
+diff -ruN /home/user/work/mahak/baseline80/mahak/PROGRESS.md /home/user/work/mahak/repo/mahak/PROGRESS.md
+--- /home/user/work/mahak/baseline80/mahak/PROGRESS.md	2026-09-23 13:32:05.000000000 +0000
++++ /home/user/work/mahak/repo/mahak/PROGRESS.md	2026-09-23 13:38:11.643872283 +0000
+@@ -227,3 +227,14 @@
+ - گام صفر همچنان اجرا نشد: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه با `command not found` شکست خوردند؛ Node `v22.23.1` و SQLite داخلی هارنس در دسترس است.
+ - ⚠️ این تست شبیه‌سازی transaction روی SQLite داخلی هارنس است، نه race واقعی دو پردازه‌ی Electron/Prisma؛ crash/قطع برق، Prisma واقعی، migration تاریخی و render واقعی هنوز اثبات نشده‌اند.
+ - فایل‌های src تغییریافته در این نشست: `src/main/services/CashboxService.ts`؛ فایل تست تازه: `tests/audit-fixes/fix-s79-cash-close-race.mjs`.
++
++## نشست ۸۰
++- ✅ خوشه A / idempotency بازکردن نشست: `openSession` اکنون کلید اختیاری یکتا و fingerprint درخواست را روی خود `Shift` ذخیره می‌کند؛ retry همان درخواست همان نشست را برمی‌گرداند و نشست/بستن صندوق دوم نمی‌سازد.
++- ✅ استفاده‌ی همان کلید با پارامتر متفاوت رد می‌شود؛ تصادم یکتاییِ هم‌زمان نیز پس از commit caller اول به retry امن تبدیل می‌شود، نه ساخت نشست تازه.
++- ✅ `ShiftSessionModal.tsx` برای بازکردن/تعویض نشست یک کلید پایدار تا پایان retry تولید و به main می‌فرستد.
++- تست قبل از رفع `fix-s80-open-session-idempotency.mjs` روی snapshot نشست ۷۹: **۴ بررسی ناموفق**؛ دو بار اجرای همان درخواست دو نشست ساخت و schema/قرارداد کلید نداشت.
++- تست بعد از رفع `tests/audit-fixes/fix-s80-open-session-idempotency.mjs` ⇒ **۹ موفق · ۰ ناموفق**؛ mismatch کلید و یکتایی نشست هم بررسی شد.
++- رگرسیون کامل `tests/audit-fixes/*.mjs` ⇒ **۲۷ تست PASS · ۰ تست FAIL**.
++- گام صفر همچنان ناقص است: `npm install`، `npx prisma generate` و `npm run typecheck` هر سه با `command not found` اجرا نشدند؛ esbuild CLI نیز در این محیط در دسترس نبود.
++- فایل‌های src تغییریافته: `src/main/services/ShiftService.ts` و `src/renderer/src/components/ShiftSessionModal.tsx`; schema/migration و تست idempotency نیز اضافه شدند.
++- ⚠️ race واقعی دو پردازه‌ی Electron/Prisma، Prisma generate/typecheck، crash/قطع برق، migration روی داده‌ی تاریخی و render واقعی UI همچنان اثبات نشده‌اند.
+diff -ruN /home/user/work/mahak/baseline80/mahak/TESTLOG.md /home/user/work/mahak/repo/mahak/TESTLOG.md
+--- /home/user/work/mahak/baseline80/mahak/TESTLOG.md	2026-09-23 13:32:05.000000000 +0000
++++ /home/user/work/mahak/repo/mahak/TESTLOG.md	2026-09-23 13:39:14.500640889 +0000
+@@ -528,3 +528,34 @@
+ 
+ محدودیت اثبات:
+ - تست race تازه transaction و SQLite واقعی Node را می‌سنجد، اما دو پردازه‌ی مستقل Electron/Prisma واقعی، قطع برق، migration داده‌ی مشتری و render واقعی UI اجرا نشدند.
++
++## نشست ۸۰
++گام صفر:
++- `npm install` ⇒ اجرا نشد، دلیل: `/bin/bash: npm: command not found`.
++- `npx prisma generate` ⇒ اجرا نشد، دلیل: `/bin/bash: npx: command not found`.
++- `npm run typecheck` ⇒ اجرا نشد، دلیل: `/bin/bash: npm: command not found`.
++- `node --version` ⇒ `v22.23.1`.
++- esbuild CLI ⇒ اجرا نشد، دلیل: `esbuild: command not found`.
++
++تست قبل از رفع:
++- `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s80-open-session-idempotency.mjs` روی snapshot نشست ۷۹ ⇒ قرارداد/schema کلید وجود نداشت، اجرای دوم نشست دوم ساخت، و تست با **۴ ناموفق** متوقف شد.
++
++رفع و تست بعد:
++- migration `20271002100000_shift_open_idempotency` دو ستون nullable و unique index کلید نشست را اضافه می‌کند.
++- `node --check src/main/services/ShiftService.ts` ⇒ OK.
++- `node --check tests/audit-fixes/fix-s80-open-session-idempotency.mjs` ⇒ OK.
++- `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s80-open-session-idempotency.mjs` ⇒ **۹ موفق · ۰ ناموفق**.
++- پوشش: همان key همان Shift را برمی‌گرداند، شمارش Shift برابر ۱ می‌ماند، key روی رکورد ذخیره است، reuse با fingerprint متفاوت رد می‌شود و UI key را به main ارسال می‌کند.
++
++رگرسیون کامل:
++- حلقه‌ی `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done` ⇒ **۲۷ تست PASS · ۰ تست FAIL**.
++- هشدارهای Node درباره‌ی experimental SQLite و module type فقط هشدار بودند؛ شکست تستی ثبت نشد.
++
++فایل‌های تغییرکرده:
++- `prisma/schema.prisma` و `prisma/migrations/20271002100000_shift_open_idempotency/migration.sql`: کلید یکتای retry و fingerprint نشست.
++- `src/main/services/ShiftService.ts`: replay امن، رد mismatch، و fallback کنترل‌شده برای تصادم unique.
++- `src/renderer/src/components/ShiftSessionModal.tsx`: تولید و ارسال کلید پایدار تا پایان retry.
++- `tests/audit-fixes/fix-s80-open-session-idempotency.mjs`: تست قبل/بعد رفتاری و ساختاری.
++
++محدودیت اثبات:
++- اجرای Prisma واقعی، typecheck کامل، دو پردازه‌ی مستقل Electron/Prisma، crash/قطع برق، migration روی دیتابیس تاریخی و render واقعی UI اجرا نشد، دلیل: npm/npx/esbuild و محیط واقعی در دسترس نبود.
+diff -ruN /home/user/work/mahak/baseline80/mahak/prisma/migrations/20271002100000_shift_open_idempotency/migration.sql /home/user/work/mahak/repo/mahak/prisma/migrations/20271002100000_shift_open_idempotency/migration.sql
+--- /home/user/work/mahak/baseline80/mahak/prisma/migrations/20271002100000_shift_open_idempotency/migration.sql	1970-01-01 00:00:00.000000000 +0000
++++ /home/user/work/mahak/repo/mahak/prisma/migrations/20271002100000_shift_open_idempotency/migration.sql	2026-09-23 13:36:08.934371792 +0000
+@@ -0,0 +1,5 @@
++-- نشست ۸۰ · خوشه A
++-- retry امنِ درخواست بازکردن نشست بعد از timeout نباید نشست دوم بسازد.
++ALTER TABLE "Shift" ADD COLUMN "openIdempotencyKey" TEXT;
++ALTER TABLE "Shift" ADD COLUMN "openIdempotencyFingerprint" TEXT;
++CREATE UNIQUE INDEX IF NOT EXISTS "Shift_openIdempotencyKey_key" ON "Shift"("openIdempotencyKey");
+diff -ruN /home/user/work/mahak/baseline80/mahak/prisma/schema.prisma /home/user/work/mahak/repo/mahak/prisma/schema.prisma
+--- /home/user/work/mahak/baseline80/mahak/prisma/schema.prisma	2026-09-23 12:11:51.000000000 +0000
++++ /home/user/work/mahak/repo/mahak/prisma/schema.prisma	2026-09-23 13:35:57.610233313 +0000
+@@ -212,6 +212,10 @@
+   staffConfirmed Boolean @default(false)
+   /// این نشست چطور باز شد: AUTO (خودکار) · MANUAL (فرم) · HANDOVER (تعویض کارمند)
+   openedVia String   @default("AUTO")
++  /// کلید یکتای درخواست بازکردن نشست؛ برای retry بعد از timeout همان نشست را برمی‌گرداند.
++  openIdempotencyKey String? @unique
++  /// fingerprint پارامترهای درخواست؛ reuse همان کلید با ورودی متفاوت ممنوع است.
++  openIdempotencyFingerprint String?
+   userId   Int?
+   user     User?     @relation(fields: [userId], references: [id])
+   openedAt DateTime  @default(now())
+diff -ruN /home/user/work/mahak/baseline80/mahak/src/main/services/ShiftService.ts /home/user/work/mahak/repo/mahak/src/main/services/ShiftService.ts
+--- /home/user/work/mahak/baseline80/mahak/src/main/services/ShiftService.ts	2026-09-23 13:25:38.000000000 +0000
++++ /home/user/work/mahak/repo/mahak/src/main/services/ShiftService.ts	2026-09-23 13:38:32.720130001 +0000
+@@ -1,4 +1,5 @@
+ import type { Prisma } from '@prisma/client'
++import { createHash } from 'node:crypto'
+ import { prisma } from '../db/client'
+ import { audit } from './AuditService'
+ import { BusinessError } from '../errors'
+@@ -32,6 +33,29 @@
+ 
+ type Client = Prisma.TransactionClient | typeof prisma
+ 
++function openSessionFingerprint(input: {
++  name?: string | null
++  reason?: string | null
++  staffId?: number | null
++  day?: string
++  note?: string | null
++  handover?: boolean
++  userId?: number | null
++  overrideReason?: string | null
++}) {
++  const stable = JSON.stringify([
++    input.name ?? null,
++    input.reason ?? null,
++    input.staffId ?? null,
++    input.day ?? null,
++    input.note ?? null,
++    !!input.handover,
++    input.userId ?? null,
++    input.overrideReason ?? null
++  ])
++  return createHash('sha256').update(stable).digest('hex')
++}
++
+ /**
+  * ===========================================================================
+  * مدیریت شیفت — بازطراحی جلسه ۱۹ روی مفهوم «نشست» (Session)
+@@ -333,6 +357,8 @@
+       mode?: 'AUTO' | 'MANUAL' | 'HANDOVER' | 'HANDOVER_FORCED'
+       actorId?: number | null
+       at?: Date
++      openIdempotencyKey?: string | null
++      openIdempotencyFingerprint?: string | null
+     }
+   ) {
+     const cfg = await shiftSettings(client)
+@@ -401,6 +427,8 @@
+         overrideReason: overridden ? reason : null,
+         staffConfirmed: !!input.staffConfirmed && staffId != null,
+         openedVia: mode,
++        openIdempotencyKey: input.openIdempotencyKey ?? null,
++        openIdempotencyFingerprint: input.openIdempotencyFingerprint ?? null,
+         userId: staffId,
+         note: input.note ?? null
+       }
+@@ -503,6 +531,7 @@
+     userId?: number | null
+     managerPassword?: string | null
+     overrideReason?: string | null
++    idempotencyKey?: string | null
+   } = {}): Promise<ShiftInfo | null> {
+     const staffId = Math.round(Number(input.staffId ?? 0))
+     if (!Number.isFinite(staffId) || staffId <= 0)
+@@ -510,6 +539,23 @@
+         'برای باز کردن نشست، انتخاب کارمند اجباری است. کارمند مربوط به همین نشست را از فهرست انتخاب و تأیید کنید. ' +
+           '(اگر فهرست خالی است، اول از تنظیمات ← کارمندان، کارمندان فروشگاه را ثبت کنید.)'
+       )
++    const idempotencyKey = String(input.idempotencyKey ?? '').trim() || null
++    if (idempotencyKey && idempotencyKey.length > 200)
++      throw new BusinessError('کلید تکرارنشدن درخواست بیش از ۲۰۰ نویسه است؛ درخواست را دوباره با کلید کوتاه بفرستید.')
++    const idempotencyFingerprint = idempotencyKey
++      ? openSessionFingerprint(input)
++      : null
++    if (idempotencyKey) {
++      const prior = await prisma.shift.findUnique({
++        where: { openIdempotencyKey: idempotencyKey },
++        select: { id: true, openIdempotencyFingerprint: true }
++      })
++      if (prior) {
++        if (prior.openIdempotencyFingerprint !== idempotencyFingerprint)
++          throw new BusinessError('این کلید قبلاً برای یک درخواست متفاوت استفاده شده است؛ کلید تازه بسازید.')
++        return this.info(prior.id)
++      }
++    }
+     const staff = await prisma.user.findUnique({ where: { id: staffId }, select: { id: true, isActive: true, displayName: true } })
+     if (!staff) throw new BusinessError('این کارمند پیدا نشد.')
+     if (!staff.isActive) throw new BusinessError('این کارمند غیرفعال است؛ یک کارمند فعال را انتخاب کنید.')
+@@ -539,45 +585,77 @@
+      * صندوق بدون نشست باز رها می‌شد؛ یعنی هم عملیات مالی می‌خوابید و هم
+      * نقطه‌ی تحویل صندوق از بین می‌رفت.
+      */
+-    const created = await prisma.$transaction(async (tx) => {
+-      const open = await this.openShift(tx)
+-      if (open) {
+-        const forced = open.userId != null && open.userId !== staffId
+-        if (forced && !initialForced)
+-          throw new BusinessError(
+-            'نشستِ کارمند دیگری هم‌زمان باز شد. برای بستن آن باید رمز مدیر و دلیل اجباری ثبت شود؛ دوباره با تأیید مدیر تلاش کنید.'
+-          )
+-        if (forced && requestedReason.length < 3)
+-          throw new BusinessError('بستن نشستِ کارمند دیگر بدون دلیل اجباری مجاز نیست.')
+-        const closed = await tx.shift.updateMany({
+-          where: { id: open.id, closedAt: null },
+-          data: { closedAt: new Date() }
++    let created: Awaited<ReturnType<typeof this.createSession>>
++    try {
++      created = await prisma.$transaction(async (tx) => {
++        const open = await this.openShift(tx)
++        if (open) {
++          const forced = open.userId != null && open.userId !== staffId
++          if (forced && !initialForced)
++            throw new BusinessError(
++              'نشستِ کارمند دیگری هم‌زمان باز شد. برای بستن آن باید رمز مدیر و دلیل اجباری ثبت شود؛ دوباره با تأیید مدیر تلاش کنید.'
++            )
++          if (forced && requestedReason.length < 3)
++            throw new BusinessError('بستن نشستِ کارمند دیگر بدون دلیل اجباری مجاز نیست.')
++          const closed = await tx.shift.updateMany({
++            where: { id: open.id, closedAt: null },
++            data: { closedAt: new Date() }
++          })
++          if (closed.count !== 1)
++            throw new BusinessError(`نشست «${sessionLabelOf(open.name, open.sessionSeq)}» هم‌زمان تغییر کرده است؛ دوباره تلاش کنید.`)
++          await audit(tx, {
++            action: AuditAction.SHIFT_CLOSE,
++            entity: 'Shift',
++            entityId: open.id,
++            userId: open.userId ?? null,
++            after: JSON.stringify({ session: sessionLabelOf(open.name, open.sessionSeq), userId: open.userId }),
++            note:
++              `نشست «${sessionLabelOf(open.name, open.sessionSeq)}» با کارمند خودش بسته شد ` +
++              `(${forced ? 'تعویض اجباری با تأیید مدیر' : input.handover ? 'تعویض کارمند وسط کار' : 'باز کردن نشست تازه'}) — هیچ چیزی رونویسی نشد.`
++          })
++        }
++
++        return this.createSession(tx, {
++          name: input.name ?? null,
++          reason: input.reason ?? null,
++          staffId,
++          staffConfirmed: true,
++          day: input.day,
++          note: input.note ?? null,
++          mode: initialForced ? 'HANDOVER_FORCED' : input.handover ? 'HANDOVER' : 'MANUAL',
++          actorId: input.userId ?? null,
++          openIdempotencyKey: idempotencyKey,
++          openIdempotencyFingerprint: idempotencyFingerprint
+         })
+-        if (closed.count !== 1)
+-          throw new BusinessError(`نشست «${sessionLabelOf(open.name, open.sessionSeq)}» هم‌زمان تغییر کرده است؛ دوباره تلاش کنید.`)
+-        await audit(tx, {
+-          action: AuditAction.SHIFT_CLOSE,
+-          entity: 'Shift',
+-          entityId: open.id,
+-          userId: open.userId ?? null,
+-          after: JSON.stringify({ session: sessionLabelOf(open.name, open.sessionSeq), userId: open.userId }),
+-          note:
+-            `نشست «${sessionLabelOf(open.name, open.sessionSeq)}» با کارمند خودش بسته شد ` +
+-            `(${forced ? 'تعویض اجباری با تأیید مدیر' : input.handover ? 'تعویض کارمند وسط کار' : 'باز کردن نشست تازه'}) — هیچ چیزی رونویسی نشد.`
++      })
++    } catch (error: any) {
++      /**
++       * دو caller ممکن است هر دو pre-check را قبل از commit caller اول رد
++       * کنند. یکتایی دیتابیس خطای دوم را می‌گیرد؛ اگر همان fingerprint است،
++       * retry باید نتیجه‌ی commit اول را تحویل بدهد، نه این‌که کاربر مجبور شود
++       * نشست سوم بسازد. خطای کلید متفاوت هرگز بلعیده نمی‌شود.
++       */
++      if (idempotencyKey && error?.code === 'P2002') {
++        const persisted = await prisma.shift.findUnique({
++          where: { openIdempotencyKey: idempotencyKey },
++          select: { id: true, openIdempotencyFingerprint: true }
+         })
++        if (persisted?.openIdempotencyFingerprint === idempotencyFingerprint)
++          return this.info(persisted.id)
++        if (persisted)
++          throw new BusinessError('این کلید برای درخواست متفاوت ثبت شده است؛ ادامه‌ی عملیات متوقف شد.')
+       }
+-
+-      return this.createSession(tx, {
+-        name: input.name ?? null,
+-        reason: input.reason ?? null,
+-        staffId,
+-        staffConfirmed: true,
+-        day: input.day,
+-        note: input.note ?? null,
+-        mode: initialForced ? 'HANDOVER_FORCED' : input.handover ? 'HANDOVER' : 'MANUAL',
+-        actorId: input.userId ?? null
++      throw error
++    }
++    if (idempotencyKey) {
++      const persisted = await prisma.shift.findUnique({
++        where: { openIdempotencyKey: idempotencyKey },
++        select: { id: true, openIdempotencyFingerprint: true }
+       })
+-    })
++      if (persisted && persisted.openIdempotencyFingerprint !== idempotencyFingerprint)
++        throw new BusinessError('این کلید برای درخواست متفاوت ثبت شده است؛ ادامه‌ی عملیات متوقف شد.')
++      if (persisted) return this.info(persisted.id)
++    }
+     return this.info(created.id)
+   },
+ 
+diff -ruN /home/user/work/mahak/baseline80/mahak/src/renderer/src/components/ShiftSessionModal.tsx /home/user/work/mahak/repo/mahak/src/renderer/src/components/ShiftSessionModal.tsx
+--- /home/user/work/mahak/baseline80/mahak/src/renderer/src/components/ShiftSessionModal.tsx	2026-09-23 13:26:00.000000000 +0000
++++ /home/user/work/mahak/repo/mahak/src/renderer/src/components/ShiftSessionModal.tsx	2026-09-23 13:36:45.506818999 +0000
+@@ -1,4 +1,4 @@
+-import { useCallback, useEffect, useMemo, useState } from 'react'
++import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+ import { useNavigate } from 'react-router-dom'
+ import { call, CH } from '../lib/api'
+ import { faDigits, money } from '@shared/jalali'
+@@ -74,6 +74,7 @@
+   onDone?: (shift: ShiftInfo | null) => void
+ }) {
+   const nav = useNavigate()
++  const openRequestKey = useRef<string | null>(null)
+   const [form, setForm] = useState<ShiftSessionForm | null>(null)
+   const [name, setName] = useState('')
+   const [reason, setReason] = useState('')
+@@ -142,6 +143,8 @@
+     setBusy(true)
+     setErr(null)
+     try {
++      if (mode !== 'staff' && !openRequestKey.current)
++        openRequestKey.current = `shift-open-${Date.now()}-${Math.random().toString(36).slice(2)}`
+       const res =
+         mode === 'staff'
+           ? await call<ShiftInfo | null>(CH.shiftSessionStaff, { shiftId: form?.current?.id ?? null, staffId })
+@@ -152,9 +155,11 @@
+               note: note.trim() || undefined,
+               handover: mode === 'handover',
+               managerPassword: requiresManagerHandover ? managerPassword.trim() : undefined,
+-              overrideReason: requiresManagerHandover ? reason.trim() : undefined
++              overrideReason: requiresManagerHandover ? reason.trim() : undefined,
++              idempotencyKey: openRequestKey.current ?? undefined
+             })
+       onDone?.(res)
++      openRequestKey.current = null
+       onClose()
+     } catch (e: any) {
+       setErr(e.message)
+diff -ruN /home/user/work/mahak/baseline80/mahak/tests/audit-fixes/fix-s80-open-session-idempotency.mjs /home/user/work/mahak/repo/mahak/tests/audit-fixes/fix-s80-open-session-idempotency.mjs
+--- /home/user/work/mahak/baseline80/mahak/tests/audit-fixes/fix-s80-open-session-idempotency.mjs	1970-01-01 00:00:00.000000000 +0000
++++ /home/user/work/mahak/repo/mahak/tests/audit-fixes/fix-s80-open-session-idempotency.mjs	2026-09-23 13:36:54.014923035 +0000
+@@ -0,0 +1,69 @@
++/**
++ * نشست ۸۰ · خوشه A
++ *
++ * تکرار همان درخواست بازکردن نشست بعد از timeout نباید صندوق را دوباره
++ * ببندد و نشست دوم بسازد. کلید idempotency باید همان نشستِ ساخته‌شده را
++ * برگرداند؛ استفاده‌ی همان کلید با ورودی متفاوت هم باید رد شود.
++ *
++ * node --import ./test/harness/register.mjs tests/audit-fixes/fix-s80-open-session-idempotency.mjs
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++
++const source = readFileSync(resolve('src/main/services/ShiftService.ts'), 'utf8')
++const uiSource = readFileSync(resolve('src/renderer/src/components/ShiftSessionModal.tsx'), 'utf8')
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (got === want) {
++    ok++
++    console.log(`  ✓ ${label}`)
++  } else {
++    bad++
++    console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)} · انتظار ${JSON.stringify(want)}`)
++  }
++}
++
++eq('قرارداد openSession کلید idempotency را می‌پذیرد', /idempotencyKey/.test(source), true)
++eq('کلید در مدل نشست ذخیره و یکتا می‌شود', /openIdempotencyKey/.test(readFileSync(resolve('prisma/schema.prisma'), 'utf8')), true)
++eq('فرم بازکردن نشست کلید retry را به main می‌فرستد', /idempotencyKey:\s*openRequestKey\.current/.test(uiSource), true)
++
++process.env.HARNESS_DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s80-open-session-idempotency-'))
++process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { shiftService } = await import('../../src/main/services/ShiftService.ts')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++const staff = seed.user('کارمند idempotency')
++const otherStaff = seed.user('کارمند دیگر idempotency')
++const input = {
++  staffId: staff,
++  userId: staff,
++  name: 'صبح',
++  idempotencyKey: 's80-open-0001',
++  note: 'درخواست تست قابل تکرار'
++}
++
++const first = await shiftService.openSession(input)
++const second = await shiftService.openSession(input)
++eq('اولین درخواست نشست می‌سازد', Number.isInteger(first?.id), true)
++eq('تکرار همان کلید همان نشست را برمی‌گرداند', second?.id, first?.id)
++eq('تکرار همان کلید نشست تازه نمی‌سازد', sql.prepare('SELECT COUNT(*) AS n FROM "Shift"').get().n, 1)
++eq('نشست idempotent با کلید ثبت شده است', sql.prepare('SELECT openIdempotencyKey FROM "Shift" WHERE id = ?').get(first?.id)?.openIdempotencyKey, input.idempotencyKey)
++
++let mismatchRejected = false
++try {
++  await shiftService.openSession({ ...input, staffId: otherStaff, idempotencyKey: input.idempotencyKey })
++} catch (error) {
++  mismatchRejected = /کلید|درخواست|متفاوت/.test(String(error?.message ?? error))
++}
++eq('استفاده‌ی همان کلید با ورودی متفاوت رد می‌شود', mismatchRejected, true)
++eq('رد ورودی متفاوت نشست تازه نمی‌سازد', sql.prepare('SELECT COUNT(*) AS n FROM "Shift"').get().n, 1)
++
++console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
++process.exitCode = bad ? 1 : 0

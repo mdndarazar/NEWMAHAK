@@ -1,0 +1,41 @@
+(node:3082) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:3082) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/pristine/mahak-session131/src/main/services/CardTransferService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/pristine/mahak-session131/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) adjust بدون رمز / با رمز غلط ⇒ رد، صفر ردیف اصلاحی، وضعیت مرجع دست‌نخورده
+  ✗ بدون رمز — بدون تأیید پذیرفته شد
+  ✗ رمز خالی — بدون تأیید پذیرفته شد
+  ✗ رمز غلط — بدون تأیید پذیرفته شد
+  ✗ ردیف ADJUSTMENT پس از تلاش‌های بی‌مجوز — انتظار 0، دریافت 3
+  ✗ Audit ADJUST پس از تلاش‌های بی‌مجوز — انتظار 0، دریافت 3
+  ✗ وضعیت درخواست مرجع — انتظار "PENDING"، دریافت "ADJUSTED"
+
+۲) validation ورودی پیش از رمز هم برقرار می‌ماند (رفتار S143)
+  ✓ مبلغ اعشاری با رمز درست (رد شد: مبلغ اصلاحی باید عدد صحیح غیرصفر (مثبت یا منفی) به ریال باشد؛ مقدار «1000.4» پذیرفته نیست )
+  ✗ ردیف ADJUSTMENT — انتظار 0، دریافت 3
+
+۳) با رمز مدیر ⇒ ثبت + Audit با actor و scope تأیید
+  ✗ ردیف ADJUSTMENT معتبر — انتظار 1، دریافت 4
+  ✓ مبلغ ردیف اصلاحی = -1000
+  ✓ actor در Audit = 1
+  ✗ scope تأیید در Audit — انتظار "MANAGER"، دریافت undefined
+
+۴) سیم‌کشی IPC و UI (ساختاری؛ Electron واقعی اجرا نمی‌شود)
+  ✗ IPC.cardTransferPay با withSessionActor (actor از نشست main)
+  ✗ IPC.cardTransferPay دیگر withUser نیست
+  ✗ IPC.cardTransferCancel با withSessionActor (actor از نشست main)
+  ✗ IPC.cardTransferCancel دیگر withUser نیست
+  ✗ IPC.cardTransferAdjust با withSessionActor (actor از نشست main)
+  ✗ IPC.cardTransferAdjust دیگر withUser نیست
+  ✗ helper cardTransferActor خودش withSessionActor را صدا می‌زند
+  ✗ IPC کارت‌به‌کارت برچسب‌های قابل‌جعل (userName/shiftId/shiftName) renderer را خنثی می‌کند
+  ✗ IPC.stockCountSubmit با withOptionalSessionActor
+  ✗ IPC.stockCountSubmit دیگر withUser نیست
+  ✗ adjust در سرویس assertPanelPassword(PANEL_KEYS.cardTransfers) دارد
+  ✗ CardTransferPanel رمز adjust را در payload می‌فرستد
+  ✗ CardTransferPanel ورودی رمز فرم اصلاحی دارد
+
+✗ 3 بررسی موفق · 22 ناموفق

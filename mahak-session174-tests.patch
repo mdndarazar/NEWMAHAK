@@ -1,0 +1,386 @@
+diff -ruN base/mahak/tests/audit-fixes/fix-s174-credit-scope-in-chunk.mjs mahak/tests/audit-fixes/fix-s174-credit-scope-in-chunk.mjs
+--- base/mahak/tests/audit-fixes/fix-s174-credit-scope-in-chunk.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-s174-credit-scope-in-chunk.mjs	2026-09-27 14:05:07.448742535 +0000
+@@ -0,0 +1,170 @@
++/**
++ * ===========================================================================
++ * نشست ۱۷۴ · خوشه D · S173-D3 — storeCreditScopes با فیلتر فاکتوری و سقف IN ۵۰۰
++ *
++ * storeCreditScopes با هر فیلتر فاکتوری (کارمند/شیفت/مشتری/کانال/…) تا ۲۰٬۰۰۰ شناسه‌ی فاکتور را
++ * مستقیم در OR سه‌تایی `in` (sourceInvoiceId/exchangeInvoiceId/usedInvoiceId) و در
++ * redemptionWhere (`invoiceId in`) می‌گذاشت، و issuedScoped هم تا ۲۰٬۰۰۰ `id in` داشت. قاعده‌ی
++ * پروژه برای گزارش‌ها سقف IN ۵۰۰ (REPORT_IN_CHUNK) است. با ۵۰۱+ فاکتورِ یک کارمند در بازه، ردیف
++ * «مصرف اعتبار»/«تعهد اعتبار» پل، drill مصرف اعتبار و بخش مصرف اعتبار دفتر رویداد از سقف رد
++ * می‌شدند (پل: کل گزارش با خطا؛ drill: هشدار خواندن‌نشد؛ دفتر: خطا).
++ * انتظار: هیچ IN بالای ۵۰۰ روی StoreCredit/StoreCreditRedemption؛ اعداد با فیلتر درست
++ * (فقط فاکتورهای کارمند الف، نه ب)؛ drill صفحه‌بندی کامل/یکتا/نزولی؛ جمع drill = ردیف پل؛
++ * دفتر رویداد همان تعداد را نشان دهد.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s174-credit-scope-in-chunk.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s174-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { salesService, saleWhere } = await import('../../src/main/services/SalesService.ts')
++const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
++const { salesLedger } = await import('../../src/main/services/SalesLedger.ts')
++const { prisma } = await import('../../src/main/db/client.ts')
++const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)?.slice(0, 200)}`) }
++}
++
++let maxIn = 0
++const walk = (w) => {
++  if (!w || typeof w !== 'object') return
++  for (const [k, v] of Object.entries(w)) {
++    if ((k === 'in' || k === 'notIn') && Array.isArray(v)) { maxIn = Math.max(maxIn, v.length); if (v.length > 500) throw new Error('HARNESS: سقف IN برابر ۵۰۰ است') }
++    else if (v && typeof v === 'object') walk(v)
++  }
++}
++for (const model of ['storeCredit', 'storeCreditRedemption']) {
++  for (const m of ['findMany', 'count', 'aggregate', 'groupBy']) {
++    if (typeof prisma[model][m] !== 'function') continue
++    const orig = prisma[model][m].bind(prisma[model])
++    prisma[model][m] = (args) => { walk(args?.where); return orig(args) }
++  }
++}
++
++const userA = seed.user('فروشنده الف ۱۷۴')
++const userB = seed.user('فروشنده ب ۱۷۴')
++const product = seed.product('کاپشن ۱۷۴', seed.category('پوشاک'))
++const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
++const today = toJalaliDate(new Date())
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - 3600_000, userId: userA })
++const variant = seed.variant(product, 'XL')
++sql.prepare('UPDATE "ProductVariant" SET stock = 100, salePrice = 1000 WHERE id = ?').run(variant)
++
++const invA = await salesService.create({ userId: userA, shiftId, lines: [{ variantId: variant, qty: 1, unitPrice: 1000, discount: 0, tax: 0 }], payments: [{ methodId: cash, amount: 1000, destination: 'CASH' }] })
++const invB = await salesService.create({ userId: userB, shiftId, lines: [{ variantId: variant, qty: 1, unitPrice: 1000, discount: 0, tax: 0 }], payments: [{ methodId: cash, amount: 1000, destination: 'CASH' }] })
++
++// ۵۲۰ کپی از فاکتور الف (همان کارمند/روز/وضعیت) ⇒ ۵۲۱ فاکتور کارمند الف امروز
++const baseInv = seed.rows('SELECT * FROM "SaleInvoice" WHERE id = ?', invA.id)[0]
++const invCols = Object.keys(baseInv).filter((c) => c !== 'id' && c !== 'receiptNo')
++const insInv = sql.prepare(`INSERT INTO "SaleInvoice" (receiptNo, ${invCols.map((c) => `"${c}"`).join(',')}) SELECT ?, ${invCols.map((c) => `"${c}"`).join(',')} FROM "SaleInvoice" WHERE id = ?`)
++const maxReceipt = Number(seed.rows('SELECT MAX(receiptNo) AS m FROM "SaleInvoice"')[0].m)
++const aInvoices = [invA.id]
++for (let i = 0; i < 520; i++) aInvoices.push(Number(insInv.run(maxReceipt + 1 + i, invA.id).lastInsertRowid))
++const NA = aInvoices.length
++
++// برای هر فاکتور الف: یک اعتبار ۱٬۰۰۰ (منبع = همان فاکتور، ۱۰۰ مصرف‌شده) و یک مصرف ۱۰۰ روی همان فاکتور
++const now = Date.now()
++const insCredit = sql.prepare('INSERT INTO "StoreCredit" (code, amount, usedAmount, usedCount, status, source, sourceInvoiceId, userId, issuedAt, issuedAtJalali, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
++const insRed = sql.prepare('INSERT INTO "StoreCreditRedemption" (creditId, code, amount, remainderAfter, seq, invoiceId, receiptNo, at, atJalali, atTime, userId, shiftId) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
++const cols = new Set(seed.rows('PRAGMA table_info("StoreCredit")').map((r) => r.name))
++if (!cols.has('createdAt') || !cols.has('updatedAt')) throw new Error('schema changed')
++const mk = (invoiceId, code, userId) => {
++  const cid = Number(insCredit.run(code, 1000, 100, 1, 'PARTIALLY_USED', 'MANUAL', invoiceId, userId, now - 60_000, today, now - 60_000, now).lastInsertRowid)
++  insRed.run(cid, code, 100, 900, 1, invoiceId, null, now - 30_000, today, '10:00', userId, shiftId)
++}
++aInvoices.forEach((id, i) => mk(id, `S174A${i}`, userA))
++mk(invB.id, 'S174B0', userB)
++
++const period = { fromJalali: today, toJalali: today, source: 'explicit' }
++const report = async (filter, opts = {}) => {
++  try {
++    const { statements } = await buildStatements({
++      where: saleWhere(filter), from: jalaliStartOfDay(today), to: jalaliEndOfDay(today), period, filter
++    }, opts)
++    return statements
++  } catch (e) { return { error: String(e?.message ?? e) } }
++}
++const fA = { fromJalali: today, toJalali: today, userId: userA }
++const fB = { fromJalali: today, toJalali: today, userId: userB }
++const fAll = { fromJalali: today, toJalali: today }
++
++console.log('\n۱) پل با فیلتر کارمند الف (۵۲۱ فاکتور)')
++maxIn = 0
++const sA = await report(fA)
++eq('گزارش بی‌خطا ساخته شد', sA?.error ?? null, null)
++eq('مصرف اعتبار = ۵۲۱ × ۱۰۰', sA?.storeCredits?.used ?? null, NA * 100)
++eq('تعداد مصرف = ۵۲۱', sA?.storeCredits?.usageCount ?? null, NA)
++eq('تعهد اعتبار زنده = ۵۲۱ × ۹۰۰', sA?.storeCredits?.active ?? null, NA * 900)
++eq('اعتبار صادرشده‌ی بازه = ۵۲۱ × ۱٬۰۰۰', sA?.storeCredits?.issued ?? null, NA * 1000)
++eq('تعداد صادرشده = ۵۲۱', sA?.storeCredits?.issuedCount ?? null, NA)
++eq('سهم بی‌سند (دستی) = ۵۲۱ × ۱٬۰۰۰', sA?.storeCredits?.issuedUnbacked ?? null, NA * 1000)
++eq('هیچ IN بالای ۵۰۰ نبود', maxIn <= 500, true)
++
++console.log('\n۲) کنترل: کارمند ب و بدون فیلتر')
++const sB = await report(fB)
++eq('ب: مصرف = ۱۰۰', sB?.storeCredits?.used ?? null, 100)
++eq('ب: تعهد = ۹۰۰', sB?.storeCredits?.active ?? null, 900)
++const s0 = await report(fAll)
++eq('کل: مصرف = ۵۲۲ × ۱۰۰', s0?.storeCredits?.used ?? null, (NA + 1) * 100)
++eq('کل: تعهد = ۵۲۲ × ۹۰۰', s0?.storeCredits?.active ?? null, (NA + 1) * 900)
++
++const sNone = await report({ fromJalali: today, toJalali: today, customerId: 999999 })
++eq('فیلتر بی‌فاکتور: بی‌خطا', sNone?.error ?? null, null)
++eq('فیلتر بی‌فاکتور: مصرف = ۰', sNone?.storeCredits?.used ?? null, 0)
++eq('فیلتر بی‌فاکتور: تعهد = ۰', sNone?.storeCredits?.active ?? null, 0)
++
++console.log('\n۳) drill ردیف «مصرف اعتبار» با فیلتر الف')
++const drill = async (skip, take) => {
++  const s = await report(fA, { withDrillDown: true, bridgeSourceKey: 'storeCreditUsed', bridgeSourceSkip: skip, bridgeSourceTake: take })
++  return { s, r: (s?.bridge?.rows ?? []).find((x) => x.key === 'storeCreditUsed') }
++}
++maxIn = 0
++const d1 = await drill(0, 2000)
++eq('drill بی‌خطا', d1.s?.error ?? null, null)
++eq('ردیف پل = ۵۲٬۱۰۰', d1.r?.amount ?? null, NA * 100)
++eq('totalCount = ۵۲۱', d1.r?.sourcesPage?.totalCount ?? null, NA)
++eq('همه در یک صفحه', (d1.r?.sources ?? []).length, NA)
++eq('جمع drill = ردیف', (d1.r?.sources ?? []).reduce((a, x) => a + Number(x.amount), 0), d1.r?.amount ?? -1)
++eq('بدون هشدار خواندن‌نشد', String(d1.r?.sourcesWarning ?? '').includes('خوانده نشد'), false)
++eq('هیچ فاکتور ب در drill نیست', (d1.r?.sources ?? []).some((x) => x.invoiceId === invB.id), false)
++const seen = []
++for (let skip = 0; skip < NA; skip += 200) {
++  const { r } = await drill(skip, 200)
++  eq(`اندازه‌ی صفحه‌ی skip=${skip}`, (r?.sources ?? []).length, Math.min(200, NA - skip))
++  eq(`totalCount skip=${skip}`, r?.sourcesPage?.totalCount ?? null, NA)
++  seen.push(...(r?.sources ?? []).map((x) => x.id))
++}
++eq('صفحه‌ها یکتا و کامل', [new Set(seen).size, seen.length], [NA, NA])
++eq('ترتیب id نزولی در کل صفحه‌ها', seen.every((id, i) => i === 0 || seen[i - 1] > id), true)
++eq('هیچ IN بالای ۵۰۰ نبود (drill)', maxIn <= 500, true)
++
++console.log('\n۴) دفتر رویداد با فیلتر الف')
++maxIn = 0
++let led
++try { led = await salesLedger.ledger({ fromJalali: today, toJalali: today, userId: userA }) } catch (e) { led = { error: String(e?.message ?? e) } }
++eq('دفتر بی‌خطا', led?.error ?? null, null)
++eq('تعداد مصرف اعتبار دفتر = ۵۲۱', led?.sections?.storeCreditsUsed?.totalCount ?? null, NA)
++const usedRows = (led?.rows ?? []).filter((r) => r.eventType === 'STORE_CREDIT_USED')
++eq('ردیف‌های مصرف اعتبار دفتر = ۵۲۱', usedRows.length, NA)
++eq('جمع مبلغ مصرف دفتر = پل', usedRows.reduce((a, r) => a + r.amount, 0), NA * 100)
++eq('cashEffect مصرف اعتبار همه صفر', usedRows.every((r) => r.cashEffect === 0), true)
++eq('هیچ IN بالای ۵۰۰ نبود (دفتر)', maxIn <= 500, true)
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)
+diff -ruN base/mahak/tests/audit-fixes/fix-s174-debt-c2c-in-chunk.mjs mahak/tests/audit-fixes/fix-s174-debt-c2c-in-chunk.mjs
+--- base/mahak/tests/audit-fixes/fix-s174-debt-c2c-in-chunk.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-s174-debt-c2c-in-chunk.mjs	2026-09-27 14:07:08.837446809 +0000
+@@ -0,0 +1,91 @@
++/**
++ * ===========================================================================
++ * نشست ۱۷۴ · خوشه D · ادامه‌ی S173 (بند ۳ نقطه‌ی شروع) — debtAdjustmentsByInvoice و سقف IN ۵۰۰
++ *
++ * فاکتورها دسته‌ی ۵۰۰تایی خوانده می‌شوند، ولی شناسه‌ی برگشت‌های کارت‌به‌کارتِ همان دسته (c2cIds)
++ * بی‌سقف در `returnId in` درخواست‌های کارت‌به‌کارت می‌نشست. یک دسته‌ی فاکتور می‌تواند ۵۰۱+ برگشت
++ * کارت‌به‌کارت داشته باشد (چند برگشت جزئی روی هر فاکتور) ⇒ عبور از سقف IN گزارش‌ها؛ این تابع
++ * «بدهی واحد» همه‌ی مسیرهاست (addPayment، تب نسیه، گزارش فروش، صورت‌های حسابداری).
++ * انتظار: هیچ IN بالای ۵۰۰ روی cardTransferRequest؛ بازپرداخت کارت‌به‌کارتِ لغوشده (حتی اگر
++ * شناسه‌اش بعد از ۵۰۰ اول باشد) از «پس‌داده از دریافتی» بیرون بماند؛ بدهی فاکتور درست.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s174-debt-c2c-in-chunk.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s174b-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { debtAdjustmentsByInvoice, invoiceRemaining } = await import('../../src/main/services/invoiceDebt.ts')
++const { prisma } = await import('../../src/main/db/client.ts')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)?.slice(0, 200)}`) }
++}
++
++let maxIn = 0
++const walk = (w) => {
++  if (!w || typeof w !== 'object') return
++  for (const [k, v] of Object.entries(w)) {
++    if ((k === 'in' || k === 'notIn') && Array.isArray(v)) { maxIn = Math.max(maxIn, v.length); if (v.length > 500) throw new Error('HARNESS: سقف IN برابر ۵۰۰ است') }
++    else if (v && typeof v === 'object') walk(v)
++  }
++}
++for (const model of ['cardTransferRequest', 'saleReturn']) {
++  const orig = prisma[model].findMany.bind(prisma[model])
++  prisma[model].findMany = (args) => { walk(args?.where); return orig(args) }
++}
++
++const userId = seed.user('مدیر ۱۷۴ب')
++const invX = seed.insert('SaleInvoice', { receiptNo: 17401, userId, status: 'PARTIALLY_RETURNED', issuedAtJalali: '1405/07/05', grandTotal: 100000, paidTotal: 100000 })
++const invY = seed.insert('SaleInvoice', { receiptNo: 17402, userId, status: 'PARTIALLY_RETURNED', issuedAtJalali: '1405/07/05', grandTotal: 5000, paidTotal: 5000 })
++const N = 520
++const retIds = []
++for (let i = 0; i < N; i++)
++  retIds.push(seed.insert('SaleReturn', { invoiceId: invX, kind: 'RETURN', total: 100, refundMethod: 'CARD_TO_CARD', refundAmount: 100, returnedAt: Date.now() - 10_000 }))
++// ۲۰ برگشت آخر (شناسه‌های بعد از ۵۰۰ اول): درخواست کارت‌به‌کارت لغو شده ⇒ پولی به مشتری نرسید
++// + ۳ برگشت اول (دسته‌ی اول ۵۰۰تایی) هم لغوشده، تا هر دو دسته سهم داشته باشند
++const canceledIds = [...retIds.slice(0, 3), ...retIds.slice(N - 20)]
++const CANCELED = canceledIds.length
++for (const rid of canceledIds)
++  seed.insert('CardTransferRequest', { returnId: rid, sourceInvoiceId: invX, status: 'CANCELED', amount: 100 })
++for (const rid of retIds.slice(5, 10))
++  seed.insert('CardTransferRequest', { returnId: rid, sourceInvoiceId: invX, status: 'PAID', amount: 100 })
++// فاکتور دوم در همان دسته: یک برگشت نقدی ساده
++seed.insert('SaleReturn', { invoiceId: invY, kind: 'RETURN', total: 1000, refundMethod: 'CASH', refundAmount: 1000, returnedAt: Date.now() - 10_000 })
++
++console.log('\n۱) ۵۲۰ برگشت کارت‌به‌کارت روی یک فاکتور، ۳ تای اول و ۲۰ تای آخر لغوشده')
++maxIn = 0
++let m
++try { m = await debtAdjustmentsByInvoice(prisma, [invX, invY]) } catch (e) { m = { error: String(e?.message ?? e) } }
++eq('بی‌خطا', m?.error ?? null, null)
++const ax = m?.get?.(invX)
++eq('ارزش برگشتی فاکتور X = ۵۲٬۰۰۰', ax?.returnedValue ?? null, N * 100)
++eq('پس‌داده از دریافتی X = ۴۹۷ × ۱۰۰ (لغوشده‌ها بیرون)', ax?.refundFromReceived ?? null, (N - CANCELED) * 100)
++const ay = m?.get?.(invY)
++eq('فاکتور Y دست‌نخورده: ارزش ۱٬۰۰۰', ay?.returnedValue ?? null, 1000)
++eq('فاکتور Y: پس‌داده ۱٬۰۰۰', ay?.refundFromReceived ?? null, 1000)
++eq('هیچ IN بالای ۵۰۰ نبود', maxIn <= 500, true)
++
++console.log('\n۲) بدهی واحد فاکتور X از همان تابع')
++let r
++try { r = await invoiceRemaining(prisma, invX, 100000, 100000) } catch (e) { r = { error: String(e?.message ?? e) } }
++eq('بی‌خطا', r?.error ?? null, null)
++// پرداخت ۱۰۰٬۰۰۰، برگشت ۵۲٬۰۰۰، پس‌داده ۴۹٬۷۰۰ ⇒ خالص دریافتی ۵۰٬۳۰۰ برای مانده‌ی ۴۸٬۰۰۰ ⇒ اضافه ۲٬۳۰۰
++eq('payable = ۴۸٬۰۰۰', r?.payable ?? null, 100000 - N * 100)
++eq('netReceived = ۵۰٬۳۰۰', r?.netReceived ?? null, 100000 - (N - CANCELED) * 100)
++eq('اضافه‌دریافت = ۲٬۳۰۰ (سهم لغوشده‌ها)', r?.overpaid ?? null, CANCELED * 100)
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)
+diff -ruN base/mahak/tests/audit-fixes/fix-s174-stale-response-panels.mjs mahak/tests/audit-fixes/fix-s174-stale-response-panels.mjs
+--- base/mahak/tests/audit-fixes/fix-s174-stale-response-panels.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-s174-stale-response-panels.mjs	2026-09-27 14:09:29.286261662 +0000
+@@ -0,0 +1,113 @@
++/**
++ * ===========================================================================
++ * نشست ۱۷۴ · مشاهده‌ی P3 ممیزی ۸۸ و ۱۱۶ — «پاسخ کهنه» در OutOfShiftPanel، CardTransferPanel،
++ * OverrideSessionsPanel و MovementsModal (همان الگوی A88-01 در StaffPerformancePanel).
++ *
++ * باگ: هر تغییر بازه/فیلتر/کالا/صفحه یک درخواست تازه می‌فرستاد و پاسخ *هر* درخواست روی state
++ * می‌نشست؛ درخواست قبلیِ کندتر (بازه‌ی بزرگ‌تر) دیرتر برمی‌گشت و ردیف‌ها/جمع‌های بازه یا کالای
++ * قبلی زیر عنوان فعلی می‌ماند؛ Excel هم با نام بازه‌ی فعلی همان ردیف‌های کهنه را می‌نوشت.
++ *
++ * بخش ۱ (رفتاری): گیت مشترک @shared/latestRequest با دو درخواست هم‌پوشان که قدیمی دیرتر
++ * برمی‌گردد — state نهایی باید مال درخواست آخر باشد؛ خطا/busy درخواست کهنه هم اعمال نشود.
++ * بخش ۲ (متن کد، چون رندر واقعی React/Electron در این محیط اجرا نمی‌شود): هر چهار مؤلفه از گیت
++ * استفاده می‌کنند، پیش از setData/setRows پاسخ کهنه را کنار می‌گذارند، busy/loading/خطا فقط برای
++ * آخرین درخواست، و خروجی Excel حین بارگذاری بسته است.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s174-stale-response-panels.mjs
++ * ===========================================================================
++ */
++import { readFileSync, existsSync } from 'node:fs'
++import { resolve } from 'node:path'
++
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)?.slice(0, 200)}`) }
++}
++
++console.log('\n۱) گیت «فقط آخرین درخواست» — رفتاری')
++let createLatestGate = null
++try { ({ createLatestGate } = await import('@shared/latestRequest')) } catch { createLatestGate = null }
++eq('ماژول مشترک @shared/latestRequest وجود دارد', typeof createLatestGate, 'function')
++
++/** شبیه‌سازی دقیق load پنل: همان ترتیب setBusy/setData/setErr مؤلفه‌ها */
++const deferred = () => { let res, rej; const p = new Promise((a, b) => { res = a; rej = b }); return { p, res, rej } }
++const panel = (gate) => {
++  const state = { data: null, err: null, busy: false }
++  const load = async (key, pending) => {
++    const seq = gate ? gate.next() : 0
++    const latest = () => (gate ? gate.isLatest(seq) : true)
++    state.busy = true; state.err = null
++    try { const r = await pending; if (!latest()) return; state.data = { key, r } }
++    catch (e) { if (latest()) state.err = String(e.message) }
++    finally { if (latest()) state.busy = false }
++  }
++  return { state, load }
++}
++if (createLatestGate) {
++  // الف) بازه‌ی قدیمی (کند) دیرتر از بازه‌ی جدید برمی‌گردد
++  const a = panel(createLatestGate())
++  const d1 = deferred(), d2 = deferred()
++  const l1 = a.load('۱۴۰۵/۰۱/۰۱..۱۴۰۵/۰۶/۳۱', d1.p)
++  const l2 = a.load('۱۴۰۵/۰۷/۰۵..۱۴۰۵/۰۷/۰۵', d2.p)
++  d2.res(['امروز']); await l2
++  eq('بعد از پاسخ جدید: داده‌ی بازه‌ی جدید', a.state.data?.key, '۱۴۰۵/۰۷/۰۵..۱۴۰۵/۰۷/۰۵')
++  d1.res(['شش ماه']); await l1
++  eq('پاسخ کهنه‌ی دیررس روی state ننشست', a.state.data?.key, '۱۴۰۵/۰۷/۰۵..۱۴۰۵/۰۷/۰۵')
++  eq('busy بعد از پاسخ آخر خاموش', a.state.busy, false)
++  // ب) خطای درخواست کهنه روی صفحه نمی‌نشیند، busy درخواست جاری را خاموش نمی‌کند
++  const b = panel(createLatestGate())
++  const e1 = deferred(), e2 = deferred()
++  const m1 = b.load('قبلی', e1.p)
++  const m2 = b.load('فعلی', e2.p)
++  e1.rej(new Error('خطای درخواست قبلی')); await m1
++  eq('خطای کهنه نمایش داده نشد', b.state.err, null)
++  eq('busy درخواست جاری هنوز روشن', b.state.busy, true)
++  e2.res(['ok']); await m2
++  eq('پاسخ جاری نشست', b.state.data?.key, 'فعلی')
++  // ج) invalidate (بستن مودال) ⇒ پاسخ در جریان کهنه
++  const g = createLatestGate()
++  const s = g.next(); g.invalidate()
++  eq('invalidate درخواست در جریان را کهنه می‌کند', g.isLatest(s), false)
++  eq('درخواست بعدی دوباره آخرین است', g.isLatest(g.next()), true)
++}
++// کنترل: بدون گیت (رفتار قبلی) همان سناریو پاسخ کهنه را می‌نشاند — اثبات اینکه سناریو واقعاً مسابقه است
++{
++  const c = panel(null)
++  const d1 = deferred(), d2 = deferred()
++  const l1 = c.load('قدیم', d1.p), l2 = c.load('جدید', d2.p)
++  d2.res(1); await l2; d1.res(2); await l1
++  eq('کنترل بدون گیت: پاسخ کهنه برنده می‌شد (سناریو معتبر است)', c.state.data?.key, 'قدیم')
++}
++
++console.log('\n۲) هر چهار مؤلفه — متن کد')
++const src = (f) => {
++  const p = resolve('src/renderer/src/components', f)
++  return existsSync(p) ? readFileSync(p, 'utf8') : ''
++}
++const checks = {
++  'OutOfShiftPanel.tsx': { set: 'setData(res)', busy: 'setBusy(false)', exportGuard: /disabled=\{busy \|\| !data\?\.rows\.length\}/ },
++  'OverrideSessionsPanel.tsx': { set: 'setData(res)', busy: 'setBusy(false)', exportGuard: /disabled=\{busy \|\| !rows\.length\}/ },
++  'CardTransferPanel.tsx': { set: 'setRows(list?.rows ?? [])', busy: 'setBusy(false)', exportGuard: /disabled=\{busy \|\| !rows\.length\}/ },
++  'MovementsModal.tsx': { set: 'setRows(result)', busy: 'setLoading(false)', exportGuard: null }
++}
++for (const [f, c] of Object.entries(checks)) {
++  const s = src(f)
++  eq(`${f}: گیت مشترک import شده`, /from '@shared\/latestRequest'/.test(s), true)
++  eq(`${f}: هر درخواست شماره می‌گیرد`, /const seq = gate\.next\(\)/.test(s), true)
++  const iSet = s.indexOf(c.set)
++  const iGuard = s.lastIndexOf('if (!gate.isLatest(seq)) return', iSet)
++  eq(`${f}: پاسخ کهنه پیش از ${c.set} کنار گذاشته می‌شود`, iSet > 0 && iGuard > 0 && iSet - iGuard < 200, true)
++  eq(`${f}: خطا فقط برای آخرین درخواست`, /if \(gate\.isLatest\(seq\)\) setErr\(e\.message\)/.test(s), true)
++  eq(`${f}: busy/loading فقط برای آخرین درخواست`, s.includes(`if (gate.isLatest(seq)) ${c.busy}`), true)
++  if (c.exportGuard) eq(`${f}: Excel حین بارگذاری بسته`, c.exportGuard.test(s), true)
++}
++const mm = src('MovementsModal.tsx')
++eq('MovementsModal: بستن مودال درخواست در جریان را کهنه می‌کند', /gate\.invalidate\(\)/.test(mm), true)
++eq('MovementsModal: تعویض کالا ردیف‌های قبلی را پاک می‌کند', /loadedVariant\.current !== variant\.id\) \{\s*setRows\(\[\]\)/.test(mm), true)
++for (const f of ['OutOfShiftPanel.tsx', 'OverrideSessionsPanel.tsx'])
++  eq(`${f}: تعویض بازه داده‌ی قبلی را پاک می‌کند`, /if \(loadedRange\.current !== rangeKey\) setData\(null\)/.test(src(f)), true)
++eq('CardTransferPanel: تعویض بازه/وضعیت ردیف و جمع قبلی را پاک می‌کند', /if \(loadedKey\.current !== key\) \{\s*setRows\(\[\]\)\s*setTotals\(null\)/.test(src('CardTransferPanel.tsx')), true)
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)

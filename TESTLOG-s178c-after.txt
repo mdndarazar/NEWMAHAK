@@ -1,0 +1,24 @@
+(node:6757) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6757) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/work178/src/main/services/VariantPurgeService.ts is not specified and it doesn't parse as CommonJS.
+To eliminate this warning, add "type": "module" to /home/user/work/work178/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+— ۱) پیش‌نمایش مانع‌ها را همان‌طور می‌گوید که purge رد می‌کند
+  ✓ تازه‌حذف (۱۰ روز): canPurge = false
+  ✓ تازه‌حذف: مانع ردیف پیام مهلت ۷۳۰ روز دارد
+  ✓ تازه‌حذف: blockers کل پیش‌نمایش پیام فارسی مهلت دارد
+  ✓ purge همان کالا رد می‌شود (پیش‌نمایش = عملیات)
+  ✓ بدون deletedAt: canPurge = false با پیام مهلت
+  ✓ کالای فعال: canPurge = false و پیام «هنوز در فهرست کالاهای فعال»
+  ✓ دارای حرکت انبار: canPurge = false و پیام دفتر گردش
+  ✓ purge کالای دارای حرکت رد می‌شود
+  ✓ مخلوط (مجاز + تازه): canPurge = false (همه یا هیچ) و فقط ردیف تازه مانع دارد
+  ✓ شناسه‌ی ناموجود: هشدار «پیدا نشد» ولی مانع حذف موارد موجود نیست (purge هم فقط موجودها را می‌گیرد)
+
+— ۲) مسیر مجاز
+  ✓ ۷۳۱ روز بی‌حرکت: canPurge = true، بدون مانع
+  ✓ فیلدهای قبلی پیش‌نمایش حفظ شد
+  ✓ purge همان کالا انجام می‌شود
+  ✓ انتخاب خالی: canPurge = false با پیام انتخاب
+
+✓ 14 بررسی موفق · 0 ناموفق

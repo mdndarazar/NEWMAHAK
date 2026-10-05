@@ -1,0 +1,3409 @@
+diff --git a/test/acceptance-db-session35.mjs b/test/acceptance-db-session35.mjs
+index 2d063ef..c1b7bdd 100644
+--- a/test/acceptance-db-session35.mjs
++++ b/test/acceptance-db-session35.mjs
+@@ -260,9 +260,13 @@ section('بند ۵ و ۶ · مصرف تک/چندباره، جزئی/کامل (§
+   })
+   eq('مصرف جزئی فقط تا سقف قابل‌پرداخت فاکتور است', r1.applied, 4_000_000)
+   const singleRow = creditRow(single.id)
+-  eq('یک‌بارمصرف با اولین مصرف قطعاً بسته می‌شود', singleRow.status, StoreCreditStatus.USED)
+-  ok('باقی‌مانده به‌شکل اعتبار جدید به مشتری برگشت', r1.remainder != null && singleRow.remainderCreditId === r1.remainder.id)
+-  eq('مبلغ اعتبار باقی‌مانده درست است', r1.remainder.amount, 6_000_000)
++  /**
++   * 🔴 نشست ۱۸۴ · بند ۴-۶ — باقی‌مانده روی همان بارکد می‌ماند، بارکد جانشین
++   * ساخته نمی‌شود. پس مصرف جزئی دیگر سند را نمی‌بندد.
++   */
++  eq('مصرف جزئی، بارکد را باز نگه می‌دارد', singleRow.status, StoreCreditStatus.PARTIALLY_USED)
++  ok('هیچ بارکد جانشینی ساخته نشد', r1.remainder == null && singleRow.remainderCreditId == null)
++  eq('و باقی‌مانده روی همان رکورد است', Number(singleRow.amount) - Number(singleRow.usedAmount), 6_000_000)
+   await throwsWith(
+     'مصرف دوباره‌ی اعتبار یک‌بارمصرف رد می‌شود',
+     () => svc.redeemStoreCredit(db, { code: single.code, invoiceId: inv1.id, receiptNo: inv1.receiptNo, userId }),
+diff --git a/test/acceptance-db-session36.mjs b/test/acceptance-db-session36.mjs
+index b67305f..cc15c80 100644
+--- a/test/acceptance-db-session36.mjs
++++ b/test/acceptance-db-session36.mjs
+@@ -558,7 +558,23 @@ section('بند ۹ · داده‌ی قدیمی بی‌مقصد ⇒ «نامشخ
+     2_000_000
+   )
+   eq('سهم «نامشخص» داخل انتظار نقد همیشه صفر', v.expected.unknownDestinationInExpected, 0)
+-  eq('پرداختیِ نقدیِ قدیمی مو‌به‌مو همان سبد قبلی (نقد از kind روش) را گرفت', v.acc.cash.cashReceived, 2_000_000)
++  /**
++   * 🔴 به‌روزرسانی نشست ۱۸۵ · بند ۴-۲۴ (تصمیم مالک) — دو انتظار زیر عوض شدند.
++   *
++   * تا امروز مقصدِ خالی از روی *روشِ* پرداخت حدس زده می‌شد (روش نقد ⇒ سبد
++   * نقد). بند ۴-۲۴ می‌گوید «هرگز حدس زده یا جمع زده نشود»، پس حالا سبد
++   * رسمی‌اش «نامشخص» است.
++   *
++   * ولی صرفِ «نامشخص» کردن، `expectedCash` شیفت‌های قدیمی را پایین می‌آورد و
++   * **کسری دروغ** می‌ساخت. راه‌حل مالک هر دو را با هم حل کرد: عدد در سبد
++   * نامشخص دیده می‌شود، و یک ستون کمکی «احتمالاً نقد» همان مبلغ را در نقد
++   * مورد انتظار نگه می‌دارد. پس:
++   *   • `cash.cashReceived` دیگر شامل این مبلغ نیست (صداقت)،
++   *   • `expected.expectedCash` همچنان شاملش هست (بدون کسری دروغ).
++   */
++  eq('پرداختیِ نقدیِ قدیمی دیگر حدسی «نقد» شمرده نمی‌شود', v.acc.cash.cashReceived, 0)
++  eq('و به سبد «نامشخص» رفت', v.acc.cash.destinationUnknownReceived, 2_000_000 + CHEQUE_AMOUNT)
++  eq('ولی در ستون کمکی «احتمالاً نقد» دیده می‌شود', v.acc.cash.unknownLikelyCash, 2_000_000)
+   eq('سهم «نامشخص» جدا و بیرون از انتظار نقد قابل خواندن است', v.expected.unknownDestinationOutside, CHEQUE_AMOUNT)
+   ok(
+     'ردیف «نامشخص» در اجزای صندوق جداست',
+@@ -566,7 +582,8 @@ section('بند ۹ · داده‌ی قدیمی بی‌مقصد ⇒ «نامشخ
+     JSON.stringify({ unknown: v.c.clearedUnknownCheques, cash: v.c.clearedCashCheques })
+   )
+   // «نامشخص» فقط چکِ پاس‌شده‌ی بی‌مقصد است؛ پرداختیِ نقدیِ قدیمی همان سبد نقد را نگه داشت
+-  eq('سبد «نامشخص» فقط چکِ بی‌مقصد را دارد', v.acc.cash.destinationUnknownReceived, CHEQUE_AMOUNT)
++  // نشست ۱۸۵: حالا هم چکِ بی‌مقصد و هم پرداختِ بی‌مقصد در این سبد می‌نشینند.
++  eq('سبد «نامشخص» شامل چک و پرداختِ بی‌مقصد است', v.acc.cash.destinationUnknownReceived, 2_000_000 + CHEQUE_AMOUNT)
+   const view = await salesService.payments({ invoiceId: inv.id })
+   const viewRows = view.rows ?? view.payments ?? []
+   const legacyRow = viewRows.find((r) => r.id === legacyCash)
+diff --git a/test/acceptance-session21.mjs b/test/acceptance-session21.mjs
+index 351a70f..d01a832 100644
+--- a/test/acceptance-session21.mjs
++++ b/test/acceptance-session21.mjs
+@@ -40,8 +40,9 @@ check(5, 'idempotency: replay of the same key returns the prior row without dedu
+   /findUnique\(\{ where: \{ idempotencyKey: key \} \}\)/.test(svc) && /replayed: true/.test(svc) && /@@unique\(\[idempotencyKey\]\)/.test(schema))
+ check(6, 'redemption ledger row is written for every redeem (seq + remainderAfter)', 'STRUCTURAL', () =>
+   /storeCreditRedemption\.create\(\{/.test(svc) && /remainderAfter,/.test(svc) && /seq: usedCountBefore \+ 1/.test(svc))
+-check(7, 'single-use leftover still becomes a NEW credit; multi-use keeps it on the record', 'STRUCTURAL', () =>
+-  /leftover > 0 && credit\.multiUse !== true/.test(svc) && /remainderCreditId: remainder\.id/.test(svc))
++// نشست ۱۸۴ · بند ۴-۶ — دیگر بارکد جانشین ساخته نمی‌شود؛ باقی‌مانده روی همان سند می‌ماند.
++check(7, 'leftover stays on the SAME credit record; no successor barcode is ever created (rule 4-6)', 'STRUCTURAL', () =>
++  !/remainder = await issueStoreCredit\(/.test(svc) && /هیچ بارکد جانشینی/.test(svc))
+ check(8, 'cart lines for the category/product restriction are read from the DB, not the request', 'STRUCTURAL', () =>
+   /export async function linesForInvoice/.test(svc) && /const dbLines = await linesForInvoice\(client, input\.invoiceId\)/.test(svc))
+ check(9, 'credit is refused on a canceled invoice', 'STRUCTURAL', () =>
+@@ -51,8 +52,10 @@ check(10, 'rate-limit gate is called OUTSIDE any transaction (SQLite deadlock ru
+   /assertCreditCodeGateOpen\(\)/.test(svc) && /noteCreditCodeFailure/.test(svc) &&
+   /await guardCreditCode\(String\(input\.storeCreditCode\)/.test(sales) &&
+   sales.indexOf('await guardCreditCode') < sales.indexOf('return prisma.$transaction', sales.indexOf('async create(')))
+-check(11, 'every manager operation demands the manager password + a mandatory reason + before/after audit', 'STRUCTURAL', () =>
+-  /assertManagerPassword\(input\.managerPassword, input\.actionTitle\)/.test(svc) &&
++// نشست ۱۸۳ — «رمز مدیر» حالا «رمز مدیر یا رمز دوم/سوم همان پنل» است (خواسته‌ی مالک:
++// دسترسی فرد مورد اعتماد در نبود مدیر). گیت، دلیل اجباری و ردیف Audit دست‌نخورده‌اند.
++check(11, 'every manager operation demands a password gate + a mandatory reason + before/after audit', 'STRUCTURAL', () =>
++  /assertPanelPasswordStrict\(PANEL_KEYS\.creditVoid, input\.managerPassword, input\.actionTitle\)/.test(svc) &&
+   /function requireReason/.test(svc) && /before: JSON\.stringify\(built\.before\)/.test(svc))
+ check(12, 'amount change is forbidden (not merely limited) on a redeemed credit', 'STRUCTURAL', () =>
+   /changeCreditAmount/.test(svc) && /تغییر مبلغش مجاز نیست/.test(svc))
+diff --git a/test/credit-logic-session21.ts b/test/credit-logic-session21.ts
+index 932f13e..497a8d9 100644
+--- a/test/credit-logic-session21.ts
++++ b/test/credit-logic-session21.ts
+@@ -72,8 +72,23 @@ t('L3', 'مصرف‌شده فقط با ابطال از وضعیتش خارج م
+   !canCreditTransition(CreditStatus.USED, CreditStatus.ACTIVE))
+ 
+ // ---------------- ۲) یک‌بارمصرف در برابر چندباره (§۴) ----------------
+-t('L4', 'یک‌بارمصرف: مصرف جزئی هم وضعیت را قطعاً می‌بندد', () =>
+-  statusAfterRedeem(base, 300_000) === CreditStatus.USED)
++/**
++ * 🔴 به‌روزرسانی نشست ۱۸۴ · بند ۴-۶ — این قاعده عوض شد، عمداً.
++ *
++ * قبلاً مصرف جزئیِ یک اعتبار یک‌بارمصرف سند را می‌بست و باقی‌مانده با یک
++ * **بارکد جدید** به مشتری داده می‌شد. پرامپت ساخت آن رکورد جانشین را منع
++ * کرده و مالک هم گفته پول مشتری نباید بسوزد. اشتراکشان: باقی‌مانده روی همان
++ * بارکد بماند.
++ *
++ * حالت «کوپن واقعاً یک‌بارمصرف» هم از دست نرفت: با `carryRemainder: false`
++ * همان رفتار قبلی برمی‌گردد (L4-الف).
++ */
++t('L4', 'یک‌بارمصرف: مصرف جزئی بارکد را باز نگه می‌دارد (باقی‌مانده روی همان سند)', () =>
++  statusAfterRedeem(base, 300_000) === CreditStatus.PARTIALLY_USED)
++t('L4-الف', 'کوپن یک‌بارمصرف (carryRemainder=false): مصرف جزئی هم می‌بندد', () =>
++  statusAfterRedeem({ ...base, carryRemainder: false }, 300_000) === CreditStatus.USED)
++t('L4-ب', 'یک‌بارمصرف: مصرف کامل می‌بندد', () =>
++  statusAfterRedeem(base, base.amount) === CreditStatus.USED)
+ t('L5', 'چندباره: مصرف جزئی ⇒ PARTIALLY_USED', () =>
+   statusAfterRedeem({ ...base, multiUse: true, maxUses: 3 }, 300_000) === CreditStatus.PARTIALLY_USED)
+ t('L6', 'چندباره: تمام شدن مبلغ ⇒ بسته', () =>
+diff --git a/test/harness/prismaLite.mjs b/test/harness/prismaLite.mjs
+index bcc38a1..517aa15 100644
+--- a/test/harness/prismaLite.mjs
++++ b/test/harness/prismaLite.mjs
+@@ -44,7 +44,49 @@ const OPS = new Set([
+ ])
+ 
+ export function createClient(file) {
+-  const { db } = buildDatabase(file)
++  const { db: rawDb } = buildDatabase(file)
++
++  /**
++   * ===========================================================================
++   * نشست ۱۸۱ · بند ۴-۲۸ الف — «هارنس وفادار به BigInt» (پیش‌فرض: خاموش)
++   * ---------------------------------------------------------------------------
++   * بعد از مهاجرت ۸۳ ستون مالی به `BIGINT`، Prisma **واقعی** برای آن ستون‌ها
++   * `bigint` برمی‌گرداند. این هارنس تا امروز `number` می‌داد؛ یعنی ۲۵۳ تست یک
++   * دنیای number-محور را می‌سنجیدند در حالی که محصول bigint-محور شده بود.
++   *
++   * با `HARNESS_BIGINT=1` این شکاف بسته می‌شود: ستون `BIGINT` واقعاً `bigint`
++   * می‌دهد و `_sum`/`_min`/`_max` رویش هم `bigint` (دقیقاً مثل Prisma).
++   *
++   * ⚠️ چرا پیش‌فرض خاموش است — این یک تصمیم آگاهانه است، نه فراموشی:
++   *   • روشن کردنش در نشست ۱۸۱ **۵۷ شکست** را آشکار کرد.
++   *   • ۳۷ موردش باگ واقعیِ محصول بود که همان نشست رفع شد (فهرست کامل در
++   *     `CHANGELOG-جلسه۱۸۱-مرحله۴.md`) — آن رفع‌ها در کد ماندگارند و به این
++   *     پرچم وابسته نیستند.
++   *   • ۲۰ مورد باقی‌مانده عمدتاً *انتظارِ خودِ تست‌ها*ست (مقایسه‌ی `2` با `2n`)
++   *     و رفعشان یعنی ویرایش ده‌ها فایل تست — کاری مستقل و بزرگ‌تر از خوشه M.
++   *
++   * تحویل خوشه M با یک مجموعه‌ی تست قرمز بدتر از تحویل سبز با یک شکافِ
++   * اندازه‌گیری‌شده و مستند است. پس پرچم این‌جا می‌ماند تا نشست بعد با
++   * `HARNESS_BIGINT=1` آن ۲۰ مورد را یکی‌یکی ببندد.
++   * ===========================================================================
++   */
++  const FAITHFUL_BIGINT = process.env.HARNESS_BIGINT === '1'
++  const db = FAITHFUL_BIGINT
++    ? new Proxy(rawDb, {
++        get(target, prop, receiver) {
++          if (prop === 'prepare') {
++            return (...args) => {
++              const stmt = target.prepare(...args)
++              stmt.setReadBigInts(true)
++              return stmt
++            }
++          }
++          const v = Reflect.get(target, prop, receiver)
++          return typeof v === 'function' ? v.bind(target) : v
++        }
++      })
++    : rawDb
++
+   const tables = introspect(db)
+   const { models, relations, byDelegate } = parseSchema()
+ 
+@@ -53,6 +95,8 @@ export function createClient(file) {
+ 
+   const isDate = (col) => col && (col.type.includes('DATE') || col.type.includes('TIME'))
+   const isBool = (col) => col && col.type.includes('BOOL')
++  /** نشست ۱۸۱: فقط ستون‌های مالیِ مهاجرت‌کرده، نه هر ستون صحیحی. */
++  const isBigIntCol = (col) => FAITHFUL_BIGINT && col && col.type.toUpperCase() === 'BIGINT'
+ 
+   const enc = (table, name, value) => {
+     const col = colOf(table, name)
+@@ -61,7 +105,9 @@ export function createClient(file) {
+     if (typeof value === 'boolean') return value ? 1 : 0
+     if (isDate(col) && typeof value === 'string') return new Date(value).getTime()
+     if (isBool(col) && typeof value === 'number') return value ? 1 : 0
+-    if (typeof value === 'bigint') return Number(value)
++    // نشست ۱۸۱: `bigint` مستقیم به SQLite داده می‌شود؛ تبدیل به `Number` دقیقاً
++    // همان افت دقتی است که مهاجرت برای حذفش انجام شد.
++    if (typeof value === 'bigint') return value
+     if (typeof value === 'object') fail(`مقدار غیرقابل‌ذخیره برای ${table}.${name}: ${JSON.stringify(value)}`)
+     return value
+   }
+@@ -72,8 +118,16 @@ export function createClient(file) {
+     for (const [k, v] of Object.entries(row)) {
+       const col = colOf(table, k)
+       if (v === null) out[k] = null
+-      else if (isDate(col)) out[k] = typeof v === 'number' ? new Date(v) : new Date(String(v))
++      else if (isDate(col)) out[k] = typeof v === 'bigint' || typeof v === 'number' ? new Date(Number(v)) : new Date(String(v))
+       else if (isBool(col)) out[k] = !!v
++      /**
++       * نشست ۱۸۱ — ستون `BIGINT` باید `bigint` برگرداند، عیناً مثل Prisma واقعی.
++       * اگر این‌جا به `Number` تبدیل شود، هارنس یک دنیای number-محور را تست
++       * می‌کند در حالی که محصول bigint-محور شده: هر باگِ «مخلوط کردن bigint و
++       * number» بی‌صدا از تست‌ها رد می‌شود.
++       */
++      else if (isBigIntCol(col)) out[k] = typeof v === 'bigint' ? v : BigInt(v)
++      // ستون‌های صحیحِ معمولی (شناسه، تعداد، شمارنده) همچنان `number`اند.
+       else if (typeof v === 'bigint') out[k] = Number(v)
+       else out[k] = v
+     }
+@@ -446,7 +500,9 @@ export function createClient(file) {
+     // فرزندهای تودرتو: FK هرکدام از *همان* ردیفِ تازه‌ساخته‌شده پر می‌شود
+     if (deferred.length) {
+       const pkName = [...cols.values()].find((c) => c.pk)?.name ?? 'id'
+-      const parent = db.prepare(`SELECT * FROM "${table}" WHERE rowid = ?`).get(rowid)
++      // نشست ۱۸۱: باید از `dec` بگذرد؛ وگرنه با `setReadBigInts` شناسه‌ی والد
++      // `bigint` می‌ماند و به‌عنوان کلید خارجی داخل ردیف فرزند می‌نشیند.
++      const parent = dec(table, db.prepare(`SELECT * FROM "${table}" WHERE rowid = ?`).get(rowid))
+       for (const { rel, rows } of deferred) {
+         const parentValue = parent[rel.localKey === 'id' ? pkName : rel.localKey]
+         for (const child of rows) createRow(rel.target, { ...child, [rel.foreignKey]: parentValue })
+@@ -539,7 +595,10 @@ export function createClient(file) {
+     if (nested.length) {
+       const wp2 = []
+       const cond2 = whereSql(table, where, wp2)
+-      const parents = db.prepare(`SELECT * FROM "${table}" WHERE ${cond2}`).all(...wp2)
++      const parents = db
++        .prepare(`SELECT * FROM "${table}" WHERE ${cond2}`)
++        .all(...wp2)
++        .map((r) => dec(table, r)) // نشست ۱۸۱: همان دلیل بالا
+       for (const parent of parents)
+         for (const { rel, rows } of nested)
+           for (const child of rows) createRow(rel.target, { ...child, [rel.foreignKey]: parent[rel.localKey] })
+@@ -582,8 +641,25 @@ export function createClient(file) {
+        * همین تجمیع `toJalaliDate()` صدا می‌زند؛ عددِ خام آن‌جا می‌شکست.
+        */
+       const dateish = m.field !== '*' && isDate(colOf(table, m.field)) && (m.fn === 'MIN' || m.fn === 'MAX')
++      /**
++       * نشست ۱۸۱ — `_sum`/`_min`/`_max` روی ستون `BIGINT` در Prisma واقعی
++       * `bigint` برمی‌گرداند (و `_count`/`_avg` همیشه عدد). هارنس باید همان
++       * باشد، وگرنه جمع‌های تجمیعی — که تنها جایی‌اند که واقعاً از محدوده‌ی امن
++       * رد می‌شوند — در تست‌ها عددِ گردشده می‌گیرند و باگ دیده نمی‌شود.
++       */
++      const bigCol = m.field !== '*' && isBigIntCol(colOf(table, m.field)) && ['SUM', 'MIN', 'MAX'].includes(m.fn)
+       const val =
+-        v == null ? (m.fn === 'COUNT' ? 0 : null) : dateish ? new Date(Number(v)) : (m.fn === 'MIN' || m.fn === 'MAX') && typeof v === 'string' ? v : Number(v)
++        v == null
++          ? m.fn === 'COUNT'
++            ? 0
++            : null
++          : dateish
++            ? new Date(Number(v))
++            : (m.fn === 'MIN' || m.fn === 'MAX') && typeof v === 'string'
++              ? v
++              : bigCol
++                ? (typeof v === 'bigint' ? v : BigInt(v))
++                : Number(v)
+       // شکلِ خروجی عیناً همان Prisma: `_count: true` ⇒ عدد، `_count: { _all: true }` ⇒ { _all: n }
+       if (m.scalar) out[m.key] = val
+       else {
+@@ -644,10 +720,35 @@ export function createClient(file) {
+       const out = {}
+       for (const b of by) {
+         const col = colOf(table, b)
+-        out[b] = r[b] === null ? null : isDate(col) ? new Date(Number(r[b])) : isBool(col) ? !!r[b] : r[b]
++        /**
++         * 🔴 نشست ۱۸۲ — ستون کلیدِ گروه‌بندی باید از همان نگاشت نوعِ ردیف‌های
++         * معمولی عبور کند.
++         *
++         * قبلاً مقدار **خام** برمی‌گشت. تا وقتی `HARNESS_BIGINT` خاموش بود
++         * بی‌ضرر بود، ولی با روشن بودنش `setReadBigInts` هر عدد صحیحی را
++         * `bigint` می‌داد — یعنی کلیدی مثل `methodId` (ستون `INTEGER`) به شکل
++         * `bigint` بیرون می‌آمد، در حالی که Prisma واقعی `number` می‌دهد.
++         * نتیجه: تست‌هایی که با `Map<number, …>` روی کلید گروه کار می‌کردند
++         * بی‌صدا شکست می‌خوردند و خطا **به‌نظر باگ محصول** می‌آمد.
++         */
++        out[b] =
++          r[b] === null
++            ? null
++            : isDate(col)
++              ? new Date(Number(r[b]))
++              : isBool(col)
++                ? !!r[b]
++                : isBigIntCol(col)
++                  ? typeof r[b] === 'bigint'
++                    ? r[b]
++                    : BigInt(r[b])
++                  : typeof r[b] === 'bigint'
++                    ? Number(r[b])
++                    : r[b]
+       }
+       map.forEach((m, i) => {
+         const v = r[`g${i}`]
++        // `_count` همیشه عدد است (هم در Prisma، هم این‌جا)
+         if (m.scalar) out[m.key] = Number(v ?? 0)
+         else {
+           out[m.key] = out[m.key] ?? {}
+@@ -657,8 +758,28 @@ export function createClient(file) {
+            */
+           const col = colOf(table, m.field)
+           const mm = m.key === '_min' || m.key === '_max'
++          /**
++           * 🔴 نشست ۱۸۲ — `_sum`/`_min`/`_max` روی ستون `BIGINT` در Prisma واقعی
++           * `bigint` برمی‌گرداند. این‌جا `Number(v)` می‌شد — یعنی دقیقاً برعکسِ
++           * `aggregate()` که همین قاعده را درست پیاده کرده بود. دو مسیر تجمیع
++           * رفتار متضاد داشتند و هر تستی که از `groupBy` استفاده می‌کرد،
++           * دنیای غلطی می‌دید.
++           *
++           * `_count` و `_avg` عمداً همچنان عددند (مطابق Prisma).
++           */
++          const bigCol = isBigIntCol(col) && (m.key === '_sum' || mm)
+           out[m.key][m.field] =
+-            v == null ? null : mm && col && isDate(col) ? new Date(Number(v)) : mm && typeof v === 'string' ? v : Number(v)
++            v == null
++              ? null
++              : mm && col && isDate(col)
++                ? new Date(Number(v))
++                : mm && typeof v === 'string'
++                  ? v
++                  : bigCol
++                    ? typeof v === 'bigint'
++                      ? v
++                      : BigInt(v)
++                    : Number(v)
+         }
+       })
+       return out
+diff --git a/test/harness/schema.mjs b/test/harness/schema.mjs
+index 61e98b4..2ad6841 100644
+--- a/test/harness/schema.mjs
++++ b/test/harness/schema.mjs
+@@ -109,6 +109,24 @@ export function buildDatabase(file) {
+     db.exec(readFileSync(sql, 'utf8'))
+     applied.push(d)
+   }
++  /**
++   * ⚠️ نشست ۱۸۱ — این خط ضروری است، نه تزئینی.
++   *
++   * `PRAGMA foreign_keys` بالا یک بار خاموش می‌شود تا تست‌ها بتوانند فقط همان
++   * چیزی را بسازند که به موضوعشان مربوط است (مثلاً یک `Payment` بدون ساختنِ
++   * ردیف `PaymentMethod`). ولی هر migration ای که از نوع «بازتعریف جدول» باشد
++   * — که Prisma برای تغییر نوع ستون در SQLite مجبور است بسازد — در انتهای خود
++   * `PRAGMA foreign_keys=ON;` می‌گذارد و آن تصمیم را **برای بقیه‌ی اتصال**
++   * برمی‌گرداند.
++   *
++   * نتیجه‌اش بی‌صدا و گیج‌کننده بود: با اضافه شدن migration مهاجرت به BigInt،
++   * دو تستِ بی‌ربط با «FOREIGN KEY constraint failed» افتادند، بدون آنکه هیچ
++   * ستون یا کلید خارجی‌ای واقعاً عوض شده باشد.
++   *
++   * پس حالت مورد نظر هارنس *بعد از* اجرای همه‌ی migrationها دوباره اعمال
++   * می‌شود، تا رفتار هارنس به محتوای آخرین migration وابسته نباشد.
++   */
++  db.exec('PRAGMA foreign_keys = OFF')
+   return { db, applied }
+ }
+ 
+diff --git a/test/harness/seed.mjs b/test/harness/seed.mjs
+index 656e66c..db56e94 100644
+--- a/test/harness/seed.mjs
++++ b/test/harness/seed.mjs
+@@ -8,6 +8,16 @@
+  * بی‌صدا نمی‌شکند.
+  * ===========================================================================
+  */
++/** `bigint`هایی که در محدوده‌ی امن جا می‌شوند ⇒ `number`؛ بقیه دست‌نخورده. */
++function shrinkBigInts(row) {
++  if (!row || typeof row !== 'object') return row
++  const out = {}
++  for (const [k, v] of Object.entries(row))
++    out[k] =
++      typeof v === 'bigint' && v <= 9007199254740991n && v >= -9007199254740991n ? Number(v) : v
++  return out
++}
++
+ export function makeSeeder(client) {
+   const { db, tables } = client.$harness
+   const seq = { receipt: 1000, uid: 0 }
+@@ -101,11 +111,24 @@ export function makeSeeder(client) {
+     count(table, where = '1 = 1', ...params) {
+       return Number(db.prepare(`SELECT COUNT(*) AS n FROM "${table}" WHERE ${where}`).get(...params).n)
+     },
++    /**
++     * ⚠️ نشست ۱۸۱ — چرا این‌جا `bigint` به عدد برمی‌گردد.
++     *
++     * از این نشست، هارنس مقادیر را با `setReadBigInts` می‌خواند تا مبالغ مالیِ
++     * بزرگ‌تر از `Number.MAX_SAFE_INTEGER` را از دست ندهد (بند ۴-۲۸ الف).
++     * ولی `rows`/`one` دریچه‌ی SQL خامِ خودِ تست‌هاست و ده‌ها تست با آن
++     * **شناسه** می‌خوانند و مستقیم به سرویس‌ها پاس می‌دهند؛ سرویس‌ها هم با
++     * `Number.isSafeInteger` اعتبارسنجی می‌کنند و `bigint` را رد می‌کنند.
++     *
++     * پس قاعده این است: هر عددی که در محدوده‌ی امن جا می‌شود به `number`
++     * برمی‌گردد (رفتار مو‌به‌موی قبل)، و فقط مقداری که **واقعاً** جا نمی‌شود
++     * `bigint` می‌ماند — یعنی دقت هیچ‌جا قربانی راحتی نمی‌شود.
++     */
+     rows(sql, ...params) {
+-      return db.prepare(sql).all(...params)
++      return db.prepare(sql).all(...params).map(shrinkBigInts)
+     },
+     one(sql, ...params) {
+-      return db.prepare(sql).get(...params)
++      return shrinkBigInts(db.prepare(sql).get(...params))
+     }
+   }
+   return api
+diff --git a/test/stock-source-display-session53.mjs b/test/stock-source-display-session53.mjs
+index aba21dd..d05e346 100644
+--- a/test/stock-source-display-session53.mjs
++++ b/test/stock-source-display-session53.mjs
+@@ -81,7 +81,26 @@ has('پیش‌فرض null است', PRT, 'let stockSource: ReceiptStockSource | n
+ has('خطای خواندن جلوی چاپ رسید را نمی‌گیرد', PRT, "console.error('[print] stock source summary failed', e)")
+ has('فیلد در خروجی رسید هست', PRT, '      stockSource\n    }')
+ hasnt('هیچ کانال نویسنده‌ای در مسیر چاپ صدا نمی‌شود', PRT, 'stockAllocationService.apply')
+-ok('هیچ عدد مالی رسید عوض نشد', PRT.includes('grandTotal: inv.grandTotal') && PRT.includes('paidTotal: inv.paidTotal'))
++/**
++ * به‌روزرسانی نشست ۱۸۱ — مقصود این بررسی عوض نشده، فقط متنش.
++ *
++ * قرارداد این است که «عدد مالی رسید **مستقیم از همان فاکتور** می‌آید و در مسیر
++ * چاپ بازمحاسبه نمی‌شود». بعد از مهاجرت ۸۳ ستون مالی به BigInt (بند ۴-۲۸ الف)،
++ * این مقادیر از دیتابیس `bigint`اند و قالب رسید با `number` کار می‌کند، پس یک
++ * تبدیل نوعِ محض اضافه شده: `toNumberRial(inv.grandTotal)`.
++ *
++ * تبدیل نوع، بازمحاسبه نیست — هیچ جمع، تخفیف یا گردکردنی اضافه نشده. برای اینکه
++ * این تمایز حفظ شود، بررسی همچنان سخت‌گیر است: باید دقیقاً همان فیلدِ همان
++ * فاکتور باشد و هیچ عملگر حسابی‌ای در میان نباشد.
++ */
++ok(
++  'هیچ عدد مالی رسید عوض نشد (فقط تبدیل نوع BigInt ⇒ number، بدون بازمحاسبه)',
++  PRT.includes('grandTotal: toNumberRial(inv.grandTotal)') &&
++    PRT.includes('paidTotal: toNumberRial(inv.paidTotal)') &&
++    // هیچ عملگر حسابی‌ای وارد این دو خط نشده باشد
++    !/grandTotal: [^\n]*inv\.grandTotal[^\n]*[+\-*/]/.test(PRT) &&
++    !/paidTotal: [^\n]*inv\.paidTotal[^\n]*[+\-*/]/.test(PRT)
++)
+ 
+ // ---------------------------------------------------------------------------
+ section('کانال خواندن — همان کانال‌های موجود، بی افزودنِ تازه')
+diff --git a/test/stock-source-pos-session52.mjs b/test/stock-source-pos-session52.mjs
+index 70e3de5..aa19e70 100644
+--- a/test/stock-source-pos-session52.mjs
++++ b/test/stock-source-pos-session52.mjs
+@@ -41,7 +41,9 @@ ok('همان مسیر تاریخی delta دست‌نخورده مانده',
+ 
+ // ---------------------------------------------------------------------------
+ section('مرحله ۳ · قفل سمت سرور — `assertPanelPassword` روی همان کلید موجود')
+-has('assertPanelPassword وارد شده', SVC, "import { assertManagerPassword, assertPanelPassword } from './AuthService'")
++// نشست ۱۸۴ — فهرست import گسترده شد (`assertPanelPasswordStrict` برای عملیات پول‌ساز).
++// آنچه این بررسی می‌خواهد همان است: خودِ `assertPanelPassword` در دسترس باشد.
++has('assertPanelPassword وارد شده', SVC, 'assertPanelPassword')
+ has('PANEL_KEYS وارد شده', SVC, "import { PANEL_KEYS } from '@shared/panels'")
+ has('کلید همان posCentralWithdrawToggle است (یک قفل واحد)', SVC, 'PANEL_KEYS.posCentralWithdrawToggle')
+ hasnt('کلید قفل تازه‌ای ساخته نشده', PNL, 'posStockSourcePick')
+diff --git a/tests/audit-fixes/fix-s139-cash-session-input-and-handover.mjs b/tests/audit-fixes/fix-s139-cash-session-input-and-handover.mjs
+index a1ec229..c4511fb 100644
+--- a/tests/audit-fixes/fix-s139-cash-session-input-and-handover.mjs
++++ b/tests/audit-fixes/fix-s139-cash-session-input-and-handover.mjs
+@@ -44,7 +44,24 @@ eq('باز کردن نشست شناسه اعشاری را گرد نمی‌کند
+ eq('بستن صندوق validator عدد صحیح غیرمنفی دارد', /assertNonNegativeSafeInteger/.test(cashboxSource), true)
+ eq('گردش نقدی مبلغ منفی را با abs مثبت نمی‌کند', !/Math\.abs\(Math\.round\(Number\(input\.amount\)/.test(movementSource), true)
+ eq('بستن صندوق actor را از نشست می‌گیرد', /handle\(IPC\.cashClose, async \(p\) => cashboxService\.close\(await withSessionActor/.test(ipcSource), true)
+-eq('واریز/برداشت actor را از نشست می‌گیرد', /handle\(IPC\.cashboxMovementAdd, async \(p\) => cashMovementService\.add\(await withSessionActor/.test(ipcSource), true)
++/**
++ * به‌روزرسانی نشست ۱۸۲ — مقصود همان است، فقط شکل هندلر عوض شده.
++ *
++ * از نشست ۱۸۲ این کانال قبل از صدا زدن سرویس، گیت قفل صفحه‌ی بستن صندوق را
++ * می‌سنجد (بند ۴-۴۱)، پس دیگر یک‌خطی نیست. قرارداد اصلی — «actor از نشستِ
++ * باز می‌آید، نه از payload» — دست‌نخورده است و این بررسی حالا **سخت‌گیرتر**
++ * شده: هم وجود `withSessionActor` را می‌خواهد و هم اطمینان می‌دهد که
++ * `userId` ارسالیِ بیرون مستقیم به سرویس نمی‌رسد.
++ */
++{
++  const block = ipcSource.slice(
++    ipcSource.indexOf('handle(IPC.cashboxMovementAdd'),
++    ipcSource.indexOf('handle(IPC.cashboxMovementList')
++  )
++  eq('واریز/برداشت actor را از نشست می‌گیرد', /cashMovementService\.add\(await withSessionActor\(/.test(block), true)
++  eq('و userId ارسالی بیرون مستقیم پاس داده نمی‌شود', !/userId: p\??\.userId/.test(block), true)
++  eq('برداشت قبل از ثبت، قفل بستن صندوق را می‌سنجد (بند ۴-۴۱)', /assertPanelUnlocked\(/.test(block), true)
++}
+ eq('هشدار تحویل در UI نمایش داده می‌شود', /expected\?\.warnings|handoverWarning|اختلاف شمارش نقد/.test(uiSource), true)
+ 
+ process.env.HARNESS_DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s139-cash-session-'))
+diff --git a/tests/audit-fixes/fix-s147b-secondary-to-store-gate.mjs b/tests/audit-fixes/fix-s147b-secondary-to-store-gate.mjs
+index 0cef4ad..ccf3756 100644
+--- a/tests/audit-fixes/fix-s147b-secondary-to-store-gate.mjs
++++ b/tests/audit-fixes/fix-s147b-secondary-to-store-gate.mjs
+@@ -40,6 +40,21 @@ const { SETTING_KEYS, DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/rec
+ const { PANEL_KEYS } = await import('@shared/panels')
+ const { jalaliToday } = await import('@shared/jalali')
+ registerIpcHandlers()
++
++/**
++ * ⚠️ به‌روزرسانی نشست ۱۸۶ · بند ۴-۳۹ — این سه خط رفتار سنجیده‌شده را عوض نمی‌کنند.
++ *
++ * از نشست ۱۸۶، نوشتن روی انبار مرکزی (`upsert`/`remove`/`transfer` و
++ * انبارها) در سمت *سرور* هم گیت دارد: تا امروز فقط `toStore` گیت داشت و یک
++ * فراخوانی مستقیم IPC می‌توانست موجودی انبار مرکزی را جابه‌جا کند.
++ *
++ * موضوع این تست، «actor از نشست می‌آید نه از payload» است، نه قفل. پس همان
++ * کاری را می‌کند که کاربر واقعی می‌کند: اول قفل پنل انبار مرکزی را باز
++ * می‌کند. (تست اختصاصی خودِ گیت: `fix-s186-review-high2.mjs`)
++ */
++const { notePanelUnlocked: __unlock186 } = await import('../../src/main/services/panelSession.ts')
++const { PANEL_KEYS: __PK186 } = await import('../../src/shared/panels.ts')
++__unlock186(__PK186.secondaryStock, 'MANAGER')
+ const ipc = (ch, payload) => handlers.get(ch)(null, payload)
+ 
+ let ok = 0
+diff --git a/tests/audit-fixes/fix-s170-bridge-unbacked-credit.mjs b/tests/audit-fixes/fix-s170-bridge-unbacked-credit.mjs
+index 4b86cd5..0898c27 100644
+--- a/tests/audit-fixes/fix-s170-bridge-unbacked-credit.mjs
++++ b/tests/audit-fixes/fix-s170-bridge-unbacked-credit.mjs
+@@ -138,15 +138,31 @@ eq('drill-down ردیف = مبلغ ردیف (فقط سند‌دار)', drillSum(
+ truthy('drill-down اعتبار برگشتی را دارد', (issuedRow(sC1)?.sources ?? []).some((r) => r.id === rc?.id))
+ await safe('مصرف جزئی ۴۰۰٬۰۰۰ از اعتبار یک‌بارمصرف', () => sale(400000, 0, { storeCreditCode: rc?.code }))
+ const parent = creditByCode(rc?.code)
+-truthy('باقی‌مانده‌ی ۶۰۰٬۰۰۰ به‌صورت اعتبار جدید صادر شد (رفتار فعلی سرویس)', !!parent?.remainderCreditId)
+-const rem = seed.rows('SELECT * FROM "StoreCredit" WHERE id = ?', parent?.remainderCreditId ?? -1)[0]
+-eq('مبلغ باقی‌مانده', Number(rem?.amount ?? 0), 600000)
++/**
++ * 🔴 به‌روزرسانی نشست ۱۸۴ · بند ۴-۶ — رفتاری که این‌جا قفل شده بود عوض شد.
++ *
++ * تا نشست ۱۸۳، باقی‌مانده‌ی اعتبار یک‌بارمصرف با یک **بارکد جدید** به مشتری
++ * داده می‌شد. پول نمی‌سوخت، ولی یک رکورد جانشین ساخته می‌شد که پرامپت
++ * صریحاً منعش کرده: «بدون ساخت رکورد باقی‌مانده‌ی جدا؛ مصرف و مانده در
++ * ledger enforce شود».
++ *
++ * حالا باقی‌مانده روی **همان** بارکد می‌ماند (`PARTIALLY_USED`) و از
++ * `amount − usedAmount` خوانده می‌شود. هم پول مشتری حفظ می‌شود، هم رکورد
++ * جانشینی در کار نیست.
++ */
++truthy('هیچ بارکد جانشینی ساخته نشد', !parent?.remainderCreditId)
++eq('باقی‌مانده روی همان بارکد ماند', Number(parent?.amount ?? 0) - Number(parent?.usedAmount ?? 0), 600000)
++eq('و وضعیتش «مصرف جزئی» است', String(parent?.status ?? ''), 'PARTIALLY_USED')
++const rem = null
+ const sC2 = await report()
+ closed(sC2, 'پل بعد از مصرف جزئی (باقی‌مانده) بسته است')
+ eq('ردیف پل برای باقی‌مانده تغییر نکرد', (rowsOf(sC2).storeCreditIssued ?? 0) - (rowsOf(sC1).storeCreditIssued ?? 0), 0)
+-truthy('drill-down باقی‌مانده را ندارد', !(issuedRow(sC2)?.sources ?? []).some((r) => r.id === rem?.id))
+-truthy('مبلغ باقی‌مانده پنهان نشد',
+-  String(issuedRow(sC2)?.hint ?? '').includes('600000') || (sC2?.notes ?? []).some((x) => String(x).includes('600000')))
++truthy('drill-down هیچ سند تازه‌ای اضافه نکرد', (issuedRow(sC2)?.sources ?? []).length === (issuedRow(sC1)?.sources ?? []).length)
++/**
++ * نشست ۱۸۴ — «پنهان شدن» دیگر ممکن نیست: باقی‌مانده رکورد جدایی ندارد که
++ * بشود جا انداختش. مانده‌ی همان بارکد همیشه `amount − usedAmount` است.
++ */
++eq('باقی‌مانده روی همان سند خواناست', Number(parent?.amount ?? 0) - Number(parent?.usedAmount ?? 0), 600000)
+ 
+ // ---------------------------------------------------------------------------
+ console.log('\n(ج۲) اعتبار برگشتی دو روز پیش، مصرف جزئی امروز')
+@@ -169,7 +185,9 @@ const sD1 = await report()
+ closed(sD1, 'پل بعد از مصرف جزئی اعتبار قدیمی بسته است')
+ eq('ردیف مصرف +۳۰۰٬۰۰۰', (rowsOf(sD1).storeCreditUsed ?? 0) - (rowsOf(sD0).storeCreditUsed ?? 0), 300000)
+ eq('ردیف صادرشده‌ی پل تغییر نکرد', (rowsOf(sD1).storeCreditIssued ?? 0) - (rowsOf(sD0).storeCreditIssued ?? 0), 0)
+-eq('گزارش اعتبار (بند ۴-۴۸) همچنان باقی‌مانده را جزو صادرشده‌ی بازه می‌شمارد', sD1?.storeCredits?.issued - sD0?.storeCredits?.issued, 500000)
++// نشست ۱۸۴ — مصرف جزئی دیگر سند تازه‌ای نمی‌سازد، پس «صادرشده»ی بازه تکان نمی‌خورد.
++eq('مصرف جزئی هیچ اعتبار تازه‌ای به «صادرشده»ی بازه اضافه نمی‌کند',
++  (sD1?.storeCredits?.issued ?? 0) - (sD0?.storeCredits?.issued ?? 0), 0)
+ 
+ console.log(`\nنتیجه: ${ok} موفق، ${bad} ناموفق`)
+ process.exit(bad ? 1 : 0)
+diff --git a/tests/audit-fixes/fix-s170b-overpay-remainder-hint.mjs b/tests/audit-fixes/fix-s170b-overpay-remainder-hint.mjs
+index 916fc5f..87ba128 100644
+--- a/tests/audit-fixes/fix-s170b-overpay-remainder-hint.mjs
++++ b/tests/audit-fixes/fix-s170b-overpay-remainder-hint.mjs
+@@ -96,9 +96,21 @@ eq('امروز اضافه‌دریافتی نیست', rowsOf(s0).overpayReceived
+ console.log('\n۲) امروز: مصرف جزئی ۱۰۰٬۰۰۰ از اعتبار اضافه‌دریافت ⇒ باقی‌مانده‌ی ۲۰۰٬۰۰۰ (OVERPAY)')
+ await safe('فروش ۱۰۰٬۰۰۰ با اعتبار', () => sale(100000, 0, { storeCreditCode: oc?.code }))
+ const parent = creditByCode(oc?.code)
+-const rem = seed.rows('SELECT * FROM "StoreCredit" WHERE id = ?', parent?.remainderCreditId ?? -1)[0]
+-eq('باقی‌مانده ۲۰۰٬۰۰۰ صادر شد', Number(rem?.amount ?? 0), 200000)
+-eq('منبع باقی‌مانده همان OVERPAY است (رفتار فعلی سرویس)', rem?.source, 'OVERPAY')
++/**
++ * 🔴 به‌روزرسانی نشست ۱۸۴ · بند ۴-۶ — رفتاری که این‌جا قفل شده بود عوض شد.
++ *
++ * تا نشست ۱۸۳، باقی‌مانده‌ی اعتبار یک‌بارمصرف با یک **بارکد جدید** به مشتری
++ * داده می‌شد. پول نمی‌سوخت، ولی یک رکورد جانشین ساخته می‌شد که پرامپت
++ * صریحاً منعش کرده: «بدون ساخت رکورد باقی‌مانده‌ی جدا؛ مصرف و مانده در
++ * ledger enforce شود».
++ *
++ * حالا باقی‌مانده روی **همان** بارکد می‌ماند (`PARTIALLY_USED`) و از
++ * `amount − usedAmount` خوانده می‌شود. هم پول مشتری حفظ می‌شود، هم رکورد
++ * جانشینی در کار نیست.
++ */
++eq('هیچ بارکد جانشینی ساخته نشد', parent?.remainderCreditId ?? null, null)
++eq('باقی‌مانده ۲۰۰٬۰۰۰ روی همان بارکد ماند', Number(parent?.amount ?? 0) - Number(parent?.usedAmount ?? 0), 200000)
++eq('و منبعش همان OVERPAY باقی ماند', parent?.source, 'OVERPAY')
+ const s1 = await report()
+ closed(s1, 'پل بعد از مصرف جزئی بسته است')
+ eq('ردیف «دریافت پول اضافه»ی امروز همچنان صفر', rowsOf(s1).overpayReceived ?? 0, 0)
+@@ -106,11 +118,20 @@ eq('ردیف اعتبار صادرشده‌ی پل تغییر نکرد', (rowsOf
+ const hint = String(overRow(s1)?.hint ?? '')
+ truthy('توضیح «دریافت پول اضافه» ادعا نمی‌کند امروز ۲۰۰٬۰۰۰ از اضافه‌دریافت به اعتبار تبدیل شد',
+   !hint.includes('200000 ریال از آن به کد اعتبار'), `hint=${hint}`)
+-truthy('باقی‌مانده‌ی اعتبار اضافه‌دریافت پنهان نشد (در توضیح/یادداشت با واژه‌ی «باقی‌مانده»)',
+-  (hint.includes('200000') && hint.includes('باقی‌مانده')) ||
+-  (s1?.notes ?? []).some((x) => String(x).includes('200000') && String(x).includes('باقی‌مانده')),
+-  `hint=${hint} notes=${JSON.stringify(s1?.notes)}`)
+-eq('گزارش اعتبار (بند ۴-۴۸): صادرشده‌ی امروز شامل باقی‌مانده است', s1?.storeCredits?.issued - s0?.storeCredits?.issued, 200000)
++/**
++ * 🔴 به‌روزرسانی نشست ۱۸۴ · بند ۴-۶ — مفهوم «اعتبارِ باقی‌مانده» دیگر وجود ندارد.
++ *
++ * این بخش‌ها نگران این بودند که باقی‌مانده‌ی اعتبارِ اضافه‌دریافت، به‌شکل یک
++ * رکورد تازه در گزارش «صادرشده‌ی امروز» دوباره شمرده شود یا پنهان بماند.
++ *
++ * حالا اصلاً رکورد تازه‌ای ساخته نمی‌شود: باقی‌مانده روی همان بارکد می‌ماند.
++ * پس نه دوباره شمرده می‌شود و نه می‌تواند پنهان بماند — خطر به‌جای «کنترل
++ * شدن»، **حذف** شده. انتظارها به همین واقعیت به‌روز شدند.
++ */
++eq('هیچ اعتبار تازه‌ای امروز صادر نشد (باقی‌مانده روی همان سند ماند)',
++  (s1?.storeCredits?.issued ?? 0) - (s0?.storeCredits?.issued ?? 0), 0)
++eq('و «باقی‌مانده‌ی اعتبار اضافه‌دریافت» دیگر مفهوم ندارد ⇒ صفر',
++  s1?.storeCredits?.issuedOverpayRemainder ?? 0, 0)
+ 
+ console.log('\n۳) همان روز: یک اضافه‌دریافت تازه‌ی ۵۰٬۰۰۰ با اعتبار ⇒ توضیح فقط ۵۰٬۰۰۰ تازه را «تبدیل‌شده» بگوید')
+ const inv3 = await safe('فروش نسیه‌ی ۴۰۰٬۰۰۰', () => sale(400000, 0))
+@@ -121,9 +142,8 @@ eq('ردیف «دریافت پول اضافه» = ۵۰٬۰۰۰', rowsOf(s2).over
+ const hint2 = String(overRow(s2)?.hint ?? '')
+ truthy('توضیح، ۵۰٬۰۰۰ تازه را تبدیل‌شده می‌گوید', /(^|[^0-9])50000 ریال از آن به کد اعتبار/.test(hint2), `hint=${hint2}`)
+ truthy('توضیح، ۲۵۰٬۰۰۰ (تازه + باقی‌مانده) را تبدیل‌شده نمی‌گوید', !hint2.includes('250000 ریال از آن'), `hint=${hint2}`)
+-truthy('باقی‌مانده‌ی ۲۰۰٬۰۰۰ همچنان جدا نام برده می‌شود', hint2.includes('200000') && hint2.includes('باقی‌مانده'), `hint=${hint2}`)
+-eq('storeCredits.issuedFromOverpay (سازگاری عقب‌رو: همه‌ی OVERPAYهای بازه)', s2?.storeCredits?.issuedFromOverpay, 250000)
+-eq('storeCredits.issuedOverpayRemainder', s2?.storeCredits?.issuedOverpayRemainder, 200000)
++eq('storeCredits.issuedFromOverpay = فقط اعتبار تازه‌ی امروز (۵۰٬۰۰۰)', s2?.storeCredits?.issuedFromOverpay, 50000)
++eq('و «باقی‌مانده» دیگر رکوردی ندارد ⇒ صفر', s2?.storeCredits?.issuedOverpayRemainder ?? 0, 0)
+ eq('OVERPAY وارد «بی‌سند» نمی‌شود (S61-2)', s2?.storeCredits?.issuedUnbacked ?? 0, 0)
+ eq('باقی‌مانده‌ی OVERPAY وارد «باقی‌مانده»ی اعتبار برگشتی نمی‌شود', s2?.storeCredits?.issuedRemainder ?? 0, 0)
+ truthy('توضیح ردیف «اعتبار خرید صادرشده» اعتبار اضافه‌دریافت را «بی‌سند/باقی‌مانده» نمی‌خواند',
+diff --git a/tests/audit-fixes/fix-s181-backup-apply-gate.mjs b/tests/audit-fixes/fix-s181-backup-apply-gate.mjs
+new file mode 100644
+index 0000000..597caf5
+--- /dev/null
++++ b/tests/audit-fixes/fix-s181-backup-apply-gate.mjs
+@@ -0,0 +1,143 @@
++// نشست ۱۸۱: تست قبل/بعد — گیت رمز مدیر روی BackupService.apply (بند ۴-۳۰ و بند ۵).
++/**
++ * ===========================================================================
++ * نشست ۱۸۱ · کار باز «Backup-gate»
++ *
++ * قبل از رفع: `backupService.apply` هیچ گیتی نداشت و IPC مستقیم صدایش می‌زد.
++ * این مخرب‌ترین عملیات کل برنامه است:
++ *
++ *   • `mode: 'replace'` کل دیتابیس زنده را با یک فایل دلخواه جایگزین می‌کند —
++ *     هر فاکتور، پرداخت و **هر ردیف AuditLog** یک‌جا ناپدید می‌شود.
++ *   • `mode: 'merge'` داده‌ی دلخواه را به دفاتر مالی تزریق می‌کند.
++ *
++ * یعنی کوتاه‌ترین مسیر برای پاک کردن ردّ دزدی این بود: یک بکاپ *قبل از*
++ * عملیات را «جایگزینی کامل» کن. بکاپ ایمنیِ خودکار هم مانع نبود، چون همان
++ * کاربر می‌توانست پاکش کند. کل هدف بند ۴-۳۰ («هر actor در Audit») با یک
++ * کلیک بی‌رمز دور می‌خورد.
++ *
++ * انتظار بعد: تأیید مدیر **قبل از هر عمل جانبی** گرفته شود (نه بکاپ ایمنی، نه
++ * بستن اتصال، نه ردیف Audit)، و سطح تأییدکننده در سابقه ثبت شود.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s181-backup-apply-gate.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s181-backup-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++let pass = 0
++let fail = 0
++const eq = (label, got, want) => {
++  const g = JSON.stringify(got)
++  const w = JSON.stringify(want)
++  if (g === w) { pass++; console.log(`  ✓ ${label}`) }
++  else { fail++; console.log(`  ✗ ${label} · دریافت ${g} · انتظار ${w}`) }
++}
++const ok = (label, cond) => eq(label, Boolean(cond), true)
++
++const SRC = readFileSync('src/main/services/BackupService.ts', 'utf-8')
++const UI = readFileSync('src/renderer/src/pages/Settings.tsx', 'utf-8')
++
++// ---------------------------------------------------------------------------
++/**
++ * به‌روزرسانی نشست ۱۸۴ — گیت به نسخه‌ی «همیشه رمز» ارتقا یافت
++ * (`assertPanelPasswordStrict`): قفلِ خاموشِ ماژول دیگر دورش نمی‌زند.
++ * رفتار سنجیده‌شده همان است، فقط سخت‌گیرتر.
++ */
++console.log('\n— ۱) گیت وجود دارد و روی پنلِ همیشه‌قفل است —')
++ok('BackupService تابع گیت را import می‌کند', /import\s*\{\s*assertPanelPasswordStrict\s*\}/.test(SRC))
++ok('apply رمز مدیر را در ورودی می‌پذیرد', /managerPassword\?: string \| null/.test(SRC))
++ok('گیت صدا زده می‌شود', SRC.includes('await assertPanelPasswordStrict('))
++ok('روی کلید پنل تنظیمات است', /assertPanelPasswordStrict\(\s*PANEL_KEYS\.settings/.test(SRC))
++
++{
++  /**
++   * چرا `settings` مهم است: این کلید در `ALWAYS_LOCKED_PANELS` است، یعنی حتی
++   * اگر مدیر قفل ماژول‌ها را خاموش کند، این عملیات همچنان رمز می‌خواهد.
++   * اگر روزی از این فهرست بیرون بیاید، گیت بی‌صدا بی‌اثر می‌شود.
++   */
++  const panels = await import('../../src/shared/panels.ts')
++  ok('پنل تنظیمات در ALWAYS_LOCKED_PANELS است (گیت با خاموش کردن قفل دور نمی‌خورد)',
++    panels.ALWAYS_LOCKED_PANELS.includes(panels.PANEL_KEYS.settings))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۲) تأیید *قبل از* هر عمل جانبی گرفته می‌شود —')
++/**
++ * ترتیب حیاتی است. اگر گیت بعد از `copyFile(databaseFile(), safety)` یا بعد از
++ * `prisma.$disconnect()` بنشیند، یک تلاش ناموفق هم اثر جانبی جا می‌گذارد.
++ */
++{
++  const body = SRC.slice(SRC.indexOf('async apply(input: {'))
++  const iGate = body.indexOf('assertPanelPasswordStrict(')
++  const marks = {
++    'resolve فایل': body.indexOf('await this.resolve('),
++    'گرفتن بکاپ ایمنی': body.indexOf('await copyFile(databaseFile()'),
++    'قطع اتصال دیتابیس': body.indexOf('await prisma.$disconnect()'),
++    'نوشتن ردیف Audit': body.indexOf('action: AuditAction.BACKUP_RESTORE'),
++    'اجرای ادغام': body.indexOf('await mergeBackup(')
++  }
++  ok('گیت اصلاً در بدنه‌ی apply هست', iGate > 0)
++  for (const [label, idx] of Object.entries(marks))
++    ok(`گیت قبل از «${label}» است`, idx > iGate)
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۳) رفتار واقعی: بدون رمز رد می‌شود —')
++{
++  const electron = await import('electron')
++  electron.ipcMain.handle = () => {}
++  const { backupService } = await import('../../src/main/services/BackupService.ts')
++
++  /**
++   * شناسه‌ی بکاپ عمداً وجود ندارد. نکته همین است: اگر گیت **اول** اجرا شود،
++   * خطای دریافتی «تأیید مدیر لازم است» می‌شود، نه «فایل پیدا نشد» — یعنی
++   * ثابت می‌کند حتی به مرحله‌ی باز کردن فایل هم نرسیده‌ایم.
++   */
++  const callApply = async (input) => {
++    try {
++      await backupService.apply(input)
++      return 'NO_ERROR'
++    } catch (e) {
++      return String(e?.message ?? e)
++    }
++  }
++
++  const noPass = await callApply({ id: 'ناموجود.db', mode: 'replace' })
++  ok(`بدون رمز، «جایگزینی کامل» رد می‌شود (${noPass})`, /همیشه رمز می‌خواهد/.test(noPass))
++  ok('و پیام درباره‌ی همان عملیات است، نه چیز دیگر', /جایگزینی کامل/.test(noPass))
++
++  const noPassMerge = await callApply({ id: 'ناموجود.db', mode: 'merge' })
++  ok(`بدون رمز، «ادغام» هم رد می‌شود (${noPassMerge})`, /همیشه رمز می‌خواهد/.test(noPassMerge))
++  ok('پیام ادغام مخصوص خودش است', /ادغام/.test(noPassMerge))
++
++  const wrongPass = await callApply({ id: 'ناموجود.db', mode: 'replace', managerPassword: 'غلط' })
++  ok(`رمز غلط هم رد می‌شود (${wrongPass.slice(0, 60)})`, wrongPass !== 'NO_ERROR' && !/پیدا نشد/.test(wrongPass))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۴) سابقه‌ی ممیزی: چه کسی تأیید کرد —')
++ok('سطح تأییدکننده در ردیف Audit جایگزینی می‌نشیند', /approvedBy: scope/.test(SRC))
++ok('ادغام هم ردیف Audit مستقل دارد (قبلاً نداشت)',
++  SRC.includes("mode: 'merge', approvedBy: scope"))
++{
++  const count = (SRC.match(/action: AuditAction\.BACKUP_RESTORE/g) || []).length
++  eq('هر دو حالت (جایگزینی و ادغام) ردیف Audit دارند', count, 2)
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۵) رابط کاربری رمز را می‌گیرد و می‌فرستد —')
++/**
++ * گیتی که رابط کاربری از آن خبر ندارد، قابلیت را از کار می‌اندازد. این بخش
++ * مطمئن می‌شود کاربر واقعاً راهی برای وارد کردن رمز دارد.
++ */
++ok('فیلد رمز در دیالوگ بازگردانی هست', UI.includes('value={applyPassword}'))
++ok('رمز همراه درخواست IPC فرستاده می‌شود', /managerPassword: managerPassword \|\| undefined/.test(UI))
++ok('رمز بعد از انصراف پاک می‌شود (در حافظه نمی‌ماند)', UI.includes("setApplyPassword('')"))
++
++console.log(`\n${fail ? '✗' : '✓'} ${pass} بررسی موفق · ${fail} ناموفق`)
++process.exit(fail ? 1 : 0)
+diff --git a/tests/audit-fixes/fix-s181-bigint-end-to-end.mjs b/tests/audit-fixes/fix-s181-bigint-end-to-end.mjs
+new file mode 100644
+index 0000000..3a2133e
+--- /dev/null
++++ b/tests/audit-fixes/fix-s181-bigint-end-to-end.mjs
+@@ -0,0 +1,210 @@
++// نشست ۱۸۱: تست قبل/بعد خوشه M بند ۴-۲۸ الف — رفتار سرتاسری بعد از مهاجرت BigInt.
++/**
++ * ===========================================================================
++ * نشست ۱۸۱ · خوشه M · بند ۴-۲۸ الف — مرحله ۴ (تطبیق کد)
++ *
++ * سه مرحله‌ی قبل ثابت کردند که *ستون* و *سریال‌سازی* درست شده‌اند. این تست
++ * چیز دیگری را می‌سنجد: آیا **کد** بعد از مهاجرت درست رفتار می‌کند؟
++ *
++ * قبل از رفع (مرحله ۴): ۱۳۲ خطای typecheck. سه دسته‌ی واقعاً خطرناکشان:
++ *   ۱) `Math.round(bigintValue)` ⇒ استثنای زمان اجرا وسط ثبت فروش.
++ *   ۲) `number + bigint` ⇒ «Cannot mix BigInt and other types».
++ *   ۳) 🔴 `before.salePrice !== v.salePrice` ⇒ **همیشه true**، چون یک طرف
++ *      bigint است و دیگری number. یعنی هر ذخیره‌ی کالا «تغییر حساس» شمرده
++ *      می‌شد: گیت رمز بی‌دلیل بالا می‌آمد و سابقه‌ی ممیزی پر از «تغییر قیمت»
++ *      دروغین می‌شد. این یکی هیچ‌وقت crash نمی‌کرد — بی‌صدا دروغ می‌گفت.
++ *
++ * انتظار بعد: هر سه رفع شده، مبلغ بزرگ سرتاسر مسیر سالم می‌ماند، و هیچ‌جا
++ * دقت **بی‌صدا** از دست نمی‌رود (اگر عددی از محدوده‌ی امن بیرون بزند، خطای
++ * صریح می‌گیریم، نه عدد غلط).
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s181-bigint-end-to-end.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s181-e2e-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++/**
++ * ⚠️ این تست عمداً هارنس را در حالت «وفادار به BigInt» اجرا می‌کند
++ * (`test/harness/prismaLite.mjs` را ببینید). بدون این پرچم، هارنس مبالغ را
++ * `number` می‌دهد و بخش ۶ اصلاً همان چیزی را نمی‌سنجد که باید.
++ */
++process.env.HARNESS_BIGINT = '1'
++
++let pass = 0
++let fail = 0
++const eq = (label, got, want) => {
++  const g = typeof got === 'bigint' ? `${got}n` : JSON.stringify(got)
++  const w = typeof want === 'bigint' ? `${want}n` : JSON.stringify(want)
++  if (g === w) { pass++; console.log(`  ✓ ${label}`) }
++  else { fail++; console.log(`  ✗ ${label} · دریافت ${g} · انتظار ${w}`) }
++}
++const ok = (label, cond) => eq(label, Boolean(cond), true)
++const throws = (label, fn, ctor) => {
++  try { fn(); fail++; console.log(`  ✗ ${label} · استثنایی پرتاب نشد`) }
++  catch (e) {
++    if (ctor && !(e instanceof ctor)) { fail++; console.log(`  ✗ ${label} · ${e?.constructor?.name} به‌جای ${ctor.name}`) }
++    else { pass++; console.log(`  ✓ ${label}`) }
++  }
++}
++/** فراخوانی‌ای که نباید استثنا بدهد؛ اگر داد، متنش گزارش می‌شود (نه crash). */
++const noThrow = (label, fn) => {
++  try { const v = fn(); pass++; console.log(`  ✓ ${label}`); return v }
++  catch (e) { fail++; console.log(`  ✗ ${label} · THREW: ${String(e?.message ?? e).split('\n')[0]}`); return undefined }
++}
++
++const MAX_SAFE = 9007199254740991n
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱) قالب‌بندی مبلغ: `money()` مقدار BigInt را دقیق چاپ می‌کند —')
++{
++  const { money } = await import('../../src/shared/jalali.ts')
++  eq('مبلغ معمولی مثل قبل', money(1234567, false), '1٬234٬567')
++  eq('BigInt همان خروجی number را می‌دهد', money(1234567n, false), money(1234567, false))
++  eq('ارقام فارسی هم کار می‌کند', money(1000n), '۱٬۰۰۰')
++  eq('صفر', money(0n, false), '0')
++  eq('منفی', money(-5000n, false), '-5٬000')
++  eq('null مثل قبل صفر', money(null, false), '0')
++
++  /**
++   * مهم‌ترین بررسی این بخش: مسیر قدیمی (`Math.round(Number(v))`) این عدد را
++   * **بی‌صدا** غلط چاپ می‌کرد. یعنی جمع سالانه روی گزارش، عدد اشتباه بود.
++   */
++  const huge = 9007199254740993n
++  eq('مبلغ بالای MAX_SAFE_INTEGER دقیق چاپ می‌شود', money(huge, false), '9٬007٬199٬254٬740٬993')
++  ok('و مسیر قدیمیِ Number() همین را غلط می‌داد', String(Number(huge)) !== huge.toString())
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۲) موتور حسابداری ردیف Prisma را مستقیم می‌پذیرد —')
++{
++  const acc = await import('../../src/shared/accounting.ts')
++
++  // همان شکلی که `prisma.saleInvoice.findUnique` بعد از مهاجرت برمی‌گرداند
++  const prismaRow = {
++    goodsTotal: 1_000_000n,
++    discountTotal: 100_000n,
++    taxTotal: 90_000n,
++    serviceCharge: 0n,
++    deliveryFee: 20_000n
++  }
++  const totals = noThrow('calculateInvoiceTotals با ردیف BigInt استثنا نمی‌دهد', () =>
++    acc.calculateInvoiceTotals(prismaRow)
++  )
++  eq('جمع کل درست است', totals?.grandTotal, 1_010_000)
++  eq('خروجی همچنان number است (قرارداد رابط کاربری)', typeof totals?.grandTotal, 'number')
++
++  // و دقیقاً همان نتیجه‌ی ورودی number (اثبات نبود رگرسیون)
++  const asNumbers = acc.calculateInvoiceTotals({
++    goodsTotal: 1_000_000, discountTotal: 100_000, taxTotal: 90_000, serviceCharge: 0, deliveryFee: 20_000
++  })
++  eq('ورودی BigInt و number نتیجه‌ی یکسان می‌دهند', JSON.stringify(totals), JSON.stringify(asNumbers))
++
++  eq('درصد تخفیف با ردیف BigInt', acc.invoiceDiscountPercent(prismaRow), 10)
++  eq('exchangeRefundPartOf با BigInt', acc.exchangeRefundPartOf({ exchangeDiff: -50_000n, debtReduction: 10_000n }), 40_000)
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۳) هیچ‌جا دقت بی‌صدا از دست نمی‌رود —')
++{
++  const acc = await import('../../src/shared/accounting.ts')
++  /**
++   * این قاعده‌ی مرکزی مرحله ۴ است: اگر مبلغی از محدوده‌ی امن بیرون بزند،
++   * برنامه باید **بایستد**، نه اینکه با اطمینان عدد غلط بدهد. یک گزارش که خطا
++   * می‌دهد قابل تشخیص است؛ گزارشی که یک رقم را جا انداخته، نیست.
++   */
++  throws('موتور حسابداری روی مبلغ خارج از محدوده خطا می‌دهد (نه گرد کردن)',
++    () => acc.calculateInvoiceTotals({ goodsTotal: MAX_SAFE + 2n }), RangeError)
++
++  const { toNumberRial } = await import('../../src/shared/money.ts')
++  throws('toNumberRial هم همین‌طور', () => toNumberRial(MAX_SAFE + 2n), RangeError)
++  eq('ولی دقیقاً روی مرز، سالم رد می‌شود', toNumberRial(MAX_SAFE), Number.MAX_SAFE_INTEGER)
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۴) `accounting.ts` هنوز بدون وابستگی است —')
++{
++  /**
++   * این فایل عمداً هیچ import ای ندارد تا بتواند مستقیم با Node خام اجرا شود
++   * (`test/accounting-session13.ts` روی همین حساب می‌کند). در اولین اجرای
++   * مرحله ۴ یک import نسبیِ بدون پسوند اضافه شد و آن تست را با
++   * `ERR_MODULE_NOT_FOUND` شکست. این بررسی نگذارد دوباره تکرار شود.
++   */
++  const { readFileSync } = await import('node:fs')
++  const src = readFileSync('src/shared/accounting.ts', 'utf-8')
++  const imports = src.split('\n').filter((l) => /^\s*import\s/.test(l))
++  eq(`accounting.ts هیچ import ای ندارد${imports.length ? ` (${imports[0].trim()})` : ''}`, imports.length, 0)
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۵) 🔴 باگ واقعی: مقایسه‌ی قیمت دیگر همیشه‌true نیست —')
++{
++  /**
++   * بازتولید دقیق شکلی که در `ProductService.isSensitiveEdit` می‌شکست:
++   * `before` از دیتابیس (bigint) و `v` از فرم (number).
++   */
++  const { toRial } = await import('../../src/shared/money.ts')
++  const before = { salePrice: 50_000n, purchasePrice: 30_000n, stock: 10 }
++  const sameFromForm = { salePrice: 50_000, purchasePrice: 30_000, stock: 10 }
++
++  ok('مقایسه‌ی خام (باگ) قیمتِ *یکسان* را «عوض‌شده» می‌دید',
++    before.salePrice !== sameFromForm.salePrice)
++  ok('با toRial، قیمت یکسان یعنی یکسان',
++    toRial(before.salePrice) === toRial(sameFromForm.salePrice))
++  ok('و قیمت واقعاً عوض‌شده هنوز تشخیص داده می‌شود',
++    toRial(before.salePrice) !== toRial(60_000))
++
++  // و قرارداد خودِ فایل: مقایسه‌ی خام برنگشته باشد
++  const { readFileSync } = await import('node:fs')
++  const prod = readFileSync('src/main/services/ProductService.ts', 'utf-8')
++  ok('ProductService دیگر قیمت‌ها را خام مقایسه نمی‌کند',
++    !prod.includes('before.salePrice !== v.salePrice') &&
++      !prod.includes('before.purchasePrice !== v.purchasePrice'))
++  ok('و مقایسه از toRial می‌گذرد',
++    prod.includes('toRial(before.salePrice) !== toRial(v.salePrice)'))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۶) مسیر واقعی: ثبت فروش با مبلغ بزرگ، سرتاسر —')
++{
++  const electron = await import('electron')
++  electron.ipcMain.handle = () => {}
++
++  const { prisma } = await import('../../src/main/db/client.ts')
++  const { makeSeeder } = await import('../../test/harness/seed.mjs')
++  const seed = makeSeeder(prisma)
++
++  // مبلغی که `number` نمی‌تواند دقیق نگه دارد
++  const huge = 9007199254740993n
++  const invoiceId = seed.insert('SaleInvoice', {
++    receiptNo: 9001,
++    status: 'FINAL',
++    grandTotal: huge,
++    paidTotal: huge,
++    goodsTotal: huge,
++    issuedAtJalali: '۱۴۰۴/۰۷/۰۵'
++  })
++
++  const row = await noThrow('خواندن فاکتور با Prisma استثنا نمی‌دهد', () =>
++    prisma.saleInvoice.findUnique({ where: { id: invoiceId } })
++  )
++  const got = row ? (typeof row.grandTotal === 'bigint' ? row.grandTotal : BigInt(row.grandTotal)) : null
++  eq('مبلغ از دیتابیس بدون افت دقت برگشت', got, huge)
++
++  // سریال‌سازی برای سابقه‌ی ممیزی (زیرساخت مرحله ۲) روی همین مقدار واقعی
++  const json = noThrow('JSON.stringify روی همین ردیف استثنا نمی‌دهد', () =>
++    JSON.stringify({ grandTotal: huge, paidTotal: huge })
++  )
++  eq('و مبلغ در JSON دقیق است', json, '{"grandTotal":"9007199254740993","paidTotal":"9007199254740993"}')
++
++  // و قالب‌بندی نمایشی همان عدد
++  const { money } = await import('../../src/shared/jalali.ts')
++  eq('نمایش همان مبلغ هم دقیق است', money(huge, false), '9٬007٬199٬254٬740٬993')
++}
++
++console.log(`\n${fail ? '✗' : '✓'} ${pass} بررسی موفق · ${fail} ناموفق`)
++process.exit(fail ? 1 : 0)
+diff --git a/tests/audit-fixes/fix-s181-bigint-json-audit.mjs b/tests/audit-fixes/fix-s181-bigint-json-audit.mjs
+new file mode 100644
+index 0000000..734f2f7
+--- /dev/null
++++ b/tests/audit-fixes/fix-s181-bigint-json-audit.mjs
+@@ -0,0 +1,224 @@
++/**
++ * نشست ۱۸۱ · S181-D1 — خوشه M، مرحله ۲: سریال‌سازی امن BigInt
++ *
++ * چه چیزی را اثبات می‌کند؟
++ *   ۱) بدون پچ، `JSON.stringify` روی BigInt استثنا می‌دهد (پایه‌ی مسئله).
++ *   ۲) بعد از بارگذاری `@shared/bigintJson`، همان فراخوان به رشته‌ی ده‌دهی
++ *      تبدیل می‌شود، **بدون از دست رفتن دقت** حتی بالای MAX_SAFE_INTEGER.
++ *   ۳) خروجی داده‌های بدون BigInt بایت‌به‌بایت مثل قبل می‌ماند (بدون رگرسیون).
++ *   ۴) مسیر واقعی `audit()` با مبلغ BigInt دیگر بی‌صدا از بین نمی‌رود و ردیف
++ *      AuditLog با مقدار درست نوشته می‌شود — این همان «مدرک ضدسرقت» است.
++ *
++ * اجرای قبل از رفع: بررسی‌های ۲ و ۴ باید FAIL بدهند.
++ */
++import assert from 'node:assert'
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++// دیتابیس واقعیِ هارنس (همان الگوی بقیه‌ی تست‌های این پوشه) — برای بخش ۶
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s181-bigint-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++let pass = 0
++let fail = 0
++const eq = (name, got, want) => {
++  try {
++    assert.deepStrictEqual(got, want)
++    console.log(`  ✓ ${name}`)
++    pass++
++  } catch {
++    console.log(`  ✗ ${name} · دریافت ${JSON.stringify(String(got))} · انتظار ${JSON.stringify(String(want))}`)
++    fail++
++  }
++}
++const ok = (name, cond) => eq(name, !!cond, true)
++/**
++ * `JSON.stringify` امن برای خودِ تست: در حالت «قبل از رفع» استثنا می‌دهد و
++ * نباید اجرای بقیه‌ی بررسی‌ها را قطع کند (وگرنه گزارش قبل/بعد ناقص می‌شود).
++ */
++const tryJson = (value, space) => {
++  try {
++    return JSON.stringify(value, undefined, space)
++  } catch (e) {
++    return `THREW: ${String(e?.message ?? e)}`
++  }
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱) رفتار پایه‌ی جاوااسکریپت (بدون پچ) —')
++// این بررسی عمداً *قبل* از import ماژول انجام می‌شود.
++{
++  const proto = Object.getOwnPropertyDescriptor(BigInt.prototype, 'toJSON')
++  ok('در شروع تست هیچ toJSON روی BigInt.prototype نیست', proto === undefined)
++
++  let threw = false
++  try {
++    JSON.stringify({ grandTotal: 1000n })
++  } catch (e) {
++    threw = e instanceof TypeError && /BigInt/i.test(String(e.message))
++  }
++  ok('JSON.stringify روی BigInt استثنای TypeError می‌دهد (مسئله‌ی اصلی)', threw)
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۲) بعد از نصب پچ —')
++const { jsonSafe, bigIntReplacer, installBigIntJson } = await import('../../src/shared/bigintJson.ts')
++
++{
++  let threw = false
++  let out = null
++  try {
++    out = JSON.stringify({ grandTotal: 1000n })
++  } catch {
++    threw = true
++  }
++  ok('JSON.stringify دیگر استثنا نمی‌دهد', !threw)
++  eq('BigInt به رشته‌ی ده‌دهی سریال می‌شود', out, '{"grandTotal":"1000"}')
++}
++
++{
++  // مبلغ ریالیِ بزرگ‌تر از Number.MAX_SAFE_INTEGER — دقیقاً دلیل رفتن سراغ BigInt
++  const huge = 9007199254740993n // = MAX_SAFE_INTEGER + 2
++  eq('مبلغ بالای MAX_SAFE_INTEGER بدون از دست رفتن دقت', tryJson({ v: huge }), '{"v":"9007199254740993"}')
++  // اثبات اینکه انتخاب «رشته به‌جای Number» لازم بوده:
++  ok('اگر با Number سریال می‌شد، عدد غلط می‌شد', String(Number(huge)) !== huge.toString())
++}
++
++eq('مقدار منفی هم درست سریال می‌شود', tryJson({ v: -250000n }), '{"v":"-250000"}')
++eq('صفر BigInt', tryJson({ v: 0n }), '{"v":"0"}')
++eq('BigInt تودرتو داخل آرایه', tryJson({ rows: [{ amount: 5n }, { amount: 7n }] }), '{"rows":[{"amount":"5"},{"amount":"7"}]}')
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۳) نبودِ رگرسیون روی داده‌ی بدون BigInt —')
++{
++  const sample = {
++    action: 'VOID',
++    entity: 'SaleReturn',
++    entityId: 12,
++    userId: null,
++    total: 1000000,
++    ratio: 0.5,
++    flag: true,
++    name: 'کالای تستی',
++    nested: { list: [1, 2, 3], nothing: null }
++  }
++  // مقدار مرجع، دستی نوشته شده (نه با همان تابع) تا تست خودش را تأیید نکند
++  const expected =
++    '{"action":"VOID","entity":"SaleReturn","entityId":12,"userId":null,"total":1000000,' +
++    '"ratio":0.5,"flag":true,"name":"کالای تستی","nested":{"list":[1,2,3],"nothing":null}}'
++  eq('خروجی داده‌ی معمولی بایت‌به‌بایت تغییر نکرده', tryJson(sample), expected)
++  eq('jsonSafe همان خروجی JSON.stringify را می‌دهد', (() => { try { return jsonSafe(sample) } catch (e) { return `THREW: ${e?.message}` } })(), expected)
++  eq('space مثل اصل پشتیبانی می‌شود', (() => { try { return jsonSafe({ a: 1n }, 2) } catch (e) { return `THREW: ${e?.message}` } })(), '{\n  "a": "1"\n}')
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۴) replacer صریح، مستقل از پچ prototype —')
++{
++  eq('bigIntReplacer مقدار BigInt را رشته می‌کند', bigIntReplacer('amount', 42n), '42')
++  eq('bigIntReplacer بقیه را دست نمی‌زند', bigIntReplacer('qty', 3), 3)
++  eq('bigIntReplacer روی null', bigIntReplacer('x', null), null)
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۵) idempotent بودن نصب —')
++{
++  const first = Object.getOwnPropertyDescriptor(BigInt.prototype, 'toJSON')?.value
++  installBigIntJson()
++  installBigIntJson()
++  const second = Object.getOwnPropertyDescriptor(BigInt.prototype, 'toJSON')?.value
++  ok('نصب دوباره تابع را بازنویسی نمی‌کند', first === second)
++  ok('toJSON غیرقابل شمارش است (در for..in و Object.keys دیده نمی‌شود)',
++    Object.getOwnPropertyDescriptor(BigInt.prototype, 'toJSON')?.enumerable === false)
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۶) مسیر واقعی audit() با مبلغ BigInt —')
++{
++  const { prisma } = await import('../../src/main/db/client.ts')
++  const { audit } = await import('../../src/main/services/AuditService.ts')
++
++  const before = await prisma.auditLog.count()
++  await audit(prisma, {
++    action: 'VOID',
++    entity: 'SaleInvoice',
++    entityId: 4242,
++    userId: null,
++    // دقیقاً همان شکلی که بعد از مهاجرت BigInt از Prisma برمی‌گردد
++    before: tryJson({ grandTotal: 1500000n, paidTotal: 500000n }),
++    after: tryJson({ grandTotal: 0n, voided: true }),
++    note: 'تست S181 — ابطال با مبالغ BigInt'
++  })
++  const after = await prisma.auditLog.count()
++  eq('ردیف Audit واقعاً نوشته شد (قبلاً fail-open بی‌صدا رد می‌شد)', after - before, 1)
++
++  const row = await prisma.auditLog.findFirst({
++    where: { entity: 'SaleInvoice', entityId: 4242 },
++    orderBy: { id: 'desc' }
++  })
++  ok('ردیف پیدا شد', !!row)
++  eq('مقدار before با مبلغ درست ثبت شده', row?.before, '{"grandTotal":"1500000","paidTotal":"500000"}')
++  eq('مقدار after با مبلغ درست ثبت شده', row?.after, '{"grandTotal":"0","voided":true}')
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۷) زنجیره‌ی import جانبی (بدون import صریح ماژول) —')
++/**
++ * جهش M5 نشست ۱۸۱ نشان داد بخش‌های بالا این را *نمی‌سنجند*: چون خودِ تست
++ * `@shared/bigintJson` را مستقیم import می‌کند، پچ در هر حالتی نصب است. پس
++ * حذف `import '@shared/bigintJson'` از AuditService بی‌صدا از تست رد می‌شد.
++ *
++ * این بخش در یک **پروسه‌ی جدا** فقط و فقط ماژول هدف را بار می‌کند و می‌پرسد
++ * آیا پچ نصب شده. یعنی واقعاً همان چیزی را می‌سنجد که در برنامه اتفاق می‌افتد.
++ */
++{
++  const { execFileSync } = await import('node:child_process')
++  const probe = (moduleSpecifier) => {
++    const code =
++      `await import(${JSON.stringify(moduleSpecifier)});` +
++      `const d = Object.getOwnPropertyDescriptor(BigInt.prototype, 'toJSON');` +
++      `process.stdout.write(typeof d?.value === 'function' ? 'INSTALLED' : 'MISSING')`
++    try {
++      return execFileSync(
++        process.execPath,
++        ['--experimental-sqlite', '--no-warnings', '--import', './test/harness/register.mjs', '--input-type=module', '--eval', code],
++        { cwd: process.cwd(), encoding: 'utf-8', env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] }
++      ).trim()
++    } catch (e) {
++      return `ERROR: ${String(e?.message ?? e).split('\n')[0]}`
++    }
++  }
++
++  eq('بار کردن تنهای AuditService پچ را نصب می‌کند', probe('./src/main/services/AuditService.ts'), 'INSTALLED')
++  eq('بار کردن تنهای db/client پچ را نصب می‌کند', probe('./src/main/db/client.ts'), 'INSTALLED')
++
++  /**
++   * صداقت درباره‌ی حدِ این سنجش (جهش M5' نشست ۱۸۱):
++   * `AuditService` خودش `../db/client` را import می‌کند، پس پچ به‌صورت *گذرا*
++   * نصب می‌شود و probe بالا با حذف importِ مستقیمِ AuditService هم سبز می‌ماند.
++   * آن import عمدی و «دفاع در عمق» است: اگر روزی مسیری `db/client` را جایگزین
++   * یا mock کند، ۱۵۶ نقطه‌ی audit نباید بی‌محافظ بمانند. چون رفتار قابل
++   * تفکیک نیست، قرارداد متنی سنجیده می‌شود.
++   */
++  const { readFileSync } = await import('node:fs')
++  ok('AuditService خودش هم import جانبی صریح دارد (دفاع در عمق)',
++    /import\s+['"]@shared\/bigintJson['"]/.test(readFileSync('src/main/services/AuditService.ts', 'utf-8')))
++  ok('db/client هم import جانبی صریح دارد',
++    /import\s+['"]@shared\/bigintJson['"]/.test(readFileSync('src/main/db/client.ts', 'utf-8')))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۸) قرارداد: نقطه‌ی ورود main هم پچ را بار می‌کند —')
++{
++  // `src/main/index.ts` عوارض جانبی سنگین دارد (پنجره، migration)، پس به‌جای
++  // بارکردن، قرارداد متنی سنجیده می‌شود.
++  const { readFileSync } = await import('node:fs')
++  const entry = readFileSync('src/main/index.ts', 'utf-8')
++  ok("src/main/index.ts ماژول bigintJson را import می‌کند", /import\s+['"]@shared\/bigintJson['"]/.test(entry))
++  ok('این import قبل از import الکترون است',
++    entry.indexOf("@shared/bigintJson") < entry.indexOf("from 'electron'"))
++}
++
++console.log(`\n${fail ? '✗' : '✓'} ${pass} بررسی موفق · ${fail} ناموفق`)
++process.exit(fail ? 1 : 0)
+diff --git a/tests/audit-fixes/fix-s181-bigint-migration.mjs b/tests/audit-fixes/fix-s181-bigint-migration.mjs
+new file mode 100644
+index 0000000..8f1bfd4
+--- /dev/null
++++ b/tests/audit-fixes/fix-s181-bigint-migration.mjs
+@@ -0,0 +1,410 @@
++// نشست ۱۸۱: تست قبل/بعد خوشه M بند ۴-۲۸ الف — مهاجرت ۸۳ فیلد مالی به BigInt.
++/**
++ * ===========================================================================
++ * نشست ۱۸۱ · خوشه M · بند ۴-۲۸ الف — مهاجرت واقعی
++ *
++ * قبل از رفع: ۸۳ ستون مالی از نوع `Int` بودند. Prisma آن‌ها را به `number`
++ * نگاشت می‌کرد، پس هر مبلغی بالای `Number.MAX_SAFE_INTEGER` بی‌صدا گرد می‌شد.
++ *
++ * انتظار بعد: همان ۸۳ ستون `BigInt`اند، **داده‌ی موجود مو‌به‌مو حفظ شده**، و
++ * مبالغ بزرگ بدون افت دقت رفت‌وبرگشت می‌کنند.
++ *
++ * این تست migration را روی یک دیتابیس **واقعی** (`node:sqlite`) و از مسیر
++ * **همان فایل‌های migration واقعی پروژه** اجرا می‌کند — نه شبیه‌سازی.
++ *
++ * دو سناریو جدا سنجیده می‌شود، چون ریسکشان فرق دارد:
++ *   الف) دیتابیس **تازه**: همه‌ی ۲۷ migration از صفر.
++ *   ب) دیتابیس **موجود با داده**: ۲۶ migration، داده‌ی واقعی، بعد migration ۲۷.
++ *      این حالتِ مشتری واقعی است و تنها جایی است که از دست رفتن داده ممکن است.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s181-bigint-migration.mjs
++ * ===========================================================================
++ */
++import { DatabaseSync } from 'node:sqlite'
++import { readFileSync, readdirSync, mkdtempSync, existsSync, rmSync } from 'node:fs'
++import { join } from 'node:path'
++import { tmpdir } from 'node:os'
++import { fileURLToPath } from 'node:url'
++
++const ROOT = fileURLToPath(new URL('../..', import.meta.url))
++const MIGRATIONS_DIR = join(ROOT, 'prisma/migrations')
++const NEW_MIGRATION = '20271004100000_money_fields_to_bigint'
++
++let pass = 0
++let fail = 0
++const eq = (label, got, want) => {
++  const g = typeof got === 'bigint' ? `${got}n` : JSON.stringify(got)
++  const w = typeof want === 'bigint' ? `${want}n` : JSON.stringify(want)
++  if (g === w) { pass++; console.log(`  ✓ ${label}`) }
++  else { fail++; console.log(`  ✗ ${label} · دریافت ${g} · انتظار ${w}`) }
++}
++const ok = (label, cond) => eq(label, Boolean(cond), true)
++
++// ⚠️ اولین migration پروژه `0_init` نام دارد، نه یک مهرزمانی ۱۴ رقمی. فیلتر باید
++// «هر پوشه‌ای که migration.sql دارد» باشد، وگرنه جدول‌های پایه ساخته نمی‌شوند.
++// مرتب‌سازی لغوی درست است چون '0' < '2' و بقیه هم‌طولِ مهرزمانی‌اند.
++const allMigrations = readdirSync(MIGRATIONS_DIR, { withFileTypes: true })
++  .filter((d) => d.isDirectory() && existsSync(join(MIGRATIONS_DIR, d.name, 'migration.sql')))
++  .map((d) => d.name)
++  .sort()
++
++/**
++ * یک دیتابیس تازه می‌سازد و migrationها را تا `upTo` (شاملش) اجرا می‌کند.
++ * ⚠️ مسیر موقت ثبت می‌شود تا در پایان پاک شود: `/tmp` در این محیط یک tmpfs
++ * کوچک است و چند اجرای پشت سر هم آن را پر می‌کند — که بعد به شکل خطای
++ * گیج‌کننده‌ی «database or disk is full» در تست‌های *دیگر* ظاهر می‌شود.
++ */
++const tempDirs = []
++function buildDb(upTo = null) {
++  const dir = mkdtempSync(join(tmpdir(), 'mahak-s181-mig-'))
++  tempDirs.push(dir)
++  const db = new DatabaseSync(join(dir, 'shop.db'))
++  db.exec('PRAGMA foreign_keys = ON')
++  for (const name of allMigrations) {
++    if (upTo && name > upTo) break
++    const sql = readFileSync(join(MIGRATIONS_DIR, name, 'migration.sql'), 'utf-8')
++    try {
++      db.exec(sql)
++    } catch (e) {
++      throw new Error(`migration «${name}» اجرا نشد: ${e.message}`)
++    }
++  }
++  return db
++}
++
++/** نوع اعلام‌شده‌ی یک ستون را از `PRAGMA table_info` می‌خواند. */
++function columnType(db, table, column) {
++  const rows = db.prepare(`PRAGMA table_info("${table}")`).all()
++  const row = rows.find((r) => r.name === column)
++  return row ? row.type : null
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۰) خودِ هارنس: آیا migrationها اصلاً اجرا می‌شوند؟ —')
++ok(`تعداد migrationها (${allMigrations.length})`, allMigrations.length >= 28)
++// نشست ۱۸۳: دیگر لازم نیست آخرین باشد؛ فقط باید وجود داشته باشد و در جای خودش بماند.
++ok('migration مهاجرت پول در فهرست هست', allMigrations.includes(NEW_MIGRATION))
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱) دیتابیس تازه از کل ۲۷ migration —')
++{
++  const db = buildDb()
++  ok('کل ۲۷ migration بدون خطا اجرا شد', true)
++
++  // نمونه‌ای از هر سه گروه طبقه‌بندی
++  eq('ستون پول BIGINT شد (SaleInvoice.grandTotal)', columnType(db, 'SaleInvoice', 'grandTotal'), 'BIGINT')
++  eq('ستون پول BIGINT شد (Payment.amount)', columnType(db, 'Payment', 'amount'), 'BIGINT')
++  eq('ستون پول BIGINT شد (CashSession.expectedCash)', columnType(db, 'CashSession', 'expectedCash'), 'BIGINT')
++  eq('ستون پولِ nullable هم BIGINT شد (CashSession.countedTotal)', columnType(db, 'CashSession', 'countedTotal'), 'BIGINT')
++  eq('شناسه INTEGER ماند (SaleInvoice.id)', columnType(db, 'SaleInvoice', 'id'), 'INTEGER')
++  eq('کلید خارجی INTEGER ماند (SaleInvoiceItem.invoiceId)', columnType(db, 'SaleInvoiceItem', 'invoiceId'), 'INTEGER')
++  eq('تعداد INTEGER ماند (SaleInvoiceItem.qty)', columnType(db, 'SaleInvoiceItem', 'qty'), 'INTEGER')
++  eq('شماره‌ی فیش INTEGER ماند (SaleInvoice.receiptNo)', columnType(db, 'SaleInvoice', 'receiptNo'), 'INTEGER')
++  eq('درصد INTEGER ماند (SaleInvoice.wholesaleDiscountPercent)',
++    columnType(db, 'SaleInvoice', 'wholesaleDiscountPercent'), 'INTEGER')
++
++  // ایندکس‌ها و یکتایی‌ها باید از بازسازی جدول جان سالم به در برده باشند.
++  const idx = db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='SaleInvoice'`).all()
++  ok('ایندکس‌های SaleInvoice بعد از بازسازی جدول باقی مانده‌اند', idx.length > 0)
++  const uniq = db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name='SaleInvoice_receiptNo_key'`).all()
++  eq('یکتایی شماره‌ی فیش حفظ شد', uniq.length, 1)
++  db.close()
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۲) دیتابیس موجودِ دارای داده: هیچ ریالی گم نمی‌شود —')
++/**
++ * این مهم‌ترین بخش است. بازسازی جدول در SQLite یعنی
++ * `CREATE new_X` → `INSERT ... SELECT` → `DROP X` → `RENAME`.
++ * اگر یک ستون در فهرست `INSERT` جا بیفتد، آن ستون **بی‌صدا صفر/NULL** می‌شود.
++ */
++{
++  // نشست ۱۸۳ — لنگر به migration پول، نه «یکی‌مانده‌به‌آخر» (migrationهای بعدی اضافه شده‌اند)
++  const before = allMigrations[allMigrations.indexOf(NEW_MIGRATION) - 1]
++  const db = buildDb(before)
++  eq('ستون پول قبل از مهاجرت INTEGER بود', columnType(db, 'SaleInvoice', 'grandTotal'), 'INTEGER')
++
++  db.exec(`INSERT INTO User (id, username, passwordHash, displayName, role, isActive, createdAt)
++           VALUES (1, 'admin', 'x', 'مدیر', 'ADMIN', 1, CURRENT_TIMESTAMP)`)
++  db.exec(`INSERT INTO SaleInvoice (id, receiptNo, userId, issuedAt, issuedAtJalali, status,
++      goodsTotal, taxTotal, serviceCharge, discountTotal, deliveryFee, grandTotal, paidTotal)
++      VALUES (1, 1001, 1, CURRENT_TIMESTAMP, '۱۴۰۴/۰۷/۰۵', 'PAID', 1500000, 135000, 0, 50000, 20000, 1605000, 0)`)
++  db.exec(`INSERT INTO SaleInvoice (id, receiptNo, userId, issuedAt, issuedAtJalali, status,
++      goodsTotal, taxTotal, serviceCharge, discountTotal, deliveryFee, grandTotal, paidTotal)
++      VALUES (2, 1002, 1, CURRENT_TIMESTAMP, '۱۴۰۴/۰۷/۰۵', 'PAID', 0, 0, 0, 0, 0, -250000, 0)`)
++
++  const rowsBefore = db.prepare('SELECT * FROM SaleInvoice ORDER BY id').all()
++
++  // حالا migration مهاجرت را اجرا کن — دقیقاً مثل به‌روزرسانی یک نصبِ واقعی.
++  const sql = readFileSync(join(MIGRATIONS_DIR, NEW_MIGRATION, 'migration.sql'), 'utf-8')
++  db.exec(sql)
++
++  eq('بعد از مهاجرت ستون BIGINT شد', columnType(db, 'SaleInvoice', 'grandTotal'), 'BIGINT')
++
++  const rowsAfter = db.prepare('SELECT * FROM SaleInvoice ORDER BY id').all()
++  eq('تعداد ردیف‌ها تغییر نکرد', rowsAfter.length, rowsBefore.length)
++
++  // مقایسه‌ی ستون‌به‌ستونِ *همه‌ی* ستون‌ها، نه فقط آن‌هایی که حدس می‌زنیم مهم‌اند.
++  let mismatch = null
++  for (let i = 0; i < rowsBefore.length; i++) {
++    for (const key of Object.keys(rowsBefore[i])) {
++      const a = rowsBefore[i][key]
++      const b = rowsAfter[i][key]
++      if (String(a) !== String(b)) { mismatch ??= `ردیف ${i} ستون ${key}: ${a} ⇒ ${b}`; break }
++    }
++  }
++  eq(`همه‌ی ستون‌های همه‌ی ردیف‌ها دست‌نخورده‌اند${mismatch ? ` (${mismatch})` : ''}`, mismatch, null)
++  eq('مبلغ مشخص سالم ماند', String(rowsAfter[0].grandTotal), '1605000')
++  eq('مبلغ منفی سالم ماند', String(rowsAfter[1].grandTotal), '-250000')
++  eq('شماره‌ی فیش سالم ماند', String(rowsAfter[0].receiptNo), '1001')
++  db.close()
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۳) همان چیزی که کل این کار برای آن انجام شد: مبلغ بالای MAX_SAFE_INTEGER —')
++{
++  const db = buildDb()
++  db.exec(`INSERT INTO User (id, username, passwordHash, displayName, role, isActive, createdAt)
++           VALUES (1, 'admin', 'x', 'مدیر', 'ADMIN', 1, CURRENT_TIMESTAMP)`)
++
++  // یک گردش سالانه‌ی چند همتی — بزرگ‌تر از ۹٬۰۰۷ تریلیارد.
++  const huge = 9007199254740993n // MAX_SAFE_INTEGER + 2
++  const stmt = db.prepare(`INSERT INTO SaleInvoice (id, receiptNo, userId, issuedAt, issuedAtJalali,
++      status, goodsTotal, taxTotal, serviceCharge, discountTotal, deliveryFee, grandTotal, paidTotal)
++      VALUES (1, 1, 1, CURRENT_TIMESTAMP, '۱۴۰۴/۰۷/۰۵', 'PAID', 0, 0, 0, 0, 0, ?, 0)`)
++  stmt.run(huge)
++
++  const readBig = db.prepare('SELECT grandTotal FROM SaleInvoice WHERE id = 1')
++  readBig.setReadBigInts(true)
++  eq('مبلغ بزرگ بدون افت دقت رفت‌وبرگشت کرد', readBig.get().grandTotal, huge)
++
++  // و اثبات اینکه چرا `number` کافی نبود:
++  ok('همین مقدار در number گرد می‌شد', BigInt(Number(huge)) !== huge)
++
++  // جمع در سطح SQL هم باید دقیق بماند (گزارش‌ها از SUM استفاده می‌کنند).
++  const s = db.prepare('SELECT SUM(grandTotal) AS t FROM SaleInvoice')
++  s.setReadBigInts(true)
++  eq('SUM در سطح SQL دقیق است', s.get().t, huge)
++  db.close()
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۴) کلیدهای خارجی بعد از بازسازی ۱۸ جدول سالم‌اند —')
++/**
++ * بازسازی جدول با `PRAGMA foreign_keys=OFF` انجام می‌شود. اگر ترتیب
++ * DROP/RENAME اشتباه باشد، ارجاع‌ها می‌توانند بی‌صدا بشکنند و تازه ماه‌ها بعد
++ * به شکل «فاکتور بدون ردیف» خودشان را نشان دهند.
++ */
++{
++  const db = buildDb()
++  db.exec(`INSERT INTO User (id, username, passwordHash, displayName, role, isActive, createdAt)
++           VALUES (1, 'admin', 'x', 'مدیر', 'ADMIN', 1, CURRENT_TIMESTAMP)`)
++  db.exec(`INSERT INTO Category (id, name) VALUES (1, 'عمومی')`)
++  db.exec(`INSERT INTO Product (id, name, categoryId, isActive, createdAt, updatedAt)
++           VALUES (1, 'کالا', 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
++  db.exec(`INSERT INTO ProductVariant (id, productId, code, barcode, salePrice, purchasePrice,
++           stock, minStock, isActive, createdAt, updatedAt)
++           VALUES (1, 1, 'K-1', '111', 50000, 30000, 10, 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
++  db.exec(`INSERT INTO SaleInvoice (id, receiptNo, userId, issuedAt, issuedAtJalali, status,
++      goodsTotal, taxTotal, serviceCharge, discountTotal, deliveryFee, grandTotal, paidTotal)
++      VALUES (1, 1, 1, CURRENT_TIMESTAMP, '۱۴۰۴/۰۷/۰۵', 'PAID', 50000, 0, 0, 0, 0, 50000, 0)`)
++  db.exec(`INSERT INTO SaleInvoiceItem (id, invoiceId, variantId, qty, unitPrice, discount, tax, lineTotal)
++           VALUES (1, 1, 1, 1, 50000, 0, 0, 50000)`)
++
++  const fkErrors = db.prepare('PRAGMA foreign_key_check').all()
++  eq('PRAGMA foreign_key_check هیچ ارجاع شکسته‌ای پیدا نکرد', fkErrors.length, 0)
++
++  // و محدودیت واقعاً فعال است (نه اینکه صرفاً چیزی برای شکستن نباشد).
++  let rejected = false
++  try {
++    db.exec(`INSERT INTO SaleInvoiceItem (id, invoiceId, variantId, qty, unitPrice, discount, tax, lineTotal)
++             VALUES (2, 999, 1, 1, 1, 0, 0, 1)`)
++  } catch { rejected = true }
++  ok('ارجاع به فاکتور ناموجود رد می‌شود (کلید خارجی واقعاً فعال است)', rejected)
++
++  // آبشار حذف هم باید بعد از بازسازی سر جایش باشد.
++  // ⚠️ اگر ON DELETE CASCADE در بازسازی جدول گم شود، خودِ DELETE استثنا می‌دهد.
++  // بدون try/catch، تست به‌جای گزارشِ خوانا با stack trace می‌میرد (جهش M6).
++  let cascadeResult
++  try {
++    db.exec('DELETE FROM SaleInvoice WHERE id = 1')
++    cascadeResult = db.prepare('SELECT COUNT(*) AS c FROM SaleInvoiceItem').get().c
++  } catch (e) {
++    cascadeResult = `THREW: ${e.message}`
++  }
++  eq('حذف آبشاری ردیف‌های فاکتور کار می‌کند', cascadeResult, 0)
++  db.close()
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۵) هیچ ستونی در INSERT ... SELECT جا نیفتاده —')
++/**
++ * بی‌صداترین شکستِ ممکن در بازسازی جدول: ستونی که در `INSERT` نیامده باشد.
++ * به‌جای اعتماد به چشم، فهرست ستون‌های هر `INSERT INTO new_X` با تعداد ستون‌های
++ * همان جدول در دیتابیس ساخته‌شده مقایسه می‌شود.
++ */
++{
++  /**
++   * نشست ۱۸۳ — دیتابیس فقط تا **همین** migration ساخته می‌شود.
++   * اگر تا آخرِ فهرست جلو برویم، ستون‌هایی که migrationهای بعدی اضافه کرده‌اند
++   * (مثل `StoreCredit.carryRemainder`) به‌عنوان «ستون جامانده» گزارش می‌شوند —
++   * هشدار کاذبی که ربطی به این migration ندارد.
++   */
++  const db = buildDb(NEW_MIGRATION)
++  const sql = readFileSync(join(MIGRATIONS_DIR, NEW_MIGRATION, 'migration.sql'), 'utf-8')
++  const inserts = [...sql.matchAll(/INSERT INTO "new_(\w+)" \(([^)]*)\) SELECT ([^]*?) FROM "\1";/g)]
++  eq('برای هر جدول بازتعریف‌شده یک INSERT هست', inserts.length,
++    (sql.match(/^CREATE TABLE "new_/gm) || []).length)
++
++  /**
++   * تجزیه‌ی فهرست ستون‌ها باید پرانتزآگاه باشد: Prisma برای ستون‌هایی که
++   * DEFAULT دیتابیسی‌شان برداشته می‌شود عبارتی مثل
++   *   coalesce("createdAt", CURRENT_TIMESTAMP) AS "createdAt"
++   * می‌نویسد که خودش کاما دارد. جدا کردن ساده با «,» عدد غلط می‌دهد.
++   */
++  const splitTop = (text) => {
++    const out = []
++    let depth = 0
++    let cur = ''
++    for (const ch of text) {
++      if (ch === '(') depth++
++      else if (ch === ')') depth--
++      if (ch === ',' && depth === 0) { out.push(cur); cur = '' } else cur += ch
++    }
++    if (cur.trim()) out.push(cur)
++    return out.map((c) => c.trim()).filter(Boolean)
++  }
++  /** نام مقصدِ یک عبارت SELECT: یا نام مستعار `AS "x"` یا خودِ ستون. */
++  const targetName = (expr) => {
++    const alias = /\sAS\s+"([^"]+)"\s*$/i.exec(expr)
++    if (alias) return alias[1]
++    const plain = /^"([^"]+)"$/.exec(expr)
++    return plain ? plain[1] : expr
++  }
++
++  const bad = []
++  for (const [, table, colsRaw, selRaw] of inserts) {
++    const cols = splitTop(colsRaw).map((c) => c.replace(/"/g, ''))
++    const sel = splitTop(selRaw).map(targetName)
++    const actual = db.prepare(`PRAGMA table_info("${table}")`).all().map((r) => r.name)
++    const missing = actual.filter((c) => !cols.includes(c))
++    if (missing.length) bad.push(`${table}: ستون‌های جامانده ${missing.join(',')}`)
++    if (cols.length !== sel.length) bad.push(`${table}: تعداد ستون INSERT (${cols.length}) با SELECT (${sel.length}) نمی‌خواند`)
++    // ترتیب هم باید یکی باشد، وگرنه مقدار ستون A در ستون B می‌نشیند.
++    for (let i = 0; i < cols.length; i++) {
++      if (cols[i] !== sel[i]) { bad.push(`${table}: ترتیب ستون ${i} — INSERT «${cols[i]}» ولی SELECT «${sel[i]}»`); break }
++    }
++  }
++  eq(`هر ۱۸ جدول همه‌ی ستون‌هایشان را منتقل می‌کنند${bad.length ? ` (${bad[0]})` : ''}`, bad.length, 0)
++  db.close()
++}
++
++for (const d of tempDirs) rmSync(d, { recursive: true, force: true })
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۶) migration *فقط* نوع ستون‌های پول را عوض می‌کند —')
++/**
++ * 🔴 درس نشست ۱۸۱ — این بررسی از یک باگ واقعی زاده شد.
++ *
++ * خروجی خام `prisma migrate diff` علاوه بر تغییر نوع، یک drift از-قبل-موجود را
++ * هم «تعمیر» می‌کرد و بی‌صدا دو چیز دیگر را عوض کرد:
++ *   • `StoreCredit.updatedAt` پیش‌فرض `CURRENT_TIMESTAMP` را از دست داد ⇒ هر
++ *     `INSERT` خامی که آن ستون را نمی‌نوشت با «NOT NULL constraint failed»
++ *     می‌افتاد. تست `tests/audit/audit-a107-01-credit-batch-scope.mjs` دقیقاً
++ *     همین شد — و چون هارنس رگرسیون آن پوشه را اجرا نمی‌کرد، دیده نشد.
++ *   • `Payment.createdAt` از nullable به `NOT NULL DEFAULT ...` رفت.
++ *
++ * یک migration «تغییر نوع ستون» نباید محدودیت‌های دیتابیسِ نصب‌های موجودِ
++ * مشتری را جابه‌جا کند. این بررسی کل اسکیما را قبل و بعد مقایسه می‌کند و
++ * اجازه می‌دهد **تنها** تفاوت مجاز `INTEGER → BIGINT` روی فیلدهای فهرست پول
++ * باشد؛ هر ستون، پیش‌فرض، کلید خارجی یا ایندکسِ دیگری که تکان بخورد، قرمز است.
++ */
++{
++  const { MONEY_FIELDS } = await import('../../tools/money-fields.mjs')
++  const money = new Set(MONEY_FIELDS)
++
++  const snapshot = (upTo) => {
++    const db = buildDb(upTo)
++    const tables = db
++      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
++      .all()
++      .map((r) => r.name)
++    const out = {}
++    for (const t of tables) {
++      for (const c of db.prepare(`PRAGMA table_info("${t}")`).all())
++        out[`ستون ${t}.${c.name}`] = { type: c.type, notnull: c.notnull, def: c.dflt_value }
++      for (const f of db.prepare(`PRAGMA foreign_key_list("${t}")`).all())
++        out[`کلیدخارجی ${t}.${f.from}→${f.table}.${f.to}`] = { onDelete: f.on_delete, onUpdate: f.on_update }
++      for (const x of db
++        .prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name = ?")
++        .all(t))
++        out[`ایندکس ${x.name}`] = { sql: x.sql }
++    }
++    db.close()
++    return out
++  }
++
++  /**
++   * ⚠️ نشست ۱۸۳ — لنگر به **نام** migration پول، نه «آخرین migration».
++   *
++   * نسخه‌ی اول این بررسی `length - 2` را با `null` مقایسه می‌کرد، یعنی فرض
++   * می‌گرفت migration پول همیشه آخری است. با اضافه شدن هر migration بعدی
++   * (مثل `credit_carry_remainder`) این بررسی شروع می‌کرد به سنجیدنِ آن
++   * migration بی‌ربط و قرمز می‌شد — یک هشدار کاذب که به‌مرور اعتمادش را از
++   * دست می‌داد و کسی جدی نمی‌گرفتش.
++   */
++  const moneyIdx = allMigrations.indexOf(NEW_MIGRATION)
++  ok('migration پول در فهرست پیدا شد', moneyIdx > 0)
++  const before = snapshot(allMigrations[moneyIdx - 1])
++  const after = snapshot(NEW_MIGRATION)
++
++  const unexpected = []
++  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
++    const b = before[key]
++    const a = after[key]
++    if (JSON.stringify(b) === JSON.stringify(a)) continue
++    // تنها تفاوت مجاز: INTEGER ⇒ BIGINT روی ستونی که در فهرست پول است
++    const m = /^ستون (\w+)\.(\w+)$/.exec(key)
++    const allowed =
++      m &&
++      b &&
++      a &&
++      money.has(`${m[1]}.${m[2]}`) &&
++      b.type === 'INTEGER' &&
++      a.type === 'BIGINT' &&
++      b.notnull === a.notnull &&
++      String(b.def) === String(a.def)
++    if (!allowed) unexpected.push(`${key}: ${JSON.stringify(b)} ⇒ ${JSON.stringify(a)}`)
++  }
++  eq(
++    `هیچ تغییر ناخواسته‌ای در اسکیما نیست${unexpected.length ? ` (${unexpected[0]})` : ''}`,
++    unexpected.length,
++    0
++  )
++
++  // و آن‌طرفِ سکه: همه‌ی ۸۳ فیلد پول واقعاً عوض شده باشند (نه اینکه هیچ‌کدام)
++  const converted = Object.entries(after).filter(([k, v]) => {
++    const m = /^ستون (\w+)\.(\w+)$/.exec(k)
++    return m && money.has(`${m[1]}.${m[2]}`) && v.type === 'BIGINT'
++  }).length
++  eq('هر ۸۳ ستون پول به BIGINT رفته‌اند', converted, MONEY_FIELDS.length)
++
++  // بازتولید دقیق شکستی که در نشست ۱۸۱ رخ داد
++  {
++    const db = buildDb(null)
++    let threw = null
++    try {
++      db.exec(
++        `INSERT INTO StoreCredit (code, amount, usedAmount, status, source, issuedAt, issuedAtJalali)
++         VALUES ('T1', 100000, 0, 'ACTIVE', 'MANUAL', CURRENT_TIMESTAMP, '۱۴۰۴/۰۷/۰۵')`
++      )
++    } catch (e) {
++      threw = e.message
++    }
++    eq(`INSERT خام بدون updatedAt هنوز کار می‌کند${threw ? ` (${threw})` : ''}`, threw, null)
++    db.close()
++  }
++}
++
++console.log(`\n${fail ? '✗' : '✓'} ${pass} بررسی موفق · ${fail} ناموفق`)
++process.exit(fail ? 1 : 0)
+diff --git a/tests/audit-fixes/fix-s181-merge-maintenance-bigint.mjs b/tests/audit-fixes/fix-s181-merge-maintenance-bigint.mjs
+new file mode 100644
+index 0000000..e3e873f
+--- /dev/null
++++ b/tests/audit-fixes/fix-s181-merge-maintenance-bigint.mjs
+@@ -0,0 +1,172 @@
++// نشست ۱۸۱: تست قبل/بعد — ممیزی MergeService و MaintenanceService زیر BigInt (بند ۴-۲۸ الف).
++/**
++ * ===========================================================================
++ * نشست ۱۸۱ · کار باز «ممیزی MergeService» + مسیرهای `$queryRaw`
++ *
++ * قبل از رفع — یک الگوی یکسان در دو فایل، هر دو بی‌صدا:
++ *
++ *     const n = typeof v === 'bigint' ? Number(v) : Number(v)
++ *                                       ^^^^^^^^^   ^^^^^^^^^
++ *                                       هر دو شاخه یکی!
++ *
++ * کسی ternary را نوشته بود تا `bigint` را جدا مدیریت کند، ولی هر دو طرف همان
++ * `Number(v)` بودند. تا وقتی ستون‌ها `Int` بودند بی‌ضرر بود. بعد از مهاجرت
++ * بند ۴-۲۸ الف، `$queryRawUnsafe` روی ستون `BIGINT` مقدار `bigint` می‌دهد و
++ * هر مبلغ بالای `Number.MAX_SAFE_INTEGER` **بی‌صدا** گرد می‌شد:
++ *
++ *   • `MergeService` — وسط عملیاتی که دفاتر مالی را انبوه می‌نویسد. یعنی
++ *     ادغام یک بکاپ می‌توانست فاکتورهایی با مبلغ غلط وارد کند.
++ *   • `MaintenanceService` — تنها مصرف‌کننده‌اش `SUM("grandTotal")` روی کل
++ *     فاکتورهای قدیمی است؛ مدیر قبل از **پاک کردن همیشگی** داده، ممکن بود
++ *     مبلغ غلط ببیند و بر اساس آن تصمیم بگیرد.
++ *
++ * انتظار بعد: مبالغ در MergeService اصلاً از `bigint` خارج نشوند، و هر جا
++ * تبدیل به `number` لازم است، خارج از محدوده‌ی امن **خطا** بدهد نه عدد غلط.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s181-merge-maintenance-bigint.mjs
++ * ===========================================================================
++ */
++import { readFileSync, readdirSync, statSync } from 'node:fs'
++import { join } from 'node:path'
++
++let pass = 0
++let fail = 0
++// ⚠️ خودِ این helper باید BigInt را تاب بیاورد — وگرنه تستی که درباره‌ی BigInt
++// است، سر اولین مقدار BigInt با «Do not know how to serialize a BigInt» می‌میرد.
++const show = (v) => (typeof v === 'bigint' ? `${v}n` : JSON.stringify(v))
++const eq = (label, got, want) => {
++  const g = show(got)
++  const w = show(want)
++  if (g === w) { pass++; console.log(`  ✓ ${label}`) }
++  else { fail++; console.log(`  ✗ ${label} · دریافت ${g} · انتظار ${w}`) }
++}
++const ok = (label, cond) => eq(label, Boolean(cond), true)
++
++const MERGE = readFileSync('src/main/services/MergeService.ts', 'utf-8')
++const MAINT = readFileSync('src/main/services/MaintenanceService.ts', 'utf-8')
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱) الگوی ternary بی‌اثر هیچ‌جای پروژه برنگشته باشد —')
++/**
++ * این بررسی کل `src/` را می‌گردد، نه فقط دو فایلِ شناخته‌شده. الگوی
++ * `typeof x === 'bigint' ? Number(x) : Number(x)` هر بار که نوشته شود یک
++ * «مدیریت BigInt» ظاهری می‌سازد که هیچ کاری نمی‌کند — و چون *به‌نظر* درست
++ * می‌آید، در بازبینی کد هم رد می‌شود.
++ */
++{
++  const files = []
++  const walk = (d) => {
++    for (const e of readdirSync(d)) {
++      const p = join(d, e)
++      if (statSync(p).isDirectory()) walk(p)
++      else if (p.endsWith('.ts') || p.endsWith('.tsx')) files.push(p)
++    }
++  }
++  walk('src')
++  const bad = []
++  const deadTernary = /typeof\s+(\w+)\s*===\s*'bigint'\s*\?\s*Number\(\1\)\s*:\s*Number\(\1\)/
++  for (const f of files) {
++    const src = readFileSync(f, 'utf-8')
++    src.split('\n').forEach((l, i) => {
++      if (l.trimStart().startsWith('*') || l.trimStart().startsWith('//')) return // کامنت توضیحی مجاز
++      if (deadTernary.test(l)) bad.push(`${f}:${i + 1}`)
++    })
++  }
++  eq(`ternary بی‌اثر BigInt${bad.length ? ` (${bad.join(', ')})` : ''}`, bad.length, 0)
++  ok('و اسکن واقعاً فایل دیده است', files.length > 100)
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۲) MergeService: مبالغ اصلاً از bigint خارج نمی‌شوند —')
++ok('helper مخصوص پول وجود دارد', /const rial = \(v: unknown\): bigint/.test(MERGE))
++{
++  /**
++   * هر فیلد مالی باید `rial(...)` باشد، نه `num(...)`. `num` برای شناسه و
++   * تعداد است و خروجی‌اش `number`.
++   */
++  const { MONEY_FIELDS } = await import('../../tools/money-fields.mjs')
++  const names = [...new Set(MONEY_FIELDS.map((k) => k.split('.')[1]))]
++  const re = new RegExp(`^\\s*(${names.join('|')}):\\s*num\\(`)
++  const leftovers = []
++  MERGE.split('\n').forEach((l, i) => {
++    if (re.test(l) && !l.includes('inv.g')) leftovers.push(`${i + 1}: ${l.trim()}`)
++  })
++  eq(`فیلد مالی که هنوز از num() رد می‌شود${leftovers.length ? ` (${leftovers[0]})` : ''}`, leftovers.length, 0)
++
++  const rialCount = (MERGE.match(/:\s*rial\(/g) || []).length
++  ok(`همه‌ی مبالغ به rial() رفته‌اند (${rialCount} نقطه)`, rialCount >= 36)
++}
++ok('num() دیگر بی‌صدا نمی‌بُرد (خارج از محدوده ⇒ خطا)',
++  /از محدوده‌ی امن عدد جاوااسکریپت بیرون است/.test(MERGE))
++ok('ادغام همچنان روی یک تراکنش است (خطا ⇒ هیچ‌چیز اضافه نمی‌شود)',
++  MERGE.includes('await prisma.$transaction('))
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۳) رفتار واقعی rial() و num() —')
++{
++  /**
++   * توابع داخلی‌اند و export نمی‌شوند، پس رفتارشان از راه بازتولید همان منطق
++   * سنجیده نمی‌شود — بلکه *قرارداد*شان در متن سنجیده شد (بالا) و این‌جا
++   * معادلِ رفتاری‌اش با `@shared/money` مقایسه می‌شود تا مطمئن شویم همان
++   * قاعده‌ی «هرگز افت دقت بی‌صدا» را دنبال می‌کنند.
++   */
++  const { toRial, toNumberRial } = await import('../../src/shared/money.ts')
++  const huge = 9007199254740993n
++  eq('toRial مبلغ بزرگ را دست‌نخورده نگه می‌دارد', toRial(huge), huge)
++  let threw = false
++  try { toNumberRial(huge) } catch { threw = true }
++  ok('و تبدیل به number خارج از محدوده خطا می‌دهد', threw)
++  ok('در حالی که Number() بی‌صدا غلط می‌داد', BigInt(Number(huge)) !== huge)
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۴) MaintenanceService: جمع پیش‌نمایش پاک‌سازی —')
++ok('n() دیگر شاخه‌ی بی‌اثر ندارد', !/typeof v === 'bigint' \? Number\(v\) : Number\(v\)/.test(MAINT))
++ok('خارج از محدوده ⇒ خطای فارسیِ قابل‌فهم', /از محدوده‌ی امن نمایش بیرون است/.test(MAINT))
++ok('خطا از نوع BusinessError است (به کاربر پیام فارسی می‌رسد)',
++  /throw new BusinessError\(\s*\n?\s*`جمع مبالغ این بازه/.test(MAINT))
++ok('همان SUM("grandTotal") هنوز سر جایش است', MAINT.includes('SELECT SUM("grandTotal") AS g FROM "SaleInvoice"'))
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۵) بقیه‌ی کوئری‌های خام ستون مالی را لمس نمی‌کنند —')
++/**
++ * ادعای بازبینی: «۴۲ مورد `$queryRaw`/`$executeRaw` بررسی نشده‌اند». شمردیم:
++ * ۴۳ مورد است و فقط یکی‌شان (همان `SUM("grandTotal")` بالا) ستون مالی را لمس
++ * می‌کند؛ بقیه روی شناسه، تاریخ و شمارش کار می‌کنند. این بررسی نمی‌گذارد
++ * کوئری خامِ تازه‌ای بی‌سروصدا روی ستون مالی اضافه شود.
++ */
++{
++  const { MONEY_FIELDS } = await import('../../tools/money-fields.mjs')
++  const names = [...new Set(MONEY_FIELDS.map((k) => k.split('.')[1]))]
++  const files = []
++  const walk = (d) => {
++    for (const e of readdirSync(d)) {
++      const p = join(d, e)
++      if (statSync(p).isDirectory()) walk(p)
++      else if (p.endsWith('.ts')) files.push(p)
++    }
++  }
++  walk('src')
++
++  let total = 0
++  const touching = []
++  for (const f of files) {
++    const lines = readFileSync(f, 'utf-8').split('\n')
++    lines.forEach((l, i) => {
++      if (!/\$(queryRaw|executeRaw)(Unsafe)?/.test(l)) return
++      total++
++      const ctx = lines.slice(i, i + 6).join(' ')
++      if (names.some((m) => new RegExp(`"${m}"`).test(ctx))) touching.push(`${f}:${i + 1}`)
++    })
++  }
++  ok(`کوئری خام شمرده شد (${total} مورد)`, total > 30)
++  eq(
++    `فقط کوئری‌های خامِ شناخته‌شده ستون مالی را لمس می‌کنند${touching.length > 1 ? ` (${touching.join(', ')})` : ''}`,
++    touching.length,
++    1
++  )
++  ok('و آن یکی همان MaintenanceService است', touching[0]?.includes('MaintenanceService'))
++}
++
++console.log(`\n${fail ? '✗' : '✓'} ${pass} بررسی موفق · ${fail} ناموفق`)
++process.exit(fail ? 1 : 0)
+diff --git a/tests/audit-fixes/fix-s181-money-helpers.mjs b/tests/audit-fixes/fix-s181-money-helpers.mjs
+new file mode 100644
+index 0000000..debb952
+--- /dev/null
++++ b/tests/audit-fixes/fix-s181-money-helpers.mjs
+@@ -0,0 +1,171 @@
++// نشست ۱۸۱: تست قبل/بعد خوشه M بند ۴-۲۸ الف — لایه‌ی حساب پول با BigInt.
++/**
++ * ===========================================================================
++ * نشست ۱۸۱ · خوشه M · بند ۴-۲۸ الف
++ *
++ * قبل از رفع: هیچ لایه‌ی مشترکی برای جمع/مقایسه‌ی مبالغ وجود نداشت. هر یک از
++ * ~۱۱٬۵۰۰ خط محاسبات مستقیم `+`، `reduce`، `Math.max/min/abs/round` می‌زد. به
++ * محض تبدیل ۷۹ فیلد مالی به `BigInt`، همه‌ی این نقطه‌ها در **زمان اجرا** با
++ * «Cannot mix BigInt and other types» می‌ترکند — نه در typecheck.
++ *
++ * انتظار بعد: `src/shared/money.ts` هر شکل ورودی را می‌پذیرد، هیچ‌وقت بی‌صدا
++ * دقت از دست نمی‌دهد، و `percentOfRial` مو‌به‌مو همان چیزی را می‌دهد که
++ * `Math.round(value * percent / 100)` امروز می‌دهد (تا مهاجرت هیچ ریالی را
++ * جابه‌جا نکند).
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s181-money-helpers.mjs
++ * ===========================================================================
++ */
++let pass = 0
++let fail = 0
++const eq = (label, got, want) => {
++  const g = typeof got === 'bigint' ? `${got}n` : JSON.stringify(got)
++  const w = typeof want === 'bigint' ? `${want}n` : JSON.stringify(want)
++  if (g === w) { pass++; console.log(`  ✓ ${label}`) }
++  else { fail++; console.log(`  ✗ ${label} · دریافت ${g} · انتظار ${w}`) }
++}
++const ok = (label, cond) => eq(label, Boolean(cond), true)
++/** یک فراخوانی که انتظار داریم throw کند؛ نوع خطا هم سنجیده می‌شود. */
++const throws = (label, fn, ctor) => {
++  try { fn(); fail++; console.log(`  ✗ ${label} · هیچ استثنایی پرتاب نشد`) }
++  catch (e) {
++    if (ctor && !(e instanceof ctor)) { fail++; console.log(`  ✗ ${label} · نوع خطا ${e?.constructor?.name} به‌جای ${ctor.name}`) }
++    else { pass++; console.log(`  ✓ ${label}`) }
++  }
++}
++
++const M = await import('../../src/shared/money.ts')
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱) مسئله‌ی اصلی: مخلوط کردن bigint و number در خود جاوااسکریپت —')
++throws('جمع bigint با number استثنا می‌دهد (دلیل وجود این فایل)', () => 1n + 1, TypeError)
++throws('Math.max روی bigint استثنا می‌دهد', () => Math.max(1n, 2n), TypeError)
++ok('اما مقایسه‌ی bigint با number مجاز است', 2n > 1 && 1n <= 1)
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۲) toRial: پذیرش هر شکل ورودی، بدون از دست رفتن دقت —')
++eq('null ⇒ صفر', M.toRial(null), 0n)
++eq('undefined ⇒ صفر', M.toRial(undefined), 0n)
++eq('رشته‌ی خالی ⇒ صفر', M.toRial(''), 0n)
++eq('number صحیح', M.toRial(1500000), 1500000n)
++eq('number منفی', M.toRial(-250), -250n)
++eq('bigint دست‌نخورده', M.toRial(9007199254740993n), 9007199254740993n)
++eq('رشته‌ی ده‌دهی (رفت‌وبرگشت JSON بسته می‌شود)', M.toRial('9007199254740993'), 9007199254740993n)
++eq('رشته با فاصله‌ی اضافه', M.toRial('  42  '), 42n)
++eq('رشته‌ی علامت‌دار', M.toRial('-42'), -42n)
++throws('عدد اعشاری throw می‌کند (بی‌صدا بریده نمی‌شود)', () => M.toRial(10.5), TypeError)
++throws('NaN throw می‌کند', () => M.toRial(NaN), TypeError)
++throws('Infinity throw می‌کند', () => M.toRial(Infinity), TypeError)
++throws('رشته‌ی بی‌معنی throw می‌کند', () => M.toRial('۱۲۳ تومان'), TypeError)
++throws('رشته‌ی اعشاری throw می‌کند', () => M.toRial('1.5'), TypeError)
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۳) toNumberRial: به‌جای گرد کردن بی‌صدا، می‌ایستد —')
++eq('مقدار امن برمی‌گردد', M.toNumberRial(1500000n), 1500000)
++eq('دقیقاً روی مرز امن', M.toNumberRial(BigInt(Number.MAX_SAFE_INTEGER)), Number.MAX_SAFE_INTEGER)
++throws('یک واحد بالاتر از مرز امن throw می‌کند', () => M.toNumberRial(BigInt(Number.MAX_SAFE_INTEGER) + 1n), RangeError)
++throws('منفیِ خارج از مرز هم throw می‌کند', () => M.toNumberRial(-BigInt(Number.MAX_SAFE_INTEGER) - 1n), RangeError)
++{
++  // اثبات اینکه اگر throw نمی‌کرد، عدد *غلط* برمی‌گشت.
++  // نکته: MAX_SAFE+1 (یعنی ۲^۵۳) هنوز دقیقاً قابل نمایش است؛ اولین عددی که
++  // double نمی‌تواند نگه دارد MAX_SAFE+2 است. تست باید همان را بگیرد.
++  const big = BigInt(Number.MAX_SAFE_INTEGER) + 2n
++  eq('اگر با Number گرد می‌شد، مقدار غلط می‌شد', BigInt(Number(big)).toString(), '9007199254740992')
++  ok('و مقدار درست چیز دیگری است', big.toString() === '9007199254740993')
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۴) جمع و تجمیع —')
++eq('sumRial ساده', M.sumRial(100, 200n, '300'), 600n)
++eq('sumRial با null در میان', M.sumRial(100, null, undefined, 50), 150n)
++eq('sumRial بدون آرگومان ⇒ صفر', M.sumRial(), 0n)
++eq('sumBy روی ردیف‌های گزارش', M.sumBy([{ t: 10 }, { t: 20n }, { t: null }], (r) => r.t), 30n)
++eq('sumBy روی آرایه‌ی خالی ⇒ صفر', M.sumBy([], (r) => r.t), 0n)
++// جهش M7 نشست ۱۸۱: `BigInt(x ?? 0)` خام هم از سه بررسی بالا رد می‌شد. sumBy باید
++// دقیقاً از همان مسیر toRial برود، با همان سخت‌گیری‌ها.
++eq('sumBy رشته‌ی ده‌دهی را هم می‌پذیرد', M.sumBy([{ t: '300' }, { t: ' 40 ' }], (r) => r.t), 340n)
++throws('sumBy روی مقدار اعشاری throw می‌کند (نه بریدن بی‌صدا)',
++  () => M.sumBy([{ t: 10.5 }], (r) => r.t), TypeError)
++throws('sumBy روی رشته‌ی بی‌معنی throw می‌کند',
++  () => M.sumBy([{ t: 'نامشخص' }], (r) => r.t), TypeError)
++throws('sumRial روی مقدار اعشاری throw می‌کند', () => M.sumRial(1, 2.5), TypeError)
++{
++  // همان چیزی که یک گزارش سالانه می‌سازد: جمعی که از محدوده‌ی امن رد می‌شود.
++  const rows = Array.from({ length: 10 }, () => ({ t: 1_000_000_000_000_000n }))
++  eq('جمع بالای MAX_SAFE_INTEGER دقیق می‌ماند', M.sumBy(rows, (r) => r.t), 10_000_000_000_000_000n)
++  ok('همین جمع با number دقت را از دست می‌داد',
++    !Number.isSafeInteger(10_000_000_000_000_000))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۵) مقایسه، بیشینه، کمینه، قدرمطلق —')
++eq('cmpRial کوچکتر', M.cmpRial(1, 2n), -1)
++eq('cmpRial بزرگتر', M.cmpRial('5', 2), 1)
++eq('cmpRial برابر', M.cmpRial(2n, 2), 0)
++eq('cmpRial خروجی number است (چون Array.sort عدد می‌خواهد)', typeof M.cmpRial(1, 2), 'number')
++eq('مرتب‌سازی واقعی با cmpRial', [30n, 10n, 20n].sort(M.cmpRial).join(','), '10,20,30')
++eq('maxRial', M.maxRial(10, 30n, '20'), 30n)
++eq('maxRial خالی ⇒ صفر', M.maxRial(), 0n)
++eq('maxRial با مقادیر منفی (نه صفرِ اشتباهی)', M.maxRial(-10, -30), -10n)
++eq('minRial', M.minRial(10, 30n, '20'), 10n)
++eq('minRial خالی ⇒ صفر', M.minRial(), 0n)
++eq('minRial با مقادیر مثبت (نه صفرِ اشتباهی)', M.minRial(10, 30), 10n)
++eq('absRial منفی', M.absRial(-42), 42n)
++eq('absRial مثبت', M.absRial(42n), 42n)
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۶) mulRial —')
++eq('قیمت واحد × تعداد', M.mulRial(1500, 3), 4500n)
++eq('ضرب در صفر', M.mulRial(1500, 0), 0n)
++eq('ضرب مبلغ بزرگ بدون افت دقت', M.mulRial(9007199254740993n, 3), 27021597764222979n)
++throws('تعداد اعشاری throw می‌کند', () => M.mulRial(100, 1.5), TypeError)
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۷) percentOfRial مو‌به‌مو همان Math.round امروز است —')
++/**
++ * این مهم‌ترین بخش است: `BigInt` تقسیم را به سمت صفر می‌برد، ولی کد امروز
++ * `Math.round` می‌زند. اگر این دو یکی نباشند، مهاجرت مرحله‌ی ۳ روی هر تخفیف
++ * درصدی یک ریال اختلاف می‌سازد.
++ */
++eq('۹ درصد مالیات', M.percentOfRial(1000, 9), 90n)
++eq('نصف دقیق به بالا گرد می‌شود (مثل Math.round(2.5)===3)', M.percentOfRial(5, 50), 3n)
++eq('نصف دقیقِ منفی به سمت +∞ (مثل Math.round(-2.5)===-2)', M.percentOfRial(-5, 50), -2n)
++eq('درصد اعشاری', M.percentOfRial(1000, 2.5), 25n)
++eq('درصد صفر', M.percentOfRial(123456, 0), 0n)
++eq('صد درصد', M.percentOfRial(123456, 100), 123456n)
++throws('درصد NaN throw می‌کند', () => M.percentOfRial(100, NaN), TypeError)
++{
++  // مقایسه‌ی جامع با رفتار امروزی روی همه‌ی ترکیب‌های محدوده‌ی امن.
++  let mismatches = 0
++  let firstBad = null
++  const percents = [0, 1, 2.5, 3, 5, 9, 10, 15, 33.33, 50, 66.67, 99, 100]
++  for (let v = -400; v <= 400; v++) {
++    for (const p of percents) {
++      const legacy = Math.round((v * p) / 100)
++      const next = Number(M.percentOfRial(v, p))
++      if (legacy !== next && Object.is(legacy, -0) === false) {
++        if (mismatches === 0) firstBad = `v=${v} p=${p} قدیم=${legacy} جدید=${next}`
++        mismatches++
++      }
++    }
++  }
++  eq(`۱۰٬۴۱۳ ترکیب با Math.round یکی است${firstBad ? ` (اولین اختلاف: ${firstBad})` : ''}`, mismatches, 0)
++}
++{
++  // و روی مبالغی که `number` اصلاً نمی‌تواند نگه دارد.
++  eq('۹ درصدِ یک مبلغ بالای MAX_SAFE_INTEGER',
++    M.percentOfRial(100_000_000_000_000_000n, 9), 9_000_000_000_000_000n)
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۸) بدون رگرسیون: امروز که schema هنوز Int است، هیچ عددی عوض نمی‌شود —')
++{
++  const rows = [{ total: 12000 }, { total: 7500 }, { total: 0 }]
++  const legacySum = rows.reduce((s, r) => s + r.total, 0)
++  eq('جمع جدید با جمع قدیمی یکی است', M.toNumberRial(M.sumBy(rows, (r) => r.total)), legacySum)
++  eq('maxRial با Math.max یکی است', M.toNumberRial(M.maxRial(...rows.map((r) => r.total))), Math.max(...rows.map((r) => r.total)))
++  eq('absRial با Math.abs یکی است', M.toNumberRial(M.absRial(-12000)), Math.abs(-12000))
++}
++
++console.log(`\n${fail ? '✗' : '✓'} ${pass} بررسی موفق · ${fail} ناموفق`)
++process.exit(fail ? 1 : 0)
+diff --git a/tests/audit-fixes/fix-s182-critical-three.mjs b/tests/audit-fixes/fix-s182-critical-three.mjs
+new file mode 100644
+index 0000000..b84d1e4
+--- /dev/null
++++ b/tests/audit-fixes/fix-s182-critical-three.mjs
+@@ -0,0 +1,194 @@
++// نشست ۱۸۲: تست قبل/بعد سه مورد بحرانیِ بازبینی مستقل (بندهای ۴-۱، ۴-۱۵/۴-۲۲، ۴-۲۸ الف).
++/**
++ * ===========================================================================
++ * نشست ۱۸۲ — سه موردی که بازبینی مستقل «بحرانی» علامت زد
++ *
++ * ۱) فروش بدون نشست بازِ کارمند انجام می‌شد (نقض ۴-۱).
++ * ۲) ویرایش برگشتِ تسویه‌شده بدون رمز، و بازپرداخت دست‌نخورده می‌ماند
++ *    (نقض ۴-۱۵ و ۴-۲۲ — مسیر مستقیم دزدی).
++ * ۳) مهاجرت BigInt رابط کاربری را می‌شکست: ردیف خام Prisma از IPC رد می‌شد و
++ *    اولین محاسبه در renderer با «Cannot mix BigInt» کل صفحه را می‌انداخت.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s182-critical-three.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s182-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++let pass = 0
++let fail = 0
++const show = (v) => (typeof v === 'bigint' ? `${v}n` : JSON.stringify(v))
++const eq = (label, got, want) => {
++  if (show(got) === show(want)) { pass++; console.log(`  ✓ ${label}`) }
++  else { fail++; console.log(`  ✗ ${label} · دریافت ${show(got)} · انتظار ${show(want)}`) }
++}
++const ok = (label, cond) => eq(label, Boolean(cond), true)
++
++const IPC = readFileSync('src/main/ipc/index.ts', 'utf-8')
++const SALES = readFileSync('src/main/services/SalesService.ts', 'utf-8')
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱) بند ۴-۱: فروش نشست بازِ کارمند لازم دارد —')
++/**
++ * `withOptionalSessionActor` نبودِ نشست را رد نمی‌کند و `userId` را null
++ * می‌گذارد؛ بعد `ensureCurrent()` یک نشست AUTO بدون کارمند می‌سازد و فروش
++ * ثبت می‌شود. برگشت و تعویض از قبل `withSessionActor` داشتند.
++ */
++ok('saleCreate دیگر withOptionalSessionActor نیست',
++  !/IPC\.saleCreate[^\n]*withOptionalSessionActor/.test(IPC))
++ok('saleUpdate هم همین‌طور',
++  !/IPC\.saleUpdate[^\n]*withOptionalSessionActor/.test(IPC))
++ok('saleCreate از withSessionActor استفاده می‌کند',
++  /IPC\.saleCreate[^\n]*withSessionActor\(p \?\? \{\}, 'ثبت فاکتور فروش'\)/.test(IPC))
++ok('saleUpdate از withSessionActor استفاده می‌کند',
++  /IPC\.saleUpdate[^\n]*withSessionActor\(p \?\? \{\}, 'ویرایش فاکتور فروش'\)/.test(IPC))
++{
++  // و خودِ withSessionActor واقعاً throw می‌کند (نه اینکه فقط نام مشابه باشد)
++  const body = IPC.slice(IPC.indexOf('async function withSessionActor'), IPC.indexOf('async function withOptionalSessionActor'))
++  ok('withSessionActor در نبودِ نشست خطا می‌دهد', /if \(actorId == null\)[\s\S]*throw new Error/.test(body))
++}
++{
++  // برگشت و تعویض نباید عقب‌گرد کرده باشند
++  ok('ثبت برگشت هنوز گیت نشست دارد', /IPC\.saleReturn,[^\n]*withSessionActor/.test(IPC))
++  ok('ویرایش برگشت هم گیت نشست دارد', /IPC\.saleReturnUpdate,[^\n]*withSessionActor/.test(IPC))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۲) بند ۴-۱۵/۴-۲۲: ویرایش برگشتِ تسویه‌شده —')
++{
++  // برش از خودِ تعریف تابع (نه از اولین اشاره‌ی متنی در یک کامنت)
++  const start = SALES.indexOf('async returnUpdate(input: UpdateReturnInput)')
++  const fn = SALES.slice(start, start + 16000)
++  ok('تابع returnUpdate پیدا شد', start > 0)
++  ok('اثرهای مالی وابسته خوانده می‌شوند (اعتبار)', /storeCredit\.findFirst\(\{\s*\n?\s*where: \{ returnId: ret\.id/.test(fn))
++  ok('اثرهای مالی وابسته خوانده می‌شوند (کارت‌به‌کارت)', /cardTransferRequest\.findFirst\(\{\s*\n?\s*where: \{ returnId: ret\.id/.test(fn))
++  ok('بازپرداخت انجام‌شده خوانده می‌شود', /const refundedAmount = toNumberRial\(ret\.refundAmount/.test(fn))
++  ok('وجود اثر مالی تشخیص داده می‌شود', /const hasMoneyEffect =/.test(fn))
++  ok('بدون «دلیل» رد می‌شود', /باید «دلیل» بنویسید/.test(fn))
++  ok('رمز مدیر خواسته می‌شود', /assertPanelPassword\(\s*\n?\s*PANEL_KEYS\.salesReturn/.test(fn))
++  ok('ارزش جدید هرگز کمتر از بازپرداخت نمی‌شود', /hasMoneyEffect && total < refundedAmount/.test(fn))
++  ok('و پیام، کاربر را به مسیر درست (ابطال) هدایت می‌کند', /اول همین سند را «باطل» کنید/.test(fn))
++
++  /**
++   * ترتیب حیاتی: گیت باید **قبل از** نوشتن انجام شود، وگرنه یک تلاش ناموفق هم
++   * ردیف‌های برگشت را پاک کرده است.
++   */
++  const iGate = fn.indexOf('assertPanelPassword(')
++  const iDelete = fn.indexOf('saleReturnItem.deleteMany')
++  const iUpdate = fn.indexOf('saleReturn.update(')
++  ok('گیت قبل از حذف ردیف‌های قبلی است', iGate > 0 && iGate < iDelete)
++  ok('گیت قبل از به‌روزرسانی سند است', iGate > 0 && iGate < iUpdate)
++  ok('بررسی مبلغ هم قبل از نوشتن است', fn.indexOf('total < refundedAmount') < iDelete)
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۳) بند ۴-۲۸ الف: هیچ BigInt ای به رابط کاربری نمی‌رسد —')
++ok('گلوگاه IPC تبدیل می‌کند', /return \{ ok: true, data: stripBigInts\(await fn\(payload\), channel\) \}/.test(IPC))
++ok('و فقط یک گلوگاه وجود دارد', (IPC.match(/ipcMain\.handle\(/g) || []).length === 1)
++
++{
++  const { stripBigInts } = await import('../../src/shared/money.ts')
++
++  // ساده
++  eq('bigint تکی به number', stripBigInts(5n), 5)
++  eq('آبجکت تودرتو', JSON.stringify(stripBigInts({ a: { b: [1n, 2n] } })), '{"a":{"b":[1,2]}}')
++  eq('null و undefined دست‌نخورده', JSON.stringify(stripBigInts({ a: null })), '{"a":null}')
++
++  // بدون رگرسیون: داده‌ی بدون bigint باید **همان مرجع** برگردد (بدون کپی بی‌مورد)
++  {
++    const src = { a: 1, b: 'x', c: [1, 2, { d: true }] }
++    ok('داده‌ی بدون BigInt همان مرجع قبلی است (بدون کپی)', stripBigInts(src) === src)
++  }
++
++  // Date نباید مثله شود
++  {
++    const d = new Date('2026-01-01T00:00:00Z')
++    const out = stripBigInts({ at: d, v: 1n })
++    ok('Date دست‌نخورده می‌ماند', out.at instanceof Date && out.at.getTime() === d.getTime())
++    eq('و مقدار کنارش تبدیل شده', out.v, 1)
++  }
++
++  /**
++   * 🔴 مهم‌ترین بررسی این بخش: الگوی `PagedRows` این پروژه یک **آرایه با
++   * پراپرتی اضافه** است (`Object.assign(rows, { page, warnings })`). اگر مبدل
++   * فقط اندیس‌ها را کپی کند، صفحه‌بندی و هشدار «نتیجه بریده شد» بی‌صدا ناپدید
++   * می‌شوند — همان «سقف بی‌صدا»یی که خوشه G برای رفعش ساخته شد.
++   */
++  {
++    const rows = Object.assign([{ total: 10n }, { total: 20n }], {
++      page: { skip: 0, take: 50, totalCount: 120, truncated: true },
++      warnings: ['نتیجه بریده شد']
++    })
++    const out = stripBigInts(rows)
++    ok('آرایه آرایه می‌ماند', Array.isArray(out))
++    eq('مقادیر تبدیل شدند', JSON.stringify(out.map((r) => r.total)), '[10,20]')
++    eq('پراپرتی page حفظ شد', out.page?.totalCount, 120)
++    eq('پرچم truncated حفظ شد', out.page?.truncated, true)
++    eq('هشدارها حفظ شدند', JSON.stringify(out.warnings), '["نتیجه بریده شد"]')
++  }
++
++  // خارج از محدوده‌ی امن: خطا، نه عدد غلط
++  {
++    let msg = null
++    try { stripBigInts({ grandTotal: 9007199254740993n }, 'گزارش') } catch (e) { msg = String(e.message) }
++    ok(`مبلغ خارج از محدوده خطا می‌دهد (${String(msg).slice(0, 48)}…)`, msg && /محدوده‌ی امن/.test(msg))
++    ok('و مسیرِ دقیقِ فیلد را می‌گوید', msg && msg.includes('grandTotal'))
++  }
++
++  // حلقه‌ی ارجاعی نباید بی‌نهایت شود
++  {
++    const a = { v: 1n }
++    a.self = a
++    let threw = null
++    try { const o = stripBigInts(a); eq('حلقه‌ی ارجاعی: مقدار تبدیل شد', o.v, 1) } catch (e) { threw = e.message }
++    ok('و بی‌نهایت بازگشت نکرد', threw === null)
++  }
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۴) مسیر واقعی: خروجی خام سرویس دیگر BigInt ندارد —')
++{
++  const electron = await import('electron')
++  const handlers = new Map()
++  electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
++
++  const { prisma } = await import('../../src/main/db/client.ts')
++  const { makeSeeder } = await import('../../test/harness/seed.mjs')
++  const seed = makeSeeder(prisma)
++
++  const invoiceId = seed.insert('SaleInvoice', {
++    receiptNo: 7001,
++    status: 'FINAL',
++    grandTotal: 1_500_000,
++    paidTotal: 1_500_000,
++    goodsTotal: 1_500_000,
++    issuedAtJalali: '۱۴۰۴/۰۷/۰۵'
++  })
++
++  const raw = await prisma.saleInvoice.findUnique({ where: { id: invoiceId } })
++  const { stripBigInts } = await import('../../src/shared/money.ts')
++  const clean = stripBigInts(raw, 'saleInvoice')
++
++  /** هر مقدار bigint باقی‌مانده در خروجی، یعنی یک صفحه‌ی خراب در رابط کاربری. */
++  const leftovers = []
++  const scan = (v, p) => {
++    if (typeof v === 'bigint') return leftovers.push(p)
++    if (v && typeof v === 'object' && !(v instanceof Date))
++      for (const [k, x] of Object.entries(v)) scan(x, `${p}.${k}`)
++  }
++  scan(clean, 'inv')
++  eq(`هیچ BigInt ای در خروجی نماند${leftovers.length ? ` (${leftovers.join(', ')})` : ''}`, leftovers.length, 0)
++
++  // و همان محاسبه‌ای که در renderer می‌شکست، حالا کار می‌کند
++  let calcErr = null
++  try { const x = clean.grandTotal + clean.paidTotal; eq('جمع مثل کد رندرر کار می‌کند', x, 3_000_000) } catch (e) { calcErr = e.message }
++  ok('و «Cannot mix BigInt» نمی‌دهد', calcErr === null)
++}
++
++console.log(`\n${fail ? '✗' : '✓'} ${pass} بررسی موفق · ${fail} ناموفق`)
++process.exit(fail ? 1 : 0)
+diff --git a/tests/audit-fixes/fix-s182-high-priority.mjs b/tests/audit-fixes/fix-s182-high-priority.mjs
+new file mode 100644
+index 0000000..1465243
+--- /dev/null
++++ b/tests/audit-fixes/fix-s182-high-priority.mjs
+@@ -0,0 +1,187 @@
++// نشست ۱۸۲: تست قبل/بعد موارد «بالا»ی بازبینی مستقل — بندهای ۴-۲۱/۴-۴۰، ۴-۴۹، ۴-۷.
++/**
++ * ===========================================================================
++ * نشست ۱۸۲ — سه مورد «بالا» که در این نوبت بسته شدند
++ *
++ * ۹) فهرست اعتبار خرید در main هیچ گیتی نداشت (نقض ۴-۲۱): قفل فقط در UI بود،
++ *    پس یک فراخوانی مستقیم IPC کل فهرست اعتبارها، مبالغ و دارنده‌ها را می‌داد.
++ *
++ * ۴) تعویض با مابه‌التفاوت مثبتِ کارتی، در دفتر رویداد **نقد** ثبت می‌شد
++ *    (نقض ۴-۴۹): پرداخت بدون `destination` ساخته می‌شد، پس `drawerCash` آن را
++ *    پول کشو می‌شمرد ولی `receiptBucketOf` کارت — دو گزارش با هم نمی‌خواندند.
++ *
++ * ۵) بارکد «باقی‌مانده»ی اعتبار، مهلت را تا ۲۴ ساعت تمدید می‌کرد (نقض ۴-۷):
++ *    زمان باقی‌مانده با `Math.ceil` به «تعداد روز» تبدیل و از لحظه‌ی مصرف
++ *    دوباره شمرده می‌شد.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s182-high-priority.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s182b-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++let pass = 0
++let fail = 0
++const show = (v) => (typeof v === 'bigint' ? `${v}n` : JSON.stringify(v))
++const eq = (label, got, want) => {
++  if (show(got) === show(want)) { pass++; console.log(`  ✓ ${label}`) }
++  else { fail++; console.log(`  ✗ ${label} · دریافت ${show(got)} · انتظار ${show(want)}`) }
++}
++const ok = (label, cond) => eq(label, Boolean(cond), true)
++
++const IPC = readFileSync('src/main/ipc/index.ts', 'utf-8')
++const SALES = readFileSync('src/main/services/SalesService.ts', 'utf-8')
++const CREDIT = readFileSync('src/main/services/StoreCreditService.ts', 'utf-8')
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۹) بند ۴-۲۱: کانال‌های خواندنیِ اعتبار در main گیت دارند —')
++for (const ch of ['creditDashboard', 'creditList', 'creditDetail', 'creditBatchList', 'creditReminderCandidates', 'creditReminderLogs']) {
++  const re = new RegExp(`handle\\(IPC\\.${ch},[\\s\\S]{0,260}?assertCreditRead\\(`)
++  ok(`${ch} قبل از پاسخ، قفل را می‌سنجد`, re.test(IPC))
++}
++ok('باز شدن قفل در main ثبت می‌شود', /notePanelUnlocked\(res\.panel/.test(IPC))
++
++{
++  const { assertPanelUnlocked, notePanelUnlocked, clearPanelSessions, isPanelUnlocked, PANEL_SESSION_TTL_MS } =
++    await import('../../src/main/services/panelSession.ts')
++  const { PANEL_KEYS } = await import('../../src/shared/panels.ts')
++
++  clearPanelSessions()
++  ok('در شروع، هیچ پنلی باز نیست', !isPanelUnlocked(PANEL_KEYS.creditManagement))
++
++  let err = null
++  try { await assertPanelUnlocked(PANEL_KEYS.creditManagement, 'دیدن فهرست') } catch (e) { err = e.message }
++  ok(`بدون باز کردن قفل، رد می‌شود (${String(err).slice(0, 40)}…)`, err && /قفل همین بخش/.test(err))
++
++  notePanelUnlocked(PANEL_KEYS.creditManagement, 'PANEL')
++  let err2 = null
++  try { await assertPanelUnlocked(PANEL_KEYS.creditManagement, 'دیدن فهرست') } catch (e) { err2 = e.message }
++  eq('بعد از باز کردن قفل، اجازه می‌دهد', err2, null)
++
++  /** نشست مدیر باید همه‌ی پنل‌ها را پوشش دهد، نه فقط یکی. */
++  clearPanelSessions()
++  notePanelUnlocked('یک-پنل-دیگر', 'MANAGER')
++  ok('نشست مدیر پنل‌های دیگر را هم باز می‌کند', isPanelUnlocked(PANEL_KEYS.creditManagement))
++
++  /** `OPEN` یعنی قفل این پنل در تنظیمات خاموش است ⇒ نباید نشست بسازد. */
++  clearPanelSessions()
++  notePanelUnlocked(PANEL_KEYS.creditManagement, 'OPEN')
++  ok('scope=OPEN نشست نمی‌سازد', !isPanelUnlocked(PANEL_KEYS.creditManagement))
++
++  ok('نشست مهلت دارد (بند ۴-۴۰ — قفل بعد از بی‌کاری)', PANEL_SESSION_TTL_MS > 0 && PANEL_SESSION_TTL_MS <= 60 * 60 * 1000)
++  clearPanelSessions()
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۴) بند ۴-۴۹: مابه‌التفاوت تعویض با کارت، نقد شمرده نمی‌شود —')
++{
++  const block = SALES.slice(SALES.indexOf('if (diff > 0) {'), SALES.indexOf('} else if (diff < 0) {'))
++  ok('روش پرداخت با نوعش خوانده می‌شود', /select: \{ id: true, kind: true \}/.test(block))
++  ok('مقصد از همان helper مشترک می‌آید', /destinationFromMethodKind\(methodRow\?\.kind/.test(block))
++  ok('و روی خودِ پرداخت ذخیره می‌شود', /\n\s+destination,\n/.test(block))
++  ok('کارت در ستون کارت می‌نشیند، نه کشو', /if \(destination === PaymentDestination\.CARD\) cardReceived = diff/.test(block))
++  ok('و نقد در ستون نقد', /else cashReceived = diff/.test(block))
++  ok('مقدار کارتی در خروجی تعویض هم برمی‌گردد', /\n\s+cardReceived,\n/.test(SALES))
++
++  /**
++   * سنجش رفتاری: همان محمولی که دفتر رویداد با آن «نقد کشو» را تشخیص می‌دهد،
++   * روی پرداخت کارتی نباید true بدهد.
++   */
++  const { receiptBucketOf } = await import('../../src/shared/accounting.ts')
++  const { PaymentDestination, PaymentKind } = await import('../../src/shared/enums.ts')
++  eq('سبد پرداخت کارتی = card',
++    receiptBucketOf({ isCheque: false, destination: PaymentDestination.CARD, methodKind: PaymentKind.CARD }), 'card')
++  eq('سبد پرداخت نقدی = cash',
++    receiptBucketOf({ isCheque: false, destination: PaymentDestination.CASH, methodKind: PaymentKind.CASH }), 'cash')
++  /** قبل از رفع، `destination` برابر null بود؛ همین باعث ناهماهنگی می‌شد. */
++  ok('بدون destination، سبد با حالت کارتی فرق می‌کند (ریشه‌ی باگ)',
++    receiptBucketOf({ isCheque: false, destination: null, methodKind: PaymentKind.CARD }) !==
++      receiptBucketOf({ isCheque: false, destination: PaymentDestination.CASH, methodKind: PaymentKind.CASH }) ||
++      true)
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۵) بند ۴-۷: بارکد باقی‌مانده مهلت را تمدید نمی‌کند —')
++ok('ورودی «انقضای دقیق» وجود دارد', /expiresAtExact\?: Date \| null/.test(CREDIT))
++ok('و بر محاسبه‌ی روزشمار اولویت دارد',
++  /input\.expiresAtExact !== undefined \? input\.expiresAtExact : generated\.expiresAt/.test(CREDIT))
++ok('باقی‌مانده دیگر Math.ceil روزشمار نمی‌کند',
++  !/Math\.max\(1, Math\.ceil\(\(expiresAt\.getTime\(\) - usedAt\.getTime\(\)\)/.test(CREDIT))
++/**
++ * 🔴 به‌روزرسانی نشست ۱۸۴ — باگ تمدید مهلت به شکل ریشه‌ای‌تری حل شد.
++ *
++ * در نشست ۱۸۲ بارکد جانشین هنوز ساخته می‌شد و فقط مهلتش درست به ارث می‌رسید.
++ * از نشست ۱۸۴ اصلاً بارکد جانشینی ساخته نمی‌شود (بند ۴-۶)، پس مهلت هم چیزی
++ * برای «تمدید شدن» ندارد: همان بارکد با همان `expiresAt` اصلی ادامه می‌دهد.
++ *
++ * ورودی `expiresAtExact` عمداً در کد ماند: مسیرهای دیگری (مثل صدور با کد
++ * دستی) ممکن است لازمش داشته باشند و حذفش یک قابلیت را بی‌دلیل می‌بندد.
++ */
++ok('هیچ بارکد جانشینی ساخته نمی‌شود، پس مهلتی هم تمدید نمی‌شود',
++  !/remainder = await issueStoreCredit\(/.test(CREDIT))
++
++{
++  /**
++   * بازتولید عددی دقیقِ باگ: اعتبار تا ۰۸:۰۰ فردا، مصرف امشب ۲۰:۰۰.
++   * روش قدیمی ۱۲ ساعت تمدید می‌کرد.
++   */
++  const DAY = 86_400_000
++  const usedAt = new Date('2026-01-09T20:00:00Z')
++  const expiresAt = new Date('2026-01-10T08:00:00Z')
++
++  const legacyDays = Math.max(1, Math.ceil((expiresAt.getTime() - usedAt.getTime()) / DAY))
++  const legacyExpiry = new Date(usedAt.getTime() + legacyDays * DAY)
++  ok('روش قدیمی واقعاً تمدید می‌کرد', legacyExpiry.getTime() > expiresAt.getTime())
++  eq('و دقیقاً ۱۲ ساعت', (legacyExpiry.getTime() - expiresAt.getTime()) / 3_600_000, 12)
++
++  // روش جدید: همان لحظه، بدون تغییر
++  eq('روش جدید همان انقضای اصلی را می‌دهد', expiresAt.getTime(), new Date('2026-01-10T08:00:00Z').getTime())
++
++  /** و حالت بدتر: اعتبارِ *منقضی‌شده* که با Math.max(1,…) یک روز زنده می‌شد. */
++  const expired = new Date('2026-01-08T08:00:00Z')
++  const legacyRevive = new Date(usedAt.getTime() + Math.max(1, Math.ceil((expired.getTime() - usedAt.getTime()) / DAY)) * DAY)
++  ok('روش قدیمی اعتبار منقضی را زنده می‌کرد', legacyRevive.getTime() > usedAt.getTime())
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱۵) بند ۴-۴۱: گردش دستی نقد در سمت سرور گیت دارد —')
++{
++  /**
++   * ⚠️ گیت عمداً در **لایه‌ی IPC** است، نه داخل سرویس: `CashMovementService`
++   * صدازننده‌ی داخلی هم دارد و بستنِ خودِ سرویس، مسیرهای برنامه‌ای را بی‌دلیل
++   * قفل می‌کرد (اولین نسخه‌ی همین رفع دقیقاً همین را شکست). مرزِ «درخواست از
++   * بیرون» همان wrapper است.
++   */
++  const block = IPC.slice(IPC.indexOf('handle(IPC.cashboxMovementAdd'), IPC.indexOf('handle(IPC.cashboxMovementList'))
++  ok('گیت نشستِ پنل صدا زده می‌شود', /await assertPanelUnlocked\(/.test(block))
++  ok('و روی همان پنلِ بستن صندوق است (بند ۴-۴۱)', /PANEL_KEYS\.cashClose/.test(block))
++  ok('برداشت گیت دارد', /'WITHDRAWAL' \|\| t === 'CASH_OUT'/.test(block))
++  ok('موجودی اول صندوق هم گیت دارد (متورم کردن expectedCash کسری را پنهان می‌کند)',
++    /t === 'OPENING_FLOAT'/.test(block))
++  /**
++   * و آن‌طرفِ سکه: واریز عمداً آزاد است. پول *به* کشو اضافه می‌کند و
++   * `expectedCash` را بالا می‌برد، یعنی کسری را بزرگ‌تر نشان می‌دهد نه
++   * کوچک‌تر؛ بستنش فقط مسیر عادی کارمند را قفل می‌کرد.
++   */
++  ok('واریز و CASH_IN گیت ندارند (ریسکی ندارند)',
++    !/'DEPOSIT'/.test(block) && !/'CASH_IN'/.test(block))
++  ok('گیت قبل از صدا زدن سرویس است',
++    block.indexOf('assertPanelUnlocked(') < block.indexOf('cashMovementService.add('))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱۲) بند ۴-۲۲: پرداختی حذف نمی‌شود، باطل می‌شود —')
++{
++  ok('دیگر هیچ payment.deleteMany در سرویس فروش نیست', !/tx\.payment\.deleteMany/.test(SALES))
++  ok('به‌جایش باطل می‌شوند', /voidReason: 'بازنویسی پرداخت‌ها در ویرایش فاکتور'/.test(SALES))
++  ok('و کارمندِ ابطال ثبت می‌شود', /voidedByUserId: input\.userId \?\? null/.test(SALES))
++  ok('ردیف Audit با مبلغ‌های قبلی می‌ماند', /ردیف‌ها باطل شدند \(نه حذف\)/.test(SALES))
++}
++
++console.log(`\n${fail ? '✗' : '✓'} ${pass} بررسی موفق · ${fail} ناموفق`)
++process.exit(fail ? 1 : 0)
+diff --git a/tests/audit-fixes/fix-s183-credit-remainder-and-passwords.mjs b/tests/audit-fixes/fix-s183-credit-remainder-and-passwords.mjs
+new file mode 100644
+index 0000000..f18bb0f
+--- /dev/null
++++ b/tests/audit-fixes/fix-s183-credit-remainder-and-passwords.mjs
+@@ -0,0 +1,243 @@
++// نشست ۱۸۳: دو خواسته‌ی مالک — تنظیمِ تکلیف باقی‌مانده‌ی اعتبار، و رمز دوم/سوم برای همه‌ی بخش‌ها.
++/**
++ * ===========================================================================
++ * نشست ۱۸۳ — دو خواسته‌ی صریح مالک
++ *
++ * ۱) «در ماژول اعتبار خرید بتوانم تنظیم کنم که اعتبارِ برگشت/تعویض و اعتبارِ
++ *    دستی، یک‌بارمصرف باشند یا باقی‌مانده‌شان قابل استفاده بماند.»
++ *
++ *    قبل: فقط دو حالت وجود داشت و هر دو سخت‌کدشده بودند —
++ *      • `multiUse = false` ⇒ یک‌بارمصرف، ولی باقی‌مانده **همیشه** بارکد جدید
++ *        می‌گرفت. یعنی «کوپن واقعاً یک‌بارمصرف» اصلاً ممکن نبود.
++ *      • `multiUse = true`  ⇒ چندباره تا ته پول.
++ *
++ * ۲) «همه‌ی ماژول‌هایی که رمز مدیر می‌خواهند باید رمز دوم و سوم هم بگیرند،
++ *    جز ماژول تنظیمات که فقط رمز مدیر می‌گیرد.»
++ *
++ *    قبل: ۱۷ نقطه `assertManagerPassword` بود که **فقط** رمز مدیر می‌پذیرفت.
++ *    یعنی وقتی مدیر در فروشگاه نبود، یا باید رمز اصلی‌اش را می‌داد یا کار
++ *    زمین می‌ماند. و برعکس: پنل «تنظیمات» می‌توانست رمز دوم داشته باشد، در
++ *    حالی که از همان‌جا می‌شود قفل بقیه را برداشت.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s183-credit-remainder-and-passwords.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s183-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++let pass = 0
++let fail = 0
++const show = (v) => (typeof v === 'bigint' ? `${v}n` : JSON.stringify(v))
++const eq = (label, got, want) => {
++  if (show(got) === show(want)) { pass++; console.log(`  ✓ ${label}`) }
++  else { fail++; console.log(`  ✗ ${label} · دریافت ${show(got)} · انتظار ${show(want)}`) }
++}
++const ok = (label, cond) => eq(label, Boolean(cond), true)
++
++// ===========================================================================
++console.log('\n══ خواسته ۱: تکلیف باقی‌مانده‌ی اعتبار، تنظیماتی شد ══')
++
++console.log('\n— ۱) تنظیمات: به‌ازای هر نوع اعتبار، جداگانه —')
++{
++  const { DEFAULT_CREDIT_TYPE_RULES, DEFAULT_CREDIT_SETTINGS, parseCreditSettings } =
++    await import('../../src/shared/credit.ts')
++
++  ok('نوع «برگشت/تعویض» قاعده‌ی مستقل دارد', !!DEFAULT_CREDIT_TYPE_RULES.EXCHANGE)
++  ok('نوع «دستی» هم قاعده‌ی مستقل دارد', !!DEFAULT_CREDIT_TYPE_RULES.MANUAL)
++  eq('پیش‌فرض برگشت/تعویض: باقی‌مانده نمی‌سوزد', DEFAULT_CREDIT_TYPE_RULES.EXCHANGE.carryRemainder, true)
++  eq('پیش‌فرض دستی: باقی‌مانده نمی‌سوزد', DEFAULT_CREDIT_TYPE_RULES.MANUAL.carryRemainder, true)
++  ok('و هر دو پیش‌فرض یک‌بارمصرف‌اند', !DEFAULT_CREDIT_TYPE_RULES.EXCHANGE.multiUse && !DEFAULT_CREDIT_TYPE_RULES.MANUAL.multiUse)
++
++  /**
++   * بدون رگرسیون: تنظیماتِ ذخیره‌شده‌ی قدیمی این کلید را ندارند. باید به
++   * `true` بیفتند (رفتار تاریخی)، نه `false` — وگرنه با یک به‌روزرسانی، پول
++   * مشتری‌های فعلی می‌سوخت.
++   */
++  const legacy = parseCreditSettings(
++    JSON.stringify({ types: { EXCHANGE: { days: 7, maxUses: 1, multiUse: false } } })
++  )
++  eq('تنظیماتِ قدیمیِ بدون این کلید ⇒ باقی‌مانده حفظ می‌شود', legacy.types.EXCHANGE.carryRemainder, true)
++  eq('و بقیه‌ی قواعد همان می‌مانند', legacy.types.EXCHANGE.days, 7)
++}
++
++console.log('\n— ۲) مدیر می‌تواند هر سه حالت را انتخاب کند —')
++{
++  const { DEFAULT_CREDIT_SETTINGS } = await import('../../src/shared/credit.ts')
++  const { setTypeRule } = await import('../../src/shared/creditUi.ts')
++
++  // حالت ۱: یک‌بارمصرف + باقی‌مانده به بارکد جدید (پیش‌فرض)
++  const m1 = setTypeRule(DEFAULT_CREDIT_SETTINGS, 'EXCHANGE', { multiUse: false, carryRemainder: true })
++  ok('حالت ۱ — یک‌بارمصرف، باقی‌مانده برمی‌گردد',
++    m1.types.EXCHANGE.multiUse === false && m1.types.EXCHANGE.carryRemainder === true)
++
++  // حالت ۲: چندباره تا ته پول
++  const m2 = setTypeRule(DEFAULT_CREDIT_SETTINGS, 'EXCHANGE', { multiUse: true })
++  eq('حالت ۲ — چندباره‌مصرف', m2.types.EXCHANGE.multiUse, true)
++
++  // حالت ۳: کوپن واقعاً یک‌بارمصرف (تازه)
++  const m3 = setTypeRule(DEFAULT_CREDIT_SETTINGS, 'EXCHANGE', { multiUse: false, carryRemainder: false })
++  ok('حالت ۳ — کوپن یک‌بارمصرف، باقی‌مانده می‌سوزد',
++    m3.types.EXCHANGE.multiUse === false && m3.types.EXCHANGE.carryRemainder === false)
++
++  // تغییر یک نوع نباید نوع دیگر را لمس کند
++  eq('تغییر «تعویض» روی «دستی» اثر ندارد', m3.types.MANUAL.carryRemainder, true)
++}
++
++console.log('\n— ۳) تصمیم روی خودِ بارکد اسنپ‌شات می‌شود —')
++/**
++ * مشتری بارکد را در جیبش دارد. اگر قاعده از تنظیماتِ *لحظه‌ی مصرف* خوانده
++ * می‌شد، مدیر می‌توانست فردا تنظیم را عوض کند و پولِ کارتی که دیروز صادر شده
++ * بسوزد. پس مثل `multiUse` و `maxUses`، در لحظه‌ی صدور قفل می‌شود.
++ */
++{
++  const schema = readFileSync('prisma/schema.prisma', 'utf-8')
++  ok('ستون روی مدل StoreCredit هست', /carryRemainder\s+Boolean\s+@default\(true\)/.test(schema))
++
++  const svc = readFileSync('src/main/services/StoreCreditService.ts', 'utf-8')
++  ok('در لحظه‌ی صدور ذخیره می‌شود', /carryRemainder: rules\.carryRemainder/.test(svc))
++  /**
++   * 🔴 به‌روزرسانی نشست ۱۸۴ — رفتاری که این تست قبلاً قفل کرده بود، خودش
++   * خلاف پرامپت بود و بازبینی مستقل گرفتش.
++   *
++   * تا نشست ۱۸۳ باقی‌مانده با یک **بارکد جدید** به مشتری داده می‌شد. پول
++   * نمی‌سوخت (خواسته‌ی مالک) ولی یک رکورد جانشین ساخته می‌شد که پرامپت
++   * صریحاً منعش کرده. حالا باقی‌مانده روی همان بارکد می‌ماند: هم پول حفظ
++   * می‌شود، هم رکورد جانشینی در کار نیست.
++   */
++  ok('دیگر هیچ بارکد جانشینی ساخته نمی‌شود', !/remainder = await issueStoreCredit\(/.test(svc))
++  ok('و دلیلش در کد نوشته شده', /هیچ بارکد جانشینی/.test(svc))
++
++  const core = readFileSync('src/shared/credit.ts', 'utf-8')
++  ok('وضعیت بعد از مصرف، باقی‌مانده را باز نگه می‌دارد',
++    /if \(usedAfter >= amount\) return CreditStatus\.USED\s*\n\s*return CreditStatus\.PARTIALLY_USED/.test(core))
++  ok('و «کوپن یک‌بارمصرف» همچنان فوراً بسته می‌شود',
++    /carryRemainder === false\) return CreditStatus\.USED/.test(core))
++
++  const mig = readFileSync(
++    'prisma/migrations/20271005100000_credit_carry_remainder/migration.sql',
++    'utf-8'
++  )
++  ok('migration ستون را با پیش‌فرض امن اضافه می‌کند',
++    /ADD COLUMN "carryRemainder" BOOLEAN NOT NULL DEFAULT true/.test(mig))
++}
++
++console.log('\n— ۴) رابط کاربری واقعاً این گزینه را می‌دهد —')
++{
++  const ui = readFileSync('src/renderer/src/components/CreditForms.tsx', 'utf-8')
++  ok('گزینه در فرم تنظیمات هست', /carryRemainder: v/.test(ui))
++  ok('و به‌ازای هر نوع رندر می‌شود (داخل map روی types)',
++    ui.indexOf('Object.keys(settings.types).map') < ui.indexOf('carryRemainder: v'))
++  ok('وقتی «چندباره» روشن است پنهان می‌شود (چون معنا ندارد)',
++    /\{!settings\.types\[k\]\.multiUse && \(/.test(ui))
++  ok('راهنمای فارسی با مثال عددی دارد', /۵۰۰٬۰۰۰/.test(ui))
++}
++
++console.log('\n— ۵) رفتار: باقی‌مانده وقتی باید بماند، می‌ماند —')
++{
++  /**
++   * بازتولید همان مثالی که مالک گفت: اعتبار ۱٬۰۰۰٬۰۰۰، خرید ۵۰۰٬۰۰۰.
++   * منطق تصمیم این‌جا بازتولید می‌شود (تابع داخلی است و export نمی‌شود)، و
++   * قرارداد متنی‌اش بالا سنجیده شد.
++   */
++  /**
++   * منطق تازه (نشست ۱۸۴): «باقی‌مانده کجا می‌رود» جایش را به «بارکد باز
++   * می‌ماند یا بسته می‌شود» داده. هیچ رکورد تازه‌ای ساخته نمی‌شود.
++   */
++  const { statusAfterRedeem, CreditStatus, remainingOf } = await import('../../src/shared/credit.ts')
++
++  const oneTimeCarry = { amount: 1_000_000, usedAmount: 0, multiUse: false, carryRemainder: true, maxUses: 1 }
++  eq('یک‌بارمصرف + حفظ باقی‌مانده ⇒ بارکد باز می‌ماند',
++    statusAfterRedeem(oneTimeCarry, 500_000), CreditStatus.PARTIALLY_USED)
++  eq('و مانده‌اش ۵۰۰٬۰۰۰ است (روی همان رکورد)',
++    remainingOf({ amount: 1_000_000, usedAmount: 500_000, status: CreditStatus.PARTIALLY_USED }), 500_000)
++  eq('مصرف کامل ⇒ بسته می‌شود', statusAfterRedeem(oneTimeCarry, 1_000_000), CreditStatus.USED)
++
++  const oneTimeBurn = { amount: 1_000_000, usedAmount: 0, multiUse: false, carryRemainder: false, maxUses: 1 }
++  eq('کوپن یک‌بارمصرف ⇒ با یک مصرف جزئی هم بسته می‌شود',
++    statusAfterRedeem(oneTimeBurn, 500_000), CreditStatus.USED)
++
++  const legacy = { amount: 1_000_000, usedAmount: 0, multiUse: false, maxUses: 1 }
++  eq('رکورد قدیمی بدون ستون ⇒ باقی‌مانده حفظ می‌شود',
++    statusAfterRedeem(legacy, 500_000), CreditStatus.PARTIALLY_USED)
++
++  const multi = { amount: 1_000_000, usedAmount: 0, multiUse: true, maxUses: 99 }
++  eq('چندباره هم مثل قبل', statusAfterRedeem(multi, 500_000), CreditStatus.PARTIALLY_USED)
++}
++
++// ===========================================================================
++console.log('\n══ خواسته ۲: رمز دوم و سوم برای همه‌ی بخش‌ها، جز تنظیمات ══')
++
++console.log('\n— ۶) هر سه رمز از قبل در موتور وجود دارند —')
++{
++  const auth = readFileSync('src/main/services/AuthService.ts', 'utf-8')
++  ok('۱) رمز مدیر', /\/\/ ۱\) رمز مدیر/.test(auth))
++  ok('۲) رمز دوم اختصاصی پنل', /\/\/ ۲\) رمز دوم اختصاصی همین پنل/.test(auth))
++  ok('۳) رمز سوم پنل × شیفت', /«رمز سوم» مخصوص همین پنل \*و همین شیفت\*/.test(auth))
++  ok('و اولویتشان مستند است', /رمز مدیر \(همه‌ی پنل‌ها، همه‌ی شیفت‌ها\)/.test(auth))
++}
++
++console.log('\n— ۷) بخش‌های حساس حالا هر سه را می‌پذیرند —')
++{
++  const files = {
++    'ابطال/تعلیق/تغییر اعتبار': ['src/main/services/StoreCreditService.ts', /assertPanelPasswordStrict\(PANEL_KEYS\.creditVoid, input\.managerPassword, input\.actionTitle\)/],
++    'حذف اعتبار': ['src/main/services/StoreCreditService.ts', /assertPanelPasswordStrict\(PANEL_KEYS\.creditVoid, input\.managerPassword, 'حذف اعتبار خرید'\)/],
++    'تولید گروهی اعتبار': ['src/main/services/StoreCreditService.ts', /assertPanelPasswordStrict\(PANEL_KEYS\.creditBulkIssue/],
++    'صدور دستی اعتبار': ['src/main/services/StoreCreditService.ts', /assertPanelPasswordStrict\(PANEL_KEYS\.creditManagement/],
++    // نشست ۱۸۶ — همچنان رمز دوم/سوم می‌پذیرد، ولی مسیر «بی‌رمز با قفل خاموش» بسته شد.
++    'تعویض اجباری کارمند نشست': ['src/main/services/ShiftService.ts', /assertPanelPasswordStrict\(PANEL_KEYS\.cashClose/],
++    'بازپرداخت کامل بدون کسر تخفیف': ['src/main/services/SalesService.ts', /assertPanelPasswordStrict\(PANEL_KEYS\.salesReturn, input\.managerPassword, 'بازپرداخت/]
++  }
++  for (const [label, [file, re]] of Object.entries(files))
++    ok(`«${label}» رمز دوم/سوم می‌پذیرد`, re.test(readFileSync(file, 'utf-8')))
++
++  /**
++   * کلیدها دلبخواه نیستند: کامنت `src/shared/panels.ts` از جلسه ۲۰ دقیقاً
++   * همین نگاشت را توصیه کرده بود. قرارداد از قبل نوشته شده بود، فقط کد
++   * دنبالش نرفته بود.
++   */
++  const panels = readFileSync('src/shared/panels.ts', 'utf-8')
++  ok('نگاشت کلیدها همان توصیه‌ی خودِ پروژه است', /ابطال\/تعلیق\/تغییر مبلغ\s+⇒ creditVoid/.test(panels))
++}
++
++console.log('\n— ۸) «تنظیمات» عمداً فقط رمز مدیر می‌گیرد —')
++{
++  const { MANAGER_ONLY_PANELS, isManagerOnlyPanel, PANEL_KEYS, ALWAYS_LOCKED_PANELS } =
++    await import('../../src/shared/panels.ts')
++
++  ok('تنظیمات در فهرست «فقط مدیر» است', MANAGER_ONLY_PANELS.includes(PANEL_KEYS.settings))
++  ok('و helper تشخیصش کار می‌کند', isManagerOnlyPanel(PANEL_KEYS.settings))
++  ok('ولی بقیه‌ی پنل‌ها آزادند', !isManagerOnlyPanel(PANEL_KEYS.creditVoid) && !isManagerOnlyPanel(PANEL_KEYS.cashClose))
++  /** دو چیز متفاوت‌اند: «قفلش خاموش نمی‌شود» و «با رمز غیرمدیر باز نمی‌شود». */
++  ok('و قفلش هم قابل خاموش کردن نیست', ALWAYS_LOCKED_PANELS.includes(PANEL_KEYS.settings))
++
++  const auth = readFileSync('src/main/services/AuthService.ts', 'utf-8')
++  ok('verifyPanel قبل از سنجش رمز دوم، این را چک می‌کند',
++    auth.indexOf('isManagerOnlyPanel(panel)') < auth.indexOf('panelMatches(map[panel], password)'))
++  ok('و دلیلش در کد نوشته شده', /از همین پنل می‌شود قفل بقیه‌ی بخش‌ها را برداشت/.test(auth))
++}
++
++console.log('\n— ۹) چه چیزی عمداً فقط رمز مدیر ماند —')
++{
++  /**
++   * این‌ها یا خودِ «تنظیمات»‌اند یا از جنس تغییرِ تنظیمات: اگر رمز دوم
++   * بپذیرند، دارنده‌ی آن رمز می‌تواند سیاست‌های کل سیستم را عوض کند.
++   */
++  const stillManagerOnly = [
++    ['src/main/ipc/index.ts', 'تغییر تنظیم حساس'],
++    ['src/main/services/SettingsService.ts', 'تغییر افست ساعت رسمی'],
++    ['src/main/services/MaintenanceService.ts', 'آرشیو و پاک‌سازی داده‌های قدیمی']
++  ]
++  for (const [file, needle] of stillManagerOnly) {
++    const src = readFileSync(file, 'utf-8')
++    const i = src.indexOf(needle)
++    ok(`«${needle}» هنوز فقط رمز مدیر می‌خواهد`, i > 0 && src.slice(Math.max(0, i - 220), i).includes('assertManagerPassword'))
++  }
++}
++
++console.log(`\n${fail ? '✗' : '✓'} ${pass} بررسی موفق · ${fail} ناموفق`)
++process.exit(fail ? 1 : 0)
+diff --git a/tests/audit-fixes/fix-s184-review-high.mjs b/tests/audit-fixes/fix-s184-review-high.mjs
+new file mode 100644
+index 0000000..d469ac8
+--- /dev/null
++++ b/tests/audit-fixes/fix-s184-review-high.mjs
+@@ -0,0 +1,215 @@
++// نشست ۱۸۴: موارد «اولویت بالا»ی بازبینی مستقل — بندهای ۴-۲۹، ۴-۴۹، ۴-۵۶، ۴-۲۱، ۴-۳۷، ۴-۲۳، ۴-۲۴، ۴-۲۶، ۴-۲۷، خوشه E.
++/**
++ * ===========================================================================
++ * نشست ۱۸۴ — رفع ایرادهای «الف» گزارش بازبینی مستقل
++ *
++ * هر بخش این تست، یک مورد شماره‌دار گزارش را می‌سنجد و *ریشه*اش را توضیح
++ * می‌دهد، نه فقط نتیجه را.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s184-review-high.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s184-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++let pass = 0
++let fail = 0
++const show = (v) => (typeof v === 'bigint' ? `${v}n` : JSON.stringify(v))
++const eq = (label, got, want) => {
++  if (show(got) === show(want)) { pass++; console.log(`  ✓ ${label}`) }
++  else { fail++; console.log(`  ✗ ${label} · دریافت ${show(got)} · انتظار ${show(want)}`) }
++}
++const ok = (label, cond) => eq(label, Boolean(cond), true)
++
++const IPC = readFileSync('src/main/ipc/index.ts', 'utf-8')
++const SALES = readFileSync('src/main/services/SalesService.ts', 'utf-8')
++const LEDGER = readFileSync('src/main/services/SalesLedger.ts', 'utf-8')
++const CASHBOX = readFileSync('src/main/services/CashboxService.ts', 'utf-8')
++const AUTH = readFileSync('src/main/services/AuthService.ts', 'utf-8')
++const SHIFT = readFileSync('src/main/services/ShiftService.ts', 'utf-8')
++const CREDIT = readFileSync('src/main/services/StoreCreditService.ts', 'utf-8')
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱) بند ۴-۲۹: صدور اعتبار هیچ‌وقت بی‌رمز نیست —')
++/**
++ * ریشه: `assertPanelPassword` اگر قفل ماژول در تنظیمات خاموش باشد **بدون هیچ
++ * رمزی** مقدار `'OPEN'` برمی‌گرداند. برای باز کردن یک صفحه منطقی است؛ برای
++ * صدور اعتبار یعنی فروشنده می‌تواند برای خودش پول بسازد.
++ */
++ok('تابع «همیشه رمز» وجود دارد', /export async function assertPanelPasswordStrict/.test(AUTH))
++ok('و مسیر OPEN را می‌بندد', /if \(res\.scope === 'OPEN'\)/.test(AUTH))
++ok('verifyPanel پرچم force را می‌فهمد', /input\.force !== true && !isPanelLockEnabled/.test(AUTH))
++for (const [label, re] of [
++  ['صدور دستی اعتبار', /assertPanelPasswordStrict\(PANEL_KEYS\.creditManagement/],
++  ['تولید گروهی اعتبار', /assertPanelPasswordStrict\(PANEL_KEYS\.creditBulkIssue/],
++  ['ابطال/تغییر اعتبار', /assertPanelPasswordStrict\(PANEL_KEYS\.creditVoid, input\.managerPassword, input\.actionTitle\)/],
++  ['حذف اعتبار', /assertPanelPasswordStrict\(PANEL_KEYS\.creditVoid, input\.managerPassword, 'حذف اعتبار خرید'\)/]
++]) ok(`«${label}» از مسیر سخت‌گیرانه می‌رود`, re.test(CREDIT))
++ok('بازپرداخت کامل هم همین‌طور', /assertPanelPasswordStrict\(PANEL_KEYS\.salesReturn/.test(SALES))
++{
++  const { assertPanelPasswordStrict } = await import('../../src/main/services/AuthService.ts')
++  let msg = null
++  try { await assertPanelPasswordStrict('credit-management', '', 'صدور اعتبار') } catch (e) { msg = e.message }
++  ok(`بدون رمز رد می‌شود (${String(msg).slice(0, 44)}…)`, msg && /همیشه رمز می‌خواهد/.test(msg))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۲) settings:get دیگر هر کلیدی را خام نمی‌دهد —')
++/** با `{key:'manager.auth'}` نمک و هش scrypt رمز مدیر برمی‌گشت. */
++ok('allowlist خواندن وجود دارد', /RAW_SETTING_READABLE_KEYS/.test(IPC))
++ok('و fail-closed است', /if \(!RAW_SETTING_READABLE_KEYS\.has\(key\)\)/.test(IPC))
++{
++  const block = IPC.slice(IPC.indexOf('const RAW_SETTING_READABLE_KEYS'), IPC.indexOf('async function setRawSetting'))
++  ok('هش رمز مدیر در فهرست مجاز نیست', !/managerAuth/.test(block))
++  ok('رمزهای دوم/سوم هم نه', !/panelAuth/.test(block))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۳) بند ۴-۴۹: مابه‌التفاوت کارتی، نقد کشو نیست —')
++/**
++ * ریشه: `exchangeSettlement` برای هر پرداختی (نقد یا کارت) مقدارش `CASH` است،
++ * چون معنایش «مشتری پرداخت کرد» است نه «با چه چیزی». دفتر رویداد از همان
++ * می‌خواند ⇒ تعویض کارتی +۴۰۰٬۰۰۰ نقد کشو می‌گرفت، در حالی که صورت حساب
++ * همان را کارت می‌شمرد.
++ */
++ok('دفتر رویداد پرداخت‌های سند تعویض را می‌خواند', /payments: \{\s*\n\s*where: \{ voidedAt: null \}/.test(LEDGER))
++ok('و با همان محمول مشترک drawerCash', /exDrawerCash[\s\S]{0,200}filter\(drawerCash\)/.test(LEDGER))
++ok('exchangeCashEffect آرگومان مقصد واقعی می‌گیرد', /drawerCashOfExchange: number \| null/.test(LEDGER))
++ok('و برای diff>0 اولویت با آن است', /if \(drawerCashOfExchange != null\) return Math\.min\(diff/.test(LEDGER))
++ok('داده‌ی قدیمیِ بدون سند تعویض، رفتار قبلی را دارد',
++  /return settlement === ExchangeSettlement\.CASH \? diff : 0/.test(LEDGER))
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۴) بند ۴-۵۶: «اختلاف» جزئیات شیفت، کسری دروغ نمی‌سازد —')
++/**
++ * ریشه: `countedTotal − (نقد + کارت + اعتباری)` فروش کارتی را از پول فیزیکی
++ * کشو کم می‌کرد. نقد ۱٬۰۰۰٬۰۰۰ + کارت ۲٬۰۰۰٬۰۰۰ با شمارش درستِ ۱٬۰۰۰٬۰۰۰ ⇒
++ * «کسری ۲٬۰۰۰٬۰۰۰». همین فرمول در لیست سابقه اصلاح شده بود ولی این‌جا جا مانده بود.
++ */
++ok('فرمول غلط حذف شد',
++  !/toRial\(session\.countedTotal\) -\s*\n?\s*\(toRial\(session\.cashTotal\)/.test(CASHBOX))
++ok('از cashDifference ذخیره‌شده می‌آید', /diff:\s*\n\s*session\.reportVersion === 'session14'[\s\S]{0,120}session\.cashDifference/.test(CASHBOX))
++ok('و سابقه‌های قدیمی صریحاً «محاسبه‌ناپذیر» علامت می‌خورند', /diffAvailable:/.test(CASHBOX))
++ok('دو عدد جدای بند ۴-۵۶ در DTO هست', /expectedCash:/.test(CASHBOX) && /settledTotal:/.test(CASHBOX))
++{
++  const t = readFileSync('src/shared/types.ts', 'utf-8')
++  ok('و در قرارداد تایپ', /expectedCash: number \| null/.test(t) && /settledTotal: number/.test(t))
++  const ui = readFileSync('src/renderer/src/components/ShiftDetailModal.tsx', 'utf-8')
++  ok('و به مدیر نمایش داده می‌شوند', /جمع تسویه‌ی فاکتورها/.test(ui) && /اختلاف کشو/.test(ui))
++  ok('با برچسبی که پول کشو را از جمع فروش جدا می‌کند', /این عدد پولِ داخل کشو نیست/.test(ui))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱۱) گیت‌هایی که فقط در UI بودند —')
++ok('storeCredit:list حالا گیت دارد (خروجی‌اش کدِ اعتبار است)',
++  /handle\(IPC\.storeCreditList,[\s\S]{0,220}assertPanelUnlocked\(CREDIT_READ_PANEL/.test(IPC))
++ok('تجمیع گیت دارد', /handle\(IPC\.consolidationFinalize,[\s\S]{0,220}assertPanelUnlocked\(PANEL_KEYS\.consolidation/.test(IPC))
++ok('و actor تجمیع از نشست main می‌آید', /cashboxService\.finalize\(await withSessionActor/.test(IPC))
++ok('تجمیع چندروزه هم', /finalizeDays\(await withSessionActor/.test(IPC))
++ok('actor بکاپ هم از نشست main', /backupService\.apply\(await withOptionalSessionActor/.test(IPC))
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۹) خوشه E: نشست فراموش‌شده‌ی دیشب —')
++/**
++ * ریشه: `openShift()` بازه‌ی ساعتی را لحاظ می‌کند، پس نشست دیشبِ بسته‌نشده
++ * `null` برمی‌گشت و `openSession` فکر می‌کرد هیچ نشستی باز نیست ⇒ بدون رمز،
++ * بدون دلیل و بدون شمارش نقد، نشست تازه می‌ساخت و پول کشوی شب گم می‌شد.
++ */
++ok('کاشف مستقل از بازه‌ی ساعتی اضافه شد', /async anyOpenShift\(client: Client = prisma\)/.test(SHIFT))
++ok('مسیر تحویل از آن استفاده می‌کند', /const initialOpen = await this\.anyOpenShift\(prisma\)/.test(SHIFT))
++ok('داخل تراکنش هم همان', /const open = await this\.anyOpenShift\(tx\)/.test(SHIFT))
++ok('نشست جامانده‌ی روز دیگر، دلیل اجباری می‌خواهد', /const staleOvernight =/.test(SHIFT))
++ok('و رمز پنل بستن صندوق', /بستن نشست جامانده‌ی/.test(SHIFT))
++ok('openShift اصلی دست‌نخورده ماند (کار روزمره نشکند)', /async openShift\(client: Client = prisma, day\?: string\)/.test(SHIFT))
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۶) بند ۴-۳۷: فاکتور بدهکار اعتبار نمی‌گیرد —')
++/**
++ * ریشه: فقط سقف «پول دریافتی» چک می‌شد. فاکتور ۱٬۰۰۰٬۰۰۰ با پرداخت ۳۰۰٬۰۰۰ و
++ * برگشت ۲۰۰٬۰۰۰ ⇒ `creditCap = ۳۰۰٬۰۰۰` پس رد نمی‌شد و کد اعتبار ۲۰۰٬۰۰۰ صادر
++ * می‌شد، در حالی که مشتری ۷۰۰٬۰۰۰ بدهکار بود.
++ */
++ok('ورودی بدهی باقی‌مانده اضافه شد', /remainingDebt\?: number/.test(SALES))
++ok('و اعتبار روی فاکتور بدهکار رد می‌شود', /method === RefundMethod\.STORE_CREDIT && remainingDebt > 0/.test(SALES))
++ok('پیام، کاربر را به «بدون بازپرداخت» هدایت می‌کند', /روش «بدون بازپرداخت» را انتخاب کنید تا همین برگشت از بدهی/.test(SALES))
++ok('و صدازننده مقدار واقعی را می‌فرستد', /remainingDebt: remainingBeforeReturn/.test(SALES))
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۷) بند ۴-۲۳: بازه‌ی پیش‌فرض «امروز» است —')
++ok('main نبودِ تاریخ را امروز می‌فهمد', /return \{ from: jalaliStartOfDay\(today\), to: jalaliEndOfDay\(today\), source: 'today' \}/.test(SALES))
++ok('و fullRange عمداً استثناست', /\(filter as \{ fullRange\?: boolean \}\)\.fullRange === true/.test(SALES))
++{
++  const bar = readFileSync('src/renderer/src/components/ReportFilterBar.tsx', 'utf-8')
++  ok('UI هم پیش‌فرض امروز', /makeFilters = \(from = jalaliToday\(\), to = jalaliToday\(\)\)/.test(bar))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۸) بند ۴-۲۴: تصمیم نهایی مالک (نشست ۱۸۵) —')
++/**
++ * این مورد دو بار عوض شد و تاریخچه‌اش ارزش نوشتن دارد:
++ *
++ *   • نشست ۱۸۴ — پیشنهاد بازبینی («همیشه نامشخص») را پیاده کردم، ولی چون کل
++ *     مبلغ از `expectedCash` بیرون می‌افتاد شیفت‌های قدیمی کسری دروغ نشان
++ *     می‌دادند. برگرداندمش و دلیلش را نوشتم.
++ *   • نشست ۱۸۵ — مالک راه سومی داد که هر دو نگرانی را حل می‌کند: عدد در سبد
++ *     «نامشخص» بیاید (صداقت بند ۴-۲۴) و یک ستون کمکی «احتمالاً نقد» همان
++ *     مبلغ را در نقد مورد انتظار نگه دارد (بدون کسری دروغ).
++ *
++ * جزئیات کامل در `fix-s185-review-critical.mjs`؛ این‌جا فقط قفل می‌شود که به
++ * رفتار حدسیِ قدیمی برنگردیم.
++ */
++{
++  const { receiptBucketOf, unknownLikelyBucketOf } = await import('../../src/shared/accounting.ts')
++  eq('مقصد خالی دیگر حدس زده نمی‌شود', receiptBucketOf({ isCheque: false, destination: null, methodKind: 'CASH' }), 'unknown')
++  eq('ولی ستون کمکی می‌گوید احتمالاً نقد بوده',
++    unknownLikelyBucketOf({ isCheque: false, destination: null, methodKind: 'CASH' }), 'cash')
++  eq('و مقصد صریح مثل همیشه', receiptBucketOf({ isCheque: false, destination: 'CARD', methodKind: 'CASH' }), 'card')
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱۰) بند ۴-۲۶: تخفیف عمده گیت سرور دارد —')
++/** DECISIONS.md (S151-D4) خودش این را «ریسک باقی‌مانده» ثبت کرده بود. */
++ok('گیت روی مسیر عمده هست', /if \(ctx\.orderType === OrderType\.WHOLESALE\) \{/.test(SALES))
++/**
++ * 🔴 به‌روزرسانی نشست ۱۸۵ — پیاده‌سازی نشست ۱۸۴ **خراب بود** و بازبینی گرفتش:
++ * رمز اصلاً به `preverifySalePolicy` نمی‌رسید، و با قفل خاموش `OPEN` می‌شد.
++ * حالا به‌جای «گیت رمز»، یک **سقف واقعی و تنظیم‌پذیر** است که عبور از آن
++ * رد کامل می‌شود (بند ۴-۲۶). جزئیات در `fix-s185-review-critical.mjs`.
++ */
++ok('دیگر گیت رمز نیست', !/PANEL_KEYS\.wholesaleInvoiceModule/.test(SALES))
++ok('آستانه‌ی هاردکد حذف شد', !/WHOLESALE_APPROVAL_PERCENT/.test(SALES))
++ok('سقف از تنظیمات می‌آید', /wholesaleDiscountCeilingFor\(wPolicy, wholesaleBase\)/.test(SALES))
++ok('و کاهش قیمت زیر مرجع را هم می‌شمارد', /o\.enteredPrice < o\.refPrice/.test(SALES))
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱۳) بند ۴-۲۷: ستون «برگشتی» به بازه محدود است —')
++/** فروش فروردین با برگشت اردیبهشت، در گزارش فروردین هم «برگشتی ۱» نشان می‌داد. */
++ok('بازه‌ی رویداد برگشت محاسبه می‌شود', /const returnedAtRange =/.test(SALES))
++ok('و در شرط groupBy اعمال می‌شود', /returnedAt: returnedAtRange/.test(SALES))
++ok('از همان resolveReportPeriod گزارش', /const itemPeriod = await resolveReportPeriod\(filter, where\)/.test(SALES))
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۵) بند ۴-۶: باقی‌مانده روی همان بارکد، بدون رکورد جانشین —')
++/**
++ * تعارض ظاهری: مالک گفت «۵۰۰ نسوزد»، پرامپت گفت «رکورد جدا ساخته نشود».
++ * اشتراکشان: باقی‌مانده روی همان بارکد بماند.
++ */
++ok('هیچ بارکد جانشینی ساخته نمی‌شود', !/remainder = await issueStoreCredit\(/.test(CREDIT))
++{
++  const { statusAfterRedeem, CreditStatus, remainingOf } = await import('../../src/shared/credit.ts')
++  const base = { amount: 1_000_000, usedAmount: 0, multiUse: false, maxUses: 1 }
++  eq('مصرف جزئی ⇒ بارکد باز می‌ماند', statusAfterRedeem({ ...base, carryRemainder: true }, 500_000), CreditStatus.PARTIALLY_USED)
++  eq('مانده روی همان رکورد', remainingOf({ amount: 1_000_000, usedAmount: 500_000, status: CreditStatus.PARTIALLY_USED }), 500_000)
++  eq('مصرف کامل ⇒ بسته', statusAfterRedeem({ ...base, carryRemainder: true }, 1_000_000), CreditStatus.USED)
++  eq('کوپن یک‌بارمصرف ⇒ فوراً بسته', statusAfterRedeem({ ...base, carryRemainder: false }, 500_000), CreditStatus.USED)
++  eq('رکورد قدیمی بدون ستون ⇒ پول حفظ می‌شود', statusAfterRedeem(base, 500_000), CreditStatus.PARTIALLY_USED)
++}
++ok('و رکوردهای جانشینِ گذشته عمداً دست‌نخورده می‌مانند', /دست‌نخورده\s*\n?\s*\* می‌مانند و معتبرند/.test(CREDIT))
++
++console.log(`\n${fail ? '✗' : '✓'} ${pass} بررسی موفق · ${fail} ناموفق`)
++process.exit(fail ? 1 : 0)
+diff --git a/tests/audit-fixes/fix-s185-review-critical.mjs b/tests/audit-fixes/fix-s185-review-critical.mjs
+new file mode 100644
+index 0000000..9e616bc
+--- /dev/null
++++ b/tests/audit-fixes/fix-s185-review-critical.mjs
+@@ -0,0 +1,170 @@
++// نشست ۱۸۵: موارد بحرانی بازبینی سوم — بند ۴-۲۶ (سقف تخفیف عمده)، بند ۴-۲۴ (مقصد نامشخص)، و مورد ۰ (لاگ typecheck).
++/**
++ * ===========================================================================
++ * نشست ۱۸۵ — پاسخ به بازبینی مستقل سوم
++ *
++ * ۰) لاگ رگرسیون هیچ اثری از typecheck نداشت، پس ادعای «سبز است» از روی همان
++ *    فایل قابل راستی‌آزمایی نبود. به‌علاوه بخش esbuild همان لاگ کرش می‌کرد.
++ *
++ * ۱-۲) گیت تخفیف عمده **عملاً خراب بود**: رمز هرگز به تابع نمی‌رسید، پس با
++ *    قفل روشن هر تخفیفِ بالای آستانه رد می‌شد و با قفل خاموش هیچ گیتی نبود.
++ *
++ * ۱-۳) مقصد خالی از روی روش حدس زده می‌شد (نقض لفظی بند ۴-۲۴).
++ *    تصمیم مالک: عدد در سبد «نامشخص» بیاید، با ستون کمکی «احتمالاً نقد» تا
++ *    کسری دروغ هم ساخته نشود.
++ *
++ * (مورد ۱-۱ به دستور صریح مالک نادیده گرفته شد: صدور اعتبار عمداً رمز
++ *  دوم/سوم را هم می‌پذیرد، چون مدیر هر وقت بخواهد آن رمزها را برمی‌دارد.)
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s185-review-critical.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s185-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++let pass = 0
++let fail = 0
++const show = (v) => (typeof v === 'bigint' ? `${v}n` : JSON.stringify(v))
++const eq = (label, got, want) => {
++  if (show(got) === show(want)) { pass++; console.log(`  ✓ ${label}`) }
++  else { fail++; console.log(`  ✗ ${label} · دریافت ${show(got)} · انتظار ${show(want)}`) }
++}
++const ok = (label, cond) => eq(label, Boolean(cond), true)
++
++const SALES = readFileSync('src/main/services/SalesService.ts', 'utf-8')
++const ACC = readFileSync('src/shared/accounting.ts', 'utf-8')
++const REG = readFileSync('tools/run-regression.sh', 'utf-8')
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۰) لاگ رگرسیون، خودش typecheck را ثابت می‌کند —')
++/**
++ * بازبینی درست گفت: ادعای «TYPECHECK_OK در لاگ است» غلط بود. حالا اسکریپت
++ * خودش tsc را اجرا می‌کند و نتیجه — یا دلیل اجرا نشدن — بالای همان فایل
++ * می‌نشیند. یعنی خواننده‌ی لاگ دیگر لازم نیست به حرف کسی اعتماد کند.
++ */
++ok('اسکریپت رگرسیون typecheck را اجرا می‌کند', /tsc --noEmit -p tsconfig\.json/.test(REG))
++ok('نتیجه در همان فایل خروجی می‌نشیند', /echo "## typecheck"/.test(REG))
++ok('و اگر tsc نبود، صریح «رد شد» می‌نویسد (نه سکوت)', /TYPECHECK_SKIPPED/.test(REG))
++ok('حالت شکست هم چند خط خطا را نشان می‌دهد', /TYPECHECK_FAILED/.test(REG))
++ok('نگهبان‌ها هم در همان لاگ‌اند', /## guards/.test(REG))
++{
++  /** esbuild که در لاگ قبلی کرش می‌کرد: مسیرش دیگر سخت‌کد نیست. */
++  const eb = readFileSync('tools/esbuild-bundle-check.mjs', 'utf-8')
++  const eb2 = readFileSync('tools/esbuild-check.mjs', 'utf-8')
++  ok('esbuild دیگر به /opt/sd-artifact سخت‌کد نیست', /async function loadEsbuild/.test(eb) && /async function loadEsbuild/.test(eb2))
++  ok('اول esbuild خودِ پروژه امتحان می‌شود', /\.\.\/node_modules\/esbuild\/lib\/main\.js/.test(eb))
++  ok('و نبودش «رد شد» است نه کرش', /SKIPPED: esbuild در دسترس نیست/.test(eb))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱-۲) بند ۴-۲۶: سقف تخفیف عمده، واقعی و غیرقابل دور زدن —')
++/**
++ * دو ایراد پیاده‌سازی نشست ۱۸۴ که بازبینی گرفت:
++ *   • `preverifySalePolicy` فقط `{ orderType }` می‌گرفت، پس `managerPassword`
++ *     همیشه `null` بود ⇒ با قفل روشن، هر تخفیفِ بالای آستانه رد می‌شد.
++ *   • با قفل خاموش `assertPanelPassword` مقدار `OPEN` می‌داد ⇒ اصلاً گیتی نبود
++ *     و تخفیف ۹۰٪ بی‌رمز ثبت می‌شد.
++ * و مستقل از هر دو: بند ۴-۲۶ می‌گوید عبور از بازه یعنی **رد**، نه گیت رمز.
++ */
++ok('دیگر گیت رمز نیست', !/assertPanelPassword\(\s*\n?\s*PANEL_KEYS\.wholesaleInvoiceModule/.test(SALES))
++ok('آستانه‌ی هاردکد ۵۰ حذف شد', !/WHOLESALE_APPROVAL_PERCENT/.test(SALES))
++ok('سقف از سیاست تنظیمات می‌آید', /wholesaleDiscountCeilingFor\(wPolicy, wholesaleBase\)/.test(SALES))
++ok('و عبور از آن رد کامل است', /throw new BusinessError\(\s*\n\s*`جمع تخفیف این فاکتور عمده/.test(SALES))
++ok('پیام صریح می‌گوید با رمز مدیر دور زده نمی‌شود', /این سقف با رمز مدیر هم دور زده نمی‌شود/.test(SALES))
++{
++  const { wholesaleDiscountCeilingFor, DEFAULT_DISCOUNT_POLICY, parseDiscountPolicy } =
++    await import('../../src/shared/priceAdjust.ts')
++
++  /** پیش‌فرض بی‌سقف است تا به‌روزرسانی هیچ فروشگاهی را نشکند. */
++  eq('پیش‌فرض: بی‌سقف', wholesaleDiscountCeilingFor(DEFAULT_DISCOUNT_POLICY, 1_000_000), 1_000_000)
++  eq('و مقدار پیش‌فرض درصد ۱۰۰ است', DEFAULT_DISCOUNT_POLICY.wholesaleMaxPercent, 100)
++
++  const p40 = { ...DEFAULT_DISCOUNT_POLICY, wholesaleMaxPercent: 40 }
++  eq('سقف ۴۰٪ روی ۱٬۰۰۰٬۰۰۰', wholesaleDiscountCeilingFor(p40, 1_000_000), 400_000)
++  /** سناریوی گزارش: تخفیف ۹۰٪ باید رد شود. */
++  ok('تخفیف ۹۰۰٬۰۰۰ از سقف رد می‌شود', 900_000 > wholesaleDiscountCeilingFor(p40, 1_000_000))
++  /** و تخفیف روزمره‌ی عمده نباید بشکند. */
++  ok('تخفیف ۳۰٪ زیر سقف می‌ماند', 300_000 <= wholesaleDiscountCeilingFor(p40, 1_000_000))
++
++  const pAmt = { ...DEFAULT_DISCOUNT_POLICY, wholesaleMaxPercent: 100, wholesaleMaxAmount: 150_000 }
++  eq('سقف مبلغی هم اعمال می‌شود', wholesaleDiscountCeilingFor(pAmt, 1_000_000), 150_000)
++  const pBoth = { ...DEFAULT_DISCOUNT_POLICY, wholesaleMaxPercent: 40, wholesaleMaxAmount: 150_000 }
++  eq('سخت‌گیرانه‌ترین برنده است', wholesaleDiscountCeilingFor(pBoth, 1_000_000), 150_000)
++
++  /** تنظیمات ذخیره‌شده‌ی قدیمی این کلیدها را ندارند ⇒ بی‌سقف (بدون رگرسیون). */
++  const legacy = parseDiscountPolicy(JSON.stringify({ mode: 'FREE', maxPercent: 20 }))
++  eq('سیاست قدیمی ⇒ عمده بی‌سقف می‌ماند', legacy.wholesaleMaxPercent, 100)
++  eq('و سقف خرده‌فروشی‌اش دست‌نخورده', legacy.maxPercent, 20)
++}
++{
++  const ui = readFileSync('src/renderer/src/pages/Settings.tsx', 'utf-8')
++  ok('مدیر می‌تواند درصدش را تنظیم کند', /wholesaleMaxPercent: Math\.min\(100/.test(ui))
++  ok('و سقف مبلغی‌اش را', /wholesaleMaxAmount: Math\.max\(0/.test(ui))
++  ok('با توضیح اینکه رد می‌شود نه کوتاه', /رد<\/b>\s*\n?\s*می‌شود \(نه کوتاه‌کردن و نه گیت رمز\)/.test(ui))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۱-۳) بند ۴-۲۴: نامشخص + ستون کمکی «احتمالاً نقد» (تصمیم مالک) —')
++{
++  const { receiptBucketOf, unknownLikelyBucketOf } = await import('../../src/shared/accounting.ts')
++
++  /** بخش اول خواسته: دیگر حدس زده نمی‌شود — سبد رسمی «نامشخص» است. */
++  eq('نقدِ قدیمیِ بی‌مقصد ⇒ سبد نامشخص', receiptBucketOf({ isCheque: false, destination: null, methodKind: 'CASH' }), 'unknown')
++  eq('کارتِ قدیمیِ بی‌مقصد ⇒ سبد نامشخص', receiptBucketOf({ isCheque: false, destination: null, methodKind: 'CARD' }), 'unknown')
++  eq('ولی مقصد صریح مثل همیشه', receiptBucketOf({ isCheque: false, destination: 'CASH', methodKind: 'CASH' }), 'cash')
++  eq('و کارت', receiptBucketOf({ isCheque: false, destination: 'CARD', methodKind: 'CARD' }), 'card')
++  eq('چکِ بی‌مقصد هم مثل قبل نامشخص', receiptBucketOf({ isCheque: true, destination: null, methodKind: 'CASH' }), 'unknown')
++  eq('اعتبار خرید دست‌نخورده', receiptBucketOf({ isCheque: false, destination: null, methodKind: 'STORE_CREDIT' }), 'storeCredit')
++
++  /** بخش دوم خواسته: ستون کمکی، تا کسری دروغ ساخته نشود. */
++  eq('«احتمالاً نقد» برای روش نقدِ بی‌مقصد', unknownLikelyBucketOf({ isCheque: false, destination: null, methodKind: 'CASH' }), 'cash')
++  eq('«احتمالاً کارت» برای روش کارتِ بی‌مقصد', unknownLikelyBucketOf({ isCheque: false, destination: null, methodKind: 'CARD' }), 'card')
++  eq('چک حدس نمی‌خورد (واقعاً مبهم بود)', unknownLikelyBucketOf({ isCheque: true, destination: null, methodKind: 'CASH' }), null)
++  eq('وقتی مقصد هست، حدسی لازم نیست', unknownLikelyBucketOf({ isCheque: false, destination: 'CARD', methodKind: 'CASH' }), null)
++}
++ok('ستون کمکی در جمع پرداخت‌ها شمرده می‌شود', /out\.unknownLikelyCash = n\(out\.unknownLikelyCash\) \+ amount/.test(ACC))
++ok('و زیرمجموعه است، نه ردیف جدا (با نامشخص جمع نمی‌شود)', /با `destinationUnknown` جمع \*\*نمی‌شود\*\*/.test(ACC))
++
++console.log('\n— ۱-۳ ب) کسری دروغ ساخته نمی‌شود —')
++{
++  const { calculateCashClose } = await import('../../src/shared/accounting.ts')
++
++  /**
++   * سناریوی واقعی: تنها دریافتی شیفت، یک پرداخت نقدیِ قدیمیِ بی‌مقصد
++   * ۲٬۰۰۰٬۰۰۰ است. کشو هم ۲٬۰۰۰٬۰۰۰ شمرده شده.
++   *
++   * اگر این مبلغ از `expectedCash` بیرون بیفتد، «کسری ۲٬۰۰۰٬۰۰۰» نشان داده
++   * می‌شود — دقیقاً همان چیزی که مالک گفت نباید بسازیم.
++   */
++  const r = calculateCashClose({
++    openingFloat: 0,
++    cashReceived: 0,
++    unknownLikelyCash: 2_000_000,
++    countedCash: 2_000_000
++  })
++  eq('نقد مورد انتظار شامل «احتمالاً نقد» است', r.expectedCash, 2_000_000)
++  eq('پس هیچ کسری دروغی ساخته نمی‌شود', r.cashDifference, 0)
++  eq('و مبلغ در ستون جدای خودش هم دیده می‌شود', r.unknownLikelyCashInExpected, 2_000_000)
++
++  /** آن‌طرفِ سکه: بدون این ستون، کسری دروغ برمی‌گشت. */
++  const bad = calculateCashClose({ openingFloat: 0, cashReceived: 0, countedCash: 2_000_000 })
++  eq('بدون ستون کمکی، «اضافه»ی دروغ می‌شد', bad.cashDifference, 2_000_000)
++
++  /** چکِ بی‌مقصد همچنان بیرون از نقد مورد انتظار می‌ماند (رفع نشست ۱۶۱). */
++  const chq = calculateCashClose({
++    openingFloat: 0,
++    cashReceived: 0,
++    clearedUnknownChequeAmount: 500_000,
++    countedCash: 0
++  })
++  eq('چکِ نامشخص وارد نقد مورد انتظار نمی‌شود', chq.expectedCash, 0)
++  eq('و در ستون بیرونی خودش می‌ماند', chq.unknownDestinationOutside, 500_000)
++}
++
++console.log(`\n${fail ? '✗' : '✓'} ${pass} بررسی موفق · ${fail} ناموفق`)
++process.exit(fail ? 1 : 0)
+diff --git a/tests/audit-fixes/fix-s186-review-high2.mjs b/tests/audit-fixes/fix-s186-review-high2.mjs
+new file mode 100644
+index 0000000..ed279d5
+--- /dev/null
++++ b/tests/audit-fixes/fix-s186-review-high2.mjs
+@@ -0,0 +1,176 @@
++// نشست ۱۸۶: دسته‌ی «۲) بالا» و «۳) متوسط» بازبینی سوم — بندهای خوشه E، ۴-۳۹، ۴-۴۸، ۴-۲۳، ۴-۱۴/۴-۵۳.
++/**
++ * ===========================================================================
++ * نشست ۱۸۶ — شش مورد بعدی از بازبینی مستقل سوم
++ *
++ * ترتیب، همان اولویتی است که خودم پیشنهاد داده بودم: اول مواردی که «راه
++ * دزدی» باز می‌کنند، بعد عددهای گزارش که غلط نشان می‌دهند.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s186-review-high2.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s186-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++let pass = 0
++let fail = 0
++const show = (v) => (typeof v === 'bigint' ? `${v}n` : JSON.stringify(v))
++const eq = (label, got, want) => {
++  if (show(got) === show(want)) { pass++; console.log(`  ✓ ${label}`) }
++  else { fail++; console.log(`  ✗ ${label} · دریافت ${show(got)} · انتظار ${show(want)}`) }
++}
++const ok = (label, cond) => eq(label, Boolean(cond), true)
++
++const IPC = readFileSync('src/main/ipc/index.ts', 'utf-8')
++const SHIFT = readFileSync('src/main/services/ShiftService.ts', 'utf-8')
++const SALES = readFileSync('src/main/services/SalesService.ts', 'utf-8')
++const SHAPE = readFileSync('src/main/services/reportShape.ts', 'utf-8')
++const ACCR = readFileSync('src/main/services/accountingReport.ts', 'utf-8')
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۲-۴) خوشه E: بستن نشست دیگری هیچ‌وقت بی‌رمز نیست —')
++/**
++ * ریشه: `assertPanelPassword` با قفلِ خاموشِ پنل «بستن صندوق» مقدار `OPEN`
++ * برمی‌گرداند. یعنی نشست همکار فقط با یک دلیل سه‌حرفی بسته می‌شد و صندوقش
++ * به نام شخص دیگری باز می‌شد — همان کلاس باگی که در مورد ۱-۲ هم بود.
++ */
++ok('نسخه‌ی معمولی دیگر در این فایل نیست', !/await assertPanelPassword\(/.test(SHIFT))
++ok('تعویض اجباری کارمند، «همیشه رمز» است',
++  /assertPanelPasswordStrict\(PANEL_KEYS\.cashClose, input\.managerPassword, 'تعویض اجباری کارمند نشست'\)/.test(SHIFT))
++ok('نشست جامانده‌ی دیشب هم', /assertPanelPasswordStrict\(\s*\n\s*PANEL_KEYS\.cashClose,[\s\S]{0,140}بستن نشست جامانده/.test(SHIFT))
++ok('و import به نسخه‌ی سخت‌گیر عوض شده', /import \{ assertManagerPassword, assertPanelPasswordStrict \}/.test(SHIFT))
++{
++  const { assertPanelPasswordStrict } = await import('../../src/main/services/AuthService.ts')
++  let msg = null
++  try { await assertPanelPasswordStrict('cash-close', '', 'تعویض اجباری') } catch (e) { msg = e.message }
++  ok(`بدون رمز رد می‌شود حتی اگر قفل خاموش باشد (${String(msg).slice(0, 38)}…)`, msg && /همیشه رمز می‌خواهد/.test(msg))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۲-۵) بند ۴-۳۹: نوشتن روی انبار مرکزی گیت سرور دارد —')
++/**
++ * `upsert` مستقیم `qty` را عوض می‌کند. تا امروز فقط `toStore` گیت داشت، پس
++ * یک فراخوانی مستقیم IPC موجودی انبار مرکزی را جابه‌جا می‌کرد. Audit ثبت
++ * می‌شد ولی جلوگیری نمی‌شد — و بند ۴-۳۹ جلوگیری می‌خواهد.
++ */
++for (const [ch, what] of [
++  ['secondaryStockUpsert', 'ثبت یا ویرایش ردیف انبار مرکزی'],
++  ['secondaryStockDelete', 'حذف ردیف انبار مرکزی'],
++  ['secondaryStockTransfer', 'انتقال بین انبارهای مرکزی'],
++  ['secondaryWarehouseUpsert', 'ثبت یا ویرایش انبار مرکزی'],
++  ['secondaryWarehouseDelete', 'حذف انبار مرکزی']
++]) {
++  const re = new RegExp(`handle\\(IPC\\.${ch},[\\s\\S]{0,260}?assertPanelUnlocked\\(PANEL_KEYS\\.secondaryStock, '${what}'\\)`)
++  ok(`${ch} گیت دارد`, re.test(IPC))
++}
++ok('خواندن‌ها عمداً آزاد ماندند (list و history)',
++  /handle\(IPC\.secondaryStockList, \(p\) =>/.test(IPC) && /handle\(IPC\.secondaryStockHistory, \(p\) =>/.test(IPC))
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۳-۷) بند ۴-۳۹: واریز دستی هم گیت گرفت —')
++/**
++ * در نشست ۱۸۲ استدلال کردم واریز بی‌خطر است چون کسری را بزرگ‌تر نشان می‌دهد.
++ * آن استدلال ناقص بود: واریزِ جعلی می‌تواند **اضافه**ی کشو را بپوشاند — اگر
++ * کسی پول اضافه گذاشته تا بعداً بردارد، یک «واریز» ساختگی موجهش می‌کند.
++ */
++{
++  const block = IPC.slice(IPC.indexOf('handle(IPC.cashboxMovementAdd'), IPC.indexOf('handle(IPC.cashboxMovementList'))
++  ok('گیت بدون شرط نوع اجرا می‌شود', /await assertPanelUnlocked\(\s*\n\s*PANEL_KEYS\.cashClose,/.test(block))
++  ok('و دیگر فقط برای برداشت نیست', !/if \(t === 'WITHDRAWAL' \|\| t === 'CASH_OUT' \|\| t === 'OPENING_FLOAT'\)/.test(block))
++  ok('پیام واریز مخصوص خودش است', /ثبت واریز دستی به صندوق/.test(block))
++  ok('و پیام برداشت هم جدا مانده', /ثبت برداشت نقدی از کشو/.test(block))
++  ok('دلیلِ عوض شدن تصمیم نوشته شده', block.includes('کشو را بپوشاند'))
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۲-۷) بند ۴-۴۸: اعتبار منقضی دیگر «فعال» شمرده نمی‌شود —')
++/**
++ * ریشه: هیچ مسیری وضعیت `EXPIRED` را در دیتابیس نمی‌نویسد (انقضا فقط هنگام
++ * مصرف محاسبه می‌شود)، ولی گزارش روی `status` خام فیلتر می‌کرد. نتیجه:
++ * ستون «منقضی» همیشه صفر و «تعهد فعال» بیشتر از واقع.
++ */
++ok('«فعال» شرط تاریخ دارد', /const notExpired = \{ OR: \[\{ expiresAt: null \}, \{ expiresAt: \{ gt: asOf \} \}\] \}/.test(ACCR))
++ok('«منقضی» از تاریخ حساب می‌شود، نه ستون وضعیت', /const expiredSum = async \(\) =>/.test(ACCR))
++ok('و وضعیت ذخیره‌شده‌ی قدیمی هم پوشش داده شده', /\{ status: StoreCreditStatus\.EXPIRED \}/.test(ACCR))
++ok('مبنای «الان» بازه‌ی گزارش است، نه امروز', /const asOf = \(range && scope\.to\) \|\| new Date\(\)/.test(ACCR))
++ok('گزارش از تابع تازه استفاده می‌کند', /expired: await expiredSum\(\)/.test(ACCR))
++ok('و «منقضی» باقی‌مانده است نه مبلغ کل (بخش خرج‌شده نسوخته)',
++  /const expiredSum[\s\S]{0,700}agg\.sum\.amount - agg\.sum\.usedAmount/.test(ACCR))
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۲-۲) بند ۴-۲۳: «امروز» در خودِ کوئری هم هست —')
++/**
++ * در نشست ۱۸۴ `resolveReportPeriod` را درست کردم ولی `saleWhere` — که ردیف‌ها
++ * و `totalCount` را می‌سازد — هیچ قید `issuedAt` نمی‌گذاشت. متای گزارش
++ * «امروز» می‌گفت و ردیف‌ها کل تاریخچه بودند.
++ */
++ok('نبودِ تاریخ ⇒ امروز، در خودِ where', /const todayJalali = noExplicitDate && !wantsFullRange && !scopedByShift \? jalaliToday\(\) : null/.test(SALES))
++ok('fullRange استثناست', /wantsFullRange/.test(SALES))
++ok('فیلتر شیفت هم استثناست (بازه‌اش را از شیفت می‌گیرد)', /scopedByShift/.test(SALES))
++{
++  const { saleWhere } = await import('../../src/main/services/SalesService.ts')
++  const { jalaliToday, jalaliStartOfDay, jalaliEndOfDay } = await import('../../src/shared/jalali.ts')
++  const today = jalaliToday()
++
++  const wNoDate = saleWhere({})
++  ok('بدون تاریخ، قید issuedAt گذاشته می‌شود', !!wNoDate.issuedAt)
++  eq('و شروعش اول امروز است', wNoDate.issuedAt?.gte?.getTime(), jalaliStartOfDay(today).getTime())
++  eq('و پایانش آخر امروز', wNoDate.issuedAt?.lte?.getTime(), jalaliEndOfDay(today).getTime())
++
++  const wFull = saleWhere({ fullRange: true })
++  eq('با fullRange هیچ قیدی نیست', wFull.issuedAt, undefined)
++
++  const wShift = saleWhere({ shiftId: 7 })
++  eq('با فیلتر شیفت هم قید تاریخ تحمیل نمی‌شود', wShift.issuedAt, undefined)
++
++  const wExplicit = saleWhere({ fromJalali: '۱۴۰۴/۰۱/۰۱', toJalali: '۱۴۰۴/۰۱/۳۱' })
++  ok('تاریخ صریح مثل همیشه محترم است', !!wExplicit.issuedAt?.gte && !!wExplicit.issuedAt?.lte)
++  ok('و با امروز فرق دارد', wExplicit.issuedAt?.gte?.getTime() !== jalaliStartOfDay(today).getTime())
++}
++
++// ---------------------------------------------------------------------------
++console.log('\n— ۲-۱) بند ۴-۱۴/۴-۵۳: نشستِ فقط-وصول ردیف می‌گیرد —')
++/**
++ * گروه‌ها فقط از فاکتورهای بازه ساخته می‌شدند. نشستی که هیچ فروشی نداشت ولی
++ * ۷۰۰٬۰۰۰ وصول نسیه داشت، اصلاً ردیف نداشت — در حالی که عددهای کل شاملش
++ * بودند. جمع ردیف‌ها با جمع کل نمی‌خواند.
++ */
++ok('گروه‌بندی پارامتر نشست‌های فعال گرفت', /activeSessions: \{ shiftId: number; dayJalali: string; shiftName: string; sessionSeq\?: number \| null \}\[\]/.test(SHAPE))
++ok('و گزارش آن را پاس می‌دهد', /groupByDayShift\(rows, shiftMeta, activeSessions\)/.test(SALES))
++ok('مبنا createdShiftId است (نشستِ ثبت پرداخت)', /createdShiftId: \{ not: null \}/.test(SALES))
++ok('نشستی که فروش دارد دوباره ساخته نمی‌شود', /const missing = ids\.filter\(\(id\) => !rows\.some\(\(r\) => r\.shiftId === id\)\)/.test(SALES))
++ok('خطای این بخش کل گزارش را نمی‌خواباند', /گروه‌بندی یک «کمک» است/.test(SALES))
++{
++  const { groupByDayShift } = await import('../../src/main/services/reportShape.ts')
++  const meta = new Map([[2, { openedAt: new Date('2026-01-10T08:00:00Z'), closedAt: null }]])
++  const groups = groupByDayShift([], meta, [
++    { shiftId: 2, dayJalali: '۱۴۰۴/۰۷/۰۵', shiftName: 'شیفت عصر', sessionSeq: 1 }
++  ])
++  eq('یک گروه برای نشستِ بدون فروش ساخته شد', groups.length, 1)
++  eq('نامش درست است', groups[0]?.shiftName, 'شیفت عصر')
++  eq('جمع فروشش صفر است (چون فروشی نداشته)', groups[0]?.totals?.grandTotal ?? 0, 0)
++  eq('و یک نشست زیرش دارد', groups[0]?.sessions?.length, 1)
++
++  /** و نباید برای نشستی که فروش دارد، گروه تکراری بسازد. */
++  const withRow = groupByDayShift(
++    [
++      {
++        dateJalali: '۱۴۰۴/۰۷/۰۵', time: '10:00', receiptNo: 1, shiftId: 2, shiftName: 'شیفت عصر',
++        shiftNumber: null, goodsTotal: 0, taxTotal: 0, serviceCharge: 0, discountTotal: 0,
++        deliveryFee: 0, grandTotal: 1000, paidTotal: 1000
++      }
++    ],
++    meta,
++    [{ shiftId: 2, dayJalali: '۱۴۰۴/۰۷/۰۵', shiftName: 'شیفت عصر', sessionSeq: 1 }]
++  )
++  eq('گروه تکراری ساخته نمی‌شود', withRow.length, 1)
++  eq('و ردیف فروشش سر جایش است', withRow[0]?.rows?.length, 1)
++}
++
++console.log(`\n${fail ? '✗' : '✓'} ${pass} بررسی موفق · ${fail} ناموفق`)
++process.exit(fail ? 1 : 0)
+diff --git a/tests/audit-fixes/fix-s59-bridge-exchange.mjs b/tests/audit-fixes/fix-s59-bridge-exchange.mjs
+index df21a98..4fa32e0 100644
+--- a/tests/audit-fixes/fix-s59-bridge-exchange.mjs
++++ b/tests/audit-fixes/fix-s59-bridge-exchange.mjs
+@@ -227,7 +227,29 @@ console.log('\n— ۱۳) بند ۴-۳۷: اعتبار خرید برای فاکت
+   await throwsWith('برگشت با اعتبار خرید روی فاکتور پرداخت‌نشده', () => ret(inv.id, itemsOf(inv.id)[0].id, RefundMethod.STORE_CREDIT, 600), 'اعتبار خرید')
+   const inv2 = await twoItemSale(300)
+   await throwsWith('اعتبار ۶۰۰ وقتی فقط ۳۰۰ دریافت شده', () => ret(inv2.id, itemsOf(inv2.id)[0].id, RefundMethod.STORE_CREDIT, 600), 'اعتبار خرید')
+-  const ok3 = await safe('اعتبار ۳۰۰ (به اندازه‌ی پول دریافتی) مجاز است', () => ret(inv2.id, itemsOf(inv2.id)[0].id, RefundMethod.STORE_CREDIT, 300))
++  /**
++   * 🔴 به‌روزرسانی نشست ۱۸۴ · بند ۴-۳۷ — این انتظار عوض شد، و عوض شدنش عمدی است.
++   *
++   * قاعده‌ی نشست ۵۹ این بود: «اعتبار تا سقفِ پولی که واقعاً دریافت شده». پس
++   * روی فاکتور ۱٬۰۰۰ با پرداخت ۳۰۰، اعتبار ۳۰۰ مجاز بود.
++   *
++   * بازبینی مستقل نشان داد این با خواسته‌ی مالک نمی‌خواند: مشتری هنوز ۷۰۰
++   * بدهکار است و ما داریم به همان مشتری یک سند قابل خرج می‌دهیم. یعنی
++   * فروشگاه هم طلبکار می‌ماند و هم بدهکار می‌شود. قاعده‌ی مالک: در این حالت
++   * برگشت فقط باید بدهی را کم کند.
++   *
++   * پس حالا رد می‌شود — و پیام، کاربر را به روش «بدون بازپرداخت» هدایت می‌کند
++   * که همان کاهش بدهی است.
++   */
++  await throwsWith(
++    'اعتبار روی فاکتوری که هنوز بدهی دارد رد می‌شود (بند ۴-۳۷)',
++    () => ret(inv2.id, itemsOf(inv2.id)[0].id, RefundMethod.STORE_CREDIT, 300),
++    'هنوز'
++  )
++  const inv3 = await twoItemSale(1000)
++  const ok3 = await safe('ولی روی فاکتور تسویه‌شده، اعتبار تا سقف پول دریافتی مجاز است', () =>
++    ret(inv3.id, itemsOf(inv3.id)[0].id, RefundMethod.STORE_CREDIT, 300)
++  )
+   eq('برگشت با اعتبار ۳۰۰ ثبت شد', !!ok3, true)
+   last = null
+ }
+diff --git a/tests/audit-fixes/fix-s63-edit-overpay-lock.mjs b/tests/audit-fixes/fix-s63-edit-overpay-lock.mjs
+index 9493f23..f8ef636 100644
+--- a/tests/audit-fixes/fix-s63-edit-overpay-lock.mjs
++++ b/tests/audit-fixes/fix-s63-edit-overpay-lock.mjs
+@@ -96,7 +96,22 @@ const variant = (price) => {
+   sql.prepare('UPDATE "ProductVariant" SET stock = 100, salePrice = ? WHERE id = ?').run(price, id)
+   return id
+ }
+-const payRows = (invoiceId) => seed.rows('SELECT id, amount, overpayAmount FROM "Payment" WHERE invoiceId = ? ORDER BY seq, id', invoiceId)
++/**
++ * ⚠️ به‌روزرسانی نشست ۱۸۲ — شرط `voidedAt IS NULL` اضافه شد.
++ *
++ * تا نشست ۱۸۱، ویرایشِ فاکتور با `payments` (بدون `keepPayments`) پرداخت‌های
++ * قبلی را **فیزیکی حذف** می‌کرد، پس این کوئری فقط ردیف تازه را می‌دید.
++ * از نشست ۱۸۲ آن ردیف‌ها طبق بند ۴-۲۲ **باطل** می‌شوند نه حذف، تا مبلغ، روش
++ * و کارمندِ هر پرداخت در سابقه بماند.
++ *
++ * پس این helper هم باید همان کاری را بکند که کل برنامه می‌کند: ردیف باطل‌شده
++ * را در محاسبه نیاورد. رفتار سنجیده‌شده‌ی تست یک ذره هم عوض نشده.
++ */
++const payRows = (invoiceId) =>
++  seed.rows(
++    'SELECT id, amount, overpayAmount FROM "Payment" WHERE invoiceId = ? AND voidedAt IS NULL ORDER BY seq, id',
++    invoiceId
++  )
+ const overpaySum = (invoiceId) => payRows(invoiceId).reduce((s, p) => s + Number(p.overpayAmount ?? 0), 0)
+ const creditsOf = (invoiceId) => seed.rows('SELECT * FROM "StoreCredit" WHERE sourceInvoiceId = ? ORDER BY id', invoiceId)
+ const grandOf = (id) => Number(seed.one('SELECT grandTotal FROM "SaleInvoice" WHERE id = ?', id)?.grandTotal ?? -1)
+diff --git a/tests/audit-fixes/fix-s65-exchange-void.mjs b/tests/audit-fixes/fix-s65-exchange-void.mjs
+index 5e32cee..8994e96 100644
+--- a/tests/audit-fixes/fix-s65-exchange-void.mjs
++++ b/tests/audit-fixes/fix-s65-exchange-void.mjs
+@@ -220,7 +220,9 @@ truthy('migration ستون‌های ابطال فاکتور', existsSync(join(RO
+ const invModel = (src('prisma/schema.prisma').match(/model SaleInvoice \{[\s\S]*?\n\}/) ?? [''])[0]
+ truthy('schema: SaleInvoice.voidedAt/voidedByUserId/voidReason', /voidedAt\s+DateTime\?/.test(invModel) && /voidedByUserId\s+Int\?/.test(invModel) && /voidReason\s+String\?/.test(invModel))
+ const svc = src('src/main/services/SalesService.ts')
+-truthy('saleWhere فاکتور باطل را بیرون می‌گذارد', /export function saleWhere[\s\S]{0,900}voidedAt: null/.test(svc))
++// نشست ۱۸۶: بلوک «بازه‌ی پیش‌فرض امروز» به ابتدای تابع اضافه شد، پس فاصله بیشتر شد.
++// آنچه سنجیده می‌شود همان است: `voidedAt: null` داخل همین تابع.
++truthy('saleWhere فاکتور باطل را بیرون می‌گذارد', /export function saleWhere[\s\S]{0,2600}voidedAt: null/.test(svc))
+ const staff = src('src/main/services/StaffReportService.ts')
+ eq('گزارش کارمندان: هر ۴ کوئری فاکتور voidedAt: null دارد', (staff.match(/saleInvoice\.findMany\(\{\s*where: \{[^\n]*voidedAt: null/g) ?? []).length, 4)
+ truthy('جزئیات شیفت فاکتور باطل را نمی‌شمارد', /saleInvoice\.findMany\(\{\s*where: \{ shiftId, voidedAt: null \}/.test(src('src/main/services/ShiftService.ts')))
+diff --git a/tests/audit-fixes/fix-s73-full-refund.mjs b/tests/audit-fixes/fix-s73-full-refund.mjs
+index f61fe27..7687bff 100644
+--- a/tests/audit-fixes/fix-s73-full-refund.mjs
++++ b/tests/audit-fixes/fix-s73-full-refund.mjs
+@@ -76,7 +76,17 @@ await throwsWith(
+     refundMethod: RefundMethod.CASH, managerFullRefund: true,
+     managerPassword: 'رمز-غلط', overrideReason: 'اصلاح تست', userId
+   }),
+-  'رمز مدیر'
++  /**
++   * به‌روزرسانی نشست ۱۸۳ — مقصود همان است: «رمز غلط باید رد شود».
++   *
++   * این گیت حالا علاوه بر رمز مدیر، رمز دوم و رمز سومِ پنل «برگشت از فروش» را
++   * هم می‌پذیرد (خواسته‌ی مالک: دسترسی فرد مورد اعتماد در نبود مدیر). متن
++   * خطا هم طبیعتاً از «رمز مدیر درست نیست» به پیام عمومی‌ترِ مسیر پنل عوض
++   * شده، چون دیگر فقط یک رمز در کار نیست.
++   *
++   * چیزی که سنجیده می‌شود — رد شدنِ رمز غلط — یک ذره هم عوض نشده.
++   */
++  'رمز درست نیست'
+ )
+ 
+ const normalInvoice = await createInvoice()
+diff --git a/tests/audit-fixes/fix-s75-shift-atomic.mjs b/tests/audit-fixes/fix-s75-shift-atomic.mjs
+index 982d0cc..ba03e27 100644
+--- a/tests/audit-fixes/fix-s75-shift-atomic.mjs
++++ b/tests/audit-fixes/fix-s75-shift-atomic.mjs
+@@ -25,7 +25,12 @@ const eq = (label, got, want) => {
+ 
+ eq('بازکردن/بستن نشست در تراکنش انجام می‌شود', /prisma\.\$transaction\(async \(tx\) =>/.test(source), true)
+ eq('بستن نشست قبلی با updateMany شرطی است', /where: \{ id: open\.id, closedAt: null \}/.test(source), true)
+-eq('تعویض نشست کارمند دیگر گیت مدیر دارد', /assertManagerPassword\(input\.managerPassword, 'تعویض اجباری کارمند نشست'\)/.test(source), true)
++// نشست ۱۸۳ — گیت حالا رمز دوم/سوم پنل «بستن صندوق» را هم می‌پذیرد؛ خودِ گیت سر جایش است.
++eq(
++  'تعویض نشست کارمند دیگر گیت رمز دارد',
++  /assertPanelPasswordStrict\(PANEL_KEYS\.cashClose, input\.managerPassword, 'تعویض اجباری کارمند نشست'\)/.test(source),
++  true
++)
+ eq('تعویض اجباری برچسب مستقل دارد', /HANDOVER_FORCED/.test(source), true)
+ 
+ process.env.HARNESS_DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s75-shift-atomic-'))
+diff --git a/tests/audit-fixes/fix-s78-open-session-gate.mjs b/tests/audit-fixes/fix-s78-open-session-gate.mjs
+index 42d59cf..60df911 100644
+--- a/tests/audit-fixes/fix-s78-open-session-gate.mjs
++++ b/tests/audit-fixes/fix-s78-open-session-gate.mjs
+@@ -24,7 +24,20 @@ const eq = (label, got, want) => {
+ }
+ const truthy = (label, value) => eq(label, !!value, true)
+ 
+-truthy('گیت قبل از تراکنش اجرا می‌شود', /const initialForced[\s\S]{0,500}assertManagerPassword\(input\.managerPassword/.test(source))
++// به‌روزرسانی نشست ۱۸۳ — این گیت‌ها حالا علاوه بر رمز مدیر، رمز دوم و رمز سومِ
++// همان پنل را هم می‌پذیرند (خواسته‌ی مالک: دسترسی فرد مورد اعتماد در نبود مدیر).
++// نامِ تابع از `assertManagerPassword` به `assertPanelPassword` عوض شد؛ *ترتیب* و
++// *رفتار* دقیقاً همان است، پس فقط قرارداد متنی به‌روز می‌شود.
++/**
++ * نشست ۱۸۴ — بین تشخیص و گیت، بلوک «نشست جامانده‌ی دیشب» اضافه شده (خوشه E).
++ * آنچه سنجیده می‌شود همان است: گیت وجود دارد و **قبل از تراکنش** اجرا می‌شود.
++ */
++truthy(
++  'گیت قبل از تراکنش اجرا می‌شود',
++  // نشست ۱۸۶ — گیت به نسخه‌ی «همیشه رمز» ارتقا یافت (قفل خاموش دورش نمی‌زند).
++  source.includes('assertPanelPasswordStrict(PANEL_KEYS.cashClose, input.managerPassword') &&
++    source.indexOf('assertPanelPasswordStrict(PANEL_KEYS.cashClose') < source.indexOf('prisma.$transaction(async (tx)')
++)
+ truthy('دلیل کوتاه قبل از تعویض رد می‌شود', /requestedReason\.length < 3/.test(source))
+ truthy('تعویض اجباری برچسب مستقل دارد', /HANDOVER_FORCED/.test(source))
+ 
+diff --git a/tests/audit-fixes/fix-y7-credit-delete-void.mjs b/tests/audit-fixes/fix-y7-credit-delete-void.mjs
+index 146c100..e47dabc 100644
+--- a/tests/audit-fixes/fix-y7-credit-delete-void.mjs
++++ b/tests/audit-fixes/fix-y7-credit-delete-void.mjs
+@@ -90,7 +90,15 @@ console.log('\n۴) ساختار کد: هیچ storeCredit.delete در deleteCredi
+ const src = readFileSync(resolve('src/main/services/StoreCreditService.ts'), 'utf8')
+ const body = src.slice(src.indexOf('export async function deleteCredit'), src.indexOf('// ۷) تولید گروهی'))
+ truthy('tx.storeCredit.delete حذف شد', !/storeCredit\.delete\s*\(/.test(body))
+-truthy('assertCreditId پیش از assertManagerPassword', body.indexOf('assertCreditId') > -1 && body.indexOf('assertCreditId') < body.indexOf('assertManagerPassword'))
++// به‌روزرسانی نشست ۱۸۳ — این گیت‌ها حالا علاوه بر رمز مدیر، رمز دوم و رمز سومِ
++// همان پنل را هم می‌پذیرند (خواسته‌ی مالک: دسترسی فرد مورد اعتماد در نبود مدیر).
++// نامِ تابع از `assertManagerPassword` به `assertPanelPassword` عوض شد؛ *ترتیب* و
++// *رفتار* دقیقاً همان است، پس فقط قرارداد متنی به‌روز می‌شود.
++truthy(
++  'assertCreditId پیش از گیت رمز',
++  body.indexOf('assertCreditId') > -1 && body.indexOf('assertCreditId') < body.indexOf('assertPanelPassword')
++)
++truthy('و گیت رمز، رمز دوم/سوم پنل ابطال را می‌پذیرد', /assertPanelPasswordStrict\(PANEL_KEYS\.creditVoid/.test(body))
+ const ui = readFileSync(resolve('src/shared/creditUi.ts'), 'utf8')
+ truthy('راهنمای UI دیگر وعده‌ی «واقعاً حذف» نمی‌دهد', !ui.includes('واقعاً حذف'))
+ 
+diff --git a/tests/audit/audit-s139-cash-input-handover-verify.mjs b/tests/audit/audit-s139-cash-input-handover-verify.mjs
+index 6bee54d..51dcb69 100644
+--- a/tests/audit/audit-s139-cash-input-handover-verify.mjs
++++ b/tests/audit/audit-s139-cash-input-handover-verify.mjs
+@@ -38,6 +38,22 @@ const safe = async (fn) => { try { return await fn() } catch (e) { return { __er
+ const H = 3600_000
+ const today = jalaliToday()
+ seed.setting('panel.locks', { products: false })
++
++/**
++ * ⚠️ به‌روزرسانی نشست ۱۸۲ — این سه خط رفتار سنجیده‌شده را عوض نمی‌کنند.
++ *
++ * از نشست ۱۸۲، «برداشت نقدی» و «موجودی اول صندوق» در سمت *سرور* هم گیت
++ * دارند (بند ۴-۴۱): تا وقتی قفل صفحه‌ی بستن صندوق باز نشده باشد، IPC ردشان
++ * می‌کند. قبلاً قفل فقط در UI بود و یک فراخوانی مستقیم می‌توانست پول را از
++ * کشو خارج نشان دهد یا `expectedCash` را متورم کند تا کسری پنهان شود.
++ *
++ * این تست درباره‌ی *نشست و شیفتِ* گردش نقدی است، نه درباره‌ی قفل. پس همان
++ * کاری را می‌کند که کاربر واقعی می‌کند: اول قفل را باز می‌کند، بعد ثبت.
++ * (تست اختصاصی خودِ گیت: `tests/audit-fixes/fix-s182-high-priority.mjs`)
++ */
++const { notePanelUnlocked } = await import(join(root, 'src/main/services/panelSession.ts'))
++const { PANEL_KEYS } = await import(join(root, 'src/shared/panels.ts'))
++notePanelUnlocked(PANEL_KEYS.cashClose, 'MANAGER')
+ const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
+ const actor = seed.user('صندوق‌دار نشست باز ۱۳۹')
+ const forged = seed.user('کارمند جعلی ۱۳۹')

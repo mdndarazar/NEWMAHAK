@@ -1,0 +1,28 @@
+diff -ruN /home/user/work/baseline/src/main/services/accountingReport.ts src/main/services/accountingReport.ts
+--- /home/user/work/baseline/src/main/services/accountingReport.ts	2026-09-27 13:01:39.874998353 +0000
++++ src/main/services/accountingReport.ts	2026-09-27 13:08:06.181239503 +0000
+@@ -1166,11 +1166,19 @@
+        * «باقی‌مانده»؛ اعتبار دستی/گروهی بی‌سند و باقی‌مانده در ردیف پل نیستند، پس اینجا هم نه.
+        */
+       const { backedIds } = await storeCreditBridgeSplit(issuedWhere)
+-      const where: any = { id: { in: backedIds } }
+-      const totalCount = await prisma.storeCredit.count({ where })
+-      const rows = await prisma.storeCredit.findMany({
+-        where, orderBy: { id: 'desc' }, skip, take
+-      })
++      /**
++       * نشست ۱۷۲ · S172-D3 — backedIds سقف ندارد (بازه‌ی بزرگ ⇒ ۵۰۱+ اعتبار سند‌دار) و
++       * `id in backedIds` از سقف IN گزارش‌ها (۵۰۰، REPORT_IN_CHUNK) رد می‌شد؛ خطا در catch همین
++       * تابع بلعیده می‌شد و drill ردیفِ ۵۲۱٬۰۰۰ ریالی «۰ سند» نشان می‌داد. backedIds از قبل
++       * به ترتیب id نزولی است (orderBy همان تابع)؛ پس شمارش = طول آرایه، صفحه = برش همان
++       * آرایه، و فقط شناسه‌های صفحه (حداکثر take) در دسته‌های ۵۰۰تایی خوانده می‌شوند.
++       */
++      const totalCount = backedIds.length
++      const pageIds = backedIds.slice(skip, skip + take)
++      const rows: any[] = []
++      for (let i = 0; i < pageIds.length; i += 500)
++        rows.push(...(await prisma.storeCredit.findMany({ where: { id: { in: pageIds.slice(i, i + 500) } } })))
++      rows.sort((a, b) => Number(b.id) - Number(a.id))
+       for (const r of rows)
+         out.push({
+           kind: 'STORE_CREDIT', id: r.id, amount: n(r.amount),

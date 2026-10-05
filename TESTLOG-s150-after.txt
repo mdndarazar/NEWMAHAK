@@ -1,0 +1,116 @@
+(node:3945) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:3945) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/proj/mahak-session131/src/main/services/PriceAdjustService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/proj/mahak-session131/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) ruleOf سخت: اعشار/متن/سقف با پیام فارسی رد می‌شود، نه گرد بی‌صدا (preview، بی‌رمز)
+  ✓ درصد ۱۰٫۶ (قبلاً بی‌صدا ۱۱٪) (رد شد: درصد تغییر باید عدد صحیح باشد؛ «۱۰.۶»٪ پذیرفته نیست (اعشار بی‌صدا به ۱۱ گرد نمی‌شود). هیچ قیمتی تغیی)
+  ✓ درصد «10» متنی (رد شد: درصد تغییر باید عدد صحیح باشد؛ مقدار «10» پذیرفته نیست (متن یا مقدار نامعتبر گرد یا تبدیل نمی‌شود). )
+  ✓ درصد NaN (رد شد: درصد تغییر باید عدد صحیح باشد؛ مقدار «NaN» پذیرفته نیست (متن یا مقدار نامعتبر گرد یا تبدیل نمی‌شود).)
+  ✓ درصد صفر (رد شد: درصد را وارد کنید (بزرگ‌تر از صفر).)
+  ✓ درصد منفی (رد شد: درصد را وارد کنید (بزرگ‌تر از صفر).)
+  ✓ درصد ۱۰۱ (رد شد: درصد نمی‌تواند بیشتر از ۱۰۰ باشد.)
+  ✓ مبلغ ۱۵۰۰٫۵ (قبلاً بی‌صدا ۱۵۰۱) (رد شد: مبلغ تغییر باید عدد صحیح باشد؛ «۱۵۰۰.۵» ریال پذیرفته نیست (اعشار بی‌صدا به ۱۵۰۱ گرد نمی‌شود). هیچ قی)
+  ✓ مبلغ ۳٬۰۰۰٬۰۰۰٬۰۰۰ بیش از سقف (رد شد: مبلغ تغییر (۳٬۰۰۰٬۰۰۰٬۰۰۰ ریال) از سقف مجاز ۲٬۱۴۷٬۴۸۳٬۶۴۷ ریال بیشتر است. هیچ قیمتی تغییر نکرد.)
+  ✓ رُند ۲٫۵ (رد شد: گام رُند قیمت نهایی (۱ = بدون رُند) باید عدد صحیح باشد؛ «۲.۵» ریال پذیرفته نیست (اعشار بی‌صدا به ۳ گ)
+  ✓ رُند صفر (رد شد: گام رُند قیمت نهایی (۱ = بدون رُند) باید ۱ یا بیشتر باشد؛ «۰» ریال پذیرفته نیست. هیچ قیمتی تغییر نکر)
+  ✓ رُند ‎-۱۰۰۰ (رد شد: گام رُند قیمت نهایی (۱ = بدون رُند) باید ۱ یا بیشتر باشد؛ «-۱۰۰۰» ریال پذیرفته نیست. هیچ قیمتی تغییر)
+  ✓ کف قیمت ۲٫۵ (رد شد: کف قیمت (کمترین قیمت مجاز) باید عدد صحیح باشد؛ «۲.۵» ریال پذیرفته نیست (اعشار بی‌صدا به ۳ گرد نمی‌شو)
+  ✓ کف قیمت ‎-۱ (رد شد: کف قیمت (کمترین قیمت مجاز) باید صفر یا بیشتر باشد؛ «-۱» ریال پذیرفته نیست. هیچ قیمتی تغییر نکرد.)
+  ✓ کف قیمت ۳e9 (رد شد: کف قیمت (کمترین قیمت مجاز) (۳٬۰۰۰٬۰۰۰٬۰۰۰ ریال) از سقف مجاز ۲٬۱۴۷٬۴۸۳٬۶۴۷ ریال بیشتر است. هیچ قیمتی )
+  ✓ preview معتبر ۱۰٪ (رُند/کف ارسال‌نشده ⇒ پیش‌فرض ۱ و ۰)
+  ✓ پیش‌نمایش ۱٬۰۰۰٬۰۰۰ + ۱۰٪ = 1100000
+  ✓ preview معتبر با رُند ۱۰۰۰ و کف ۰ صریح
+  ✓ پیش‌نمایش با رُند ۱۰۰۰ = 1100000
+
+۲) سقف قیمت حاصل: ۲٬۰۰۰٬۰۰۰٬۰۰۰ + ۱۰٪ ⇒ رد پیش از هر نوشتن
+  ✓ preview حاصل بیش از سقف (رد شد: قیمت جدید «کت گران ۱۵۰» (۲٬۲۰۰٬۰۰۰٬۰۰۰ ریال، از ۲٬۰۰۰٬۰۰۰٬۰۰۰ ریال) از سقف مجاز ۲٬۱۴۷٬۴۸۳٬۶۴۷ ریال ب)
+  ✓ apply حاصل بیش از سقف (رد شد: قیمت جدید «کت گران ۱۵۰» (۲٬۲۰۰٬۰۰۰٬۰۰۰ ریال، از ۲٬۰۰۰٬۰۰۰٬۰۰۰ ریال) از سقف مجاز ۲٬۱۴۷٬۴۸۳٬۶۴۷ ریال ب)
+  ✓ قیمت کالای گران دست‌نخورده = 2000000000
+  ✓ قیمت کالای دیگر همان دسته هم دست‌نخورده (اتمیک) = 1000000
+  ✓ هیچ دسته‌ای ثبت نشد = 0
+  ✓ apply مبلغ ثابت که حاصلش بیش از سقف است (رد شد: قیمت جدید «کت گران ۱۵۰» (۲٬۲۰۰٬۰۰۰٬۰۰۰ ریال، از ۲٬۰۰۰٬۰۰۰٬۰۰۰ ریال) از سقف مجاز ۲٬۱۴۷٬۴۸۳٬۶۴۷ ریال ب)
+  ✓ قیمت کالای گران پس از مبلغ ثابت دست‌نخورده = 2000000000
+
+۳) گیت main: قفل «تغییر قیمت گروهی» روشن ⇒ بی‌رمز/رمز غلط رد، صفر تغییر
+  ✓ apply بی‌رمز (رد شد: «تغییر گروهی قیمت» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.)
+  ✓ apply رمز خالی (رد شد: «تغییر گروهی قیمت» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.)
+  ✓ apply رمز غلط (رد شد: رمز درست نیست؛ دوباره تلاش کنید.)
+  ✓ validation پیش از رمز (۱۰٫۶٪ بی‌رمز ⇒ پیام درصد) (رد شد: درصد تغییر باید عدد صحیح باشد؛ «۱۰.۶»٪ پذیرفته نیست (اعشار بی‌صدا به ۱۱ گرد نمی‌شود). هیچ قیمتی تغیی)
+  ✓ زمان‌بندی آینده هم بی‌رمز رد (رد شد: «تغییر گروهی قیمت» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.)
+  ✓ قیمت دست‌نخورده = 1000000
+  ✓ دسته‌ای ثبت نشد = 0
+  ✓ Audit تغییر قیمت تازه‌ای ثبت نشد = 0
+
+۴) IPC با رمز مدیر و userId جعلی ⇒ انجام با actor نشست و scope در note
+[ipc:priceAdjust:apply] BusinessError: «تغییر گروهی قیمت» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.
+    at assertPanelPassword (file:///home/user/work/proj/mahak-session131/src/main/services/AuthService.ts:599:11)
+    at async Object.apply (file:///home/user/work/proj/mahak-session131/src/main/services/PriceAdjustService.ts:577:18)
+    at async file:///home/user/work/proj/mahak-session131/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/proj/mahak-session131/tests/audit-fixes/fix-s150-price-adjust-rule-gate.mjs:63:13)
+    at async file:///home/user/work/proj/mahak-session131/tests/audit-fixes/fix-s150-price-adjust-rule-gate.mjs:134:1 {
+  isBusinessError: true
+}
+  ✓ IPC.priceAdjustApply بی‌رمز (رد شد: «تغییر گروهی قیمت» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.)
+  ✓ IPC.priceAdjustApply با رمز مدیر
+  ✓ قیمت ۱٬۰۰۰٬۰۰۰ ⇒ ۱٬۱۰۰٬۰۰۰ = 1100000
+  ✓ userId دسته = کارمند نشست (نه جعلی) = 1
+  ✓ actor Audit = کارمند نشست = 1
+  ✓ scope در note Audit
+
+۵) ویرایش دامنه / بازگردانی / حذف سابقه هم گیت دارند
+  ✓ editBatch بی‌رمز (رد شد: «ویرایش دامنه‌ی تغییر گروهی قیمت» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.)
+  ✓ کالای C دست‌نخورده = 500000
+  ✓ IPC.priceAdjustBatchEdit با رمز
+  ✓ کالای C ۵۰۰٬۰۰۰ ⇒ ۵۵۰٬۰۰۰ = 550000
+  ✓ actor Audit ویرایش = نشست = 1
+  ✓ scope ویرایش در note
+  ✓ revert بی‌رمز (رد شد: «بازگردانی تغییر گروهی قیمت» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.)
+  ✓ قیمت A پس از revert بی‌رمز همان = 1100000
+  ✓ IPC.priceAdjustRevert با رمز
+  ✓ قیمت A برگشت = 1000000
+  ✓ قیمت C برگشت = 500000
+  ✓ actor Audit بازگردانی = نشست = 1
+  ✓ scope بازگردانی در note
+  ✓ deleteBatches بی‌رمز (رد شد: «حذف سابقه‌ی تغییر گروهی قیمت» تأیید مدیر لازم دارد. رمز مدیر (یا رمز دوم همین پنل) را وارد کنید.)
+  ✓ ردیف سابقه باقی ماند = 1
+  ✓ IPC.priceAdjustBatchesDelete با رمز
+  ✓ actor Audit حذف سابقه = نشست = 1
+  ✓ scope حذف سابقه در note
+
+۶) قفل خاموش ⇒ بی‌رمز باز (OPEN)
+  ✓ apply بی‌رمز با قفل خاموش
+  ✓ قیمت A ⇒ ۱٬۱۰۰٬۰۰۰ = 1100000
+  ✓ scope OPEN در note
+
+۷) زمان‌بند: قرار ثبت‌شده که لحظه‌ی شروع حاصلش بیش از سقف است ⇒ شکست ثبت‌شده با علت، بدون نوشتن
+[priceAdjust] scheduled start failed 3 BusinessError: قیمت جدید «شلوار جین ۱۵۰» (۲٬۲۰۰٬۰۰۰٬۰۰۰ ریال، از ۲٬۰۰۰٬۰۰۰٬۰۰۰ ریال) از سقف مجاز ۲٬۱۴۷٬۴۸۳٬۶۴۷ ریال بیشتر می‌شود؛ هیچ قیمتی تغییر نکرد. مقدار تغییر را کمتر کنید یا این کالا را از دامنه خارج کنید.
+    at assertAdjustedPrice (file:///home/user/work/proj/mahak-session131/src/main/services/PriceAdjustService.ts:219:11)
+    at file:///home/user/work/proj/mahak-session131/src/main/services/PriceAdjustService.ts:1481:7
+    at async client.$transaction (file:///home/user/work/proj/mahak-session131/test/harness/prismaLite.mjs:766:22)
+    at async processDueSchedulePhase (file:///home/user/work/proj/mahak-session131/src/main/services/PriceAdjustService.ts:1619:9)
+    at async Object.runDueSchedules (file:///home/user/work/proj/mahak-session131/src/main/services/PriceAdjustService.ts:1016:20)
+    at async safe (file:///home/user/work/proj/mahak-session131/tests/audit-fixes/fix-s150-price-adjust-rule-gate.mjs:60:19)
+    at async file:///home/user/work/proj/mahak-session131/tests/audit-fixes/fix-s150-price-adjust-rule-gate.mjs:176:12 {
+  isBusinessError: true
+}
+  ✓ runDueSchedules بدون پرتاب خطا
+  ✓ یک قرار شکست خورد = 1
+  ✓ قیمت کالای D دست‌نخورده = 2000000000
+  ✓ قرار شکست‌خورده با وضعیت ENDED کنار گذاشته شد (نه APPLIED) = "ENDED"
+  ✓ یادداشت قرار علت فارسی «سقف» را دارد
+
+۸) سیم‌کشی UI و نوع‌ها (ساختاری؛ رندر واقعی Electron اجرا نمی‌شود)
+  ✓ usePanelLock(PANEL_KEYS.priceAdjust) با fail-closed
+  ✓ PasswordField در صفحه
+  ✓ رمز همراه apply/revert/edit/delete فرستاده می‌شود
+  ✓ onChange مقدار دیگر گرد/clamp نمی‌کند
+  ✓ onChange کف قیمت دیگر گرد نمی‌کند
+  ✓ blocker برای درصد/مبلغ اعشاری پیام فارسی دارد
+  ✓ PriceAdjustInput.password
+  ✓ PriceAdjustEditInput.password
+  ✓ PriceAdjustDeleteInput.password
+
+✓ 74 بررسی موفق · 0 ناموفق

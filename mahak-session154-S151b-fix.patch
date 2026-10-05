@@ -1,0 +1,719 @@
+diff -ruN base152/src/main/ipc/index.ts s153/mahak-session131/src/main/ipc/index.ts
+--- base152/src/main/ipc/index.ts	2026-09-25 16:00:21.470916472 +0000
++++ s153/mahak-session131/src/main/ipc/index.ts	2026-09-25 16:03:49.209694328 +0000
+@@ -225,8 +225,9 @@
+   handle(IPC.stockMovements, (p) => productService.movements(p))
+ 
+   // ---- فروش ----
+-  handle(IPC.saleCreate, async (p) => salesService.create(await withUser(p)))
+-  handle(IPC.saleUpdate, async (p) => salesService.update(await withUser(p)))
++  // نشست ۱۵۴ (S151-b) — actor فاکتور و Audit قیمت دستی از نشست باز، نه userId ارسالی رندرر
++  handle(IPC.saleCreate, async (p) => salesService.create(await withOptionalSessionActor(p ?? {})))
++  handle(IPC.saleUpdate, async (p) => salesService.update(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.saleList, (p) => salesService.list(p ?? {}))
+   handle(IPC.saleGet, (p) => salesService.get(p.id))
+   handle(IPC.saleReturn, async (p) => salesService.createReturn(await withUser(p)))
+@@ -268,7 +269,10 @@
+   handle(IPC.cashboxExpected, (p) => cashboxService.expected(p ?? {}))
+   handle(IPC.saleFraudReview, (p) => fraudService.review(p ?? {}))
+   handle(IPC.settingsAccountingPolicy, () => settingsService.accountingPolicy())
+-  handle(IPC.settingsAccountingPolicySet, async (p) => settingsService.setAccountingPolicy(await withUser(p)))
++  // نشست ۱۵۴ (S151-b، S153-D1) — گیت رمز مدیر در خود سرویس؛ actor از نشست
++  handle(IPC.settingsAccountingPolicySet, async (p) =>
++    settingsService.setAccountingPolicy(await withOptionalSessionActor(p ?? {}))
++  )
+   handle(IPC.storeCreditLookup, async (p) => storeCreditService.lookup(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.storeCreditList, (p) => storeCreditService.list(p ?? {}))
+ 
+@@ -302,7 +306,7 @@
+   handle(IPC.creditReminderQueue, async (p) => storeCreditService.queueReminder(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.creditReminderLogs, (p) => storeCreditService.reminderLogs(p ?? {}))
+   handle(IPC.creditSettingsGet, () => settingsService.creditSettings())
+-  handle(IPC.creditSettingsSet, async (p) => settingsService.saveCreditSettings(await withUser(p)))
++  handle(IPC.creditSettingsSet, async (p) => settingsService.saveCreditSettings(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.printCredit, async (p) => printService.printCredit(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.printCreditBatch, async (p) => printService.printCreditBatch(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.creditPdf, async (p) => printService.creditPdf(await withOptionalSessionActor(p ?? {})))
+@@ -473,7 +477,8 @@
+   handle(IPC.settingsGet, async (p) => (await prisma.setting.findUnique({ where: { key: p.key } }))?.value ?? null)
+   handle(IPC.settingsSet, (p) => setRawSetting(p))
+   handle(IPC.settingsBundle, () => settingsService.bundle())
+-  handle(IPC.settingsSaveBundle, (p) => settingsService.saveBundle(p ?? {}))
++  // نشست ۱۵۴ (S151-b، S153-D4) — تغییر سیاست تخفیف از این کانال هم رمز پنل تنظیمات می‌خواهد
++  handle(IPC.settingsSaveBundle, async (p) => settingsService.saveBundle(await withOptionalSessionActor(p ?? {})))
+   /** سوییچ «تعیین شیفت بر اساس ساعت» — ذخیره‌ی فوری، مستقل از فرم تنظیمات (مورد ۱) */
+   handle(IPC.settingsShiftByTime, (p) => settingsService.setShiftByTime(p ?? { byTime: false }))
+   /** بند ۹ — «تاریخ و ساعت رسمی»: افست دستی + بررسی ساعت سیستم (بدون اینترنت) */
+@@ -520,7 +525,7 @@
+   handle(IPC.priceAdjustRunSchedule, () => priceAdjustService.runDueSchedules())
+   // ---- بند ۳: سیاست تخفیف پنل فروش ----
+   handle(IPC.discountPolicyGet, () => settingsService.discountPolicy())
+-  handle(IPC.discountPolicySave, (p) => settingsService.saveDiscountPolicy(p ?? {}))
++  handle(IPC.discountPolicySave, async (p) => settingsService.saveDiscountPolicy(await withOptionalSessionActor(p ?? {})))
+ 
+   // مورد ۸ — انتقال از انبار مرکزی به انبار فروشگاه
+   handle(IPC.secondaryStockToStore, async (p) => secondaryStockService.toStore(await withOptionalSessionActor(p ?? {})))
+diff -ruN base152/src/main/services/FraudService.ts s153/mahak-session131/src/main/services/FraudService.ts
+--- base152/src/main/services/FraudService.ts	2026-09-25 16:00:21.470916472 +0000
++++ s153/mahak-session131/src/main/services/FraudService.ts	2026-09-25 16:03:49.209694328 +0000
+@@ -442,7 +442,15 @@
+     // ---------------- ۸) تغییر بعد از قفل دوره ----------------
+     const overrides = await readAll((page) => prisma.auditLog.findMany({
+       where: {
+-        action: { in: [AuditAction.CLOSED_PERIOD_OVERRIDE, AuditAction.EXCHANGE_PRICE_OVERRIDE, AuditAction.STORE_CREDIT_OVER_LIMIT] },
++        // نشست ۱۵۴ (S151-b، S153-D3) — قیمت دستی فروش/ویرایش فاکتور کنار قیمت دستی تعویض
++        action: {
++          in: [
++            AuditAction.CLOSED_PERIOD_OVERRIDE,
++            AuditAction.EXCHANGE_PRICE_OVERRIDE,
++            AuditAction.SALE_PRICE_OVERRIDE,
++            AuditAction.STORE_CREDIT_OVER_LIMIT
++          ]
++        },
+         // نشست ۸۴ · خوشه I: ستون زمانِ AuditLog در schema «at» است، نه createdAt؛
+         // نام غلط باعث خطای validation و کور شدن کل تب ضدتقلب می‌شد.
+         at: { gte: from, lte: to }
+diff -ruN base152/src/main/services/SalesService.ts s153/mahak-session131/src/main/services/SalesService.ts
+--- base152/src/main/services/SalesService.ts	2026-09-25 16:00:21.470916472 +0000
++++ s153/mahak-session131/src/main/services/SalesService.ts	2026-09-25 16:03:32.073395474 +0000
+@@ -95,6 +95,7 @@
+   money
+ } from '@shared/jalali'
+ import { SETTING_KEYS, parseSaleDefaults } from '@shared/receipt'
++import { discountCeilingFor, fixedDiscountFor } from '@shared/priceAdjust'
+ import type {
+   CreateSaleInput,
+   ReturnSaleInput,
+@@ -1262,6 +1263,174 @@
+   return true
+ }
+ 
++/**
++ * ===========================================================================
++ * نشست ۱۵۴ · S151-b · بند ۴-۲۶ (بازه‌ی تخفیف سمت سرور، بی‌دورزدن با رمز) و
++ * requireManagerForPriceOverride (قیمت دستی در فروش و ویرایش فاکتور).
++ *
++ * قبلاً `create/update` هر `unitPrice` و هر تخفیفی را می‌پذیرفتند ⇒ کالای
++ * ۱٬۰۰۰٬۰۰۰ ریالی بی‌رمز و بی‌Audit با ۳۰۰٬۰۰۰ ثبت می‌شد و بازه‌ی تخفیف فقط در UI
++ * بود. این helper **بیرون از تراکنش** (نوشتن AuthLockout وسط تراکنش = بن‌بست
++ * SQLite) و به این ترتیب کار می‌کند تا فاکتوری که به‌هرحال رد می‌شود یک تلاش
++ * رمز مصرف نکند:
++ *   ۱) قیمت مرجع هر ردیف: در ویرایش کمترین unitPrice همان کالا در فاکتور اصلی
++ *      (source=INVOICE)، وگرنه salePrice فعلی کالا (source=CATALOG). کالای
++ *      ناموجود بی‌مرجع ⇒ رد (S153-D2).
++ *   ۲) بازه‌ی تخفیف (فقط غیرعمده): کاهش قیمت زیر مرجع هم تخفیف حساب می‌شود
++ *      (S152-D4). عبور از بازه = رد کامل، حتی با رمز مدیر.
++ *   ۳) رمز مدیر فقط اگر کاهش زیر مرجع هست و گیت روشن است.
++ * افزایش قیمت رمز نمی‌خواهد ولی مثل کاهش در Audit می‌نشیند (writeSalePriceOverrideAudit).
++ * ===========================================================================
++ */
++interface SalePriceOverride {
++  variantId: number
++  code: string
++  qty: number
++  refPrice: number
++  enteredPrice: number
++  source: 'INVOICE' | 'CATALOG'
++}
++
++interface SalePricingCheck {
++  /** رمز مدیر همین درخواست سنجیده و پذیرفته شد (برای preverify بعدی، فقط یک بار) */
++  managerApproved: boolean
++  /** گیت requireManagerForPriceOverride در لحظه‌ی سنجش روشن بود */
++  gateOn: boolean
++  overrides: SalePriceOverride[]
++}
++
++const discountRejectTail = ' این محدودیت را مدیر در «سیاست تخفیف» تعیین کرده و با رمز مدیر هم باز نمی‌شود.'
++
++async function preverifySalePolicy(
++  input: CreateSaleInput,
++  ctx: { orderType: string; originalItems?: { variantId: number; unitPrice: number }[] | null }
++): Promise<SalePricingCheck> {
++  // ---------- ۱) مرجع‌ها ----------
++  const invoiceRef = new Map<number, number>()
++  for (const it of ctx.originalItems ?? []) {
++    const price = Math.round(Number(it.unitPrice))
++    const prev = invoiceRef.get(it.variantId)
++    if (prev == null || price < prev) invoiceRef.set(it.variantId, price)
++  }
++  const ids = [...new Set(input.lines.map((l) => l.variantId))]
++  const variants = new Map<number, { code: string; salePrice: number }>()
++  for (const v of await loadProductVariantsByIds(prisma, ids, { id: true, code: true, salePrice: true }))
++    variants.set(Number(v.id), { code: String(v.code ?? ''), salePrice: Math.round(Number(v.salePrice ?? 0)) })
++
++  const overrides: SalePriceOverride[] = []
++  let reduction = 0
++  let base = 0
++  let goods = 0
++  for (const l of input.lines) {
++    const variant = variants.get(l.variantId)
++    const fromInvoice = invoiceRef.get(l.variantId)
++    if (fromInvoice == null && !variant)
++      throw new BusinessError(
++        `کالا پیدا نشد؛ قیمت مرجع وجود ندارد (کد ${l.code || faDigits(l.variantId)}). ` +
++          'بدون قیمت مرجع، کم‌ثبتی قیمت قابل سنجش نیست؛ کالا را دوباره از فهرست انتخاب کنید.'
++      )
++    const ref = fromInvoice ?? variant!.salePrice
++    const unit = l.unitPrice
++    reduction += Math.max(0, ref - unit) * l.qty
++    base += Math.max(unit, ref) * l.qty
++    goods += unit * l.qty
++    if (unit !== ref)
++      overrides.push({
++        variantId: l.variantId,
++        code: variant?.code || l.code || String(l.variantId),
++        qty: l.qty,
++        refPrice: ref,
++        enteredPrice: unit,
++        source: fromInvoice != null ? 'INVOICE' : 'CATALOG'
++      })
++  }
++
++  // ---------- ۲) بازه‌ی تخفیف (خالص، بدون نوشتن) ----------
++  if (ctx.orderType !== OrderType.WHOLESALE) {
++    const policy = await settingsService.discountPolicy()
++    const lineDisc = input.lines.reduce((s, l) => s + l.discount, 0)
++    const inv = Math.round(input.invoiceDiscount ?? 0)
++    const parts =
++      `تخفیف ردیف ${money(lineDisc)} ریال، تخفیف کل فاکتور ${money(inv)} ریال` +
++      ` و کاهش قیمت زیر قیمت مرجع ${money(reduction)} ریال`
++    if (policy.mode === 'OFF') {
++      if (lineDisc + inv + reduction > 0)
++        throw new BusinessError(`تخفیف در پنل فروش غیرفعال است (سیاست تخفیف: غیرفعال)؛ ${parts} پذیرفته نیست.` + discountRejectTail)
++    } else if (policy.mode === 'FIXED') {
++      if (lineDisc > 0 || reduction > 0)
++        throw new BusinessError(
++          `سیاست تخفیف «فقط تخفیف ثابت مدیر» است؛ تخفیف ردیف یا کاهش قیمت کالا مجاز نیست (${parts}).` + discountRejectTail
++        )
++      const fixed = policy.allowInvoice ? fixedDiscountFor(policy, goods) : 0
++      if (inv !== 0 && inv !== fixed)
++        throw new BusinessError(
++          `سیاست تخفیف «فقط تخفیف ثابت مدیر» است؛ تخفیف کل فاکتور فقط صفر یا دقیقاً ${money(fixed)} ریال` +
++            `${policy.fixedMode === 'PERCENT' ? ` (${faDigits(policy.fixedValue)}٪ از ${money(goods)} ریال)` : ''} مجاز است، ` +
++            `نه ${money(inv)} ریال.` + discountRejectTail
++        )
++    } else {
++      if (!policy.allowLine && (lineDisc > 0 || reduction > 0))
++        throw new BusinessError(`تخفیف روی خودِ کالا (ردیف یا کاهش قیمت) در سیاست تخفیف بسته است (${parts}).` + discountRejectTail)
++      if (!policy.allowInvoice && inv > 0)
++        throw new BusinessError(`تخفیف کل فاکتور در سیاست تخفیف بسته است؛ تخفیف ${money(inv)} ریال پذیرفته نیست.` + discountRejectTail)
++      const total = lineDisc + inv + reduction
++      const ceiling = discountCeilingFor(policy, base)
++      if (total > ceiling)
++        throw new BusinessError(
++          `جمع تخفیف این فاکتور ${money(total)} ریال است (${parts}) و از سقف مجاز ${money(ceiling)} ریال بیشتر است ` +
++            `(سقف: ${faDigits(policy.maxPercent)}٪ از ${money(base)} ریال` +
++            `${policy.maxAmount > 0 ? ` و حداکثر ${money(policy.maxAmount)} ریال` : ''}).` + discountRejectTail
++        )
++    }
++  }
++
++  // ---------- ۳) رمز مدیر (آخر از همه) ----------
++  const gateOn = (await settingsService.accountingPolicy()).requireManagerForPriceOverride !== false
++  const decreases = overrides.filter((o) => o.enteredPrice < o.refPrice)
++  let managerApproved = false
++  if (decreases.length && gateOn) {
++    await assertManagerPassword(
++      (input as any).managerPassword ?? null,
++      'قیمت کمتر از قیمت مرجع (' +
++        decreases
++          .map((o) => `کد ${o.code}: واردشده ${money(o.enteredPrice)} ریال، مرجع ${money(o.refPrice)} ریال`)
++          .join(' · ') +
++        ')'
++    )
++    managerApproved = true
++  }
++  return { managerApproved, gateOn, overrides }
++}
++
++/** Audit SALE_PRICE_OVERRIDE داخل همان تراکنش ثبت/ویرایش فاکتور (قالب EXCHANGE_PRICE_OVERRIDE). */
++async function writeSalePriceOverrideAudit(
++  tx: Prisma.TransactionClient,
++  input: { invoiceId: number; receiptNo: number; userId: number | null; what: string; check: SalePricingCheck }
++): Promise<void> {
++  const { overrides, managerApproved } = input.check
++  if (!overrides.length) return
++  const modeOf = (o: SalePriceOverride) =>
++    o.enteredPrice > o.refPrice ? 'افزایش، بدون رمز' : managerApproved ? 'کاهش با تایید رمز مدیر' : 'کاهش، گیت خاموش'
++  await audit(tx, {
++    action: AuditAction.SALE_PRICE_OVERRIDE,
++    entity: 'SaleInvoice',
++    entityId: input.invoiceId,
++    userId: input.userId,
++    before: JSON.stringify(
++      overrides.map((o) => ({ variantId: o.variantId, code: o.code, qty: o.qty, price: o.refPrice, source: o.source }))
++    ),
++    after: JSON.stringify(overrides.map((o) => ({ variantId: o.variantId, code: o.code, qty: o.qty, price: o.enteredPrice }))),
++    note:
++      `قیمت دستی در ${input.what} فیش ${faDigits(input.receiptNo)}: ` +
++      overrides
++        .map(
++          (o) =>
++            `کد ${o.code}: مرجع ${money(o.refPrice)} ← واردشده ${money(o.enteredPrice)} ریال (${modeOf(o)}${o.source === 'INVOICE' ? '، مرجع فاکتور اصلی' : ''})`
++        )
++        .join(' · ')
++  })
++}
++
+ export interface OverpayCreditResult {
+   id: number
+   code: string
+@@ -2264,6 +2433,12 @@
+         : Math.min(Math.max(Math.round(input.wholesaleDiscountPercent), 0), 100)
+ 
+     /**
++     * نشست ۱۵۴ (S151-b) — مرجع قیمت، بازه‌ی تخفیف و رمز مدیرِ قیمت دستی، بیرون از
++     * تراکنش و پیش از هر رمز دیگر؛ رمز مدیر همین درخواست فقط یک بار سنجیده می‌شود.
++     */
++    const pricing = await preverifySalePolicy(input, { orderType })
++
++    /**
+      * =====================================================================
+      * جلسه ۵۲ · مرحله ۳ — قفل **سمت سرور** برای «مبدأ کسر» در پنل فروش تکی.
+      *
+@@ -2308,11 +2483,13 @@
+       at: issuedAt,
+       what: 'ثبت فاکتور فروش',
+       managerPassword: (input as any).managerPassword ?? null,
+-      overrideReason: (input as any).overrideReason ?? null
++      overrideReason: (input as any).overrideReason ?? null,
++      alreadyVerified: pricing.managerApproved
+     })
+     const overpayManagerApproved =
+       input.overpayAsCredit === true
+         ? periodApproved ||
++          pricing.managerApproved ||
+           (await preverifyOverpayManager(input, 'صدور اعتبار از اضافه‌دریافت فروش (بالاتر از سقف اعتبار)'))
+         : false
+ 
+@@ -2514,6 +2691,15 @@
+         include: { items: true, payments: { include: { method: true } }, customer: true, shift: true }
+       })
+ 
++      /** نشست ۱۵۴ (S151-b) — قیمت دستی (کاهش یا افزایش) در AuditLog، داخل همین تراکنش */
++      await writeSalePriceOverrideAudit(tx, {
++        invoiceId: invoice.id,
++        receiptNo: invoice.receiptNo,
++        userId: input.userId ?? null,
++        what: 'ثبت فاکتور فروش',
++        check: pricing
++      })
++
+       /**
+        * کسر انبار فقط وقتی فاکتور «با کسر از موجودی» است.
+        *
+@@ -2721,19 +2907,35 @@
+      */
+     const pre = await prisma.saleInvoice.findUnique({
+       where: { id: input.id },
+-      select: { id: true, issuedAt: true, receiptNo: true }
++      select: {
++        id: true,
++        issuedAt: true,
++        receiptNo: true,
++        orderType: true,
++        items: { select: { variantId: true, unitPrice: true } }
++      }
++    })
++    /**
++     * نشست ۱۵۴ (S151-b) — فاکتور ناموجود پیش از هر رمز رد می‌شود (هیچ تلاش رمزی
++     * مصرف نمی‌شود). مرجع قیمت ویرایش = کمترین قیمت همان کالا در فاکتور اصلی؛
++     * سیاست تخفیف با orderType نهایی (ورودی یا همان فاکتور) سنجیده می‌شود.
++     */
++    if (!pre) throw new BusinessError('این فاکتور پیدا نشد؛ ممکن است حذف شده باشد. لیست فاکتورها را تازه کنید.')
++    const pricing = await preverifySalePolicy(input, {
++      orderType: input.orderType ?? pre.orderType,
++      originalItems: pre.items
++    })
++    const periodApproved = await periodLockService.preverify({
++      at: pre.issuedAt,
++      what: `ویرایش فاکتور ${faDigits(pre.receiptNo)}`,
++      managerPassword: (input as any).managerPassword ?? null,
++      overrideReason: (input as any).overrideReason ?? null,
++      alreadyVerified: pricing.managerApproved
+     })
+-    const periodApproved = pre
+-      ? await periodLockService.preverify({
+-          at: pre.issuedAt,
+-          what: `ویرایش فاکتور ${faDigits(pre.receiptNo)}`,
+-          managerPassword: (input as any).managerPassword ?? null,
+-          overrideReason: (input as any).overrideReason ?? null
+-        })
+-      : false
+     const overpayManagerApproved =
+       input.overpayAsCredit === true
+         ? periodApproved ||
++          pricing.managerApproved ||
+           (await preverifyOverpayManager(input, 'صدور اعتبار از اضافه‌دریافت ویرایش فاکتور (بالاتر از سقف اعتبار)'))
+         : false
+ 
+@@ -2969,6 +3171,15 @@
+         include: { items: true }
+       })
+ 
++      /** نشست ۱۵۴ (S151-b) — قیمت دستی ویرایش (نسبت به فاکتور اصلی) در AuditLog، داخل همین تراکنش */
++      await writeSalePriceOverrideAudit(tx, {
++        invoiceId: invoice.id,
++        receiptNo: current.receiptNo,
++        userId: input.userId ?? null,
++        what: 'ویرایش فاکتور',
++        check: pricing
++      })
++
+       /**
+        * جلسه ۴۷ — دفتر مبدأ تازه، روی اقلامِ تازه‌ی همین فاکتور. اینجا هم دوباره
+        * اعتبارسنجی می‌شود، پس ویرایشی که موجودی انبارها بینش عوض شده باشد با
+diff -ruN base152/src/main/services/SettingsService.ts s153/mahak-session131/src/main/services/SettingsService.ts
+--- base152/src/main/services/SettingsService.ts	2026-09-25 16:00:21.470916472 +0000
++++ s153/mahak-session131/src/main/services/SettingsService.ts	2026-09-25 16:04:16.682173453 +0000
+@@ -1,5 +1,11 @@
+ import { prisma } from '../db/client'
+ import { audit } from './AuditService'
++/**
++ * نشست ۱۵۴ (S151-b) — گیت‌های رمز سمت سرور. AuthService خودش SettingsService را
++ * import نمی‌کند (فقط db/client، AuditService، errors، PanelVault و shared)، پس چرخه‌ای ساخته نمی‌شود.
++ */
++import { assertManagerPassword, assertPanelPassword } from './AuthService'
++import { PANEL_KEYS } from '@shared/panels'
+ import { AuditAction } from '@shared/enums'
+ import { toClock, toJalaliDate } from '@shared/jalali'
+ import {
+@@ -166,7 +172,17 @@
+     return parseAccountingPolicy(await readKey(SETTING_KEYS.accountingPolicy))
+   },
+ 
+-  async setAccountingPolicy(input: { policy?: unknown; userId?: number | null } = {}) {
++  /**
++   * نشست ۱۵۴ (S151-b، بند ۴-۲۹، S153-D1) — سقف مجاز مغایرت صندوق، گیت قیمت دستی،
++   * قفل دوره‌ی بسته و سقف اعتبار: **همیشه** رمز مدیر، در خود سرویس (نه فقط IPC یا UI).
++   */
++  async setAccountingPolicy(
++    input: { policy?: unknown; userId?: number | null; managerPassword?: string | null } = {}
++  ) {
++    await assertManagerPassword(
++      input?.managerPassword ?? null,
++      'تغییر سیاست حسابداری (سقف مجاز مغایرت صندوق، گیت قیمت دستی، قفل دوره‌ی بسته، سقف اعتبار خرید)'
++    )
+     const before = await this.accountingPolicy()
+     const next = parseAccountingPolicy(input.policy)
+     await writeKey(SETTING_KEYS.accountingPolicy, next)
+@@ -192,14 +208,21 @@
+    * محافظه‌کار در `@shared/credit`، و یک ردیف AuditLog روی هر تغییر — چون این
+    * تنظیمات مستقیم روی پول (طول کد، دفعات مصرف، مدت اعتبار) اثر دارند.
+    *
+-   * ⚠️ خودِ صفحه‌ی تنظیمات پشت رمز دوم `creditSettings` است (§۲۰)، پس اینجا
+-   * رمز دوباره خواسته نمی‌شود — دقیقاً مثل `saveDiscountPolicy` و `saveCharge`.
++   * نشست ۱۵۴ (S151-b) — قفل UI کافی نبود (هر تماس IPC دورش می‌زد)؛ حالا خودِ
++   * سرویس رمز پنل `creditSettings` را می‌سنجد (قفل خاموش ⇒ OPEN، سیاست قفل ماژول‌ها).
+    */
+   async creditSettings(): Promise<CreditSettings> {
+     return parseCreditSettings(await readKey(SETTING_KEYS.creditSettings))
+   },
+ 
+-  async saveCreditSettings(input: { settings?: unknown; userId?: number | null } = {}): Promise<CreditSettings> {
++  async saveCreditSettings(
++    input: { settings?: unknown; userId?: number | null; panelPassword?: string | null } = {}
++  ): Promise<CreditSettings> {
++    await assertPanelPassword(
++      PANEL_KEYS.creditSettings,
++      input?.panelPassword ?? null,
++      'ذخیره‌ی تنظیمات اعتبار خرید (طول کد، دفعات مصرف، مدت اعتبار)'
++    )
+     const before = await this.creditSettings()
+     const next = parseCreditSettings(input?.settings ?? DEFAULT_CREDIT_SETTINGS)
+     await writeKey(SETTING_KEYS.creditSettings, next)
+@@ -237,11 +260,18 @@
+   },
+ 
+   /**
+-   * ذخیره‌ی سیاست تخفیف. از ماژول «تخفیف و افزایش/کاهش قیمت» صدا زده می‌شود که
+-   * خودش قفل رمز دارد، پس اینجا رمز دوباره خواسته نمی‌شود (همان الگوی
+-   * `saveCharge`). تغییرش در AuditLog ثبت می‌گردد چون مستقیم روی پول اثر دارد.
+-   */
+-  async saveDiscountPolicy(input: { policy?: unknown; userId?: number | null } = {}): Promise<DiscountPolicy> {
++   * ذخیره‌ی سیاست تخفیف. نشست ۱۵۴ (S151-b، بند ۴-۲۶): قفل UI کافی نبود؛ خودِ
++   * سرویس رمز پنل تنظیمات را می‌سنجد (این پنل همیشه قفل است). تغییرش در AuditLog
++   * ثبت می‌گردد چون مستقیم روی پول اثر دارد.
++   */
++  async saveDiscountPolicy(
++    input: { policy?: unknown; userId?: number | null; panelPassword?: string | null } = {}
++  ): Promise<DiscountPolicy> {
++    await assertPanelPassword(
++      PANEL_KEYS.settings,
++      input?.panelPassword ?? null,
++      'تغییر سیاست تخفیف پنل فروش (بازه‌ی مجاز تخفیف)'
++    )
+     const before = await this.discountPolicy()
+     const clean = parseDiscountPolicy(input?.policy ?? DEFAULT_DISCOUNT_POLICY)
+     await writeKey(SETTING_KEYS.discountPolicy, clean)
+@@ -458,7 +488,23 @@
+    * مقدارها قبل از ذخیره نرمال‌سازی می‌شوند تا فیلد ناقص یا نوع اشتباه ذخیره
+    * نشود. تغییر تنظیمات در AuditLog هم ثبت می‌گردد.
+    */
+-  async saveBundle(input: Partial<SettingsBundle> & { userId?: number | null }): Promise<SettingsBundle> {
++  async saveBundle(
++    input: Partial<SettingsBundle> & { userId?: number | null; panelPassword?: string | null }
++  ): Promise<SettingsBundle> {
++    /**
++     * نشست ۱۵۴ (S151-b، یافته‌ی Y10) — این کانال سیاست تخفیف را بی‌گیت می‌نوشت و
++     * رمز discountPolicySave را دور می‌زد. حالا *پیش از هر نوشتن*: اگر discount
++     * آمده و با سیاست فعلی فرق دارد ⇒ رمز پنل تنظیمات. بقیه‌ی کلیدهای Y10 در S151-c.
++     */
++    if (input?.discount) {
++      const current = await this.discountPolicy()
++      if (JSON.stringify(parseDiscountPolicy(input.discount)) !== JSON.stringify(current))
++        await assertPanelPassword(
++          PANEL_KEYS.settings,
++          input.panelPassword ?? null,
++          'تغییر سیاست تخفیف پنل فروش از ذخیره‌ی کلی تنظیمات'
++        )
++    }
+     const before = await this.bundle()
+ 
+     /**
+diff -ruN base152/src/renderer/src/components/CreditForms.tsx s153/mahak-session131/src/renderer/src/components/CreditForms.tsx
+--- base152/src/renderer/src/components/CreditForms.tsx	2026-09-25 16:00:21.475058766 +0000
++++ s153/mahak-session131/src/renderer/src/components/CreditForms.tsx	2026-09-25 16:05:21.079296587 +0000
+@@ -319,12 +319,20 @@
+   settings,
+   setSettings,
+   onSave,
+-  busy = false
++  busy = false,
++  password,
++  setPassword
+ }: {
+   settings: CreditSettings
+   setSettings: (fn: (s: CreditSettings) => CreditSettings) => void
+   onSave: () => void
+   busy?: boolean
++  /**
++   * نشست ۱۵۴ (S151-b) — رمز پنل creditSettings برای گیت سمت سرور. `undefined` =
++   * قفل خاموش (کادر نمایش داده نمی‌شود)؛ رشته = کادر رمز و دکمه تا رمز خالی است غیرفعال.
++   */
++  password?: string
++  setPassword?: (v: string) => void
+ }) {
+   const set = (patch: Partial<CreditSettings>) => setSettings((s) => ({ ...s, ...patch }))
+   const setReminder = (patch: Record<string, unknown>) => setSettings((s) => ({ ...s, reminder: { ...s.reminder, ...patch } as any }))
+@@ -454,7 +462,17 @@
+           {w}
+         </div>
+       ))}
+-      <button className="btn btn-primary" onClick={onSave} disabled={busy}>
++      {password !== undefined && (
++        <label className="flex flex-col gap-1">
++          <span className="kbd">رمز مدیر یا رمز دوم «تنظیمات اعتبار خرید» (سمت سرور هم بررسی می‌شود)</span>
++          <PasswordField value={password} onChange={(e) => setPassword?.(e.target.value)} />
++        </label>
++      )}
++      <button
++        className="btn btn-primary"
++        onClick={onSave}
++        disabled={busy || (password !== undefined && !password.trim())}
++      >
+         {busy ? 'در حال ذخیره…' : 'ذخیره تنظیمات'}
+       </button>
+     </div>
+diff -ruN base152/src/renderer/src/pages/CreditManagement.tsx s153/mahak-session131/src/renderer/src/pages/CreditManagement.tsx
+--- base152/src/renderer/src/pages/CreditManagement.tsx	2026-09-25 16:00:21.475058766 +0000
++++ s153/mahak-session131/src/renderer/src/pages/CreditManagement.tsx	2026-09-25 16:05:21.079296587 +0000
+@@ -10,6 +10,7 @@
+ import CreditDetailView from '../components/CreditDetailView'
+ import { exportTable } from '../lib/exportCsv'
+ import { PANEL_KEYS } from '@shared/panels'
++import { usePanelLock } from '../hooks/usePanelLocks'
+ import { faDigits, money, toLatinDigits } from '@shared/jalali'
+ import {
+   CREDIT_BATCH_HEADERS,
+@@ -139,6 +140,13 @@
+   const [from, setFrom] = useState('')
+   const [to, setTo] = useState('')
+   const [busy, setBusy] = useState(false)
++  /**
++   * نشست ۱۵۴ (S151-b) — گیت main ذخیره‌ی تنظیمات اعتبار: رمز همراه همان درخواست
++   * فرستاده می‌شود و سرور می‌سنجد. تا وضعیت قفل خوانده نشده، رمز لازم فرض می‌شود (fail-closed).
++   */
++  const { lockEnabled: creditSettingsLock, loaded: creditSettingsLockLoaded } = usePanelLock(PANEL_KEYS.creditSettings)
++  const needCreditSettingsPw = !creditSettingsLockLoaded || creditSettingsLock
++  const [creditSettingsPw, setCreditSettingsPw] = useState('')
+   const [msg, setMsg] = useState<string | null>(null)
+   const [err, setErr] = useState<string | null>(null)
+   const [issueOpen, setIssueOpen] = useState(false)
+@@ -299,11 +307,13 @@
+ 
+   const saveSettings = async () => {
+     try {
+-      await call(CH.creditSettingsSet, { settings })
++      await call(CH.creditSettingsSet, { settings, panelPassword: creditSettingsPw })
+       flash('تنظیمات اعتبار ذخیره شد.')
+       void load()
+     } catch (e: any) {
+       setErr(e.message)
++    } finally {
++      setCreditSettingsPw('') // بند ۴-۴۰ — رمز هر عملیات حساس دوباره پرسیده شود
+     }
+   }
+ 
+@@ -812,7 +822,14 @@
+ 
+         {view === 'settings' && (
+           <Gate panel={PANEL_KEYS.creditSettings} title="تنظیمات اعتبار خرید">
+-            <SettingsForm settings={settings} setSettings={setSettings} onSave={saveSettings} busy={busy} />
++            <SettingsForm
++              settings={settings}
++              setSettings={setSettings}
++              onSave={saveSettings}
++              busy={busy}
++              password={needCreditSettingsPw ? creditSettingsPw : undefined}
++              setPassword={setCreditSettingsPw}
++            />
+           </Gate>
+         )}
+ 
+diff -ruN base152/src/renderer/src/pages/Pos.tsx s153/mahak-session131/src/renderer/src/pages/Pos.tsx
+--- base152/src/renderer/src/pages/Pos.tsx	2026-09-25 16:00:21.475058766 +0000
++++ s153/mahak-session131/src/renderer/src/pages/Pos.tsx	2026-09-25 16:05:29.367441142 +0000
+@@ -479,8 +479,12 @@
+    *    برای «عدد دلخواه این فاکتور» باقی نمانده است.
+    *
+    * ۲) **تخفیف از صافیِ سیاست عبور می‌کند** (بند ۳). سقف با
+-   *    `discountCeilingFor(policy, goods)` گرفته می‌شود — همان تابعی که سمت main
+-   *    هم استفاده می‌شود، پس دو عدد متفاوت غیرممکن است. اگر خواسته‌ی فروشنده از
++   *    `discountCeilingFor(policy, goods)` گرفته می‌شود. از نشست ۱۵۴ (S151-b) همین
++   *    تابع سمت main هم در `SalesService.create/update` (`preverifySalePolicy`) بازه را
++   *    enforce می‌کند و عبور از آن حتی با رمز مدیر رد می‌شود؛ پیش از آن این بازه فقط
++   *    در UI بود. ریسک باقی‌مانده (Y11، S152-D3): گرد ردیف‌های کوتاه‌شده با
++   *    `lineScale` می‌تواند چند ریال از سقف بیشتر شود و سرور فروش را با پیام فارسی
++   *    رد کند؛ tolerance سمت سرور عمداً ساخته نشد. اگر خواسته‌ی فروشنده از
+    *    سقف بیشتر بود، *اول* تخفیف فاکتور کوتاه می‌شود و بعد تخفیف ردیف‌ها
+    *    (`lineScale`)، و `clipped` می‌گوید چقدر کوتاه شد تا در UI صریح گفته شود.
+    *    کوتاه‌کردن بی‌صدا، همان باگی است که فاکتور چاپی و گزارش را واگرا می‌کند.
+diff -ruN base152/src/renderer/src/pages/Settings.tsx s153/mahak-session131/src/renderer/src/pages/Settings.tsx
+--- base152/src/renderer/src/pages/Settings.tsx	2026-09-25 16:00:21.475058766 +0000
++++ s153/mahak-session131/src/renderer/src/pages/Settings.tsx	2026-09-25 16:05:00.050929840 +0000
+@@ -221,6 +221,8 @@
+    */
+   const [discount, setDiscount] = useState<DiscountPolicy>(DEFAULT_DISCOUNT_POLICY)
+   const [discountBusy, setDiscountBusy] = useState(false)
++  /** نشست ۱۵۴ (S151-b) — رمز مدیر یا رمز دوم پنل تنظیمات؛ سرور می‌سنجد، بعد از هر تلاش پاک می‌شود */
++  const [discountPw, setDiscountPw] = useState('')
+   const [printers, setPrinters] = useState<string[]>([])
+   const [preview, setPreview] = useState('')
+   /** پیش‌نمایش زنده‌ی لیبل (مثل پیش‌نمایش رسید، ولی برای برچسب کالا) */
+@@ -330,6 +332,8 @@
+   const [policy, setPolicy] = useState<AccountingPolicy>(DEFAULT_ACCOUNTING_POLICY)
+   const [policyDirty, setPolicyDirty] = useState(false)
+   const [policyBusy, setPolicyBusy] = useState(false)
++  /** نشست ۱۵۴ (S151-b، بند ۴-۲۹) — رمز مدیر همیشه لازم؛ بعد از هر تلاش پاک می‌شود */
++  const [policyPw, setPolicyPw] = useState('')
+ 
+   // ---------------- جلسه ۱۸ · بند ۲ — کارمندان ----------------
+   const [staffRows, setStaffRows] = useState<
+@@ -906,7 +910,12 @@
+   const save = async () => {
+     setBusy(true)
+     try {
+-      await call(CH.settingsSaveBundle, { receipt, sale, shift, label, security, discount, time })
++      /**
++       * نشست ۱۵۴ (S151-b) — سیاست تخفیف دیگر از ذخیره‌ی کلی فرستاده نمی‌شود؛ فقط
++       * دکمه‌ی اختصاصی خودش (با رمز) آن را می‌نویسد. سرور هم تغییر discount از
++       * این کانال را بی‌رمز رد می‌کند.
++       */
++      await call(CH.settingsSaveBundle, { receipt, sale, shift, label, security, time })
+       setDirty(false)
+       /**
+        * بند ۳ — پنل‌های *باز* (پنل فروش، فاکتور عمده) با این رویداد تنظیماتشان را
+@@ -965,7 +974,7 @@
+     setDiscountBusy(true)
+     setErr(null)
+     try {
+-      const next = await call<DiscountPolicy>(CH.discountPolicySave, { policy: discount })
++      const next = await call<DiscountPolicy>(CH.discountPolicySave, { policy: discount, panelPassword: discountPw })
+       const clean = parseDiscountPolicy(next ?? discount)
+       setDiscount(clean)
+       // پنل‌های باز (پنل فروش) همین لحظه سقف جدید را می‌خوانند
+@@ -977,6 +986,7 @@
+       await load()
+     } finally {
+       setDiscountBusy(false)
++      setDiscountPw('') // بند ۴-۴۰ — رمز هر عملیات حساس دوباره پرسیده شود
+     }
+   }
+ 
+@@ -1383,7 +1393,7 @@
+   const savePolicy = async () => {
+     setPolicyBusy(true)
+     try {
+-      const saved = await call<AccountingPolicy>(CH.settingsAccountingPolicySet, { policy })
++      const saved = await call<AccountingPolicy>(CH.settingsAccountingPolicySet, { policy, managerPassword: policyPw })
+       setPolicy(parseAccountingPolicy(saved))
+       setPolicyDirty(false)
+       flash(
+@@ -1394,6 +1404,7 @@
+       setErr(e.message)
+     } finally {
+       setPolicyBusy(false)
++      setPolicyPw('') // بند ۴-۴۰ — رمز هر عملیات حساس دوباره پرسیده شود
+     }
+   }
+ 
+@@ -2902,7 +2913,15 @@
+                   <b>نتیجه:</b> {describeDiscountPolicy(discount)}
+                 </div>
+                 <div className="flex flex-wrap gap-2 items-center">
+-                  <button className="btn btn-primary" onClick={() => void saveDiscount()} disabled={discountBusy}>
++                  <label className="flex flex-col gap-1">
++                    <span className="kbd">رمز مدیر یا رمز دوم «تنظیمات» (سمت سرور هم بررسی می‌شود)</span>
++                    <PasswordField value={discountPw} onChange={(e) => setDiscountPw(e.target.value)} />
++                  </label>
++                  <button
++                    className="btn btn-primary"
++                    onClick={() => void saveDiscount()}
++                    disabled={discountBusy || !discountPw.trim()}
++                  >
+                     {discountBusy ? 'در حال ذخیره…' : 'ذخیره‌ی سیاست تخفیف'}
+                   </button>
+                   <button
+@@ -3500,7 +3519,7 @@
+                     setPolicyDirty(true)
+                   }}
+                 />
+-                قیمت دستیِ کالای جایگزین در تعویض، رمز مدیر لازم دارد
++                قیمت کمتر از قیمت مرجع در فروش، ویرایش فاکتور و کالای جایگزین تعویض، رمز مدیر لازم دارد
+               </label>
+               <label className="flex items-center gap-2 font-bold">
+                 <input
+@@ -3516,7 +3535,15 @@
+               </label>
+ 
+               <div className="flex gap-2 items-center flex-wrap">
+-                <button className="btn btn-primary" onClick={() => void savePolicy()} disabled={policyBusy}>
++                <label className="flex flex-col gap-1">
++                  <span className="kbd">رمز مدیر (تغییر سیاست حسابداری همیشه رمز مدیر می‌خواهد)</span>
++                  <PasswordField value={policyPw} onChange={(e) => setPolicyPw(e.target.value)} />
++                </label>
++                <button
++                  className="btn btn-primary"
++                  onClick={() => void savePolicy()}
++                  disabled={policyBusy || !policyPw.trim()}
++                >
+                   {policyBusy ? 'در حال ذخیره…' : 'ذخیره‌ی سیاست حسابداری'}
+                 </button>
+                 <button className="btn" onClick={() => void loadPolicy()} disabled={policyBusy}>
+diff -ruN base152/src/shared/enums.ts s153/mahak-session131/src/shared/enums.ts
+--- base152/src/shared/enums.ts	2026-09-25 16:00:21.475058766 +0000
++++ s153/mahak-session131/src/shared/enums.ts	2026-09-25 16:02:09.447954431 +0000
+@@ -633,6 +633,11 @@
+   RETURN_REFUND: 'RETURN_REFUND',
+   /** بند ۱۸ — عوض‌کردن دستیِ قیمت کالای جایگزین در تعویض (با گیت مدیر) */
+   EXCHANGE_PRICE_OVERRIDE: 'EXCHANGE_PRICE_OVERRIDE',
++  /**
++   * نشست ۱۵۴ (S151-b، بند ۴-۲۶) — قیمت واحد فروش/ویرایش فاکتور متفاوت با قیمت مرجع
++   * (کاهش با تایید مدیر یا گیت خاموش، افزایش بی‌رمز)؛ before = مرجع، after = واردشده.
++   */
++  SALE_PRICE_OVERRIDE: 'SALE_PRICE_OVERRIDE',
+   /** بند ۱۸ — صدور اعتبار بالاتر از سقف تنظیمات (با گیت مدیر) */
+   STORE_CREDIT_OVER_LIMIT: 'STORE_CREDIT_OVER_LIMIT',
+   /** بند ۱۷ — ثبت/ویرایش/حذف در دوره‌ی بسته‌شده (تجمیع یا بستن صندوق) */

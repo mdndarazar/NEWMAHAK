@@ -1,0 +1,53 @@
+(node:6141) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6141) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/base/mahak/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/base/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) پل با فیلتر کارمند الف (۵۲۱ فاکتور)
+  ✗ گزارش بی‌خطا ساخته شد — انتظار null، دریافت "HARNESS: سقف IN برابر ۵۰۰ است"
+  ✗ مصرف اعتبار = ۵۲۱ × ۱۰۰ — انتظار 52100، دریافت null
+  ✗ تعداد مصرف = ۵۲۱ — انتظار 521، دریافت null
+  ✗ تعهد اعتبار زنده = ۵۲۱ × ۹۰۰ — انتظار 468900، دریافت null
+  ✗ اعتبار صادرشده‌ی بازه = ۵۲۱ × ۱٬۰۰۰ — انتظار 521000، دریافت null
+  ✗ تعداد صادرشده = ۵۲۱ — انتظار 521، دریافت null
+  ✗ سهم بی‌سند (دستی) = ۵۲۱ × ۱٬۰۰۰ — انتظار 521000، دریافت null
+  ✗ هیچ IN بالای ۵۰۰ نبود — انتظار true، دریافت false
+
+۲) کنترل: کارمند ب و بدون فیلتر
+  ✓ ب: مصرف = ۱۰۰ = 100
+  ✓ ب: تعهد = ۹۰۰ = 900
+  ✓ کل: مصرف = ۵۲۲ × ۱۰۰ = 52200
+  ✓ کل: تعهد = ۵۲۲ × ۹۰۰ = 469800
+  ✓ فیلتر بی‌فاکتور: بی‌خطا = null
+  ✓ فیلتر بی‌فاکتور: مصرف = ۰ = 0
+  ✓ فیلتر بی‌فاکتور: تعهد = ۰ = 0
+
+۳) drill ردیف «مصرف اعتبار» با فیلتر الف
+  ✗ drill بی‌خطا — انتظار null، دریافت "HARNESS: سقف IN برابر ۵۰۰ است"
+  ✗ ردیف پل = ۵۲٬۱۰۰ — انتظار 52100، دریافت null
+  ✗ totalCount = ۵۲۱ — انتظار 521، دریافت null
+  ✗ همه در یک صفحه — انتظار 521، دریافت 0
+  ✗ جمع drill = ردیف — انتظار -1، دریافت 0
+  ✓ بدون هشدار خواندن‌نشد = false
+  ✓ هیچ فاکتور ب در drill نیست = false
+  ✗ اندازه‌ی صفحه‌ی skip=0 — انتظار 200، دریافت 0
+  ✗ totalCount skip=0 — انتظار 521، دریافت null
+  ✗ اندازه‌ی صفحه‌ی skip=200 — انتظار 200، دریافت 0
+  ✗ totalCount skip=200 — انتظار 521، دریافت null
+  ✗ اندازه‌ی صفحه‌ی skip=400 — انتظار 121، دریافت 0
+  ✗ totalCount skip=400 — انتظار 521، دریافت null
+  ✗ صفحه‌ها یکتا و کامل — انتظار [521,521]، دریافت [0,0]
+  ✓ ترتیب id نزولی در کل صفحه‌ها = true
+  ✗ هیچ IN بالای ۵۰۰ نبود (drill) — انتظار true، دریافت false
+
+۴) دفتر رویداد با فیلتر الف
+  ✗ دفتر بی‌خطا — انتظار null، دریافت "HARNESS: سقف IN برابر ۵۰۰ است"
+  ✗ تعداد مصرف اعتبار دفتر = ۵۲۱ — انتظار 521، دریافت null
+  ✗ ردیف‌های مصرف اعتبار دفتر = ۵۲۱ — انتظار 521، دریافت 0
+  ✗ جمع مبلغ مصرف دفتر = پل — انتظار 52100، دریافت 0
+  ✓ cashEffect مصرف اعتبار همه صفر = true
+  ✗ هیچ IN بالای ۵۰۰ نبود (دفتر) — انتظار true، دریافت false
+
+نتیجه: 11 موفق · 26 ناموفق

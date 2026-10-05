@@ -1,0 +1,4 @@
+Mahak session 119 standalone fix
+Changes: StoreCredit detail/batches pagination, StockCount variants/list pagination, UI metadata and tests.
+Tests: S119 credit 18/0; S119 stockcount 12/0; audit regression 80 files PASS / 0 FAIL.
+Environment limitation: npm, npx, Prisma Client generation, typecheck, Electron, printer and desktop Excel unavailable.

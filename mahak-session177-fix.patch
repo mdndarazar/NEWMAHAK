@@ -1,0 +1,226 @@
+diff -ruN pristine/src/main/services/ProductService.ts work/mahak/src/main/services/ProductService.ts
+--- pristine/src/main/services/ProductService.ts	2026-09-27 15:13:13.523146229 +0000
++++ work/mahak/src/main/services/ProductService.ts	2026-09-27 15:20:03.597525329 +0000
+@@ -75,6 +75,18 @@
+   )
+ }
+ 
++/**
++ * نشست ۱۷۷ · S176-D3 — دسته‌های ۵۰۰تایی شناسه‌ی یکتا و صعودی (قاعده‌ی سقف IN ۵۰۰، S99-2).
++ * صعودی تا ترتیب خروجی findMany های پشت‌سرهم همان ترتیب کلید اصلی یک کوئری واحد بماند.
++ */
++export const PRODUCT_IN_CHUNK = 500
++export function variantIdChunksOf(ids: readonly number[], size = PRODUCT_IN_CHUNK): number[][] {
++  const uniq = [...new Set(ids)].sort((a, b) => a - b)
++  const out: number[][] = []
++  for (let i = 0; i < uniq.length; i += size) out.push(uniq.slice(i, i + size))
++  return out
++}
++
+ /** شناسه‌ی واریانت‌های موجودی که payload قیمت/موجودی‌شان را عوض می‌کند (خواندن بیرون از تراکنش). */
+ async function sensitiveVariantEdits(variants: VariantInput[]): Promise<number[]> {
+   const ids = [...new Set(variants.map((v) => Number(v?.id)).filter((id) => Number.isSafeInteger(id) && id > 0))]
+@@ -515,14 +527,31 @@
+   async remove(variantIds: number[], userId?: number | null) {
+     const ids = (variantIds ?? []).map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0)
+     if (!ids.length) return 0
+-    const before = await prisma.productVariant.findMany({
+-      where: { id: { in: ids } },
+-      select: { id: true, code: true, barcode: true, isActive: true }
+-    })
+-    const res = await prisma.productVariant.updateMany({
+-      where: { id: { in: ids } },
+-      data: { isActive: false, deletedAt: new Date() }
+-    })
++    /**
++     * نشست ۱۷۷ · S176-D3 — قبلاً همه‌ی شناسه‌ها بی‌سقف در id in می‌نشستند (قاعده‌ی سقف IN ۵۰۰، S99-2).
++     * UI امروز حداکثر ۲۰۰ ردیف می‌فرستد، ولی main نباید به سقف UI تکیه کند. حالا دسته‌های ۵۰۰تایی،
++     * داخل یک تراکنش (همه یا هیچ؛ قبلاً هم خواندن و نوشتن جدا بودند). شمارش = جمع دسته‌ها.
++     */
++    const deletedAt = new Date()
++    const { before, count } = await prisma.$transaction(async (tx) => {
++      const before: { id: number; code: string; barcode: string | null; isActive: boolean }[] = []
++      let count = 0
++      for (const chunk of variantIdChunksOf(ids)) {
++        before.push(
++          ...(await tx.productVariant.findMany({
++            where: { id: { in: chunk } },
++            select: { id: true, code: true, barcode: true, isActive: true }
++          }))
++        )
++        const r = await tx.productVariant.updateMany({
++          where: { id: { in: chunk } },
++          data: { isActive: false, deletedAt }
++        })
++        count += r.count
++      }
++      return { before, count }
++    }, TX_OPTIONS)
++    const res = { count }
+     // بیرون از هر تراکنش ⇒ کلاینت سراسری، ولی برای یکدستی امضا صریح پاس داده می‌شود.
+     await audit(prisma, {
+       action: 'DELETE',
+@@ -569,15 +598,28 @@
+   async restore(variantIds: number[], userId?: number | null) {
+     const ids = (variantIds ?? []).map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0)
+     if (!ids.length) throw new BusinessError('برای بازگردانی، حداقل یک کالا را انتخاب کنید.')
+-    const before = await prisma.productVariant.findMany({
+-      where: { id: { in: ids } },
+-      include: { product: { select: { name: true } } }
+-    })
+-    if (!before.length) throw new BusinessError('این کالاها پیدا نشدند؛ فهرست سطل آشغال را تازه کنید.')
+-    const res = await prisma.productVariant.updateMany({
+-      where: { id: { in: ids } },
+-      data: { isActive: true, deletedAt: null }
+-    })
++    // نشست ۱۷۷ · S176-D3 — مثل remove: دسته‌های ۵۰۰تایی داخل یک تراکنش (سقف IN ۵۰۰).
++    const { before, count } = await prisma.$transaction(async (tx) => {
++      const before: any[] = []
++      for (const chunk of variantIdChunksOf(ids))
++        before.push(
++          ...(await tx.productVariant.findMany({
++            where: { id: { in: chunk } },
++            include: { product: { select: { name: true } } }
++          }))
++        )
++      if (!before.length) throw new BusinessError('این کالاها پیدا نشدند؛ فهرست سطل آشغال را تازه کنید.')
++      let count = 0
++      for (const chunk of variantIdChunksOf(ids)) {
++        const r = await tx.productVariant.updateMany({
++          where: { id: { in: chunk } },
++          data: { isActive: true, deletedAt: null }
++        })
++        count += r.count
++      }
++      return { before, count }
++    }, TX_OPTIONS)
++    const res = { count }
+     await audit(prisma, {
+       action: AuditAction.PRODUCT_RESTORE,
+       entity: 'ProductVariant',
+diff -ruN pristine/src/main/services/SecondaryStockService.ts work/mahak/src/main/services/SecondaryStockService.ts
+--- pristine/src/main/services/SecondaryStockService.ts	2026-09-27 15:13:13.523146229 +0000
++++ work/mahak/src/main/services/SecondaryStockService.ts	2026-09-27 15:19:58.737497132 +0000
+@@ -568,8 +568,24 @@
+   async remove(input: { ids?: number[]; userId?: number | null } = {}): Promise<number> {
+     const ids = (input?.ids ?? []).map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0)
+     if (!ids.length) throw new BusinessError('برای حذف، حداقل یک ردیف را انتخاب کنید.')
+-    const before = await prisma.secondaryStockItem.findMany({ where: { id: { in: ids } } })
+-    const res = await prisma.secondaryStockItem.deleteMany({ where: { id: { in: ids } } })
++    /**
++     * نشست ۱۷۷ · S176-D3 — قبلاً همه‌ی شناسه‌ها بی‌سقف در id in (قاعده‌ی سقف IN ۵۰۰، S99-2). UI امروز
++     * «انتخاب همه» ندارد، ولی main نباید به UI تکیه کند. حالا دسته‌های ۵۰۰تایی یکتا و صعودی داخل یک
++     * تراکنش (همه یا هیچ). Audit و دفتر انبار مرکزی مثل قبل بعد از حذف.
++     */
++    const uniq = [...new Set(ids)].sort((a, b) => a - b)
++    const idChunks: number[][] = []
++    for (let i = 0; i < uniq.length; i += 500) idChunks.push(uniq.slice(i, i + 500))
++    const { before, count } = await prisma.$transaction(async (tx) => {
++      const before: any[] = []
++      let count = 0
++      for (const chunk of idChunks) {
++        before.push(...(await tx.secondaryStockItem.findMany({ where: { id: { in: chunk } } })))
++        count += (await tx.secondaryStockItem.deleteMany({ where: { id: { in: chunk } } })).count
++      }
++      return { before, count }
++    }, TX_OPTIONS)
++    const res = { count }
+     await audit(prisma, {
+       action: 'SECONDARY_STOCK_DELETE',
+       entity: 'SecondaryStockItem',
+diff -ruN pristine/src/main/services/VariantPurgeService.ts work/mahak/src/main/services/VariantPurgeService.ts
+--- pristine/src/main/services/VariantPurgeService.ts	2026-09-27 15:13:13.523146229 +0000
++++ work/mahak/src/main/services/VariantPurgeService.ts	2026-09-27 15:19:54.317471488 +0000
+@@ -2,7 +2,7 @@
+ import { prisma } from '../db/client'
+ import { audit } from './AuditService'
+ import { assertPanelPassword } from './AuthService'
+-import { productApprovalNote } from './ProductService'
++import { productApprovalNote, variantIdChunksOf } from './ProductService'
+ import { BusinessError } from '../errors'
+ import { faDigits } from '@shared/jalali'
+ import { PANEL_KEYS } from '@shared/panels'
+@@ -192,10 +192,15 @@
+   async preview(input: { variantIds?: number[] } = {}): Promise<VariantPurgePreview> {
+     const ids = (input?.variantIds ?? []).map(Number).filter((n) => Number.isInteger(n) && n > 0)
+     if (!ids.length) return { lines: [], historyRows: 0, movements: 0 }
+-    const variants = await prisma.productVariant.findMany({
+-      where: { id: { in: ids } },
+-      include: { product: { select: { name: true } } }
+-    })
++    // نشست ۱۷۷ · S176-D3 — دسته‌های ۵۰۰تایی (سقف IN ۵۰۰)؛ UI سطل آشغال امروز حداکثر ۳۰۰ ردیف دارد.
++    const variants: any[] = []
++    for (const chunk of variantIdChunksOf(ids))
++      variants.push(
++        ...(await prisma.productVariant.findMany({
++          where: { id: { in: chunk } },
++          include: { product: { select: { name: true } } }
++        }))
++      )
+     // جلسه ۴۹: تایپ صریح، تا ردیف‌ها `never` استنتاج نشوند
+     const lines: {
+       variantId: number
+@@ -249,10 +254,15 @@
+     const ids = (input?.variantIds ?? []).map(Number).filter((n) => Number.isInteger(n) && n > 0)
+     if (!ids.length) throw new BusinessError('برای حذف همیشگی، حداقل یک کالا را انتخاب کنید.')
+ 
+-    const variants = await prisma.productVariant.findMany({
+-      where: { id: { in: ids } },
+-      include: { product: { select: { id: true, name: true } } }
+-    })
++    // نشست ۱۷۷ · S176-D3 — دسته‌های ۵۰۰تایی (سقف IN ۵۰۰).
++    const variants: any[] = []
++    for (const chunk of variantIdChunksOf(ids))
++      variants.push(
++        ...(await prisma.productVariant.findMany({
++          where: { id: { in: chunk } },
++          include: { product: { select: { id: true, name: true } } }
++        }))
++      )
+     if (!variants.length) throw new BusinessError('این کالاها پیدا نشدند؛ فهرست سطل آشغال را تازه کنید.')
+     const active = variants.filter((v) => v.isActive)
+     if (active.length)
+@@ -290,12 +300,17 @@
+          * می‌شد؛ کالایی که بین گیت رمز و اینجا بازگردانی (فعال) شده بود برای همیشه پاک می‌شد. همان دو شرط
+          * داخل تراکنش دوباره خوانده می‌شوند؛ هر اختلاف ⇒ کل عملیات rollback با پیام فارسی.
+          */
+-        const still = await tx.productVariant.findMany({
+-          where: { id: { in: targets } },
+-          select: { id: true, isActive: true, deletedAt: true }
+-        })
++        // نشست ۱۷۷ · S176-D3 — خواندن دوباره، شمارش حرکت و حذف، همه دسته‌های ۵۰۰تایی داخل همین تراکنش.
++        const targetChunks = variantIdChunksOf(targets)
++        const stillById = new Map<number, { id: number; isActive: boolean; deletedAt: Date | null }>()
++        for (const chunk of targetChunks)
++          for (const r of await tx.productVariant.findMany({
++            where: { id: { in: chunk } },
++            select: { id: true, isActive: true, deletedAt: true }
++          }))
++            stillById.set(r.id, r)
+         const changed = targets.filter((id) => {
+-          const row = still.find((r) => r.id === id)
++          const row = stillById.get(id)
+           if (!row || row.isActive) return true
+           const d = row.deletedAt instanceof Date ? row.deletedAt.getTime() : Number(new Date(row.deletedAt ?? 0))
+           return !d || d > cutoff
+@@ -305,7 +320,8 @@
+             `حذف همیشگی انجام نشد: ${faDigits(changed.length)} کالا از لحظه‌ی تأیید تا الان از سطل آشغال بازگردانی، ` +
+               'دوباره حذف یا پاک شده است. فهرست سطل آشغال را تازه کنید؛ هیچ کالایی حذف نشد.'
+           )
+-        const movementCount = await tx.stockMovement.count({ where: { variantId: { in: targets } } })
++        let movementCount = 0
++        for (const chunk of targetChunks) movementCount += await tx.stockMovement.count({ where: { variantId: { in: chunk } } })
+         if (movementCount > 0)
+           throw new BusinessError(
+             `حذف همیشگی انجام نشد: ${faDigits(movementCount)} حرکت در دفتر گردش انبار این کالاها وجود دارد. ` +
+@@ -328,7 +344,9 @@
+         }
+ 
+         // ۳) حذف واقعی رکورد کالا؛ دفتر گردش مرحله‌ی قبل عمداً دست‌نخورده ماند
+-        const deleted = await tx.productVariant.deleteMany({ where: { id: { in: targets } } })
++        const deleted = { count: 0 }
++        for (const chunk of targetChunks)
++          deleted.count += (await tx.productVariant.deleteMany({ where: { id: { in: chunk } } })).count
+ 
+         // ۴) محصول پایه‌ای که دیگر هیچ واریانتی ندارد هم می‌رود (وگرنه یک
+         //    «کالای بی‌سایز و بی‌بارکد» در فهرست دسته‌بندی باقی می‌ماند)

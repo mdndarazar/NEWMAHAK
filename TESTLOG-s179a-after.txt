@@ -1,0 +1,70 @@
+(node:6356) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/shared/creditUi.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓ تنظیمات پیش‌فرض اعتبار در دسترس است
+۱) صدور تکی — ارقام مخلوط/فارسی درست خوانده شوند (نه ۵ ریال بی‌صدا)
+  ✓ «5۰۰۰۰۰» ⇒ ok = true
+  ✓ «5۰۰۰۰۰» ⇒ مبلغ ۵۰۰٬۰۰۰ (نه ۵) = 500000
+  ✓ «۱۲۰٬۰۰۰» فارسی با جداکننده ⇒ ok = true
+  ✓ «۱۲۰٬۰۰۰» ⇒ ۱۲۰٬۰۰۰ = 120000
+  ✓ «1,250,000» ⇒ ۱٬۲۵۰٬۰۰۰ = 1250000
+۲) صدور تکی — اعشار/منفی/متن/NaN/خارج از سقف ⇒ رد فارسی با نام فیلد، نه گرد بی‌صدا
+  ✓ مبلغ ۱۰۰۰۰۰٫۶ ⇒ رد (قبلاً ۱۰۰۰۰۱) (رد: «مبلغ اعتبار» باید عدد صحیح و نامنفی (ریال) باشد؛ مقدار واردشده «100000.6» پذیرفته نیست (اعشار، علامت منفی، حر)
+  ✓ مبلغ «۱۰۰۰۰۰٫۵» فارسی ⇒ رد (رد: «مبلغ اعتبار» باید عدد صحیح و نامنفی (ریال) باشد؛ مقدار واردشده «۱۰۰۰۰۰٫۵» پذیرفته نیست (اعشار، علامت منفی، حر)
+  ✓ مبلغ NaN ⇒ رد (رد: «مبلغ اعتبار» باید عدد صحیح و نامنفی (ریال) باشد؛ مقدار واردشده «NaN» پذیرفته نیست (اعشار، علامت منفی، حروف یا)
+  ✓ مبلغ ۱e21 ⇒ رد (رد: «مبلغ اعتبار» باید عدد صحیح و نامنفی (ریال) باشد؛ مقدار واردشده «1e+21» پذیرفته نیست (اعشار، علامت منفی، حروف )
+  ✓ مبلغ ۲^۵۳ (خارج از سقف امن) ⇒ رد (رد: «مبلغ اعتبار» باید عدد صحیح و نامنفی (ریال) باشد؛ مقدار واردشده «9007199254740992» پذیرفته نیست (اعشار، علامت )
+  ✓ مبلغ «۵۰۰هزار» ⇒ رد (رد: «مبلغ اعتبار» باید عدد صحیح و نامنفی (ریال) باشد؛ مقدار واردشده «۵۰۰هزار» پذیرفته نیست (اعشار، علامت منفی، حرو)
+  ✓ مبلغ ‎-۵۰۰۰ ⇒ رد (رد: «مبلغ اعتبار» باید عدد صحیح و نامنفی (ریال) باشد؛ مقدار واردشده «-5000» پذیرفته نیست (اعشار، علامت منفی، حروف )
+  ✓ مبلغ ۰ ⇒ همان پیام «وارد کنید» (رد: مبلغ اعتبار را وارد کنید (باید بزرگ‌تر از صفر باشد).)
+  ✓ حداقل خرید ‎-۵ ⇒ رد (قبلاً بی‌صدا ۰) (رد: «حداقل مبلغ خرید» باید عدد صحیح و نامنفی (ریال) باشد؛ مقدار واردشده «-5» پذیرفته نیست (اعشار، علامت منفی، حروف)
+  ✓ سقف هر تراکنش ۲۵۰۰٫۵ ⇒ رد (قبلاً ۲۵۰۱) (رد: «سقف مصرف در هر تراکنش» باید عدد صحیح و نامنفی (ریال) باشد؛ مقدار واردشده «2500.5» پذیرفته نیست (اعشار، علامت )
+  ✓ مدت ۷٫۵ روز ⇒ رد (قبلاً ۸) (رد: «مدت اعتبار» باید عدد صحیح و نامنفی (روز) باشد؛ مقدار واردشده «7.5» پذیرفته نیست (اعشار، علامت منفی، حروف یا ع)
+  ✓ دفعات ۳٫۲ ⇒ رد (قبلاً ۳) (رد: «تعداد دفعات مصرف» باید عدد صحیح و نامنفی (بار) باشد؛ مقدار واردشده «3.2» پذیرفته نیست (اعشار، علامت منفی، حرو)
+۳) صدور تکی — فیلدهای عددی فارسی درست به payload برسند
+  ✓ ok = true
+  ✓ days «۱۰» ⇒ ۱۰ = 10
+  ✓ maxUses «۳» ⇒ ۳ (نه ۲) = 3
+  ✓ minPurchase «۲٬۰۰۰٬۰۰۰» ⇒ ۲٬۰۰۰٬۰۰۰ = 2000000
+  ✓ maxPerTransaction «۱۰۰٬۰۰۰» ⇒ ۱۰۰٬۰۰۰ = 100000
+۴) فیلد بی‌استفاده در حالت انتخاب‌شده سنجیده نشود + مسیر عادی بدون تغییر
+  ✓ مدت/دفعات خراب ولی حالت «پیش‌فرض/یک‌بار» ⇒ ok = true
+  ✓ بدون کلید days = false
+  ✓ maxUses = ۱ = 1
+  ✓ مبلغ عادی ۵۰۰٬۰۰۰ = 500000
+  ✓ minPurchase خالی ⇒ ۰ = 0
+۵) تولید گروهی — تعداد/طول کد/مبلغ هر اعتبار
+  ✓ bulk «5۰۰۰» × «۲۰» ⇒ ok = true
+  ✓ amountEach ۵٬۰۰۰ (نه ۵) = 5000
+  ✓ count ۲۰ = 20
+  ✓ bulk تعداد ۱۰٫۵ ⇒ رد (قبلاً ۱۱) (رد: «تعداد اعتبارهای درخواستی» باید عدد صحیح و نامنفی (عدد) باشد؛ مقدار واردشده «10.5» پذیرفته نیست (اعشار، علامت )
+  ✓ bulk طول کد ۸٫۵ ⇒ رد (رد: «طول کد» باید عدد صحیح و نامنفی (کاراکتر) باشد؛ مقدار واردشده «8.5» پذیرفته نیست (اعشار، علامت منفی، حروف یا ع)
+  ✓ bulk مبلغ ۵۰۰۰٫۴ ⇒ رد (رد: «مبلغ اعتبار» باید عدد صحیح و نامنفی (ریال) باشد؛ مقدار واردشده «5000.4» پذیرفته نیست (اعشار، علامت منفی، حروف)
+  ✓ bulk حداقل خرید ‎-۱ ⇒ رد (رد: «حداقل مبلغ خرید» باید عدد صحیح و نامنفی (ریال) باشد؛ مقدار واردشده «-1» پذیرفته نیست (اعشار، علامت منفی، حروف)
+  ✓ bulk minPurchase فارسی ⇒ ۹٬۰۰۰ = 9000
+  ✓ bulk days فارسی ⇒ ۱۵ = 15
+۶) intOf نمایشی دست‌نخورده و parser تازه هم‌معنای parseGroupedInteger
+  ✓ intOf(«100000.6») هنوز ۱۰۰۰۰۱ (فقط نمایش) = 100001
+  ✓ parseFormInteger export شده
+  ✓ parseFormInteger("") = parseGroupedInteger = 0
+  ✓ parseFormInteger("0") = parseGroupedInteger = 0
+  ✓ parseFormInteger("12") = parseGroupedInteger = 12
+  ✓ parseFormInteger("۱۲۳") = parseGroupedInteger = 123
+  ✓ parseFormInteger("٤٥٦") = parseGroupedInteger = 456
+  ✓ parseFormInteger("5۰۰") = parseGroupedInteger = 500
+  ✓ parseFormInteger("1,000") = parseGroupedInteger = 1000
+  ✓ parseFormInteger("۱٬۰۰۰") = parseGroupedInteger = 1000
+  ✓ parseFormInteger("1 000") = parseGroupedInteger = 1000
+  ✓ parseFormInteger("1.5") = parseGroupedInteger = null
+  ✓ parseFormInteger("-3") = parseGroupedInteger = null
+  ✓ parseFormInteger("abc") = parseGroupedInteger = null
+  ✓ parseFormInteger("9007199254740993") = parseGroupedInteger = null
+  ✓ parseFormInteger(null) = parseGroupedInteger = 0
+  ✓ parseFormInteger(undefined) = parseGroupedInteger = 0
+  ✓ parseFormInteger(42) = parseGroupedInteger = 42
+  ✓ parseFormInteger(4.2) = parseGroupedInteger = null
+  ✓ parseFormInteger(null) = parseGroupedInteger = null
+  ✓ parseFormInteger(1e+21) = parseGroupedInteger = null
+
+نتیجه: 58 موفق، 0 ناموفق

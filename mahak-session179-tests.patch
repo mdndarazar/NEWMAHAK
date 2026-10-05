@@ -1,0 +1,287 @@
+diff -ruN baseline178/tests/audit-fixes/fix-s179-credit-form-strict-integer.mjs work/mahak/tests/audit-fixes/fix-s179-credit-form-strict-integer.mjs
+--- baseline178/tests/audit-fixes/fix-s179-credit-form-strict-integer.mjs	1970-01-01 00:00:00.000000000 +0000
++++ work/mahak/tests/audit-fixes/fix-s179-credit-form-strict-integer.mjs	2026-09-27 15:57:02.763713987 +0000
+@@ -0,0 +1,111 @@
++// نشست ۱۷۹: تست قبل/بعد مشاهده‌ی P3 ردیف ۱۴۳ AUDIT-PROGRESS (intOf در فرم صدور اعتبار دستی/گروهی).
++/**
++ * ===========================================================================
++ * نشست ۱۷۹ · بند ۴-۲۸(د)، بند ۴-۲۹ (صدور دستی اعتبار) و بند ۵ («هرگز مقدار منفی را قبول نکن»)
++ *
++ * قبل از رفع: buildIssuePayload/buildBulkPayload همه‌ی عددها را با intOf می‌خواندند:
++ *   intOf = Math.round(Number(String(v).replace(/[^\d.-]/g, '')))
++ *   ⇒ «5۰۰۰۰۰» (رقم لاتین + فارسی) ⇒ ۵ ریال، بی‌صدا و ok=true؛
++ *   ⇒ ۱۰۰٬۰۰۰٫۶ ⇒ ۱۰۰٬۰۰۱ (گرد بی‌صدا؛ رد اعشار سرور — نشست ۱۵۰ — هرگز دیده نمی‌شد)؛
++ *   ⇒ حداقل خرید ‎-۵ ⇒ ۰ بی‌صدا؛ «۱۲۰٬۰۰۰» فارسی ⇒ خطای گمراه‌کننده‌ی «مبلغ را وارد کنید».
++ * انتظار بعد: ارقام فارسی/عربی و جداکننده‌ی هزارگان درست خوانده شوند؛ اعشار، منفی، متن،
++ * NaN و عدد خارج از سقف امن با پیام فارسی (نام فیلد + واحد + مقدار) رد شوند؛ فیلدی که
++ * در حالت انتخاب‌شده استفاده نمی‌شود سنجیده نشود؛ intOf نمایشی دست نخورد.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s179-credit-form-strict-integer.mjs
++ * ===========================================================================
++ */
++const ui = await import('../../src/shared/creditUi.ts')
++const { parseGroupedInteger } = await import('../../src/shared/jalali.ts')
++const { DEFAULT_CREDIT_SETTINGS } = await import('../../src/shared/credit.ts')
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
++}
++const truthy = (label, v) => (v ? (ok++, console.log(`  ✓ ${label}`)) : (bad++, console.log(`  ✗ ${label}`)))
++const S = DEFAULT_CREDIT_SETTINGS ?? ui.DEFAULT_CREDIT_SETTINGS
++truthy('تنظیمات پیش‌فرض اعتبار در دسترس است', !!S)
++
++const issue = (patch) => ui.buildIssuePayload({ ...ui.EMPTY_ISSUE_DRAFT, overrideReason: 'آزمایش استثنا', ...patch }, S)
++const bulk = (patch) => ui.buildBulkPayload({ ...ui.EMPTY_BULK_DRAFT, overrideReason: 'آزمایش استثنا', ...patch }, S)
++const rejected = (label, r, ...needles) => {
++  const e = String(r?.error ?? '')
++  const good = r && r.ok === false && r.payload === null && /[\u0600-\u06FF]/.test(e) && needles.every((n) => e.includes(n))
++  if (good) { ok++; console.log(`  ✓ ${label} (رد: ${e.split('\n')[0].slice(0, 110)})`) }
++  else { bad++; console.log(`  ✗ ${label} — ok=${r?.ok} payload=${JSON.stringify(r?.payload?.amount ?? r?.payload?.amountEach ?? null)} error=${e.slice(0, 140)}`) }
++}
++
++console.log('۱) صدور تکی — ارقام مخلوط/فارسی درست خوانده شوند (نه ۵ ریال بی‌صدا)')
++{
++  const r = issue({ amount: '5۰۰۰۰۰' })
++  eq('«5۰۰۰۰۰» ⇒ ok', r.ok, true)
++  eq('«5۰۰۰۰۰» ⇒ مبلغ ۵۰۰٬۰۰۰ (نه ۵)', r.payload?.amount, 500000)
++  const r2 = issue({ amount: '۱۲۰٬۰۰۰' })
++  eq('«۱۲۰٬۰۰۰» فارسی با جداکننده ⇒ ok', r2.ok, true)
++  eq('«۱۲۰٬۰۰۰» ⇒ ۱۲۰٬۰۰۰', r2.payload?.amount, 120000)
++  const r3 = issue({ amount: '1,250,000' })
++  eq('«1,250,000» ⇒ ۱٬۲۵۰٬۰۰۰', r3.payload?.amount, 1250000)
++}
++
++console.log('۲) صدور تکی — اعشار/منفی/متن/NaN/خارج از سقف ⇒ رد فارسی با نام فیلد، نه گرد بی‌صدا')
++rejected('مبلغ ۱۰۰۰۰۰٫۶ ⇒ رد (قبلاً ۱۰۰۰۰۱)', issue({ amount: 100000.6 }), 'مبلغ اعتبار', 'ریال', '100000.6')
++rejected('مبلغ «۱۰۰۰۰۰٫۵» فارسی ⇒ رد', issue({ amount: '۱۰۰۰۰۰٫۵' }), 'مبلغ اعتبار')
++rejected('مبلغ NaN ⇒ رد', issue({ amount: Number.NaN }), 'مبلغ اعتبار')
++rejected('مبلغ ۱e21 ⇒ رد', issue({ amount: 1e21 }), 'مبلغ اعتبار')
++rejected('مبلغ ۲^۵۳ (خارج از سقف امن) ⇒ رد', issue({ amount: 2 ** 53 }), 'مبلغ اعتبار')
++rejected('مبلغ «۵۰۰هزار» ⇒ رد', issue({ amount: '۵۰۰هزار' }), 'مبلغ اعتبار')
++rejected('مبلغ ‎-۵۰۰۰ ⇒ رد', issue({ amount: -5000 }), 'مبلغ اعتبار')
++rejected('مبلغ ۰ ⇒ همان پیام «وارد کنید»', issue({ amount: 0 }), 'مبلغ اعتبار را وارد کنید')
++rejected('حداقل خرید ‎-۵ ⇒ رد (قبلاً بی‌صدا ۰)', issue({ amount: 500000, minPurchase: -5 }), 'حداقل مبلغ خرید', 'ریال')
++rejected('سقف هر تراکنش ۲۵۰۰٫۵ ⇒ رد (قبلاً ۲۵۰۱)', issue({ amount: 500000, maxPerTransaction: 2500.5 }), 'سقف مصرف در هر تراکنش', 'ریال')
++rejected('مدت ۷٫۵ روز ⇒ رد (قبلاً ۸)', issue({ amount: 500000, expiryMode: 'days', days: 7.5 }), 'مدت اعتبار', 'روز')
++rejected('دفعات ۳٫۲ ⇒ رد (قبلاً ۳)', issue({ amount: 500000, usesMode: 'count', maxUses: 3.2 }), 'تعداد دفعات', 'بار')
++
++console.log('۳) صدور تکی — فیلدهای عددی فارسی درست به payload برسند')
++{
++  const r = issue({ amount: 500000, expiryMode: 'days', days: '۱۰', usesMode: 'count', maxUses: '۳', minPurchase: '۲٬۰۰۰٬۰۰۰', maxPerTransaction: '۱۰۰٬۰۰۰' })
++  eq('ok', r.ok, true)
++  eq('days «۱۰» ⇒ ۱۰', r.payload?.days, 10)
++  eq('maxUses «۳» ⇒ ۳ (نه ۲)', r.payload?.maxUses, 3)
++  eq('minPurchase «۲٬۰۰۰٬۰۰۰» ⇒ ۲٬۰۰۰٬۰۰۰', r.payload?.minPurchase, 2000000)
++  eq('maxPerTransaction «۱۰۰٬۰۰۰» ⇒ ۱۰۰٬۰۰۰', r.payload?.maxPerTransaction, 100000)
++}
++
++console.log('۴) فیلد بی‌استفاده در حالت انتخاب‌شده سنجیده نشود + مسیر عادی بدون تغییر')
++{
++  const r = ui.buildIssuePayload({ ...ui.EMPTY_ISSUE_DRAFT, amount: 500000, days: 7.5, maxUses: 1.5 }, S)
++  eq('مدت/دفعات خراب ولی حالت «پیش‌فرض/یک‌بار» ⇒ ok', r.ok, true)
++  eq('بدون کلید days', 'days' in (r.payload ?? {}), false)
++  eq('maxUses = ۱', r.payload?.maxUses, 1)
++  eq('مبلغ عادی ۵۰۰٬۰۰۰', r.payload?.amount, 500000)
++  eq('minPurchase خالی ⇒ ۰', ui.buildIssuePayload({ ...ui.EMPTY_ISSUE_DRAFT, amount: 500000, minPurchase: '' }, S).payload?.minPurchase, 0)
++}
++
++console.log('۵) تولید گروهی — تعداد/طول کد/مبلغ هر اعتبار')
++{
++  const r = bulk({ amount: '5۰۰۰', count: '۲۰' })
++  eq('bulk «5۰۰۰» × «۲۰» ⇒ ok', r.ok, true)
++  eq('amountEach ۵٬۰۰۰ (نه ۵)', r.payload?.amountEach, 5000)
++  eq('count ۲۰', r.payload?.count, 20)
++  rejected('bulk تعداد ۱۰٫۵ ⇒ رد (قبلاً ۱۱)', bulk({ amount: 5000, count: 10.5 }), 'تعداد اعتبار')
++  rejected('bulk طول کد ۸٫۵ ⇒ رد', bulk({ amount: 5000, count: 10, codeLength: 8.5 }), 'طول کد')
++  rejected('bulk مبلغ ۵۰۰۰٫۴ ⇒ رد', bulk({ amount: 5000.4, count: 10 }), 'مبلغ اعتبار')
++  rejected('bulk حداقل خرید ‎-۱ ⇒ رد', bulk({ amount: 5000, count: 10, minPurchase: -1 }), 'حداقل مبلغ خرید')
++  const r2 = bulk({ amount: 5000, count: 10, minPurchase: '۹٬۰۰۰', expiryMode: 'days', days: '۱۵' })
++  eq('bulk minPurchase فارسی ⇒ ۹٬۰۰۰', r2.payload?.minPurchase, 9000)
++  eq('bulk days فارسی ⇒ ۱۵', r2.payload?.days, 15)
++}
++
++console.log('۶) intOf نمایشی دست‌نخورده و parser تازه هم‌معنای parseGroupedInteger')
++eq('intOf(«100000.6») هنوز ۱۰۰۰۰۱ (فقط نمایش)', ui.intOf('100000.6'), 100001)
++truthy('parseFormInteger export شده', typeof ui.parseFormInteger === 'function')
++if (typeof ui.parseFormInteger === 'function') {
++  for (const v of ['', '0', '12', '۱۲۳', '٤٥٦', '5۰۰', '1,000', '۱٬۰۰۰', '1 000', '1.5', '-3', 'abc', '9007199254740993', null, undefined, 42, 4.2, Number.NaN, 1e21])
++    eq(`parseFormInteger(${JSON.stringify(v)}) = parseGroupedInteger`, ui.parseFormInteger(v), parseGroupedInteger(v))
++}
++
++console.log(`\nنتیجه: ${ok} موفق، ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)
+diff -ruN baseline178/tests/audit-fixes/fix-s179-fraud-actor-duplicate-cheque.mjs work/mahak/tests/audit-fixes/fix-s179-fraud-actor-duplicate-cheque.mjs
+--- baseline178/tests/audit-fixes/fix-s179-fraud-actor-duplicate-cheque.mjs	1970-01-01 00:00:00.000000000 +0000
++++ work/mahak/tests/audit-fixes/fix-s179-fraud-actor-duplicate-cheque.mjs	2026-09-27 16:01:05.381121604 +0000
+@@ -0,0 +1,133 @@
++// نشست ۱۷۹: تست قبل/بعد مشاهده‌های P3 ردیف ۱۱۱ AUDIT-PROGRESS (actor مرور ضدتقلب؛ چک تکراری).
++/**
++ * ===========================================================================
++ * نشست ۱۷۹ · بند ۴-۳۰ («هر actor در Audit»)، بند ۵ (audit با actor واقعی) و هدف «فهمیدن دزدی»
++ *
++ * قبل از رفع:
++ *   ۱) FraudService.review در Audit «مرور ضدتقلب» userId *فیلتر کارمند* را actor می‌نوشت:
++ *      مدیر گزارش کارمند «ب» را می‌بیند ⇒ سابقه می‌گوید «ب» خودش هشدارهای خودش را مرور کرد.
++ *      IPC هم هیچ actor نشستی نمی‌داد.
++ *   ۲) «چک با شماره‌ی تکراری» فقط داخل بازه‌ی گزارش گروه می‌کرد ⇒ چکی که ماه قبل یک بار و
++ *      امروز دوباره خرج شده هرگز هشدار نمی‌گرفت؛ «۱۲۳۴۵» و «۱۲۳۴۵» (رقم فارسی) یا «12 345» دو
++ *      شماره‌ی جدا شمرده می‌شدند؛ ترتیب منابع (برش ۲۰۰) قطعی نبود.
++ * انتظار بعد: actor = کارمند نشست باز main (بدون نشست ⇒ null)، فیلتر در after؛ تکرار
++ * همه‌ی زمان‌ها با کلید نرمال‌شده، به شرط حداقل یک استفاده در بازه؛ مبلغ = جمع همان بازه؛
++ * چک باطل‌شده شمرده نمی‌شود؛ ترتیب منابع بر اساس شماره.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s179-fraud-actor-duplicate-cheque.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s179-fraud-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const electron = await import('electron')
++const handlers = new Map()
++electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const db = harnessClient()
++const seed = makeSeeder(db)
++const { registerIpcHandlers } = await import('../../src/main/ipc/index.ts')
++const { IPC } = await import('@shared/ipc')
++const { fraudService } = await import('../../src/main/services/FraudService.ts')
++const { jalaliToday, jalaliStartOfDay, jalaliAddDays: addDaysJalali } = await import('@shared/jalali')
++registerIpcHandlers()
++const ipc = (ch, payload) => handlers.get(ch)(null, payload)
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
++}
++const truthy = (label, v) => (v ? (ok++, console.log(`  ✓ ${label}`)) : (bad++, console.log(`  ✗ ${label}`)))
++const lastReview = () => seed.one('SELECT id, userId, after FROM "AuditLog" WHERE action = ? ORDER BY id DESC LIMIT 1', 'FRAUD_REVIEW')
++
++const today = jalaliToday()
++const T0 = jalaliStartOfDay(today).getTime()
++const OLD = T0 - 35 * 86400_000 // ماه قبل
++const cashier = seed.user('صندوق‌دار نشست باز ۱۷۹')
++const staffB = seed.user('فروشنده‌ی ب ۱۷۹')
++const forged = seed.user('کارمند جعلی ۱۷۹')
++
++console.log('۱) actor مرور ضدتقلب')
++{
++  // بدون نشست باز: فراخوانی مستقیم با فیلتر کارمند ب ⇒ actor نباید «ب» باشد
++  await fraudService.review({ fromJalali: today, toJalali: today, userId: staffB })
++  const a0 = lastReview()
++  truthy('ردیف Audit مرور ساخته شد', !!a0)
++  eq('بدون نشست: actor ≠ فیلتر کارمند (null)', a0?.userId == null ? null : Number(a0.userId), null)
++  truthy('فیلتر کارمند در after ثبت شده (filterUserId)', String(a0?.after ?? '').includes(`"filterUserId":${staffB}`))
++
++  seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - 3600_000, userId: cashier })
++  const r = await ipc(IPC.saleFraudReview, { fromJalali: today, toJalali: today, userId: staffB, actorId: forged })
++  truthy('IPC مرور موفق', r?.ok === true)
++  const a1 = lastReview()
++  eq('با نشست باز: actor = صندوق‌دار نشست (نه فیلتر، نه actorId جعلی)', a1?.userId == null ? null : Number(a1.userId), cashier)
++  truthy('after: filterUserId = ب', String(a1?.after ?? '').includes(`"filterUserId":${staffB}`))
++  const r2 = await ipc(IPC.saleFraudReview, { fromJalali: today, toJalali: today })
++  eq('IPC بدون فیلتر ⇒ actor همان صندوق‌دار', Number(lastReview()?.userId), cashier)
++  truthy('IPC بدون فیلتر موفق', r2?.ok === true)
++}
++
++console.log('۲) چک تکراری بین بازه‌ها و با رقم فارسی/فاصله')
++{
++  const cheque = seed.insert('PaymentMethod', { key: 'CHEQUE', label: 'چک', kind: 'CUSTOM' })
++  const inv = seed.insert('SaleInvoice', { receiptNo: 9001, userId: staffB, status: 'SETTLED', grandTotal: 9_000_000, paidTotal: 9_000_000, issuedAt: T0 + 3600_000, issuedAtJalali: today })
++  const pay = (chequeNo, amount, at, extra = {}) =>
++    seed.insert('Payment', { invoiceId: inv, methodId: cheque, kind: 'CHEQUE', chequeNo, amount, paidAt: at, createdAt: at, ...extra })
++  // الف) ماه قبل یک بار، امروز دوباره ⇒ باید هشدار بگیرد
++  pay('55501', 2_000_000, OLD)
++  pay('55501', 2_000_000, T0 + 2 * 3600_000)
++  // ب) همان شماره با رقم فارسی و فاصله ⇒ یک چک
++  pay('۷۷ ۷۰۲', 3_000_000, T0 + 3 * 3600_000)
++  pay('77702', 3_000_000, T0 + 4 * 3600_000)
++  // ج) فقط یک بار (امروز) ⇒ هشدار نه
++  pay('11103', 1_000_000, T0 + 5 * 3600_000)
++  // د) تکرار فقط در گذشته ⇒ در گزارش امروز نه
++  pay('33304', 500_000, OLD)
++  pay('33304', 500_000, OLD + 3600_000)
++  // هـ) استفاده‌ی دوم باطل‌شده ⇒ تکرار نیست
++  pay('44405', 700_000, OLD)
++  pay('44405', 700_000, T0 + 6 * 3600_000, { voidedAt: T0 + 7 * 3600_000 })
++  // و) داخل همان روز دو بار (رفتار قبلی حفظ شود)
++  pay('00906', 400_000, T0 + 8 * 3600_000)
++  pay('00906', 400_000, T0 + 9 * 3600_000)
++
++  const res = await fraudService.review({ fromJalali: today, toJalali: today })
++  const f = res.flags.find((x) => x.key === 'duplicateCheques')
++  truthy('هشدار چک تکراری وجود دارد', !!f)
++  const labels = (f?.sources ?? []).map((s) => s.label)
++  console.log('    منابع:', JSON.stringify(labels))
++  eq('تعداد شماره‌های تکراری = ۳ (55501، 77702، 00906)', f?.count, 3)
++  truthy('55501 (ماه قبل + امروز) گرفته شد', labels.some((l) => l.includes('55501')))
++  truthy('77702 (فارسی/فاصله) گرفته شد', labels.some((l) => l.includes('77702')))
++  truthy('00906 (دو بار امروز) هنوز گرفته می‌شود', labels.some((l) => l.includes('00906')))
++  truthy('11103 (یک بار) هشدار ندارد', !labels.some((l) => l.includes('11103')))
++  truthy('33304 (تکرار فقط در گذشته) در گزارش امروز نیست', !labels.some((l) => l.includes('33304')))
++  truthy('44405 (دومی باطل) هشدار ندارد', !labels.some((l) => l.includes('44405')))
++  eq('مبلغ = جمع استفاده‌های داخل بازه (۲م + ۶م + ۰٫۸م)', f?.amount, 2_000_000 + 6_000_000 + 800_000)
++  eq('ترتیب منابع قطعی بر اساس شماره', labels.map((l) => (l.match(/\d{5}/) ?? [''])[0]), ['00906', '55501', '77702'])
++  truthy('برچسب 55501 استفاده در بازه‌ی دیگر را می‌گوید', labels.some((l) => l.includes('55501') && l.includes('بازه')))
++  const src = f?.sources?.find((s) => s.label.includes('55501'))
++  eq('منبع 55501: مبلغ همان بازه', src?.amount, 2_000_000)
++
++  // گزارش ماه قبل: 55501 و 33304 و 44405 (هر کدام حداقل یک استفاده آن روز)
++  const oldDay = addDaysJalali ? addDaysJalali(today, -35) : null
++  if (oldDay) {
++    const r2 = await fraudService.review({ fromJalali: oldDay, toJalali: oldDay })
++    const f2 = r2.flags.find((x) => x.key === 'duplicateCheques')
++    const l2 = (f2?.sources ?? []).map((s) => s.label)
++    truthy('گزارش ماه قبل: 55501 (تکرار بعدی) هم دیده می‌شود', l2.some((l) => l.includes('55501')))
++    truthy('گزارش ماه قبل: 33304 دیده می‌شود', l2.some((l) => l.includes('33304')))
++    truthy('گزارش ماه قبل: 44405 (دومی باطل) دیده نمی‌شود', !l2.some((l) => l.includes('44405')))
++  } else truthy('addDaysJalali در دسترس', false)
++}
++
++console.log(`\nنتیجه: ${ok} موفق، ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)
+diff -ruN baseline178/test/harness/prismaLite.mjs work/mahak/test/harness/prismaLite.mjs
+--- baseline178/test/harness/prismaLite.mjs	2026-09-27 15:55:05.587034158 +0000
++++ work/mahak/test/harness/prismaLite.mjs	2026-09-27 16:01:05.377121581 +0000
+@@ -615,8 +615,30 @@
+           map.push({ key: k, field: f, scalar: false })
+         }
+     }
++    /**
++     * نشست ۱۷۹ — `having` قبلاً بی‌صدا نادیده گرفته می‌شد (گروه‌های تک‌عضوی هم برمی‌گشتند) و
++     * رفتار هارنس با Prisma واقعی فرق داشت. حالا شکل `{ col: { _count|_sum|_min|_max|_avg: { gt|gte|lt|lte|equals: N } } }`
++     * به HAVING واقعی SQL ترجمه می‌شود و هر شکل دیگر خطای صریح HARNESS می‌دهد (نه نتیجه‌ی دروغ).
++     */
++    const havingParts = []
++    if (args.having != null) {
++      for (const [col, aggs] of Object.entries(args.having)) {
++        if (!colOf(table, col)) fail(`having روی ستون ناشناخته «${col}» (${table})`)
++        for (const [agg, ops] of Object.entries(aggs ?? {})) {
++          const fn = { _sum: 'SUM', _count: 'COUNT', _avg: 'AVG', _min: 'MIN', _max: 'MAX' }[agg]
++          if (!fn || ops == null || typeof ops !== 'object') fail(`شکل having پشتیبانی نمی‌شود («${col}.${agg}»)`)
++          for (const [op, val] of Object.entries(ops)) {
++            const sqlOp = { gt: '>', gte: '>=', lt: '<', lte: '<=', equals: '=' }[op]
++            if (!sqlOp || typeof val !== 'number') fail(`عملگر having پشتیبانی نمی‌شود («${col}.${agg}.${op}»)`)
++            havingParts.push(`${fn}("${col}") ${sqlOp} ?`)
++            params.push(val)
++          }
++        }
++      }
++    }
++    const havingSql = havingParts.length ? ` HAVING ${havingParts.join(' AND ')}` : ''
+     const rows = db
+-      .prepare(`SELECT ${picks.join(', ')} FROM "${table}" WHERE ${cond} GROUP BY ${by.map((b) => `"${b}"`).join(', ')}`)
++      .prepare(`SELECT ${picks.join(', ')} FROM "${table}" WHERE ${cond} GROUP BY ${by.map((b) => `"${b}"`).join(', ')}${havingSql}`)
+       .all(...params)
+     return rows.map((r) => {
+       const out = {}

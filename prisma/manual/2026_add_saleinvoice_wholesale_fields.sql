@@ -1,0 +1,22 @@
+-- ---------------------------------------------------------------------------
+-- ⚠️ این فایل دیگر لازم نیست و فقط برای سابقه نگه داشته شده است.
+--
+-- از این نسخه، ساختار دیتابیس با migration های رسمی Prisma مدیریت می‌شود:
+--   prisma/migrations/0_init/
+--   prisma/migrations/20260101000000_saleinvoice_wholesale_fields/
+--
+-- و برنامه در هر بار اجرا (هم در حالت توسعه و هم در نسخه‌ی نصب‌شده) خودش
+-- migration های اعمال‌نشده را روی shop.db اجرا می‌کند
+-- (src/main/db/migrator.ts که از src/main/index.ts صدا زده می‌شود).
+-- پس نیازی به اجرای دستی هیچ SQL ای نیست؛ فقط برنامه را باز کنید.
+--
+-- محتوای قبلی این فایل، عیناً همان کاری را می‌کرد که الان migration رسمی
+-- 20260101000000_saleinvoice_wholesale_fields انجام می‌دهد:
+--
+--   ALTER TABLE "SaleInvoice" ADD COLUMN "deductInventory" BOOLEAN NOT NULL DEFAULT true;
+--   ALTER TABLE "SaleInvoice" ADD COLUMN "wholesaleDiscountPercent" INTEGER;
+--   CREATE INDEX IF NOT EXISTS "SaleInvoice_orderType_idx" ON "SaleInvoice"("orderType");
+--
+-- اگر قبلاً این فایل را دستی اجرا کرده‌اید هم مشکلی نیست: migrator خطای
+-- «duplicate column name» را به‌عنوان «قبلاً اعمال شده» می‌شناسد و رد می‌شود.
+-- ---------------------------------------------------------------------------

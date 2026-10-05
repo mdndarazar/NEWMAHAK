@@ -1,0 +1,20 @@
+(node:5868) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5868) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/pristine/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/pristine/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+Y12) شیفت فاکتور = شیفت باز لحظه‌ی ثبت
+  ✗ shiftId شیفت بسته‌ی همکار ⇒ رد — بدون تأیید پذیرفته شد
+  ✗ shiftId ناموجود ⇒ رد — بدون تأیید پذیرفته شد
+  ✗ IPC.saleCreate با shiftId شیفت بسته ⇒ رد فارسی
+  ✗ هیچ فاکتوری ثبت نشد — انتظار 0، دریافت 3
+  ✓ بدون shiftId ⇒ پذیرفته
+  ✓ shiftId = شیفت باز = 2
+  ✓ shiftId همان شیفت باز ⇒ پذیرفته
+  ✓ shiftId = شیفت باز = 2
+  ✓ فروش عمده بدون shiftId ⇒ همان شیفت باز
+  ✓ shiftId عمده = شیفت باز = 2
+
+نتیجه: 6 موفق · 4 ناموفق

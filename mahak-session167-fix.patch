@@ -1,0 +1,601 @@
+diff -ruN pristine/mahak/src/main/services/accountingReport.ts mahak/src/main/services/accountingReport.ts
+--- pristine/mahak/src/main/services/accountingReport.ts	2026-09-27 10:45:44.000000000 +0000
++++ mahak/src/main/services/accountingReport.ts	2026-09-27 11:30:40.328257155 +0000
+@@ -233,7 +233,7 @@
+     priorClearedCheques: 0, priorManagerAccount: 0, priorDestinationUnknown: 0,
+     clearedCashCheques: 0, clearedCardCheques: 0, clearedManagerCheques: 0, clearedUnknownCheques: 0,
+     managerAccount: 0, destinationUnknown: 0, ignoredNonCash: 0, legacyNegativePayments: 0,
+-    overpayReceived: 0
++    overpayReceived: 0, priorPeriodOverpay: 0
+   }
+   totals.legacyNegativePayments = Math.abs(n(legacyNegative._sum.amount))
+   if (totals.legacyNegativePayments > 0)
+@@ -336,6 +336,8 @@
+           if (bucket === 'unknown') { totals.priorDestinationUnknown = n(totals.priorDestinationUnknown) + amount; continue }
+           totals.priorClearedCheques += amount
+           totals.priorPeriod += amount
++          /** نشست ۱۶۷ · S162-D3 (S167-D1) — فقط نمایشی؛ سهم اضافه‌دریافتِ همین مبلغ */
++          totals.priorPeriodOverpay = n(totals.priorPeriodOverpay) + Math.max(0, n(r._sum.overpayAmount))
+           if (bucket === 'cash') totals.priorPeriodCash += amount
+           else if (bucket === 'card') totals.priorPeriodCard += amount
+           else totals.priorPeriodOther += amount
+@@ -350,6 +352,8 @@
+       // نشست ۱۶۱ · Y19 — ولی ردیف منفی جدای پل را می‌سازد
+       if (bucket === 'managerAccount') { totals.priorManagerAccount = n(totals.priorManagerAccount) + amount; continue }
+       totals.priorPeriod += amount
++      /** نشست ۱۶۷ · S162-D3 (S167-D1) — فقط نمایشی؛ سهم اضافه‌دریافتِ همین مبلغ (هیچ جمعی آن را نمی‌خواند) */
++      totals.priorPeriodOverpay = n(totals.priorPeriodOverpay) + Math.max(0, n(r._sum.overpayAmount))
+       if (bucket === 'cash') totals.priorPeriodCash += amount
+       else if (bucket === 'card') totals.priorPeriodCard += amount
+       else totals.priorPeriodOther += amount
+@@ -1362,7 +1366,13 @@
+       'پول به کشو، کارتخوان یا حساب مدیر رفته؛ پس نه در وجه واقعی و نه در نقد مورد انتظار صندوق ' +
+       'حساب شده است. مدیر باید مقصد واقعی را بررسی کند.',
+     storeCreditIssued: 'بدهی ما به مشتری؛ پول نرسید ولی کالا رفت — لینک به سند تعویض/برگشت',
+-    priorCreditSettlements: 'پولِ این بازه بابت فروشِ بازه‌های قبل — فروش امروز نیست',
++    priorCreditSettlements:
++      'پولِ این بازه بابت فروشِ بازه‌های قبل — فروش امروز نیست' +
++      /** نشست ۱۶۷ · S162-D3 (S167-D1) — برچسب جدای اضافه‌دریافت؛ عدد ردیف دست نمی‌خورد */
++      (n(pay.totals.priorPeriodOverpay) > 0
++        ? ` · شامل ${n(pay.totals.priorPeriodOverpay)} ریال اضافه‌دریافت روی فاکتورهای دوره‌ی قبل (فروش نیست؛ ` +
++          'پول بیش از بدهی فاکتور گرفته شده — لینک به پرداختی‌های دارای «مبلغ اضافه‌ی دریافتی»)'
++        : ''),
+     priorClearedCheques: 'چکِ بازه‌های قبل که امروز پاس شد — فروش امروز نیست',
+     priorManagerAccountReceived:
+       'بخشی از «دریافتی به حساب مدیر» که بابت فاکتورهای بازه‌های قبل است: فروش و نسیه‌ی این بازه را ' +
+@@ -1448,6 +1458,8 @@
+       settledPriorCash: pay.totals.priorPeriodCash,
+       settledPriorCard: pay.totals.priorPeriodCard,
+       settledPriorOther: pay.totals.priorPeriodOther,
++      /** نشست ۱۶۷ · S162-D3 (S167-D1) — فقط نمایشی، داخل settledPrior */
++      settledPriorOverpay: n(pay.totals.priorPeriodOverpay),
+       remaining: credit.remaining,
+       pendingCheques: pay.cheques.pending,
+       bouncedCheques: pay.cheques.bounced
+diff -ruN pristine/mahak/src/renderer/src/components/AccountingBlocks.tsx mahak/src/renderer/src/components/AccountingBlocks.tsx
+--- pristine/mahak/src/renderer/src/components/AccountingBlocks.tsx	2026-09-27 10:27:03.000000000 +0000
++++ mahak/src/renderer/src/components/AccountingBlocks.tsx	2026-09-27 11:26:09.997793342 +0000
+@@ -340,6 +340,8 @@
+           <Row label="چک پاس‌شده (تاریخ پاس‌شدن)" value={s.cash.clearedChequeReceived} sign={1} onClick={jump('cheques')} />
+           {/* نشست ۱۶۴ · Y21 (بند ۴-۵۳) — داخل ردیف‌های نقد/کارت/چک بالاست؛ فقط نمایشی، در خالص دوباره جمع نمی‌شود */}
+           <Row label="از دریافتی‌های بالا: وصول نسیه‌ی دوره‌ی قبل (تاریخ پرداخت)" value={s.cash.priorCreditSettlements} sign={0} onClick={jump('credit')} />
++          {/* نشست ۱۶۷ · S162-D3 (S167-D1) — فقط نمایشی، داخل ردیف بالا؛ در خالص جمع نمی‌شود */}
++          {(s.credit.settledPriorOverpay ?? 0) > 0 && <Row label="از وصول بالا: اضافه‌دریافت روی فاکتورهای دوره‌ی قبل (بیش از بدهی — فروش نیست)" value={s.credit.settledPriorOverpay ?? 0} sign={0} tone="warn" onClick={jump('credit')} />}
+           <Row label="بازپرداخت نقدی برگشت" value={s.cash.cashRefundsForReturns} sign={-1} onClick={jump('returns')} />
+           <Row label="بازپرداخت کارتی برگشت" value={s.cash.cardRefundsForReturns} sign={-1} onClick={jump('returns')} />
+           <Row label="بازپرداخت نقدی تعویض" value={s.cash.cashRefundsForExchanges} sign={-1} onClick={jump('exchanges')} />
+diff -ruN pristine/mahak/src/renderer/src/pages/Pos.tsx mahak/src/renderer/src/pages/Pos.tsx
+--- pristine/mahak/src/renderer/src/pages/Pos.tsx	2026-09-27 11:03:09.000000000 +0000
++++ mahak/src/renderer/src/pages/Pos.tsx	2026-09-27 11:28:48.419237209 +0000
+@@ -13,7 +13,7 @@
+ import { ColGroup, ResizableHeaderCells, useResizableColumns } from '../components/ResizableColumns'
+ import { money, faDigits } from '@shared/jalali'
+ import { describeChargeRule } from '@shared/charges'
+-import { describeDiscountPolicy, discountCeilingFor, fixedDiscountFor } from '@shared/priceAdjust'
++import { describeDiscountPolicy, discountCeilingFor, fixedDiscountFor, scaleLineDiscounts } from '@shared/priceAdjust'
+ import ManagerGate from '../components/ManagerGate'
+ import { CENTRAL_WITHDRAW_GATE, PANEL_KEYS } from '@shared/panels'
+ import type { ActiveDiscountInfo, CartLine, ShiftInfo, StoreCreditRow } from '@shared/types'
+@@ -495,9 +495,9 @@
+    *    `discountCeilingFor(policy, goods)` گرفته می‌شود. از نشست ۱۵۴ (S151-b) همین
+    *    تابع سمت main هم در `SalesService.create/update` (`preverifySalePolicy`) بازه را
+    *    enforce می‌کند و عبور از آن حتی با رمز مدیر رد می‌شود؛ پیش از آن این بازه فقط
+-   *    در UI بود. ریسک باقی‌مانده (Y11، S152-D3): گرد ردیف‌های کوتاه‌شده با
+-   *    `lineScale` می‌تواند چند ریال از سقف بیشتر شود و سرور فروش را با پیام فارسی
+-   *    رد کند؛ tolerance سمت سرور عمداً ساخته نشد. اگر خواسته‌ی فروشنده از
++   *    در UI بود. نشست ۱۶۷ · Y11 (S167-D2): گرد ردیف‌های کوتاه‌شده دیگر با
++   *    Math.round جداگانه نیست؛ `scaleLineDiscounts` جمع را دقیقاً برابر سقف نگه می‌دارد
++   *    تا سرور (بدون هیچ tolerance) فروش را رد نکند. اگر خواسته‌ی فروشنده از
+    *    سقف بیشتر بود، *اول* تخفیف فاکتور کوتاه می‌شود و بعد تخفیف ردیف‌ها
+    *    (`lineScale`)، و `clipped` می‌گوید چقدر کوتاه شد تا در UI صریح گفته شود.
+    *    کوتاه‌کردن بی‌صدا، همان باگی است که فاکتور چاپی و گزارش را واگرا می‌کند.
+@@ -525,6 +525,12 @@
+     const clipped = Math.max(0, rawLineDisc + rawInvoiceDisc - (lineDisc + invoiceDisc))
+     /** ضریب کوتاه‌شدن تخفیف ردیف‌ها (۱ = دست‌نخورده) — هم در نمایش، هم در سند */
+     const lineScale = rawLineDisc > 0 ? lineDisc / rawLineDisc : 1
++    /**
++     * نشست ۱۶۷ · Y11 (S167-D2) — تخفیف نهایی هر ردیف با یک توزیع مشترک که جمعش دقیقاً = lineDisc است
++     * (نه Math.round جداگانه که جمعش چند ریال از سقف رد می‌شد و سرور فروش را رد می‌کرد).
++     */
++    const scaledArr = lineDiscountAllowed ? scaleLineDiscounts(lines.map((l) => l.discount), lineDisc) : lines.map(() => 0)
++    const scaledLineDisc = new Map<CartLine, number>(lines.map((l, i) => [l, scaledArr[i]]))
+     const disc = lineDisc + invoiceDisc
+ 
+     // سهم تخفیف فاکتور روی هر ردیف، تا «مبلغ خالص ردیف» مبنای درست درصد عوارض
+@@ -532,8 +538,8 @@
+     const grossAfterLineDisc = Math.max(0, goods - lineDisc)
+     const share = grossAfterLineDisc > 0 ? Math.min(1, invoiceDisc / grossAfterLineDisc) : 0
+     const breakdown = charges.compute(
+-      lines.map((l) => {
+-        const lineGross = l.unitPrice * l.qty - Math.round(l.discount * lineScale)
++      lines.map((l, i) => {
++        const lineGross = l.unitPrice * l.qty - scaledArr[i]
+         return { categoryId: l.categoryId ?? null, lineNet: Math.max(0, Math.round(lineGross * (1 - share))), qty: l.qty }
+       })
+     )
+@@ -551,6 +557,8 @@
+       /** چقدر از خواسته‌ی فروشنده به‌خاطر سقف سیاست کوتاه شد */
+       clipped,
+       lineScale,
++      /** نشست ۱۶۷ · Y11 — تخفیف نهایی هر ردیف (جمع = lineDisc) */
++      scaledLineDisc,
+       /** عوارض هر ردیف — همیشه روی همان ردیف ثبت و چاپ می‌شود (بند ۲) */
+       taxPerLine: breakdown.taxPerLine,
+       service,
+@@ -572,8 +580,10 @@
+ 
+   /** تخفیف *نهایی* یک ردیف (با ضریب سقف سیاست) — یک تابع، دو مصرف‌کننده. */
+   const lineDiscountOf = useCallback(
+-    (l: CartLine) => (lineDiscountAllowed ? Math.round(l.discount * totals.lineScale) : 0),
+-    [lineDiscountAllowed, totals.lineScale]
++    // نشست ۱۶۷ · Y11 — از همان نقشه‌ی جمع‌دقیق؛ ردیف ناشناخته (نباید پیش بیاید) با کف، که هرگز از سقف رد نمی‌شود
++    (l: CartLine) =>
++      lineDiscountAllowed ? (totals.scaledLineDisc.get(l) ?? Math.min(l.discount, Math.floor(l.discount * totals.lineScale))) : 0,
++    [lineDiscountAllowed, totals.scaledLineDisc, totals.lineScale]
+   )
+ 
+   /**
+diff -ruN pristine/mahak/src/renderer/src/pages/SalesInvoice.tsx mahak/src/renderer/src/pages/SalesInvoice.tsx
+--- pristine/mahak/src/renderer/src/pages/SalesInvoice.tsx	2026-09-27 09:08:46.000000000 +0000
++++ mahak/src/renderer/src/pages/SalesInvoice.tsx	2026-09-27 11:30:29.524158685 +0000
+@@ -174,6 +174,13 @@
+    * کمتر از خودکار فقط با رمز مدیر پذیرفته می‌شود (Audit SALE_CHARGE_OVERRIDE). بعد از هر تلاش پاک می‌شود.
+    */
+   const [chargePw, setChargePw] = useState('')
++  /**
++   * نشست ۱۶۷ · S153-D5 / هم‌رده‌ی S165-D2 (S167-D3) — سرور برای «قیمت کمتر از قیمت مرجع» (مثلاً کالا بعد از
++   * بارگذاری فاکتور گران شده یا تعداد با قیمت قدیم بیشتر شده) رمز مدیر خواست ⇒ همان کادر رمز (chargePw ⇒
++   * managerPassword) نمایش داده می‌شود تا فروشنده رمزی را که تلفنی از مدیر گرفته وارد کند (بند ۴-۳۰).
++   * متن = پیام فارسی سرور (کدام کالا، مبلغ واردشده/مرجع). سرور دست نخورد.
++   */
++  const [priceNeedPw, setPriceNeedPw] = useState<string | null>(null)
+   const [deductInventory, setDeductInventory] = useState(true)
+   /**
+    * «مشتری راه دور» (مورد ۷) — همان چک‌باکس پنل فروش تکی، برای فاکتور عمده.
+@@ -542,6 +549,8 @@
+     setCreditInfo(null)
+     setCreditErr(null)
+     setErr(null)
++    // نشست ۱۶۷ (S167-D3) — کادر رمز قیمت مرجع خصوصیت همان فاکتور است
++    setPriceNeedPw(null)
+     setEditId(null)
+     setEditNo(null)
+     // جلسه ۵۱ — «دفتر مبدأ داشتن» خصوصیتِ همان فاکتورِ در حال ویرایش است
+@@ -708,6 +717,7 @@
+           setLastSaved({ id: inv.id, receiptNo: inv.receiptNo, paid: Math.max(0, Math.round(paid)) })
+           // نشست ۱۵۶ — رمز عوارض دستی بعد از ثبت موفق پاک می‌شود (در فلو اضافه‌دریافت برای تلاش دوم می‌ماند)
+           setChargePw('')
++          setPriceNeedPw(null)
+           // همان کادر زرد پنل فروش تکی، عیناً روی همین پنل (مورد ۷)
+           setWarn(inv.stockWarnings?.length ? inv.stockWarnings.join('\n') : null)
+           /** خلاصه‌ی مبدأ کسر (`summarizePlan` سمت سرور) — `null` = مثل قبل، همه از انبار فروشگاه. */
+@@ -798,6 +808,8 @@
+         )
+       else {
+         overpayPlanRef.current = null
++        // نشست ۱۶۷ (S167-D3) — رمز مدیرِ قیمت دستی/قیمت مرجع ⇒ کادر رمز کنار «مبلغ قابل پرداخت»
++        if (needsManagerPassword(message)) setPriceNeedPw(message)
+         setErr(message)
+       }
+     } finally {
+@@ -1498,11 +1510,15 @@
+               override={taxOverride}
+               onOverride={setTaxOverride}
+             />
+-            {((taxOverride != null && taxOverride < totals.autoTax) ||
++            {(priceNeedPw ||
++              (taxOverride != null && taxOverride < totals.autoTax) ||
+               (serviceOverride != null && serviceOverride < totals.autoService)) && (
+-              <label className="col-span-2" title="عوارض/حق سرویس دستیِ کمتر از مبلغ خودکار فقط با رمز مدیر ثبت می‌شود">
+-                <div className="mb-1">رمز مدیر (عوارض/حق سرویس کمتر از خودکار)</div>
++              <label className="col-span-2" title="عوارض/حق سرویس دستیِ کمتر از مبلغ خودکار، یا قیمت کمتر از قیمت مرجع، فقط با رمز مدیر ثبت می‌شود">
++                <div className="mb-1">
++                  {priceNeedPw ? 'رمز مدیر (قیمت کمتر از قیمت مرجع)' : 'رمز مدیر (عوارض/حق سرویس کمتر از خودکار)'}
++                </div>
+                 <PasswordField value={chargePw} placeholder="رمز مدیر" onChange={(e) => setChargePw(e.target.value)} />
++                {priceNeedPw && <div className="kbd mt-1 text-amber-700 whitespace-normal">{priceNeedPw}</div>}
+               </label>
+             )}
+             <label className="col-span-2">
+diff -ruN pristine/mahak/src/shared/accounting.ts mahak/src/shared/accounting.ts
+--- pristine/mahak/src/shared/accounting.ts	2026-09-27 10:45:46.000000000 +0000
++++ mahak/src/shared/accounting.ts	2026-09-27 11:25:55.281659218 +0000
+@@ -181,6 +181,12 @@
+    * ولی فروش نیست ⇒ در پل تطبیق با علامت منفی.
+    */
+   overpayReceived?: Rial
++  /**
++   * نشست ۱۶۷ · S162-D3 (S167-D1) — فقط نمایشی: سهم اضافه‌دریافت (overpayAmount) از همان ردیف‌هایی که در
++   * `priorPeriod` جمع شده‌اند (وصول فاکتور دوره‌ی قبل که بیش از بدهی بود). داخل `priorPeriod` است و هیچ
++   * جمع/پل/انتظار صندوقی آن را نمی‌خواند؛ فقط برچسب «اضافه‌دریافت روی فاکتور دوره‌ی قبل (فروش نیست)».
++   */
++  priorPeriodOverpay?: Rial
+ }
+ 
+ export interface ChequeTotals {
+diff -ruN pristine/mahak/src/shared/priceAdjust.ts mahak/src/shared/priceAdjust.ts
+--- pristine/mahak/src/shared/priceAdjust.ts	2026-09-27 09:08:46.000000000 +0000
++++ mahak/src/shared/priceAdjust.ts	2026-09-27 11:30:41.940271847 +0000
+@@ -299,6 +299,35 @@
+   return Math.max(0, Math.min(b, byPercent, byAmount))
+ }
+ 
++/**
++ * نشست ۱۶۷ · Y11 (S167-D2) — کوتاه‌کردن تخفیف ردیف‌ها تا سقف سیاست، بدون عبور حتی یک ریال.
++ *
++ * تا نشست ۱۶۶ هر ردیف جدا با Math.round(d × سقف/جمع) گرد می‌شد و جمع گردشده‌ها می‌توانست چند ریال از سقف
++ * بیشتر شود (۳۳۳/۳۳۳/۳۳۴ با سقف ۵۰۰ ⇒ ۵۰۱) ⇒ سرور (درست، بند ۴-۲۶) فروش را رد می‌کرد. اینجا هر سهم اول کف
++ * گرفته می‌شود و ریال‌های باقی‌مانده یکی‌یکی به ردیف‌های با بزرگ‌ترین باقی‌مانده‌ی کسری (تساوی ⇒ ردیف اول)
++ * داده می‌شود. نتیجه: جمع دقیقاً min(سقف، جمع خواسته)، هیچ ردیفی بیش از خواسته‌ی خودش، انحراف هر ردیف < ۱ ریال.
++ * اگر جمع خواسته ≤ سقف باشد همان ورودی (صحیح‌شده) برمی‌گردد.
++ */
++export function scaleLineDiscounts(discounts: number[], ceiling: number): number[] {
++  const d = discounts.map((x) => Math.max(0, Math.round(Number(x) || 0)))
++  const total = d.reduce((a, b) => a + b, 0)
++  const target = Math.max(0, Math.round(Number(ceiling) || 0))
++  if (total <= target) return d
++  if (target === 0) return d.map(() => 0)
++  const out = d.map((x) => Math.floor((x * target) / total))
++  let left = target - out.reduce((a, b) => a + b, 0)
++  const order = d
++    .map((x, i) => ({ i, frac: (x * target) % total }))
++    .filter((r) => d[r.i] > out[r.i])
++    .sort((a, b) => b.frac - a.frac || a.i - b.i)
++  for (const r of order) {
++    if (left <= 0) break
++    out[r.i] += 1
++    left -= 1
++  }
++  return out
++}
++
+ /** خلاصه‌ی یک‌خطی سیاست، برای نمایش در پنل فروش و در ماژول تنظیم سیاست. */
+ export function describeDiscountPolicy(policy: DiscountPolicy): string {
+   if (policy.mode === 'OFF') return 'تخفیف در پنل فروش غیرفعال است؛ هیچ تخفیفی قابل ثبت نیست.'
+diff -ruN pristine/mahak/src/shared/types.ts mahak/src/shared/types.ts
+--- pristine/mahak/src/shared/types.ts	2026-09-27 10:29:42.000000000 +0000
++++ mahak/src/shared/types.ts	2026-09-27 11:25:55.281659218 +0000
+@@ -1003,6 +1003,11 @@
+   settledPriorCard: number
+   /** بقیه‌ی همان وصولی (نه نقد، نه کارتخوان) */
+   settledPriorOther: number
++  /**
++   * نشست ۱۶۷ · S162-D3 (S167-D1) — فقط نمایشی: چه مقدار از `settledPrior` اضافه‌دریافت (بیش از بدهی
++   * فاکتور دوره‌ی قبل) بوده است. داخل همان `settledPrior` است و دوباره جمع/کم نمی‌شود. اختیاری برای سازگاری.
++   */
++  settledPriorOverpay?: number
+   /** باقی‌مانده‌ی بدهی همین فاکتورها در پایان بازه (فرمول بند ۲-۷) */
+   remaining: number
+   pendingCheques: number
+diff -ruN pristine/mahak/tests/audit-fixes/fix-s167-invoice-price-pw-box.mjs mahak/tests/audit-fixes/fix-s167-invoice-price-pw-box.mjs
+--- pristine/mahak/tests/audit-fixes/fix-s167-invoice-price-pw-box.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-s167-invoice-price-pw-box.mjs	2026-09-27 11:30:10.311983585 +0000
+@@ -0,0 +1,66 @@
++/**
++ * ===========================================================================
++ * نشست ۱۶۷ · S153-D5 / هم‌رده‌ی S165-D2 (S167-D3) — کادر رمز مدیر در صفحه‌ی فاکتور عمده وقتی سرور برای
++ * «قیمت کمتر از قیمت مرجع» رمز مدیر می‌خواهد.
++ *
++ * مسئله: سرور (درست) ویرایش/ثبت فاکتور عمده با قیمت کمتر از مرجع را بدون رمز مدیر رد می‌کند (مثلاً قیمت کالا
++ * بعد از بارگذاری فاکتور گران شده، یا افزایش تعداد با قیمت قدیم ⇒ S165-D2). ولی SalesInvoice.tsx فقط وقتی کادر
++ * رمز نشان می‌داد که عوارض/حق سرویس دستی کمتر از خودکار بود ⇒ فروشنده هیچ راهی برای وارد کردن رمز مدیر
++ * (که تلفنی گرفته، بند ۴-۳۰) نداشت و باید اقلام را دوباره می‌ساخت.
++ *
++ * رفع: خطای needsManagerPassword (غیر از فلو اضافه‌دریافت) ⇒ state priceNeedPw ⇒ همان کادر PasswordField
++ * (chargePw ⇒ managerPassword) با برچسب «قیمت کمتر از قیمت مرجع» نمایش داده می‌شود. سرور دست نمی‌خورد.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s167-invoice-price-pw-box.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s167c-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const db = harnessClient()
++const seed = makeSeeder(db)
++const { salesService } = await import('../../src/main/services/SalesService.ts')
++const { DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/receipt')
++const { jalaliToday } = await import('@shared/jalali')
++const { needsManagerPassword, isOverpayWarning } = await import('@shared/overpayFlow')
++
++let ok = 0
++let bad = 0
++const truthy = (label, v) => (v ? (ok++, console.log(`  ✓ ${label}`)) : (bad++, console.log(`  ✗ ${label}`)))
++const eq = (label, got, want) => truthy(`${label} = ${JSON.stringify(want)}${got === want ? '' : ` (دریافت ${JSON.stringify(got)})`}`, got === want)
++
++console.log('\n۱) قرارداد سرور (بدون تغییر): قیمت کمتر از مرجع بی‌رمز ⇒ پیام «رمز مدیر را وارد کنید»، با رمز ⇒ پذیرفته')
++const actor = seed.user('فروشنده ۱۶۷ج')
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: jalaliToday(), openedAt: Date.now() - 3600_000, userId: actor, staffConfirmed: 1 })
++const pid = seed.product('کت ۱۶۷', seed.category('پوشاک ۱۶۷ج'))
++const v = seed.insert('ProductVariant', { productId: pid, code: 'PW-1', barcode: 'BPW-1', salePrice: 1_000_000, stock: 100 })
++const sale = (o = {}) => ({ userId: actor, shiftId, deductInventory: false, payments: [], lines: [{ variantId: v, code: 'PW-1', barcode: 'BPW-1', name: 'کت', qty: 1, unitPrice: 800_000, discount: 0, tax: 0 }], ...o })
++let msg = ''
++try { await salesService.create(sale()); } catch (e) { msg = String(e?.message ?? e) }
++truthy(`بی‌رمز رد شد (${msg.slice(0, 90)})`, msg.length > 0)
++truthy('پیام با needsManagerPassword شناخته می‌شود', needsManagerPassword(msg))
++truthy('پیام هشدار اضافه‌دریافت نیست (پس فلو اضافه‌دریافت آن را نمی‌گیرد)', !isOverpayWarning(msg))
++truthy('پیام فارسی، با مبلغ واردشده و مرجع', /800[,٬]?000|۸۰۰٬۰۰۰/.test(msg) && /1[,٬]?000[,٬]?000|۱٬۰۰۰٬۰۰۰/.test(msg))
++let inv = null
++try { inv = await salesService.create(sale({ managerPassword: PW })) } catch (e) { console.log('   ', String(e?.message ?? e).slice(0, 160)) }
++truthy('با رمز مدیر پذیرفته شد', !!inv?.id)
++
++console.log('\n۲) SalesInvoice.tsx: خطای رمز مدیر ⇒ کادر رمز نمایش داده می‌شود')
++const src = readFileSync(resolve('src/renderer/src/pages/SalesInvoice.tsx'), 'utf8')
++truthy('state priceNeedPw تعریف شده', /const \[priceNeedPw, setPriceNeedPw\] = useState/.test(src))
++truthy('در شاخه‌ی خطای عمومی needsManagerPassword ⇒ setPriceNeedPw', /needsManagerPassword\(message\)\)\s*setPriceNeedPw\(/.test(src))
++truthy('کادر رمز با priceNeedPw هم نمایش داده می‌شود', /priceNeedPw \|\|\s*\(taxOverride != null/.test(src) || /\(taxOverride[\s\S]{0,200}\|\| priceNeedPw\)/.test(src))
++truthy('برچسب «قیمت کمتر از قیمت مرجع» در کادر', src.includes('قیمت کمتر از قیمت مرجع'))
++truthy('همان chargePw به managerPassword می‌رود (بدون مسیر تازه‌ی سرور)', /managerPassword: overpayReq\.managerPassword \?\? \(chargePw\.trim\(\) \|\| undefined\)/.test(src))
++truthy('پس از ثبت موفق priceNeedPw پاک می‌شود', /setChargePw\(''\)\s*\n\s*setPriceNeedPw\(null\)/.test(src))
++truthy('resetForm هم priceNeedPw را پاک می‌کند', /const resetForm = useCallback\([\s\S]{0,600}setPriceNeedPw\(null\)/.test(src))
++
++console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
++process.exitCode = bad ? 1 : 0
+diff -ruN pristine/mahak/tests/audit-fixes/fix-s167-prior-overpay-label.mjs mahak/tests/audit-fixes/fix-s167-prior-overpay-label.mjs
+--- pristine/mahak/tests/audit-fixes/fix-s167-prior-overpay-label.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-s167-prior-overpay-label.mjs	2026-09-27 11:25:33.657462132 +0000
+@@ -0,0 +1,138 @@
++/**
++ * ===========================================================================
++ * نشست ۱۶۷ · S162-D3 (نمایشی، بدون تغییر هیچ عدد) — برچسب جدای «اضافه‌دریافت روی فاکتور دوره‌ی قبل».
++ *
++ * مسئله: پرداخت امروز روی فاکتور دیروز با اضافه‌دریافت ۶۰۰ کلاً داخل «وصول نسیه‌ی دوره‌ی قبل» (۷۰۰) می‌نشیند
++ * (طراحی نشست ۵۸ · C4؛ پل بسته است). ولی در گزارش امروز هیچ جا گفته نمی‌شد که ۶۰۰ از این ۷۰۰ اضافه‌دریافت
++ * است و فروش نیست ⇒ مدیر نمی‌بیند فروشنده امروز پولِ بیش از بدهی گرفته است.
++ *
++ * رفع (S167-D1): totals.priorPeriodOverpay (فقط ردیف‌هایی که در priorPeriod جمع می‌شوند) ⇒
++ *   statements.credit.settledPriorOverpay ⇒ hint پل priorCreditSettlements پسوند «شامل X ریال اضافه‌دریافت …»
++ *   ⇒ ردیف sign=0 در بلوک ۶ (AccountingBlocks.tsx). هیچ عدد پل/صندوق نباید عوض شود.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s167-prior-overpay-label.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s167-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { salesService } = await import('../../src/main/services/SalesService.ts')
++const { RefundMethod } = await import('@shared/enums')
++const { toJalaliDate } = await import('@shared/jalali')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
++}
++const truthy = (label, v) => { if (v) { ok++; console.log(`  ✓ ${label}`) } else { bad++; console.log(`  ✗ ${label}`) } }
++const safe = async (label, fn) => {
++  try { return await fn() } catch (e) { bad++; console.log(`  ✗ ${label} — خطای نامنتظره: ${String(e?.message ?? e).split('\n')[0]}`); return null }
++}
++
++const HOUR = 3_600_000
++const userId = seed.user('مدیر تست ۱۶۷')
++const cat = seed.category('پوشاک ۱۶۷')
++const product = seed.product('شلوار ۱۶۷', cat)
++const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
++const today = toJalaliDate(new Date())
++const Yat = Date.now() - 30 * HOUR
++const yday = toJalaliDate(new Date(Yat))
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - HOUR, userId })
++let vseq = 0
++const variant = (price) => {
++  const id = seed.variant(product, `سایز ${++vseq}`)
++  sql.prepare('UPDATE "ProductVariant" SET stock = 100, salePrice = ? WHERE id = ?').run(price, id)
++  return id
++}
++const itemsOf = (invoiceId) => seed.rows('SELECT id FROM "SaleInvoiceItem" WHERE invoiceId = ? ORDER BY id', invoiceId)
++const line = (variantId, price) => ({ variantId, qty: 1, unitPrice: price, discount: 0, tax: 0 })
++const yesterdaySale = async (paid) => {
++  const a = variant(600), b = variant(400)
++  const inv = await salesService.create({ userId, shiftId, lines: [line(a, 600), line(b, 400)], payments: paid > 0 ? [{ methodId: cash, amount: paid, destination: 'CASH' }] : [] })
++  sql.prepare('UPDATE "SaleInvoice" SET issuedAt = ?, issuedAtJalali = ?, settledAt = CASE WHEN settledAt IS NULL THEN NULL ELSE ? END WHERE id = ?').run(Yat, yday, Yat, inv.id)
++  sql.prepare('UPDATE "Payment" SET paidAt = ?, paidAtJalali = ?, createdAt = ? WHERE invoiceId = ?').run(Yat, yday, Yat, inv.id)
++  return { inv, items: itemsOf(inv.id) }
++}
++const pay = (invoiceId, amount, extra = {}) => salesService.addPayment({ invoiceId, amount, methodId: cash, destination: 'CASH', userId, ...extra })
++const accOf = async (d) => (await salesService.reportRows({ fromJalali: d, toJalali: d })).accounting
++const row = (acc, key) => acc?.bridge?.rows?.find((r) => r.key === key)
++const amt = (acc, key) => Number(row(acc, key)?.amount ?? 0)
++const numbers = (acc) => JSON.stringify({
++  bridge: (acc?.bridge?.rows ?? []).map((r) => [r.key, r.sign * r.amount]),
++  unexplained: acc?.bridge?.unexplained,
++  cash: acc?.cash?.netCashMovement,
++  settledPrior: acc?.credit?.settledPrior,
++  settledPriorCash: acc?.credit?.settledPriorCash
++})
++
++// ===========================================================================
++console.log('\n۱) نسیه‌ی دیروز ۱٬۰۰۰ (۳۰۰ پرداخت دیروز) ⇒ برگشت ۶۰۰ امروز ⇒ بدهی ۱۰۰ ⇒ دریافت ۷۰۰ با تأیید (اضافه‌دریافت ۶۰۰)')
++const A = await safe('فروش دیروز', () => yesterdaySale(300))
++await safe('برگشت ۶۰۰', () => salesService.createReturn({ invoiceId: A.inv.id, full: false, lines: [{ saleItemId: A.items[0].id, qty: 1 }], refundMethod: RefundMethod.NONE, userId }))
++const pA = await safe('دریافت ۷۰۰ با تأیید', () => pay(A.inv.id, 700, { confirmOverpay: true }))
++eq('اضافه‌دریافت روی پرداخت', pA?.overpayAmount, 600)
++let t = await accOf(today)
++// عددهای پل همان طراحی ۵۸ · C4 باقی می‌مانند (S162-D3)
++eq('پل امروز بسته', t?.bridge?.unexplained, 0)
++eq('وصول نسیه‌ی دوره‌ی قبل ۷۰۰ (بدون تغییر عدد)', amt(t, 'priorCreditSettlements'), 700)
++eq('ردیف overpayReceived امروز ۰ (بدون دوبار کسر)', amt(t, 'overpayReceived'), 0)
++// رفع
++eq('statements.credit.settledPriorOverpay = ۶۰۰', t?.credit?.settledPriorOverpay, 600)
++const hint = String(row(t, 'priorCreditSettlements')?.hint ?? '')
++truthy('hint پل «وصول نسیه‌ی دوره‌ی قبل» مبلغ ۶۰۰ اضافه‌دریافت را صریح می‌گوید', hint.includes('600') && hint.includes('اضافه‌دریافت'))
++truthy('hint صریحاً «فروش نیست»', hint.includes('فروش نیست'))
++const snap1 = numbers(t)
++
++console.log('\n۲) کنترل: اضافه‌دریافت روی فاکتور *امروز* در این عدد نمی‌آید (ردیف overpayReceived خودش را دارد)')
++const v = variant(500)
++const invT = await safe('فروش امروز ۵۰۰ نسیه', () => salesService.create({ userId, shiftId, lines: [line(v, 500)], payments: [] }))
++await safe('دریافت ۸۰۰ با تأیید', () => pay(invT.id, 800, { confirmOverpay: true }))
++t = await accOf(today)
++eq('پل امروز بسته', t?.bridge?.unexplained, 0)
++eq('overpayReceived امروز ۳۰۰', amt(t, 'overpayReceived'), 300)
++eq('settledPriorOverpay هنوز ۶۰۰', t?.credit?.settledPriorOverpay, 600)
++
++console.log('\n۳) کنترل: وصول دوره‌ی قبل *بدون* اضافه‌دریافت ⇒ پسوند hint ظاهر نمی‌شود')
++const B = await safe('نسیه‌ی دیروز دیگر', () => yesterdaySale(0))
++const acc0 = await (async () => {
++  // جدا: فقط این فاکتور در دیتابیس تازه نیست؛ پس فقط تغییر عدد را می‌سنجیم
++  await pay(B.inv.id, 200)
++  return accOf(today)
++})()
++eq('settledPriorOverpay بدون تغییر ۶۰۰ (وصول ۲۰۰ اضافه ندارد)', acc0?.credit?.settledPriorOverpay, 600)
++eq('وصول دوره‌ی قبل ۹۰۰', amt(acc0, 'priorCreditSettlements'), 900)
++
++console.log('\n۴) ابطال پرداخت اضافه‌دار ⇒ برچسب هم صفر می‌شود و پسوند hint حذف')
++await safe('ابطال پرداخت ۷۰۰', async () => {
++  const fn = salesService.voidPayment ?? salesService.deletePayment ?? salesService.paymentDelete
++  if (!fn) throw new Error('تابع ابطال پرداخت پیدا نشد')
++  return fn.call(salesService, { id: pA?.payment?.id, userId, reason: 'تست ابطال' })
++})
++t = await accOf(today)
++eq('پل امروز بسته', t?.bridge?.unexplained, 0)
++eq('settledPriorOverpay = ۰', t?.credit?.settledPriorOverpay, 0)
++truthy('hint بدون پسوند اضافه‌دریافت', !String(row(t, 'priorCreditSettlements')?.hint ?? '').includes('اضافه‌دریافت'))
++
++console.log('\n۵) UI: بلوک ۶ ردیف نمایشی sign=0 دارد و در خالص جمع نمی‌شود')
++const ui = readFileSync(new URL('../../src/renderer/src/components/AccountingBlocks.tsx', import.meta.url), 'utf8')
++const uiLine = ui.split('\n').find((l) => l.includes('settledPriorOverpay')) ?? ''
++truthy('ردیف settledPriorOverpay در AccountingBlocks.tsx', uiLine.length > 0)
++truthy('ردیف با sign={0} (فقط نمایشی)', uiLine.includes('sign={0}'))
++truthy('برچسب «فروش نیست»', uiLine.includes('فروش نیست'))
++
++console.log('\nSNAPSHOT-NUMBERS (باید قبل/بعد از رفع یکسان باشد): ' + snap1)
++console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
++process.exitCode = bad ? 1 : 0
+diff -ruN pristine/mahak/tests/audit-fixes/fix-s167-y11-line-discount-scale.mjs mahak/tests/audit-fixes/fix-s167-y11-line-discount-scale.mjs
+--- pristine/mahak/tests/audit-fixes/fix-s167-y11-line-discount-scale.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-s167-y11-line-discount-scale.mjs	2026-09-27 11:28:25.315026631 +0000
+@@ -0,0 +1,116 @@
++/**
++ * ===========================================================================
++ * نشست ۱۶۷ · Y11 (S152-D3 بازنگری ⇒ S167-D2) — گرد تخفیف ردیف‌های کوتاه‌شده با سقف سیاست در POS.
++ *
++ * مسئله: وقتی جمع تخفیف ردیف‌ها از سقف سیاست (بند ۴-۲۶) بیشتر است، Pos.tsx هر ردیف را با
++ * Math.round(l.discount × lineScale) کوتاه می‌کرد. جمع گردشده‌ها می‌توانست چند ریال از سقف بیشتر شود
++ * (مثال: ۳۳۳/۳۳۳/۳۳۴ با سقف ۵۰۰ ⇒ ۱۶۷+۱۶۷+۱۶۷ = ۵۰۱) ⇒ سرور (درست) فروش را رد می‌کرد و فروشنده گیر می‌کرد؛
++ * و «قابل پرداخت» صفحه (goods − lineDisc) با جمع تخفیف سند چند ریال فرق داشت.
++ *
++ * رفع: تابع مشترک scaleLineDiscounts در @shared/priceAdjust (کف + توزیع ریال‌های باقی‌مانده به بزرگ‌ترین
++ * باقی‌مانده‌ها) ⇒ جمع دقیقاً برابر سقف، هیچ ردیفی بیش از خواسته‌ی خودش؛ Pos.tsx هم در عوارض و هم در سند
++ * همین تابع را می‌خواند. سرور tolerance نمی‌گیرد (بند ۴-۲۶ دست‌نخورده).
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s167-y11-line-discount-scale.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s167y11-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const db = harnessClient()
++const seed = makeSeeder(db)
++const { salesService } = await import('../../src/main/services/SalesService.ts')
++const { SETTING_KEYS } = await import('@shared/receipt')
++const { jalaliToday } = await import('@shared/jalali')
++const priceAdjust = await import('@shared/priceAdjust')
++const scale = priceAdjust.scaleLineDiscounts
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
++}
++const truthy = (label, v) => (v ? (ok++, console.log(`  ✓ ${label}`)) : (bad++, console.log(`  ✗ ${label}`)))
++const rejects = async (label, fn, needle) => {
++  try { await fn(); bad++; console.log(`  ✗ ${label} — پذیرفته شد`) }
++  catch (e) {
++    const m = String(e?.message ?? e)
++    if (!m.startsWith('HARNESS:') && /[\u0600-\u06FF]/.test(m) && (!needle || m.includes(needle))) { ok++; console.log(`  ✓ ${label} (رد شد: ${m.split('\n')[0].slice(0, 110)})`) }
++    else { bad++; console.log(`  ✗ ${label} — پیام نامنتظره: ${m.split('\n')[0].slice(0, 160)}`) }
++  }
++}
++const safe = async (label, fn) => {
++  try { const r = await fn(); ok++; console.log(`  ✓ ${label}`); return r } catch (e) { bad++; console.log(`  ✗ ${label} — خطای نامنتظره: ${String(e?.message ?? e).split('\n')[0].slice(0, 160)}`); return null }
++}
++const S = (xs) => xs.reduce((a, b) => a + b, 0)
++
++console.log('\n۱) تابع مشترک scaleLineDiscounts')
++truthy('scaleLineDiscounts در @shared/priceAdjust وجود دارد', typeof scale === 'function')
++if (typeof scale === 'function') {
++  eq('۳۳۳/۳۳۳/۳۳۴ با سقف ۵۰۰ ⇒ جمع دقیقاً ۵۰۰', S(scale([333, 333, 334], 500)), 500)
++  eq('بدون کوتاه‌شدن ⇒ دست‌نخورده', scale([100, 250, 0], 1000), [100, 250, 0])
++  eq('سقف صفر ⇒ همه صفر', scale([100, 200], 0), [0, 0])
++  eq('ردیف بی‌تخفیف تخفیف نمی‌گیرد', scale([0, 7, 0, 7], 7)[0] + scale([0, 7, 0, 7], 7)[2], 0)
++  let worst = 0, over = 0, notExact = 0
++  let seedN = 12345
++  const rnd = (k) => { seedN = (seedN * 1103515245 + 12345) % 2147483648; return seedN % k }
++  for (let t = 0; t < 3000; t++) {
++    const n = 1 + rnd(8)
++    const d = Array.from({ length: n }, () => rnd(5000))
++    const target = rnd(S(d) + 1)
++    const r = scale(d, target)
++    if (r.some((x, i) => x > d[i] || x < 0 || !Number.isInteger(x))) over++
++    if (S(r) !== Math.min(target, S(d))) notExact++
++    worst = Math.max(worst, ...r.map((x, i) => Math.abs(x - (S(d) > 0 ? (d[i] * Math.min(target, S(d))) / S(d) : 0))))
++  }
++  eq('۳۰۰۰ حالت تصادفی: هیچ ردیفی بیش از خواسته‌ی خودش/منفی/اعشاری', over, 0)
++  eq('۳۰۰۰ حالت تصادفی: جمع همیشه دقیقاً = min(سقف، خواسته)', notExact, 0)
++  truthy(`انحراف هر ردیف از سهم دقیق < ۱ ریال (بیشینه ${worst.toFixed(3)})`, worst < 1)
++}
++
++console.log('\n۲) سرور: فرمول قدیم Math.round رد می‌شد؛ توزیع تازه پذیرفته می‌شود (بدون tolerance سمت سرور)')
++const actor = seed.user('فروشنده ۱۶۷')
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: jalaliToday(), openedAt: Date.now() - 3600_000, userId: actor, staffConfirmed: 1 })
++const pid = seed.product('شلوار ۱۶۷', seed.category('پوشاک ۱۶۷'))
++const va = seed.insert('ProductVariant', { productId: pid, code: 'Y11-A', barcode: 'BY11-A', salePrice: 1000, stock: 100 })
++const vb = seed.insert('ProductVariant', { productId: pid, code: 'Y11-B', barcode: 'BY11-B', salePrice: 1000, stock: 100 })
++const vc = seed.insert('ProductVariant', { productId: pid, code: 'Y11-C', barcode: 'BY11-C', salePrice: 500, stock: 100 })
++seed.setting(SETTING_KEYS.discountPolicy, { mode: 'FREE', fixedMode: 'PERCENT', fixedValue: 0, allowLine: true, allowInvoice: true, maxPercent: 20, maxAmount: 0 })
++const wanted = [333, 333, 334]
++const ceiling = priceAdjust.discountCeilingFor({ mode: 'FREE', fixedMode: 'PERCENT', fixedValue: 0, allowLine: true, allowInvoice: true, maxPercent: 20, maxAmount: 0 }, 2500)
++eq('سقف ۲۰٪ روی ۲٬۵۰۰ = ۵۰۰', ceiling, 500)
++const lineScale = ceiling / S(wanted)
++const oldWay = wanted.map((d) => Math.round(d * lineScale))
++eq('فرمول قدیم جمع ۵۰۱ می‌داد (بازتولید Y11)', S(oldWay), 501)
++const mk = (discs) => ({
++  userId: actor, shiftId, deductInventory: false, payments: [],
++  lines: [
++    { variantId: va, code: 'Y11-A', barcode: 'BY11-A', name: 'الف', qty: 1, unitPrice: 1000, discount: discs[0], tax: 0 },
++    { variantId: vb, code: 'Y11-B', barcode: 'BY11-B', name: 'ب', qty: 1, unitPrice: 1000, discount: discs[1], tax: 0 },
++    { variantId: vc, code: 'Y11-C', barcode: 'BY11-C', name: 'ج', qty: 1, unitPrice: 500, discount: discs[2], tax: 0 }
++  ]
++})
++await rejects('سرور فرمول قدیم (۵۰۱) را رد می‌کند (بند ۴-۲۶، بدون tolerance)', () => salesService.create(mk(oldWay)), 'تخفیف')
++if (typeof scale === 'function') {
++  const newWay = scale(wanted, ceiling)
++  const inv = await safe(`سرور توزیع تازه (${newWay.join('+')}) را می‌پذیرد`, () => salesService.create(mk(newWay)))
++  const sum = Number(seed.one('SELECT COALESCE(SUM(discount),0) AS s FROM "SaleInvoiceItem" WHERE invoiceId = ?', Number(inv?.id))?.s ?? -1)
++  eq('جمع تخفیف ردیف‌های سند = سقف = عدد صفحه', sum, 500)
++} else { bad++; console.log('  ✗ سرور توزیع تازه — تابع وجود ندارد') }
++
++console.log('\n۳) Pos.tsx همین تابع را در سند و عوارض می‌خواند')
++const pos = readFileSync(resolve('src/renderer/src/pages/Pos.tsx'), 'utf8')
++truthy('دیگر Math.round(l.discount * lineScale) / totals.lineScale در کد نیست', !/Math\.round\(l\.discount \* (totals\.)?lineScale\)/.test(pos))
++truthy('scaleLineDiscounts از @shared/priceAdjust import شده', /import \{[^}]*scaleLineDiscounts[^}]*\} from '@shared\/priceAdjust'/.test(pos))
++truthy('lineDiscountOf از نقشه‌ی مقیاس‌شده می‌خواند', /lineDiscountOf = useCallback\([\s\S]{0,300}scaledLineDisc/.test(pos))
++
++console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
++process.exitCode = bad ? 1 : 0

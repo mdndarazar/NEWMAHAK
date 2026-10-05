@@ -1,0 +1,33 @@
+(node:5745) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5745) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/work178/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/work178/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓ پیش‌شرط: حرکت انبار به تجمیع A وصل است
+  ✓ پیش‌شرط: کلید خارجی هارنس روشن شد
+
+— ۱) پیش‌نمایش = عملیات
+  ✓ پیش‌نمایش بدون خطا
+  ✓ پیش‌نمایش فقط تجمیع بی‌حرکت (B) را «حذف‌شونده» می‌شمارد
+  ✓ پیش‌نمایش تجمیع دارای حرکت انبار (A) را «حفظ‌شونده» می‌شمارد
+  ✓ پیش‌نمایش شیفت مالک تجمیع حفظ‌شده (A) را حذف‌شونده نمی‌شمارد (فقط B)
+
+— ۲) پاک‌سازی واقعی
+  ✓ archivePurge بدون خطا
+  ✓ فاکتور قدیمی حذف، فاکتور امروز باقی
+  ✓ تعداد کل StockMovement دست‌نخورده
+  ✓ consolidationId حرکت‌های دفتر انبار دست‌نخورده (NULL نشد)
+  ✓ تجمیع A (دارای حرکت) حفظ شد، تجمیع B حذف شد
+  ✓ شیفت A (مالک تجمیع حفظ‌شده) باقی، شیفت B حذف
+  ✓ عدد نتیجه = حذف واقعی (۱ تجمیع، ۱ شیفت) و حفظ‌شده ۱
+  ✓ هشدار فارسی تجمیع حفظ‌شده در نتیجه
+  ✓ هیچ کلید خارجی معلقی نماند (foreign_key_check خالی)
+  ✓ Audit پاک‌سازی ثبت شد و تجمیع حفظ‌شده را می‌گوید
+
+— ۳) اجرای دوباره: تجمیع حفظ‌شده «داده برای پاک‌سازی» حساب نمی‌شود
+  ✓ پیش‌نمایش دوم: ۰ تجمیع حذف‌شونده، ۱ حفظ‌شونده، ۰ شیفت
+  ✓ اجرای دوم با پیام «داده‌ای برای پاک‌سازی وجود ندارد» رد
+  ✓ بعد از اجرای دوم: تجمیع A و پیوند دفتر همچنان باقی
+
+✓ 19 بررسی موفق · 0 ناموفق

@@ -1,0 +1,242 @@
+diff -ruN pristine/src/main/ipc/index.ts proj/mahak/src/main/ipc/index.ts
+--- pristine/src/main/ipc/index.ts	2026-09-27 08:03:28.796440356 +0000
++++ proj/mahak/src/main/ipc/index.ts	2026-09-27 08:08:07.438056965 +0000
+@@ -484,10 +484,11 @@
+   // نشست ۱۵۴ (S151-b، S153-D4) — تغییر سیاست تخفیف از این کانال هم رمز پنل تنظیمات می‌خواهد
+   handle(IPC.settingsSaveBundle, async (p) => settingsService.saveBundle(await withOptionalSessionActor(p ?? {})))
+   /** سوییچ «تعیین شیفت بر اساس ساعت» — ذخیره‌ی فوری، مستقل از فرم تنظیمات (مورد ۱) */
+-  handle(IPC.settingsShiftByTime, (p) => settingsService.setShiftByTime(p ?? { byTime: false }))
++  // نشست ۱۵۷ (Y13، S157-D3) — actor از نشست باز، نه userId رندرر؛ گیت رمز مدیر در سرویس
++  handle(IPC.settingsShiftByTime, async (p) => settingsService.setShiftByTime(await withOptionalSessionActor(p ?? { byTime: false })))
+   /** بند ۹ — «تاریخ و ساعت رسمی»: افست دستی + بررسی ساعت سیستم (بدون اینترنت) */
+   handle(IPC.settingsOfficialTime, () => settingsService.officialTime())
+-  handle(IPC.settingsOfficialTimeSet, async (p) => settingsService.saveOfficialTime(await withUser(p)))
++  handle(IPC.settingsOfficialTimeSet, async (p) => settingsService.saveOfficialTime(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.settingsTimeCheck, () => settingsService.timeCheck())
+   handle(IPC.exportCsv, (p) => exportTableFile(p))
+   handle(IPC.exportExcel, (p) => exportTableFile(p))
+@@ -585,7 +586,8 @@
+ 
+   // بند ۵ — یادآوری انبارگردانی فیزیکی
+   handle(IPC.stocktakeScheduleGet, () => stocktakeReminderService.get())
+-  handle(IPC.stocktakeScheduleSet, async (p) => stocktakeReminderService.set(await withUser(p)))
++  // نشست ۱۵۷ (Y13، S157-D2/D3) — گیت رمز پنل انبارگردانی در سرویس؛ actor از نشست
++  handle(IPC.stocktakeScheduleSet, async (p) => stocktakeReminderService.set(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.stocktakeDue, () => stocktakeReminderService.due())
+   handle(IPC.stocktakeDismiss, () => stocktakeReminderService.dismiss())
+ 
+diff -ruN pristine/src/main/services/SettingsService.ts proj/mahak/src/main/services/SettingsService.ts
+--- pristine/src/main/services/SettingsService.ts	2026-09-27 08:03:28.796440356 +0000
++++ proj/mahak/src/main/services/SettingsService.ts	2026-09-27 08:08:07.438056965 +0000
+@@ -419,9 +419,18 @@
+     return parseOfficialTimeConfig(await readKey(SETTING_KEYS.officialTime))
+   },
+ 
+-  async saveOfficialTime(input: { offsetHours?: number; userId?: number | null } = {}): Promise<OfficialTimeConfig> {
++  async saveOfficialTime(
++    input: { offsetHours?: number; userId?: number | null; managerPassword?: string | null } = {}
++  ): Promise<OfficialTimeConfig> {
+     const before = await this.officialTime()
+     const next = parseOfficialTimeConfig({ offsetHours: input?.offsetHours ?? 0 })
++    /**
++     * نشست ۱۵۷ (Y13، بند ۴-۲۹، S157-D1) — این کانال همان کلید officialTime را می‌نویسد که
++     * settings:set خام و saveBundle فقط با رمز مدیر می‌پذیرند؛ پس «تغییر واقعی» (S155-D1)
++     * پیش از هر نوشتن رمز مدیر می‌خواهد. افست روی تشخیص شیفت و گزارش‌های زمانی اثر دارد.
++     */
++    if (!sameJson(next, before))
++      await assertManagerPassword(input?.managerPassword ?? null, 'تغییر افست ساعت رسمی')
+     await writeKey(SETTING_KEYS.officialTime, next)
+     await audit(prisma, {
+       action: 'SETTINGS_UPDATE',
+@@ -492,9 +501,15 @@
+    * پاک نمی‌کند و ذخیره هم نمی‌کند.
+    * -------------------------------------------------------------------------
+    */
+-  async setShiftByTime(input: { byTime: boolean; userId?: number | null }): Promise<ShiftConfig> {
++  async setShiftByTime(input: { byTime: boolean; userId?: number | null; managerPassword?: string | null }): Promise<ShiftConfig> {
+     const before = await this.shiftConfig()
+     const next = parseShiftConfig({ ...before, byTime: Boolean(input?.byTime) })
++    /**
++     * نشست ۱۵۷ (Y13، بند ۴-۲۹، S157-D1) — byTime بخشی از shiftConfig است (کلید رمز مدیرِ
++     * settings:set و saveBundle)؛ این کانال فوری همان گیت را می‌گیرد، فقط وقتی مقدار واقعاً عوض شود.
++     */
++    if (next.byTime !== before.byTime)
++      await assertManagerPassword(input?.managerPassword ?? null, 'تغییر سوییچ «تعیین شیفت بر اساس ساعت»')
+     await writeKey(SETTING_KEYS.shiftConfig, next)
+     await audit(prisma, {
+       action: 'SETTINGS_UPDATE',
+diff -ruN pristine/src/main/services/StocktakeReminderService.ts proj/mahak/src/main/services/StocktakeReminderService.ts
+--- pristine/src/main/services/StocktakeReminderService.ts	2026-09-27 08:03:28.800440379 +0000
++++ proj/mahak/src/main/services/StocktakeReminderService.ts	2026-09-27 08:08:07.438056965 +0000
+@@ -2,6 +2,8 @@
+ import { SETTING_KEYS, parseStocktakeSchedule, type StocktakeSchedule } from '@shared/receipt'
+ import { jalaliToday, jalaliToDateTime, faDigits } from '@shared/jalali'
+ import { AuditAction } from '@shared/enums'
++import { PANEL_KEYS } from '@shared/panels'
++import { assertPanelPassword } from './AuthService'
+ 
+ /**
+  * ===========================================================================
+@@ -39,8 +41,18 @@
+ export const stocktakeReminderService = {
+   get: readSchedule,
+ 
+-  async set(payload: { schedule?: StocktakeSchedule; userId?: number | null }) {
++  async set(payload: { schedule?: StocktakeSchedule; userId?: number | null; panelPassword?: string | null }) {
+     const before = await readSchedule()
++    /**
++     * نشست ۱۵۷ (Y13، بند ۴-۲۹ و ۴-۳۹، S157-D2) — کلید stocktakeSchedule در settings:set خام
++     * رمز مدیر می‌خواهد ولی این کانال بی‌گیت بود؛ فروشنده می‌توانست یادآوری انبارگردانی ماهانه
++     * (کنترل ضدسرقت بند ۳) را خاموش کند. حالا تغییر واقعی برنامه (بدون dismissedJalali که
++     * کانال جدای «بستن یادآوری امروز» است) ⇒ رمز پنل انبارگردانی، پیش از هر نوشتن.
++     */
++    const { dismissedJalali: _bd, ...beforeCore } = before as any
++    const { dismissedJalali: _nd, ...nextCore } = parseStocktakeSchedule((payload?.schedule ?? {}) as any) as any
++    if (JSON.stringify(beforeCore) !== JSON.stringify(nextCore))
++      await assertPanelPassword(PANEL_KEYS.stocktake, payload?.panelPassword ?? null, 'تغییر برنامه‌ی یادآوری انبارگردانی')
+     const clean = await writeSchedule((payload?.schedule ?? {}) as StocktakeSchedule)
+     await prisma.auditLog.create({
+       data: {
+diff -ruN pristine/src/renderer/src/pages/Settings.tsx proj/mahak/src/renderer/src/pages/Settings.tsx
+--- pristine/src/renderer/src/pages/Settings.tsx	2026-09-27 08:03:28.800440379 +0000
++++ proj/mahak/src/renderer/src/pages/Settings.tsx	2026-09-27 08:08:28.390178507 +0000
+@@ -230,6 +230,9 @@
+    */
+   const [bundlePw, setBundlePw] = useState('')
+   const [securityPw, setSecurityPw] = useState('')
++  // نشست ۱۵۷ (Y13) — رمز مدیر برای دو کانال فوری: افست ساعت رسمی و سوییچ «شیفت بر اساس ساعت»
++  const [timePw, setTimePw] = useState('')
++  const [byTimePw, setByTimePw] = useState('')
+   const [custDelPw, setCustDelPw] = useState('')
+   const [printers, setPrinters] = useState<string[]>([])
+   const [preview, setPreview] = useState('')
+@@ -718,7 +721,7 @@
+     const previous = shift.byTime
+     setShift((p) => ({ ...p, byTime })) // نمایش فوری
+     try {
+-      await call(CH.settingsShiftByTime, { byTime })
++      await call(CH.settingsShiftByTime, { byTime, managerPassword: byTimePw })
+       flash(
+         byTime
+           ? 'ذخیره شد · از همین حالا شیفت هر فاکتور از ساعت لحظه‌ی فروش تعیین می‌شود.'
+@@ -727,6 +730,8 @@
+     } catch (e: any) {
+       setShift((p) => ({ ...p, byTime: previous })) // برگشت به حالت قبل
+       setErr(`ذخیره‌ی سوییچ شیفت انجام نشد: ${e.message}`)
++    } finally {
++      setByTimePw('')
+     }
+   }
+ 
+@@ -1441,7 +1446,7 @@
+     setTimeBusy(true)
+     try {
+       const offsetHours = Number(toLatinDigits(timeOffset).replace(/[^0-9.+-]/g, '')) || 0
+-      const next = await call<OfficialTimeConfig>(CH.settingsOfficialTimeSet, { offsetHours })
++      const next = await call<OfficialTimeConfig>(CH.settingsOfficialTimeSet, { offsetHours, managerPassword: timePw })
+       setTime(next)
+       setTimeOffset(String(next.offsetHours))
+       await runTimeCheck()
+@@ -1453,6 +1458,7 @@
+     } catch (e: any) {
+       setErr(e.message)
+     } finally {
++      setTimePw('')
+       setTimeBusy(false)
+     }
+   }
+@@ -2995,11 +3001,16 @@
+                     type="checkbox"
+                     className="w-4 h-4"
+                     checked={shift.byTime}
++                    disabled={!byTimePw.trim()}
+                     onChange={(e) => void setByTime(e.target.checked)}
+                   />
+                   تعیین شیفت بر اساس ساعت
+                   <span className="kbd">(همین لحظه ذخیره می‌شود — نیازی به دکمه‌ی ذخیره‌ی تنظیمات نیست)</span>
+                 </label>
++                <label className="flex items-center gap-2">
++                  <span className="kbd">رمز مدیر (برای تغییر این سوییچ):</span>
++                  <PasswordField value={byTimePw} onChange={(e) => setByTimePw(e.target.value)} />
++                </label>
+                 <div className="kbd leading-6">
+                   {shift.byTime ? (
+                     <>
+@@ -3758,7 +3769,15 @@
+                       onChange={(e) => setTimeOffset(e.target.value)}
+                     />
+                   </label>
+-                  <button className="btn btn-primary" onClick={() => void saveOfficialTime()} disabled={timeBusy}>
++                  <label>
++                    <div className="kbd mb-1">رمز مدیر (تغییر افست)</div>
++                    <PasswordField value={timePw} onChange={(e) => setTimePw(e.target.value)} />
++                  </label>
++                  <button
++                    className="btn btn-primary"
++                    onClick={() => void saveOfficialTime()}
++                    disabled={timeBusy || !timePw.trim()}
++                  >
+                     {timeBusy ? 'در حال ذخیره…' : 'ذخیره‌ی افست'}
+                   </button>
+                   <button className="btn" onClick={() => void runTimeCheck()} disabled={timeBusy}>
+diff -ruN pristine/src/renderer/src/pages/Stocktake.tsx proj/mahak/src/renderer/src/pages/Stocktake.tsx
+--- pristine/src/renderer/src/pages/Stocktake.tsx	2026-09-27 08:03:28.800440379 +0000
++++ proj/mahak/src/renderer/src/pages/Stocktake.tsx	2026-09-27 08:08:36.770227136 +0000
+@@ -7,6 +7,9 @@
+ import StocktakeReminderBanner from '../components/StocktakeReminderBadge'
+ import { itemsLabel, PendingStockBadge, type CardTransferRow } from '../components/CardTransferPanel'
+ import { usePendingRestock, pendingToneBox } from '../hooks/usePendingRestock'
++import PasswordField from '../components/PasswordField'
++import { PANEL_KEYS } from '@shared/panels'
++import { usePanelLock } from '../hooks/usePanelLocks'
+ import { faDigits, isValidJalaliDate, jalaliToday, jalaliMonthStart, money, toLatinDigits } from '@shared/jalali'
+ import { CARD_TRANSFER_OPERATION_LABELS, CARD_TRANSFER_STATUS_LABELS } from '@shared/enums'
+ import {
+@@ -199,6 +202,10 @@
+   const [schedule, setSchedule] = useState<StocktakeSchedule>(DEFAULT_STOCKTAKE_SCHEDULE)
+   const [newDate, setNewDate] = useState(jalaliToday())
+   const [reminderDirty, setReminderDirty] = useState(false)
++  // نشست ۱۵۷ (Y13، S157-D2) — قفل پنل انبارگردانی روشن (یا هنوز بارگذاری‌نشده) ⇒ کادر رمز، fail-closed
++  const { lockEnabled: stocktakeLock, loaded: stocktakeLockLoaded } = usePanelLock(PANEL_KEYS.stocktake)
++  const scheduleNeedPw = !stocktakeLockLoaded || stocktakeLock
++  const [schedulePw, setSchedulePw] = useState('')
+ 
+   const flash = (m: string) => {
+     setMsg(m)
+@@ -333,7 +340,8 @@
+     setBusy(true)
+     setErr(null)
+     try {
+-      const saved = await call<StocktakeSchedule>(CH.stocktakeScheduleSet, { schedule })
++      // نشست ۱۵۷ (Y13، S157-D2) — تغییر برنامه‌ی یادآوری رمز پنل انبارگردانی می‌خواهد (گیت در main)
++      const saved = await call<StocktakeSchedule>(CH.stocktakeScheduleSet, { schedule, panelPassword: schedulePw })
+       setSchedule(saved)
+       setReminderDirty(false)
+       flash(
+@@ -345,6 +353,7 @@
+     } catch (e: any) {
+       setErr(e.message)
+     } finally {
++      setSchedulePw('')
+       setBusy(false)
+     }
+   }
+@@ -955,7 +964,17 @@
+           </div>
+ 
+           <div className="flex gap-2 items-center flex-wrap">
+-            <button className="btn btn-primary" onClick={() => void saveSchedule()} disabled={busy}>
++            {scheduleNeedPw && (
++              <label className="flex items-center gap-2">
++                <span className="kbd">رمز مدیر یا رمز پنل انبارگردانی:</span>
++                <PasswordField value={schedulePw} onChange={(e) => setSchedulePw(e.target.value)} />
++              </label>
++            )}
++            <button
++              className="btn btn-primary"
++              onClick={() => void saveSchedule()}
++              disabled={busy || (scheduleNeedPw && !schedulePw.trim())}
++            >
+               {busy ? 'در حال ذخیره…' : 'ذخیره‌ی تنظیمات یادآوری'}
+             </button>
+             <button className="btn" onClick={() => void loadSchedule()} disabled={busy}>

@@ -1,0 +1,387 @@
+diff -ruN a/DECISIONS.md b/DECISIONS.md
+--- a/DECISIONS.md	2026-09-23 16:31:29.581974735 +0000
++++ b/DECISIONS.md	2026-09-23 16:31:29.581974735 +0000
+@@ -287,3 +287,7 @@
+ 
+ ### نشست ۹۷
+ S97-1 — سؤال: فیلترهای نوار مشترک در تب legacy اعتبار روی کدام سند اعمال شوند؟ گزینه‌ها: نادیده‌گرفتن آن‌ها، فیلتر مستقیم روی StoreCredit، یا resolve کردن فاکتور صدور و اتصال scalarهای اعتبار به آن. انتخاب من: گزینه‌ی سوم؛ شماره فیش، مشتری، کالا، کارمند، شیفت، کانال و نوع سفارش ابتدا روی فاکتور صدور اعمال شوند و سپس `sourceInvoiceId`، `exchangeInvoiceId` و `returnId` اعتبار محدود شوند. دلیل: تب درباره‌ی اعتبار صادرشده است و نباید با فاکتور مصرف یا یک نام مشتریِ بعدی جابه‌جا شود؛ relation پریزمایی هم عمداً وجود ندارد، پس lookup دو مرحله‌ای با قرارداد داده‌ی فعلی کم‌ریسک‌ترین راه قابل‌ردیابی است. وقتی هیچ فیلتر فاکتوری فعال نیست، query کمکی اجرا نمی‌شود تا رفتار قبلی حفظ شود.
++
++### نشست ۹۸
++S98-1 — سؤال: فیلتر فاکتوری تب اعتبار روی داده‌ی حجیم (بیش از ۵۰٬۰۰۰ فاکتور منطبق) چطور بدون برش بی‌صدا و بدون عبور از سقف پارامتر SQLite اجرا شود؟ گزینه‌ها: (۱) بالا بردن `take`؛ (۲) تکه‌کردن آرایه‌ی فاکتور و چند کوئری list جدا (ناسازگار با orderBy/take/skip)؛ (۳) lookup معکوس: از اعتبارهای کاندیدِ دارای پیوند فاکتور/برگشت شروع کن، مرجع‌ها را در دسته‌های ۵۰۰تایی بسنج و فقط شناسه‌ی اعتبار منطبق را به where بده؛ اگر بیش از ۳۰٬۰۰۰ شد خطای فارسی صریح. انتخاب من: گزینه‌ی ۳. دلیل: حجم کار با تعداد اعتبار (کوچک) مقیاس می‌گیرد نه تعداد فاکتور، مرتب‌سازی/صفحه‌بندی لیست دست نمی‌خورد، هیچ ردیفی بی‌صدا حذف نمی‌شود و در بدترین حالت کاربر پیام روشن می‌گیرد (معیار ضدسرقت: مغایرت پنهان نشود).
++S98-2 — سؤال: دو بررسی ساختاری تست نشست ۹۷ به نام تابع حذف‌شده (`creditInvoiceIdsFromReportFilter`) و شکل قدیمی `relationOr` وابسته بودند؛ تست را نگه دارم، حذف کنم یا به‌روز کنم؟ انتخاب من: به‌روز کردن همان دو regex به helperهای جدید (همان ادعا: اتصال از سه مسیر sourceInvoiceId/exchangeInvoiceId/returnId و اعمال پیش از query نهایی)، بدون کم‌کردن هیچ بررسی. دلیل: قرارداد رفتاری عوض نشده و اکنون رفتارش علاوه بر ساختار، در تست رفتاری نشست ۹۸ هم اثبات می‌شود.
+diff -ruN a/HANDOFF-PROMPT-next.txt b/HANDOFF-PROMPT-next.txt
+--- a/HANDOFF-PROMPT-next.txt	2026-09-23 16:31:29.597975030 +0000
++++ b/HANDOFF-PROMPT-next.txt	2026-09-23 16:31:29.601975103 +0000
+@@ -444,3 +444,43 @@
+ ۴) با Prisma واقعی migration/void purge و داده‌ی تاریخی را روی کپی اجرا کن؛ بعد cross-check یکپارچه‌ی A و C/D را انجام بده.
+ ۵) اگر محیط تولیدی هنوز در دسترس نبود، رفع‌های مستقل بعدی را انتخاب کن؛ خوشه C را تکه‌تکه نکن و هیچ تست هارنس/OOXML را معادل Prisma/Electron واقعی اعلام نکن.
+ ۶) هر رفع جدید را با تست قبل/بعد در `tests/audit-fixes/`، ثبت هم‌زمان در `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md` انجام بده و فقط بند ۱۰ این فایل را برای نشست بعد به‌روز کن.
++
++۱۰-۲۵) نتیجه‌ی نشست ۹۸
++گام ۰ در این محیط همچنان قابل اجرای واقعی نبود:
++- `npm install` ⇒ اجرا نشد، دلیل: `npm: command not found`.
++- `npx prisma generate` ⇒ اجرا نشد، دلیل: `npx: command not found`.
++- `npm run typecheck` ⇒ اجرا نشد، دلیل: `npm: command not found`.
++- `node --version` ⇒ `v22.23.1`. رگرسیون پایه روی zip نشست ۹۷ قبل از هر تغییر: **۴۵ فایل PASS · ۰ فایل FAIL**.
++
++رفع انجام‌شده در خوشه G (روی خروجی نشست ۹۷ در خوشه F):
++- در `src/main/services/StoreCreditService.ts` تابع `creditInvoiceIdsFromReportFilter` حذف و با دو تابع جایگزین شد: `reportInvoiceWhereFromFilter(filter)` (دقیقاً همان قیود فاکتوری نشست ۹۷: کانال/نوع سفارش با `orderTypesForChannels`، فیش، مشتری، کالا روی رابطه و snapshot، کارمند، شیفت، `voidedAt: null`) و `creditIdsFromReportFilter(filter, baseWhere)`.
++- باگ قبلی: فاکتورهای منطبق با `take: 50000` خوانده می‌شدند (اعتبار فاکتور ۵۰٬۰۰۱ام بی‌صدا حذف می‌شد) و همان آرایه دو بار در `IN` می‌رفت ⇒ بیش از ۳۲٬۷۶۶ پارامتر ⇒ `too many SQL variables` و crash کل تب اعتبار و هر مسیری که `whereFromFilter` را صدا می‌زند.
++- راه‌حل: lookup معکوس. اعتبارهای کاندید (قیدهای خود اعتبار + داشتن sourceInvoiceId/exchangeInvoiceId/returnId) خوانده می‌شوند؛ برگشت‌های مرجع (`voidedAt: null`) و فاکتورهای مرجع در دسته‌های ۵۰۰تایی (`CREDIT_FILTER_IN_CHUNK`) با `AND: [invoiceWhere, { id: { in: chunk } }]` سنجیده می‌شوند؛ فقط شناسه‌ی اعتبارهای منطبق با `withAndClause(where, { id: { in: reportCreditIds } })` به where نهایی می‌رود. بیش از `CREDIT_FILTER_MAX_IDS = 30000` ⇒ `BusinessError` فارسی با تعداد و راهنمای محدودکردن فیلتر.
++- معنای فیلتر عوض نشد: مبنا فاکتور صدور است، نه فاکتور مصرف؛ بدون فیلتر فاکتوری هیچ lookup اضافه‌ای اجرا نمی‌شود.
++
++تست اثباتی نشست ۹۸:
++- تست جدید رفتاری: `tests/audit-fixes/fix-s98-credit-filter-scale.mjs` (SQLite هارنس، ۵۰٬۰۱۰ فاکتور با INSERT…SELECT، ۶ اعتبار کنترلی، سپس ۳۰٬۰۰۱ اعتبار انبوه برای سنجش پیام سقف؛ شمارش بیشینه‌ی `?` هر statement با wrap کردن `prepare`). اجرای «قبل» باید از ریشه‌ی کپی قدیمی با `MAHAK_ROOT` همان کپی انجام شود تا singleton کلاینت هارنس یکی باشد.
++- قبل از رفع: **۳ موفق · ۹ ناموفق** (crash `too many SQL variables`، بیشینه‌ی پارامتر ۵۰٬۰۰۰).
++- بعد از رفع: **۱۲ موفق · ۰ ناموفق** (بیشینه‌ی پارامتر ≤ ۱٬۰۰۰).
++- `tests/audit-fixes/fix-s97-credit-filter-propagation.mjs`: دو regex آخر به helperهای جدید همسو شد (DECISIONS S98-2) ⇒ **۸ موفق · ۰ ناموفق**.
++- رگرسیون کامل: `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done` ⇒ **۴۶ فایل PASS · ۰ فایل FAIL**.
++- `test/acceptance-db-session36.mjs` ⇒ **۱۳۱ PASS · ۷ FAIL**، قبل و بعد یکسان (همان ۷ مورد سبد «نامشخص»؛ دست نخورد).
++- esbuild روی `src/main/services/StoreCreditService.ts` ⇒ **PASS**.
++
++۱۰-۲۶) وضعیت به‌روز خوشه‌ها
++- G: فیلتر فاکتوری تب اعتبار اکنون روی داده‌ی حجیم نه crash می‌کند و نه بی‌صدا برش می‌زند. ⚠️ بقیه‌ی خوشه G باز است: `take`های بی‌هشدار در reportItems، exchangeList، returnList، chequeList، StaffReportService (20000/2000)، FraudService (5000/2000/500)، purgePreview، shiftPaymentsOf، PendingRestockService (5000)، jalaliDaysBetween (۷۳۰ روز)، و خودِ `list` اعتبار (`take` پیش‌فرض ۱٬۰۰۰، سقف ۵٬۰۰۰) که هنوز `totalCount`/`truncated`/هشدار فارسی برنمی‌گرداند. الگوی تست حجیم نشست ۹۸ (INSERT…SELECT + شمارش پارامتر) برای این‌ها قابل استفاده است.
++- F: وضعیت نشست ۹۷ پابرجاست؛ معنای فیلتر تب اعتبار با رفع G تغییر نکرد.
++- J: وضعیت نشست ۹۵ پابرجاست.
++- A، B، C، D، E، H، I، K، L، M: وضعیت ثبت‌شده‌ی قبل پابرجاست؛ خوشه C همچنان فقط با یک تست یکپارچه ادامه یابد و تکه‌تکه نشود.
++
++۱۰-۲۷) محدودیت‌های قطعی نشست ۹۸
++`npm install`، `npx prisma generate`، `npm run typecheck`، Prisma Client تولیدی (از جمله رفتار تکه‌کردن خودکار `IN` در Prisma 5.22 و سقف واقعی متغیر SQLite باندل‌شده)، Electron/چاپگر واقعی، Excel دسکتاپ، migration روی داده‌ی تاریخی، race واقعی دو پردازه، crash/قطع برق وسط transaction، timezone غیر Asia/Tehran و پنجره‌های پنهان بکاپ/چاپ اجرا نشدند؛ دلیل: npm/npx/Electron در محیط موجود نبودند. حجم ۵۰٬۰۱۰ ردیف فقط روی SQLite هارنس (node:sqlite) اجرا شد، نه Prisma واقعی.
++
++۱۰-۲۸) نقطه‌ی دقیق شروع نشست بعد
++۱) اگر محیط دارای npm/Prisma/Electron فراهم شد، ابتدا گام ۰ را اجرا کن و تغییرات نشست‌های ۸۵ تا ۹۸ را typecheck کن؛ سپس `fix-s98-credit-filter-scale.mjs` را با Prisma واقعی هم اجرا کن.
++۲) ادامه‌ی خوشه G: به ترتیب `returnList`، `exchangeList`، `chequeList` و `reportItems` در `SalesService.ts` را بررسی کن؛ برای هر کدام `totalCount` واقعی، `truncated` و هشدار فارسی برگردان، هر `IN` با آرایه‌ی شناسه‌ی بزرگ را در دسته‌های ≤۵۰۰ تکه کن و با الگوی تست حجیم نشست ۹۸ قبل/بعد اثبات کن. بعد `StoreCreditService.list` را به همان قرارداد `totalCount/truncated` برسان (UI تب اعتبار هم هشدار را نشان دهد).
++۳) با Prisma واقعی، `storeCreditService.list` را روی داده‌ای که اعتبار از برگشت و تعویض صادر شده اجرا کن و ثابت کن فیلترهای فیش/مشتری/کالا/کانال/نوع سفارش/شیفت/کارمند فقط اعتبارهای فاکتور صدور را برمی‌گردانند.
++۴) با Electron واقعی، تب چک، اعتبار قدیمی، دفتر رویداد و ضدتقلب را از مسیر Save dialog و چاپ اجرا کن؛ مسیرهای Cancel، `loadURL`، خطای چاپ، فهرست چاپگر و destroy پنجره را ثبت کن.
++۵) با Prisma واقعی migration/void purge و داده‌ی تاریخی را روی کپی اجرا کن؛ بعد cross-check یکپارچه‌ی A و C/D را انجام بده.
++۶) اگر محیط تولیدی هنوز در دسترس نبود، رفع‌های مستقل بعدی (اولویت: بند ۲ همین فهرست) را انتخاب کن؛ خوشه C را تکه‌تکه نکن و هیچ تست هارنس/OOXML را معادل Prisma/Electron واقعی اعلام نکن.
++۷) هر رفع جدید را با تست قبل/بعد در `tests/audit-fixes/`، ثبت هم‌زمان در `PROGRESS.md`، `DECISIONS.md` و `TESTLOG.md` انجام بده و فقط بند ۱۰ این فایل را برای نشست بعد به‌روز کن.
+diff -ruN a/PROGRESS.md b/PROGRESS.md
+--- a/PROGRESS.md	2026-09-23 16:31:29.573974588 +0000
++++ b/PROGRESS.md	2026-09-23 16:31:29.573974588 +0000
+@@ -388,3 +388,16 @@
+ - کنترل نحوی مستقل: esbuild روی `src/main/services/StoreCreditService.ts` ⇒ **PASS**؛ `node --check` روی تست ⇒ **PASS**.
+ - فایل‌های تغییرکرده: `src/main/services/StoreCreditService.ts`، `tests/audit-fixes/fix-s97-credit-filter-propagation.mjs`.
+ - ⚠️ `npm install`، `npx prisma generate`، `npm run typecheck`، Prisma Client تولیدی، Electron/چاپگر واقعی، Excel دسکتاپ، migration تاریخی، race چندپردازه‌ای و crash وسط transaction همچنان اجرا نشدند.
++
++## نشست ۹۸
++- گام ۰: `npm install` ⇒ اجرا نشد، دلیل: `npm: command not found`. `npx prisma generate` ⇒ اجرا نشد، دلیل: `npx: command not found`. `npm run typecheck` ⇒ اجرا نشد، دلیل: `npm: command not found`. `node --version` ⇒ `v22.23.1`. رگرسیون پایه قبل از هر تغییر: **۴۵ فایل PASS · ۰ فایل FAIL**.
++- ✅ خوشه G / فیلتر اعتبار روی داده‌ی حجیم: helper نشست ۹۷ (`creditInvoiceIdsFromReportFilter`) فاکتورهای منطبق را با `take: 50000` می‌خواند (برش بی‌صدا) و همان آرایه را دو بار در `IN` می‌گذاشت (بیش از ۳۲٬۷۶۶ پارامتر ⇒ `too many SQL variables` و crash کل تب اعتبار). جایگزین شد با `reportInvoiceWhereFromFilter` (همان قیود نشست ۹۷، بدون تغییر معنا) و `creditIdsFromReportFilter` که از اعتبارهای کاندیدِ متصل به فاکتور/برگشت شروع می‌کند، برگشت‌ها و فاکتورهای مرجع را در دسته‌های ۵۰۰تایی می‌سنجد و فقط شناسه‌ی اعتبارهای منطبق را به `where` نهایی می‌دهد.
++- هیچ `take` بی‌صدا در این مسیر نمانده. اگر اعتبارهای منطبق از `CREDIT_FILTER_MAX_IDS = 30000` بیشتر شوند، `BusinessError` فارسی با تعداد و راهنمای «فیلتر را محدودتر کنید» برمی‌گردد (نه برش بی‌صدا، نه crash خام).
++- معنای فیلتر عوض نشد: مبنا همچنان فاکتور صدور اعتبار است (sourceInvoiceId / exchangeInvoiceId / فاکتورِ برگشتِ returnId)، برگشت باطل‌شده اتصال نمی‌دهد و بدون فیلتر فاکتوری lookup اضافه اجرا نمی‌شود.
++- تست قبل از رفع (روی کپی zip نشست ۹۷): **۳ موفق · ۹ ناموفق** (crash با `too many SQL variables`، بیشینه‌ی پارامتر ۵۰٬۰۰۰).
++- تست بعد از رفع: `tests/audit-fixes/fix-s98-credit-filter-scale.mjs` ⇒ **۱۲ موفق · ۰ ناموفق** (تست رفتاری روی SQLite هارنس با ۵۰٬۰۱۰ فاکتور و ۳۰٬۰۰۷ اعتبار).
++- `tests/audit-fixes/fix-s97-credit-filter-propagation.mjs`: دو بررسی ساختاری آخرش به نام‌های جدید helper همسو شد (دلیل در DECISIONS S98-2)؛ ⇒ **۸ موفق · ۰ ناموفق**.
++- رگرسیون کامل: **۴۶ فایل PASS · ۰ فایل FAIL**. پذیرش تاریخی `test/acceptance-db-session36.mjs` بدون تغییر: **۱۳۱ PASS · ۷ FAIL** (همان ۷ مورد سبد «نامشخص»، قبل و بعد یکسان).
++- esbuild روی `src/main/services/StoreCreditService.ts` ⇒ **PASS**.
++- فایل‌های تغییرکرده: `src/main/services/StoreCreditService.ts`، `tests/audit-fixes/fix-s98-credit-filter-scale.mjs` (جدید)، `tests/audit-fixes/fix-s97-credit-filter-propagation.mjs`.
++- ⚠️ خوشه G کامل نیست: سایر takeهای بی‌هشدار (reportItems، exchangeList، returnList، chequeList، StaffReportService، FraudService، purgePreview، shiftPaymentsOf، PendingRestockService، jalaliDaysBetween) و خودِ `take`/`skip` لیست اعتبار (بدون totalCount/truncated) باقی‌اند.
+diff -ruN a/TESTLOG.md b/TESTLOG.md
+--- a/TESTLOG.md	2026-09-23 16:31:29.589974882 +0000
++++ b/TESTLOG.md	2026-09-23 16:31:29.589974882 +0000
+@@ -904,3 +904,16 @@
+ 
+ محدودیت اثبات:
+ - تست نشست ۹۷ ساختاری است؛ اجرای Prisma Client تولیدی، migration، داده‌ی تاریخی واقعی، typecheck کامل، Electron/چاپگر، Excel دسکتاپ، race دو پردازه و crash وسط transaction اجرا نشدند.
++
++## نشست ۹۸
++گام ۰: `npm install` / `npx prisma generate` / `npm run typecheck` ⇒ اجرا نشد، دلیل: npm/npx در محیط نیست (`command not found`). `node --version` ⇒ `v22.23.1`.
++
++رفع خوشه G / فیلتر اعتبار روی داده‌ی حجیم:
++- قبل: `cd <کپی zip نشست ۹۷> && MAHAK_ROOT=<همان کپی> node --import ./test/harness/register.mjs tests/audit-fixes/fix-s98-credit-filter-scale.mjs` ⇒ **۳ موفق · ۹ ناموفق**؛ `Error: too many SQL variables` از `creditInvoiceIdsFromReportFilter`، بیشینه‌ی پارامتر یک statement = ۵۰٬۰۰۰.
++- بعد: `node --import ./test/harness/register.mjs tests/audit-fixes/fix-s98-credit-filter-scale.mjs` ⇒ **۱۲ موفق · ۰ ناموفق**؛ بیشینه‌ی پارامتر هر statement ≤ ۱٬۰۰۰.
++- `node tests/audit-fixes/fix-s97-credit-filter-propagation.mjs` (همسوشده) ⇒ **۸ موفق · ۰ ناموفق**.
++- رگرسیون: `for f in tests/audit-fixes/*.mjs; do node --import ./test/harness/register.mjs "$f"; done` ⇒ **۴۶ فایل PASS · ۰ فایل FAIL**.
++- `test/acceptance-db-session36.mjs` ⇒ **۱۳۱ PASS · ۷ FAIL** قبل و بعد (بدون تغییر؛ ۷ مورد سبد «نامشخص»).
++- esbuild روی `src/main/services/StoreCreditService.ts` ⇒ **PASS**.
++
++محدودیت اثبات: تست رفتاری روی SQLite هارنس (node:sqlite) است، نه Prisma Client تولیدی. رفتار Prisma 5.22 در تکه‌کردن خودکار `IN` و سقف واقعی متغیر SQLite نسخه‌ی باندل‌شده با Prisma اجرا نشد؛ Electron، typecheck، migration تاریخی، race دو پردازه و crash وسط transaction اجرا نشدند.
+diff -ruN a/src/main/services/StoreCreditService.ts b/src/main/services/StoreCreditService.ts
+--- a/src/main/services/StoreCreditService.ts	2026-09-23 16:31:29.557974294 +0000
++++ b/src/main/services/StoreCreditService.ts	2026-09-23 16:31:29.557974294 +0000
+@@ -2171,12 +2171,30 @@
+  *
+  * StoreCredit عمداً به فاکتور relation پریزمایی ندارد؛ شناسه‌های
+  * `sourceInvoiceId`/`exchangeInvoiceId`/`returnId` scalar هستند تا سند مالی
+- * با حذف تاریخی فاکتور نشکند. بنابراین ابتدا فاکتورهای منطبق با نوار گزارش
+- * پیدا می‌شوند و بعد شناسه‌های اعتبارِ متصل به آن‌ها به where اصلی می‌روند.
++ * با حذف تاریخی فاکتور نشکند.
+  * فیلتر روی فاکتورِ صدور است، نه فاکتورِ مصرف؛ در غیر این صورت تب «اعتبار
+  * صادرشده» با جابه‌جایی زمان مصرف، معنای خودش را از دست می‌دهد.
++ *
++ * نشست ۹۸ · خوشه G — سقف پارامتر SQLite و سقف بی‌صدا.
++ * نسخه‌ی نشست ۹۷ همه‌ی فاکتورهای منطبق را با `take: 50000` می‌خواند (برش
++ * بی‌صدا: اعتبارِ فاکتور ۵۰٬۰۰۱ام بی‌هیچ هشداری از تب حذف می‌شد) و بعد همان
++ * آرایه را دو بار در یک `IN` می‌گذاشت (بیش از ۳۲٬۷۶۶ پارامتر ⇒ crash کوئری).
++ * اکنون جهت lookup برعکس است: از اعتبارهای کاندید (که به فاکتور/برگشت وصل‌اند)
++ * شروع می‌کنیم، فاکتورها و برگشت‌های مرجع را در دسته‌های ۵۰۰تایی می‌سنجیم و
++ * فقط شناسه‌ی اعتبارهای منطبق به where نهایی می‌رود. هیچ `take` بی‌صدایی نیست.
+  */
+-async function creditInvoiceIdsFromReportFilter(filter: ListFilter): Promise<{ invoiceIds: number[]; returnIds: number[] } | null> {
++const CREDIT_FILTER_IN_CHUNK = 500
++/** سقف امن شناسه در `IN` نهایی؛ زیر سقف ۳۲٬۷۶۶ متغیر SQLite. */
++export const CREDIT_FILTER_MAX_IDS = 30000
++
++function chunkIds(ids: Iterable<number>): number[][] {
++  const uniq = [...new Set([...ids].filter((x) => Number.isFinite(x) && x > 0))]
++  const out: number[][] = []
++  for (let i = 0; i < uniq.length; i += CREDIT_FILTER_IN_CHUNK) out.push(uniq.slice(i, i + CREDIT_FILTER_IN_CHUNK))
++  return out
++}
++
++function reportInvoiceWhereFromFilter(filter: ListFilter): Prisma.SaleInvoiceWhereInput | null {
+   const channels = orderTypesForChannels(filter.channels ?? null)
+   const pickedOrderType = String(filter.orderType ?? '').trim()
+   const productSearch = String(filter.productSearch ?? '').trim()
+@@ -2223,21 +2241,68 @@
+   } else if (pickedOrderType) {
+     invoiceWhere.orderType = pickedOrderType
+   }
++  return invoiceWhere
++}
+ 
+-  const invoices = await prisma.saleInvoice.findMany({
+-    where: invoiceWhere,
+-    select: { id: true },
+-    take: 50000
+-  })
+-  const invoiceIds = invoices.map((row) => row.id)
+-  if (!invoiceIds.length) return { invoiceIds: [], returnIds: [] }
++/**
++ * شناسه‌ی اعتبارهایی که فاکتور صدورشان (sourceInvoiceId / exchangeInvoiceId یا
++ * فاکتورِ برگشتِ returnId) با فیلترهای مشترک گزارش منطبق است؛ null یعنی هیچ
++ * فیلتر فاکتوری فعال نیست. `baseWhere` همان قیدهای خود اعتبار است تا کاندیدها
++ * از ابتدا محدود باشند.
++ */
++async function creditIdsFromReportFilter(filter: ListFilter, baseWhere: any): Promise<number[] | null> {
++  const invoiceWhere = reportInvoiceWhereFromFilter(filter)
++  if (!invoiceWhere) return null
+ 
+-  const returns = await prisma.saleReturn.findMany({
+-    where: { invoiceId: { in: invoiceIds }, voidedAt: null },
+-    select: { id: true },
+-    take: 50000
++  const candidates = await prisma.storeCredit.findMany({
++    where: withAndClause(baseWhere, {
++      OR: [{ sourceInvoiceId: { not: null } }, { exchangeInvoiceId: { not: null } }, { returnId: { not: null } }]
++    }),
++    select: { id: true, sourceInvoiceId: true, exchangeInvoiceId: true, returnId: true }
+   })
+-  return { invoiceIds, returnIds: returns.map((row) => row.id) }
++  if (!candidates.length) return []
++
++  const returnInvoice = new Map<number, number>()
++  for (const chunk of chunkIds(candidates.map((c) => Number(c.returnId)))) {
++    const rets = await prisma.saleReturn.findMany({
++      where: { id: { in: chunk }, voidedAt: null },
++      select: { id: true, invoiceId: true }
++    })
++    for (const r of rets) returnInvoice.set(Number(r.id), Number(r.invoiceId))
++  }
++
++  const referenced: number[] = []
++  for (const c of candidates) {
++    if (c.sourceInvoiceId != null) referenced.push(Number(c.sourceInvoiceId))
++    if (c.exchangeInvoiceId != null) referenced.push(Number(c.exchangeInvoiceId))
++    const viaReturn = c.returnId != null ? returnInvoice.get(Number(c.returnId)) : undefined
++    if (viaReturn != null) referenced.push(viaReturn)
++  }
++  const matched = new Set<number>()
++  for (const chunk of chunkIds(referenced)) {
++    const invoices = await prisma.saleInvoice.findMany({
++      where: { AND: [invoiceWhere, { id: { in: chunk } }] },
++      select: { id: true }
++    })
++    for (const row of invoices) matched.add(Number(row.id))
++  }
++
++  const ids = candidates
++    .filter((c) => {
++      const viaReturn = c.returnId != null ? returnInvoice.get(Number(c.returnId)) : undefined
++      return (
++        (c.sourceInvoiceId != null && matched.has(Number(c.sourceInvoiceId))) ||
++        (c.exchangeInvoiceId != null && matched.has(Number(c.exchangeInvoiceId))) ||
++        (viaReturn != null && matched.has(viaReturn))
++      )
++    })
++    .map((c) => Number(c.id))
++  if (ids.length > CREDIT_FILTER_MAX_IDS) {
++    throw new BusinessError(
++      `تعداد اعتبارهای منطبق با این فیلتر (${ids.length.toLocaleString('fa-IR')} مورد) بیش از ظرفیت یک گزارش (${CREDIT_FILTER_MAX_IDS.toLocaleString('fa-IR')} مورد) است؛ بازه‌ی تاریخ یا فیلتر را محدودتر کنید تا هیچ ردیفی بی‌صدا حذف نشود.`
++    )
++  }
++  return ids
+ }
+ 
+ /**
+@@ -2263,18 +2328,9 @@
+   if (filter.batchId != null) where.batchId = Math.round(Number(filter.batchId) || 0)
+   if (!filter.includeArchived) where.deletedAt = null
+   where = withAndClause(where, creditStatusWhere(filter.status, now))
+-  const reportInvoiceIds = await creditInvoiceIdsFromReportFilter(filter)
+-  if (reportInvoiceIds) {
+-    const relationOr: any[] = []
+-    if (reportInvoiceIds.invoiceIds.length) {
+-      relationOr.push(
+-        { sourceInvoiceId: { in: reportInvoiceIds.invoiceIds } },
+-        { exchangeInvoiceId: { in: reportInvoiceIds.invoiceIds } }
+-      )
+-    }
+-    if (reportInvoiceIds.returnIds.length) relationOr.push({ returnId: { in: reportInvoiceIds.returnIds } })
+-    where = withAndClause(where, relationOr.length ? { OR: relationOr } : { id: { in: [] } })
+-  }
++  // نشست ۹۸ · خوشه G — فقط شناسه‌ی اعتبارهای منطبق (بدون آرایه‌ی عظیم فاکتور)
++  const reportCreditIds = await creditIdsFromReportFilter(filter, where)
++  if (reportCreditIds) where = withAndClause(where, { id: { in: reportCreditIds } })
+   const plan = creditSearchPlan(filter.search)
+   if (plan.raw) {
+     const or = creditSearchWhere(plan, await creditSearchMatches(plan))
+diff -ruN a/tests/audit-fixes/fix-s97-credit-filter-propagation.mjs b/tests/audit-fixes/fix-s97-credit-filter-propagation.mjs
+--- a/tests/audit-fixes/fix-s97-credit-filter-propagation.mjs	2026-09-23 16:31:29.565974441 +0000
++++ b/tests/audit-fixes/fix-s97-credit-filter-propagation.mjs	2026-09-23 16:31:29.565974441 +0000
+@@ -18,8 +18,9 @@
+ const listStart = source.indexOf('interface ListFilter')
+ const listEnd = source.indexOf('}\n\n/**', listStart) + 1
+ const filterBlock = source.slice(listStart, listEnd)
+-const helperStart = source.indexOf('async function creditInvoiceIdsFromReportFilter')
+-const helperEnd = source.indexOf('/**', helperStart + 20)
++// نشست ۹۸ · خوشه G: سازنده‌ی where فاکتور به reportInvoiceWhereFromFilter و اتصال اعتبار به creditIdsFromReportFilter منتقل شد
++const helperStart = source.indexOf('function reportInvoiceWhereFromFilter')
++const helperEnd = source.indexOf('async function whereFromFilter', helperStart + 20)
+ const helper = source.slice(helperStart, helperEnd)
+ const whereStart = source.indexOf('async function whereFromFilter')
+ const whereEnd = source.indexOf('/** جمع «تعهد فروشگاه»', whereStart)
+@@ -43,8 +44,9 @@
+ check('بعد: کانال با helper مشترک نوع‌های سفارش را می‌سازد', /orderTypesForChannels\(filter\.channels \?\? null\)/.test(helper))
+ check('بعد: فیلتر کالا روی snapshot و رابطه‌ی واریانت اعمال می‌شود', /variantName: \{ contains: productSearch \}[\s\S]{0,120}variantCode: \{ contains: productSearch \}/.test(helper))
+ check('بعد: فیلتر فاکتور با شماره فیش/مشتری/شیفت ساخته می‌شود', /receiptNo: Math\.round\(Number\(filter\.receiptNo\)/.test(helper) && /customer: \{ name: \{ contains: customerSearch \} \}/.test(helper) && /shiftId: Math\.round\(Number\(filter\.shiftId\)/.test(helper))
+-check('بعد: اعتبارهای متصل به فاکتور یا برگشت منطبق محدود می‌شوند', /sourceInvoiceId: \{ in: reportInvoiceIds\.invoiceIds \}/.test(where) && /exchangeInvoiceId: \{ in: reportInvoiceIds\.invoiceIds \}/.test(where) && /returnId: \{ in: reportInvoiceIds\.returnIds \}/.test(where))
+-check('بعد: فیلتر اعتبار در whereFromFilter پیش از query نهایی اعمال می‌شود', /const reportInvoiceIds = await creditInvoiceIdsFromReportFilter\(filter\)[\s\S]{0,650}withAndClause\(where, relationOr\.length \? \{ OR: relationOr \} : \{ id: \{ in: \[\] \} \}\)/.test(where))
++// رفتار این اتصال روی ۵۰٬۰۱۰ فاکتور در fix-s98-credit-filter-scale.mjs اثبات می‌شود
++check('بعد: اعتبارهای متصل به فاکتور یا برگشت منطبق محدود می‌شوند', /c\.sourceInvoiceId != null && matched\.has/.test(helper) && /c\.exchangeInvoiceId != null && matched\.has/.test(helper) && /viaReturn != null && matched\.has\(viaReturn\)/.test(helper))
++check('بعد: فیلتر اعتبار در whereFromFilter پیش از query نهایی اعمال می‌شود', /const reportCreditIds = await creditIdsFromReportFilter\(filter, where\)[\s\S]{0,200}withAndClause\(where, \{ id: \{ in: reportCreditIds \} \}\)/.test(where))
+ 
+ console.log(`\n${bad ? '✗' : '✓'} ${ok} بررسی موفق · ${bad} ناموفق`)
+ if (bad) process.exit(1)
+diff -ruN a/tests/audit-fixes/fix-s98-credit-filter-scale.mjs b/tests/audit-fixes/fix-s98-credit-filter-scale.mjs
+--- a/tests/audit-fixes/fix-s98-credit-filter-scale.mjs	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/audit-fixes/fix-s98-credit-filter-scale.mjs	2026-09-23 16:31:29.605975176 +0000
+@@ -0,0 +1,118 @@
++/**
++ * نشست ۹۸ · خوشه G (سقف بی‌صدا + سقف پارامتر SQLite) روی فیلتر اعتبار نشست ۹۷
++ *
++ * باگ: helper فیلتر اعتبار (نشست ۹۷) فاکتورهای منطبق را با `take: 50000`
++ * می‌خواند و همان آرایه را دو بار در یک `IN` می‌گذاشت. نتیجه روی داده‌ی حجیم:
++ *   • بالای ۵۰٬۰۰۰ فاکتور منطبق ⇒ اعتبار فاکتورهای بعدی بی‌صدا حذف می‌شد؛
++ *   • بیش از ۳۲٬۷۶۶ پارامتر در یک کوئری ⇒ crash تب اعتبار (too many SQL variables).
++ * تست رفتاری است و روی SQLite هارنس اجرا می‌شود (نه Prisma تولیدی).
++ * اجرای «قبل»: MAHAK_ROOT=<کپی قبل از رفع> node --import ./test/harness/register.mjs <این فایل>
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++import { pathToFileURL } from 'node:url'
++
++const ROOT = process.env.MAHAK_ROOT ? resolve(process.env.MAHAK_ROOT) : resolve('.')
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s98-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++const imp = (rel) => import(pathToFileURL(join(ROOT, rel)).href)
++const { harnessClient } = await imp('test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await imp('test/harness/seed.mjs')
++const { storeCreditService } = await imp('src/main/services/StoreCreditService.ts')
++const { toJalaliDate } = await import('@shared/jalali')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++const today = toJalaliDate(new Date())
++
++let ok = 0
++let bad = 0
++const check = (label, cond, info = '') => (cond ? (ok++, console.log(`  ✓ ${label}`)) : (bad++, console.log(`  ✗ ${label} ${info}`)))
++
++const userId = seed.user('مدیر تست حجم اعتبار')
++const s1 = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - 3_600_000, userId })
++const s2 = seed.insert('Shift', { name: 'شب', number: 2, dayJalali: today, openedAt: Date.now() - 1_800_000, userId })
++
++// ۵۰٬۰۱۰ فاکتور در شیفت ۱ با یک INSERT…SELECT (بدون حلقه‌ی JS)
++const N = 50_010
++const tplId = seed.insert('SaleInvoice', { receiptNo: 1, shiftId: s1, userId, status: 'SETTLED', issuedAtJalali: today })
++const cols = [...db.$harness.tables.get('SaleInvoice').columns.keys()].filter((c) => c !== 'id')
++const sel = cols.map((c) => (c === 'receiptNo' ? '(t."receiptNo" + n.i)' : `t."${c}"`)).join(', ')
++sql.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${N - 1})
++  INSERT INTO "SaleInvoice" (${cols.map((c) => `"${c}"`).join(', ')}) SELECT ${sel} FROM n, "SaleInvoice" t WHERE t.id = ${tplId}`)
++const maxInv = sql.prepare('SELECT MAX(id) AS m FROM "SaleInvoice"').get().m
++const otherInv = seed.insert('SaleInvoice', { receiptNo: 9_000_000, shiftId: s2, userId, status: 'SETTLED', issuedAtJalali: today })
++const retInv = maxInv - 3
++const retId = seed.insert('SaleReturn', { invoiceId: retInv, userId })
++
++const credit = (code, extra) =>
++  seed.insert('StoreCredit', { code, amount: 1000, status: 'ACTIVE', issuedAt: Date.now(), issuedAtJalali: today, ...extra })
++const cEarly = credit('S98EARLY', { sourceInvoiceId: tplId + 5 })
++const cLate = credit('S98LATE', { sourceInvoiceId: maxInv })
++const cExch = credit('S98EXCH', { exchangeInvoiceId: maxInv - 1 })
++const cRet = credit('S98RET', { returnId: retId })
++const cOther = credit('S98OTHER', { sourceInvoiceId: otherInv })
++const cManual = credit('S98MANUAL', { source: 'MANUAL' })
++
++// ابزار سنجش: بیشترین تعداد پارامتر در یک statement
++let maxParams = 0
++const origPrepare = sql.prepare.bind(sql)
++sql.prepare = (text) => {
++  const n = (String(text).match(/\?/g) ?? []).length
++  if (n > maxParams) maxParams = n
++  return origPrepare(text)
++}
++
++let rows = null
++let err = null
++try {
++  rows = await storeCreditService.list({ shiftId: s1, fromJalali: today, toJalali: today })
++} catch (e) {
++  err = e
++}
++check('فیلتر شیفت روی ۵۰٬۰۱۰ فاکتور بدون crash اجرا می‌شود', !err, err ? `· خطا: ${String(err?.message ?? err).slice(0, 120)}` : '')
++const ids = new Set((rows ?? []).map((r) => r.id))
++check('اعتبار فاکتور اولیه دیده می‌شود', ids.has(cEarly))
++check('اعتبار فاکتور ۵۰٬۰۱۰ام (بعد از سقف قدیمی ۵۰٬۰۰۰) بی‌صدا حذف نمی‌شود', ids.has(cLate))
++check('اعتبار صادرشده روی سند تعویض همان شیفت دیده می‌شود', ids.has(cExch))
++check('اعتبار صادرشده از برگشتِ فاکتور همان شیفت دیده می‌شود', ids.has(cRet))
++check('اعتبار فاکتور شیفت دیگر وارد نمی‌شود', !ids.has(cOther))
++check('اعتبار دستی بدون فاکتور با فیلتر فاکتوری وارد نمی‌شود', !ids.has(cManual))
++check('هیچ کوئری بیش از ۳۲٬۷۶۶ پارامتر (سقف SQLite) نمی‌سازد', maxParams <= 32766, `· بیشینه ${maxParams}`)
++check('lookupها در دسته‌های امن (≤ ۱٬۰۰۰ پارامتر) اجرا می‌شوند', maxParams <= 1000, `· بیشینه ${maxParams}`)
++
++// بدون فیلتر فاکتوری رفتار قبلی حفظ می‌شود (همه‌ی اعتبارهای امروز)
++const all = new Set((await storeCreditService.list({ fromJalali: today, toJalali: today })).map((r) => r.id))
++check('بدون فیلتر فاکتوری همه‌ی اعتبارها (از جمله دستی) برمی‌گردند', [cEarly, cLate, cExch, cRet, cOther, cManual].every((id) => all.has(id)))
++
++// برگشت باطل‌شده دیگر اعتبارش را به فاکتور وصل نمی‌کند (همان قرارداد نشست ۹۷)
++sql.prepare('UPDATE "SaleReturn" SET voidedAt = ? WHERE id = ?').run(Date.now(), retId)
++let afterVoid = new Set()
++try {
++  afterVoid = new Set((await storeCreditService.list({ shiftId: s1, fromJalali: today, toJalali: today })).map((r) => r.id))
++} catch (e) {
++  console.log(`  (خطای اجرای دوم: ${String(e?.message ?? e).slice(0, 80)})`)
++}
++check('برگشت باطل‌شده اعتبارش را از طریق فاکتور منطبق نمی‌کند', !afterVoid.has(cRet) && afterVoid.has(cLate))
++
++// بیش از ظرفیت یک IN نهایی ⇒ خطای فارسی صریح، نه برش بی‌صدا و نه crash خام
++const scCols = [...db.$harness.tables.get('StoreCredit').columns.keys()].filter((c) => c !== 'id')
++const scSel = scCols
++  .map((c) => (c === 'code' ? `('S98B' || n.i)` : c === 'sourceInvoiceId' ? `(${tplId} + (n.i % 40000))` : `t."${c}"`))
++  .join(', ')
++sql.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 30001)
++  INSERT INTO "StoreCredit" (${scCols.map((c) => `"${c}"`).join(', ')}) SELECT ${scSel} FROM n, "StoreCredit" t WHERE t.id = ${cEarly}`)
++let bigErr = null
++try {
++  await storeCreditService.list({ shiftId: s1, fromJalali: today, toJalali: today })
++} catch (e) {
++  bigErr = e
++}
++const bigMsg = String(bigErr?.message ?? '')
++check('بیش از ظرفیت ⇒ خطای فارسی با تعداد و راهنما (نه crash خام SQLite)', bigErr?.name === 'BusinessError' && bigMsg.includes('بیش از ظرفیت') && bigMsg.includes('محدودتر'), `· ${bigMsg.slice(0, 90)}`)
++
++console.log(`\n${bad ? '✗' : '✓'} ${ok} بررسی موفق · ${bad} ناموفق`)
++if (bad) process.exitCode = 1

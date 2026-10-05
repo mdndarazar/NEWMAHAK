@@ -1,0 +1,11 @@
+نشست ۱۷۱ — جهش‌ها (کد پس از هر جهش به نسخه‌ی سالم برگردانده و با cmp تأیید شد)
+S170-D3 · tests/audit-fixes/fix-s170b-overpay-remainder-hint.mjs (سالم ۲۱/۰)
+  M1 overpayFresh = issuedFromOverpay (فرمول قدیم hint)            ⇒ ۱۵ موفق · ۳ ناموفق (نسخه‌ی ۱۸‌بررسی)
+  M2 باقی‌مانده‌ی OVERPAY تشخیص داده نشود                           ⇒ ۱۲ موفق · ۶ ناموفق (نسخه‌ی ۱۸‌بررسی)
+  M3 OVERPAY وارد تفکیک عمومی (بی‌سند/باقی‌مانده) شود                ⇒ ۱۸ موفق · ۳ ناموفق
+  کد اصلی نشست ۱۷۰ با تست نهایی                                   ⇒ ۱۵ موفق · ۶ ناموفق
+S171-D2 · tests/audit-fixes/fix-s171-cancelled-status-statements.mjs (سالم ۲۳/۰)
+  M1 بدون گیت در eventInvoiceContextWhere                         ⇒ ۱۶ موفق · ۷ ناموفق
+  M2 بدون گیت where در buildStatements                            ⇒ ۱۹ موفق · ۴ ناموفق
+  M3 بدون گیت where در دفتر رویداد                                 ⇒ ۲۰ موفق · ۳ ناموفق
+  M4 بدون هشدار صریح مبلغ                                          ⇒ ۲۱ موفق · ۲ ناموفق

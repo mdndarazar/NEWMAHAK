@@ -1,0 +1,40 @@
+(node:5707) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5707) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓ اعتبار سند‌دار پایه ساخته شد = 1000
+
+۱) صفحه‌ی بزرگ (take ۲۰۰۰) با ۵۲۱ اعتبار سند‌دار
+  ✓ گزارش بی‌خطا ساخته شد = null
+  ✓ ردیف پل = −۵۲۱٬۰۰۰ = -521000
+  ✓ totalCount صفحه = ۵۲۱ = 521
+  ✓ همه‌ی ۵۲۱ سند در یک صفحه = 521
+  ✓ جمع drill = مبلغ ردیف = 521000
+  ✓ truncated = false = false
+  ✓ هیچ IN بالای ۵۰۰ نبود = true
+
+۲) صفحه‌بندی ۲۰۰تایی: بی‌هم‌پوشانی، مرتب id نزولی، کامل
+  ✓ صفحه‌ی skip=0 بی‌خطا = null
+  ✓ totalCount صفحه‌ی skip=0 = 521
+  ✓ اندازه‌ی صفحه‌ی skip=0 = 200
+  ✓ truncated صفحه‌ی skip=0 = true
+  ✓ صفحه‌ی skip=200 بی‌خطا = null
+  ✓ totalCount صفحه‌ی skip=200 = 521
+  ✓ اندازه‌ی صفحه‌ی skip=200 = 200
+  ✓ truncated صفحه‌ی skip=200 = true
+  ✓ صفحه‌ی skip=400 بی‌خطا = null
+  ✓ totalCount صفحه‌ی skip=400 = 521
+  ✓ اندازه‌ی صفحه‌ی skip=400 = 121
+  ✓ truncated صفحه‌ی skip=400 = false
+  ✓ همه‌ی شناسه‌ها یکتا = 521
+  ✓ مجموعه‌ی صفحه‌ها = همه‌ی ۵۲۱ = 521
+  ✓ ترتیب id نزولی در کل صفحه‌ها = true
+  ✓ هیچ IN بالای ۵۰۰ نبود (کل صفحه‌ها) = true
+
+۳) صفحه‌ی بیرون از بازه (skip ۱۰۰۰)
+  ✓ بی‌خطا = null
+  ✓ صفحه‌ی خالی با totalCount درست = [0,521]
+
+نتیجه: 26 موفق · 0 ناموفق

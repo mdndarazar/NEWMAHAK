@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [],
+    "skipLibCheck": true,
+    "noEmit": true,
+    /**
+     * وابستگی‌های نصب‌نشده در شیم `any` هستند، پس هر callback روی نتیجه‌ی آن‌ها
+     * «implicit any» می‌شود و هزار خطای بی‌معنی می‌سازد. فقط همین یک گزینه از
+     * `strict` کم می‌شود؛ `strictNullChecks` و بقیه سر جایشان‌اند.
+     * ⚠️ `npm run typecheck` واقعی این گزینه را روشن دارد.
+     */
+    "noImplicitAny": false
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tools/typecheck-shim.d.ts"]
+}

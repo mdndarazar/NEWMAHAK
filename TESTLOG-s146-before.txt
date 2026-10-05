@@ -1,0 +1,108 @@
+(node:3498) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:3498) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/base145/src/main/services/ProductService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/base145/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) اصلاح دستی موجودی (سرویس) بدون رمز / رمز غلط ⇒ رد فارسی، صفر حرکت
+  ✗ adjustStock بدون رمز — پیام نامنتظره: شناسه‌ی کالا باید عدد صحیح بزرگ‌تر از صفر (عدد) باشد؛ مقدار «[object Object]» پذیرفته نیست (اعشار، متن یا عدد خیلی بزرگ به عدد دیگری تبدیل نمی‌شود). موجودی تغیی
+  ✗ adjustStock رمز خالی — پیام نامنتظره: شناسه‌ی کالا باید عدد صحیح بزرگ‌تر از صفر (عدد) باشد؛ مقدار «[object Object]» پذیرفته نیست (اعشار، متن یا عدد خیلی بزرگ به عدد دیگری تبدیل نمی‌شود). موجودی تغیی
+  ✗ adjustStock رمز غلط — پیام نامنتظره: شناسه‌ی کالا باید عدد صحیح بزرگ‌تر از صفر (عدد) باشد؛ مقدار «[object Object]» پذیرفته نیست (اعشار، متن یا عدد خیلی بزرگ به عدد دیگری تبدیل نمی‌شود). موجودی تغیی
+  ✓ حرکت انبار پس از تلاش‌های بی‌مجوز = 1
+  ✓ موجودی دست‌نخورده = 3
+  ✓ Audit STOCK_ADJUST پس از تلاش‌های بی‌مجوز = 0
+
+۲) validation عددی S144 پیش از رمز هم برقرار است
+  ✓ موجودی ۲٫۵ با رمز درست (رد شد: شناسه‌ی کالا باید عدد صحیح بزرگ‌تر از صفر (عدد) باشد؛ مقدار «[object Object]» پذیرفته نیست)
+  ✓ حرکت انبار = 1
+
+۳) IPC.stockAdjust: بدون رمز رد؛ با رمز ⇒ حرکت + Audit با actor نشست (نه userId ارسالی)
+  ✗ IPC.stockAdjust بدون رمز — بدون تأیید پذیرفته شد
+  ✗ حرکت انبار پس از IPC بی‌رمز — انتظار 1، دریافت 2
+  ✓ IPC.stockAdjust با رمز مدیر و userId جعلی
+  ✗ حرکت انبار تازه — انتظار 2، دریافت 3
+  ✓ موجودی پس از اصلاح = 2
+  ✗ actor در Audit STOCK_ADJUST = کارمند نشست — انتظار 1، دریافت 0
+  ✗ scope تأیید (رمز مدیر) در Audit STOCK_ADJUST
+  ✓ توضیح کاربر در دفتر گردش حفظ شد = "انبارگردانی ماهانه"
+
+۴) ویرایش کالا: تغییر قیمت فروش/خرید یا موجودی واریانت موجود بدون رمز ⇒ رد کامل
+  ✗ upsert قیمت فروش تازه بدون رمز — بدون تأیید پذیرفته شد
+  ✗ upsert قیمت خرید تازه بدون رمز — بدون تأیید پذیرفته شد
+  ✗ upsert موجودی تازه بدون رمز — بدون تأیید پذیرفته شد
+  ✗ upsert قیمت تازه با رمز غلط — بدون تأیید پذیرفته شد
+  ✗ قیمت فروش دست‌نخورده — انتظار 1000000، دریافت 700000
+  ✓ قیمت خرید دست‌نخورده = 600000
+  ✓ موجودی دست‌نخورده = 2
+  ✗ PRICE_EDIT تازه — انتظار 0، دریافت 3
+  ✗ IPC.productUpsert قیمت تازه بدون رمز — بدون تأیید پذیرفته شد
+  ✗ قیمت فروش پس از IPC بی‌رمز — انتظار 1000000، دریافت 700000
+
+۵) ویرایش کالا با رمز ⇒ ثبت + PRICE_EDIT/STOCK_ADJUST با actor نشست و scope
+  ✓ IPC.productUpsert قیمت فروش/خرید و موجودی تازه با رمز و userId جعلی
+  ✓ قیمت فروش تازه = 1100000
+  ✓ قیمت خرید تازه = 650000
+  ✓ موجودی تازه = 5
+  ✗ PRICE_EDIT قیمت فروش با before/after قدیمی ثبت شد
+  ✗ actor در PRICE_EDIT قیمت فروش = کارمند نشست — انتظار 1، دریافت null
+  ✗ scope تأیید در PRICE_EDIT قیمت فروش
+  ✗ تغییر قیمت خرید هم Audit دارد (قبلاً هیچ ردی نمی‌ماند)
+  ✗ actor در PRICE_EDIT قیمت خرید = کارمند نشست — انتظار 1، دریافت null
+  ✗ actor در STOCK_ADJUST فرم کالا = کارمند نشست — انتظار 1، دریافت 2
+  ✗ scope تأیید در STOCK_ADJUST فرم کالا
+
+۶) بدون تغییر قیمت/موجودی و ثبت کالای تازه ⇒ رمز لازم نیست (تصمیم DECISIONS.md)
+  ✓ upsert فقط تغییر نام (قیمت و موجودی همان) بدون رمز
+  ✓ upsert بدون فیلد موجودی (stock حذف‌شده = دست نزن) بدون رمز
+  ✓ PRICE_EDIT تازه = 4
+  ✓ حرکت انبار تازه = 6
+  ✓ ثبت کالای کاملاً تازه با موجودی اولیه ۴ بدون رمز
+  ✓ موجودی اولیه‌ی کالای تازه = 4
+  ✗ actor در STOCK_INITIAL کالای تازه = کارمند نشست — انتظار 1، دریافت 2
+  ✗ افزودن واریانت تازه همراه تغییر قیمت واریانت موجود بدون رمز ⇒ رد کامل — بدون تأیید پذیرفته شد
+  ✗ واریانت تازه در تلاش ردشده ساخته نشد — انتظار 1، دریافت 2
+
+۷) قفل پنل کالاها خاموش (سیاست مدیر، بند ۴-۳۹) ⇒ بدون رمز مجاز، scope «OPEN» در Audit
+  ✗ adjustStock بدون رمز با قفل خاموش — خطای نامنتظره: شناسه‌ی کالا باید عدد صحیح بزرگ‌تر از صفر (عدد) باشد؛ مقدار «[object Object]» پذیرفته نیست (اعشار، متن یا عدد خیلی بزرگ به عدد دیگری تبدیل نمی‌شود). موجودی تغیی
+  ✗ موجودی — انتظار 6، دریافت 5
+  ✗ scope «بدون قفل» در Audit ثبت شد
+
+۸) حذف نرم/بازگردانی: actor از نشست، نه payload
+  ✓ IPC.productDelete با userId جعلی
+  ✗ actor در Audit DELETE = کارمند نشست — انتظار 1، دریافت 2
+  ✓ IPC.productRestore با userId جعلی
+  ✗ actor در Audit PRODUCT_RESTORE = کارمند نشست — انتظار 1، دریافت 2
+
+۹) حذف همیشگی کالا (بند ۴-۳۹ «حذف دائمی کالا»): بدون رمز رد، با رمز ⇒ actor نشست
+  ✗ IPC.productPurge بدون رمز — بدون تأیید پذیرفته شد
+  ✗ کالا پس از purge بی‌رمز هنوز هست — انتظار 1، دریافت 0
+[ipc:product:purge] BusinessError: این کالاها پیدا نشدند؛ فهرست سطل آشغال را تازه کنید.
+    at Object.purge (file:///home/user/work/base145/src/main/services/VariantPurgeService.ts:245:33)
+    at async file:///home/user/work/base145/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/base145/tests/pending/fix-s145-product-stock-gate.mjs:73:13)
+    at async file:///home/user/work/base145/tests/pending/fix-s145-product-stock-gate.mjs:190:1 {
+  isBusinessError: true
+}
+  ✗ IPC.productPurge رمز غلط — پیام نامنتظره: این کالاها پیدا نشدند؛ فهرست سطل آشغال را تازه کنید.
+[ipc:product:purge] BusinessError: این کالاها پیدا نشدند؛ فهرست سطل آشغال را تازه کنید.
+    at Object.purge (file:///home/user/work/base145/src/main/services/VariantPurgeService.ts:245:33)
+    at async file:///home/user/work/base145/src/main/ipc/index.ts:51:32
+    at async ipcOk (file:///home/user/work/base145/tests/pending/fix-s145-product-stock-gate.mjs:78:13)
+    at async file:///home/user/work/base145/tests/pending/fix-s145-product-stock-gate.mjs:191:1 {
+  isBusinessError: true
+}
+  ✗ IPC.productPurge با رمز مدیر و userId جعلی — این کالاها پیدا نشدند؛ فهرست سطل آشغال را تازه کنید.
+  ✓ کالا پاک شد = 0
+  ✗ actor در Audit PRODUCT_PURGE = کارمند نشست — انتظار 1، دریافت 2
+  ✗ scope تأیید در Audit PRODUCT_PURGE
+
+۱۰) سیم‌کشی UI (ساختاری؛ رندر واقعی Electron اجرا نمی‌شود)
+  ✗ StockAdjustModal رمز را همراه stock:adjust می‌فرستد
+  ✗ StockAdjustModal فیلد رمز (PasswordField) دارد و از قفل پنل کالاها پیروی می‌کند
+  ✗ ProductFormModal رمز را همراه product:upsert می‌فرستد
+  ✗ ProductFormModal فیلد رمز دارد و از قفل پنل کالاها پیروی می‌کند
+  ✗ ProductFormModal موجودی دست‌نخورده‌ی واریانت موجود را نمی‌فرستد (جلوگیری از اصلاح کاذب)
+  ✗ Products.tsx رمز را همراه product:purge می‌فرستد
+
+✗ 23 بررسی موفق · 43 ناموفق

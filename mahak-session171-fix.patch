@@ -1,0 +1,641 @@
+--- a/src/main/services/accountingReport.ts
++++ b/src/main/services/accountingReport.ts
+@@ -27,7 +27,7 @@
+ import { debtAdjustmentsByInvoice, adjustmentsOrEmpty } from './invoiceDebt'
+ import { creditIdsForReportScope } from './creditReportScope'
+ import { bridgeDrillPager } from '@shared/reportExtraOutput'
+-import { eventInvoiceContextWhere, paymentEventOwnerWhere, resolveReportEventShiftIds, returnEventOwnerWhere, reportEventInvoiceStatusWhere } from './SalesService'
++import { eventInvoiceContextWhere, paymentEventOwnerWhere, resolveReportEventShiftIds, returnEventOwnerWhere, reportEventInvoiceStatusWhere, financialStatementInvoiceWhere, excludedStatusStatementWarning } from './SalesService'
+ import type {
+   SaleAccountingStatements,
+   SaleBridgeRow,
+@@ -667,10 +667,17 @@
+   unbackedCount: number
+   remainder: number
+   remainderCount: number
++  overpayRemainder: number
++  overpayRemainderCount: number
+ }> {
+-  const rows: Array<{ id: number; amount: any; returnId: number | null }> = await prisma.storeCredit.findMany({
+-    where: { ...issuedWhere, source: { not: CreditSource.OVERPAY } },
+-    select: { id: true, amount: true, returnId: true },
++  /**
++   * نشست ۱۷۱ · S170-D3 — ردیف‌های OVERPAY هم خوانده می‌شوند، فقط برای جدا کردن «باقی‌مانده»ی
++   * مصرف جزئی اعتبار اضافه‌دریافت (source=OVERPAY کپی‌شده از والد، issuedAt=روز مصرف) از
++   * اعتبار اضافه‌دریافتِ تازه. OVERPAY هرگز وارد backed/unbacked/remainder نمی‌شود (S61-2).
++   */
++  const rows: Array<{ id: number; amount: any; returnId: number | null; source: string }> = await prisma.storeCredit.findMany({
++    where: { ...issuedWhere },
++    select: { id: true, amount: true, returnId: true, source: true },
+     orderBy: { id: 'desc' }
+   })
+   const remainderIds = new Set<number>()
+@@ -682,9 +689,16 @@
+     })
+     for (const p of parents) if (p.remainderCreditId != null) remainderIds.add(Number(p.remainderCreditId))
+   }
+-  const out = { backedIds: [] as number[], backed: 0, unbacked: 0, unbackedCount: 0, remainder: 0, remainderCount: 0 }
++  const out = {
++    backedIds: [] as number[], backed: 0, unbacked: 0, unbackedCount: 0, remainder: 0, remainderCount: 0,
++    overpayRemainder: 0, overpayRemainderCount: 0
++  }
+   for (const r of rows) {
+     const amount = n(r.amount)
++    if (r.source === CreditSource.OVERPAY) {
++      if (remainderIds.has(r.id)) { out.overpayRemainder += amount; out.overpayRemainderCount++ }
++      continue
++    }
+     if (remainderIds.has(r.id)) { out.remainder += amount; out.remainderCount++ }
+     else if (r.returnId != null) { out.backed += amount; out.backedIds.push(r.id) }
+     else { out.unbacked += amount; out.unbackedCount++ }
+@@ -771,6 +785,9 @@
+     issuedUnbackedCount: split.unbackedCount,
+     issuedRemainder: split.remainder,
+     issuedRemainderCount: split.remainderCount,
++    /** نشست ۱۷۱ · S170-D3 — باقی‌مانده‌ی اعتبار اضافه‌دریافت (داخل issuedFromOverpay) */
++    issuedOverpayRemainder: split.overpayRemainder,
++    issuedOverpayRemainderCount: split.overpayRemainderCount,
+     issuedCount: n(issued._count?._all),
+     used: n(used._sum.amount),
+     usageCount: n(used._count?._all),
+@@ -1313,10 +1330,14 @@
+ ): Promise<{ statements: SaleAccountingStatements; warnings: string[] }> {
+   const warnings: string[] = []
+   const notes: string[] = []
++  /** نشست ۱۷۱ · S171-D2 — وضعیت صریح لغو شده/پیش‌نویس: رویداد مالی نیست؛ مبلغش در هشدار صریح */
++  const excludedWarning = await excludedStatusStatementWarning(scope.where, scope.filter)
++  if (excludedWarning) warnings.push(excludedWarning)
++  const gatedScope = { ...scope, where: financialStatementInvoiceWhere(scope.where, scope.filter) }
+   const resolvedScope =
+-    scope.eventShiftIds !== undefined
+-      ? scope
+-      : { ...scope, eventShiftIds: await resolveReportEventShiftIds(scope.filter) }
++    gatedScope.eventShiftIds !== undefined
++      ? gatedScope
++      : { ...gatedScope, eventShiftIds: await resolveReportEventShiftIds(scope.filter) }
+ 
+   const [inv, pay, ret, credit, retItems] = await Promise.all([
+     invoiceAggregate(resolvedScope),
+@@ -1417,6 +1438,9 @@
+     netAccrualSales: accrual.netAccrualSales
+   })
+ 
++  /** نشست ۱۷۱ · S170-D3 */
++  const overpayRemainder = Math.max(0, n(sc.issuedOverpayRemainder))
++  const overpayFresh = Math.max(0, n(sc.issuedFromOverpay) - overpayRemainder)
+   const HINTS: Record<string, string> = {
+     realCash:
+       'نقد + کارت + سایر + چکِ پاس‌شده‌ی این بازه (پولی که واقعاً به فروشگاه رسید). ' +
+@@ -1467,10 +1491,18 @@
+     overpayReceived:
+       'پولی که بیشتر از بدهی فاکتور گرفته شد (اضافه‌دریافت): وارد صندوق شده ولی فروش نیست — ' +
+       'لینک به پرداختی‌های دارای «مبلغ اضافه‌ی دریافتی»' +
+-      (sc.issuedFromOverpay > 0
+-        ? ` · ${sc.issuedFromOverpay} ریال از آن به کد اعتبار خرید تبدیل شد (غیرقابل نقد شدن)؛ ` +
++      /**
++       * نشست ۱۷۱ · S170-D3 — فقط اعتبار اضافه‌دریافتِ *تازه* «تبدیل‌شده از همین اضافه‌دریافت» است؛
++       * باقی‌مانده‌ی مصرف جزئی اعتبار اضافه‌دریافت قبلی جدا نام برده می‌شود (عدد پل دست نمی‌خورد).
++       */
++      (overpayFresh > 0
++        ? ` · ${overpayFresh} ریال از آن به کد اعتبار خرید تبدیل شد (غیرقابل نقد شدن)؛ ` +
+           'این اعتبارها در ردیف «اعتبار خرید صادرشده» دوباره کم نمی‌شوند'
+-        : ' · بخشی که به کد اعتبار خرید تبدیل شود هم همین‌جا می‌ماند (نه در ردیف اعتبار صادرشده)')
++        : ' · بخشی که به کد اعتبار خرید تبدیل شود هم همین‌جا می‌ماند (نه در ردیف اعتبار صادرشده)') +
++      (overpayRemainder > 0
++        ? ` · ${overpayRemainder} ریال «باقی‌مانده»ی مصرف جزئی اعتبار اضافه‌دریافت قبلی (${n(sc.issuedOverpayRemainderCount)} بارکد) ` +
++          'در این بازه صادر شد: اضافه‌دریافت این بازه نیست و پولی وارد نشده؛ ادامه‌ی همان اعتبار قبلی است و در پل دوباره کم نمی‌شود'
++        : '')
+   }
+ 
+   const rows: SaleBridgeRow[] = []
+@@ -1512,6 +1544,12 @@
+       `${n(sc.issuedRemainder)} ریال از اعتبار صادرشده‌ی این بازه «باقی‌مانده»ی مصرف جزئی اعتبار یک‌بارمصرف است ` +
+         `(${n(sc.issuedRemainderCount)} بارکد)؛ ادامه‌ی بدهی قبلی است و در پل تطبیق دوباره کم نمی‌شود.`
+     )
++  /** نشست ۱۷۱ · S170-D3 */
++  if (overpayRemainder > 0)
++    notes.push(
++      `${overpayRemainder} ریال از اعتبار صادرشده‌ی این بازه «باقی‌مانده»ی مصرف جزئی اعتبار اضافه‌دریافت قبلی است ` +
++        `(${n(sc.issuedOverpayRemainderCount)} بارکد)؛ اضافه‌دریافت این بازه نیست و در پل تطبیق دوباره کم نمی‌شود.`
++    )
+   if (ret.legacyAssumedCount > 0)
+     notes.push(
+       `${ret.legacyAssumedCount} برگشت قدیمی روش بازپرداخت ثبت‌شده ندارد و با فرض «فقط بدهی مشتری کم شد» ` +
+@@ -1587,6 +1625,8 @@
+       issuedFromOverpay: sc.issuedFromOverpay,
+       /** نشست ۱۷۰ · S169-D4 — تفکیک صادرشده (همه داخل issued) */
+       issuedBacked: sc.issuedBacked, issuedUnbacked: sc.issuedUnbacked, issuedRemainder: sc.issuedRemainder,
++      /** نشست ۱۷۱ · S170-D3 — داخل issuedFromOverpay */
++      issuedOverpayRemainder: sc.issuedOverpayRemainder,
+       expired: sc.expired, canceled: sc.canceled,
+       issuedCount: sc.issuedCount, usageCount: sc.usageCount
+     },
+--- a/src/main/services/SalesService.ts
++++ b/src/main/services/SalesService.ts
+@@ -694,7 +694,8 @@
+ export function eventInvoiceContextWhere(f: SaleReportFilter): Prisma.SaleInvoiceWhereInput {
+   const where = eventSaleWhere(f)
+   const { shiftId: _shiftId, shift: _shift, userId: _userId, ...rest } = where as Record<string, unknown>
+-  return rest as Prisma.SaleInvoiceWhereInput
++  /** نشست ۱۷۱ · S171-D2 — فقط دفتر رویداد و صورت‌های مالی این تابع را مصرف می‌کنند */
++  return financialStatementInvoiceWhere(rest as Prisma.SaleInvoiceWhereInput, f)
+ }
+ 
+ export type PaymentEventPhase = 'created' | 'cleared'
+@@ -798,6 +799,49 @@
+   return s
+ }
+ 
++/**
++ * نشست ۱۷۱ · مشاهده‌ی باز AUDIT-PROGRESS ردیف ۱۲۲ (P3) · S171-D2 — وضعیت صریح «لغو شده/پیش‌نویس».
++ * فهرست فاکتورها (مسیر مدیریتی) این فاکتورها را نشان می‌دهد، ولی صورت‌های مالی (پل تطبیق، بلوک چک،
++ * دفتر رویداد) آن‌ها را رویداد مالی نمی‌شمارند؛ هم‌معنای تب‌های نسیه/چک/برگشت (D28) و مسیر پیش‌فرض
++ * (S122-1): «یک فیلتر، یک عدد». قبلاً پل با status=CANCELED وجه/نسیه/چک فاکتور لغوشده را می‌شمرد،
++ * تب‌ها ۰ بودند و پل ۱٬۵۰۰٬۰۰۰ مانده‌ی بی‌توضیح داشت. مبلغ ثبت‌شده‌ی این فاکتورها پنهان نمی‌شود:
++ * excludedStatusStatementWarning آن را در هشدار گزارش و دفتر می‌نویسد.
++ */
++export function isReportExcludedSaleStatus(status: unknown): boolean {
++  const s = String(status ?? '').trim()
++  return !!s && (REPORT_EXCLUDED_SALE_STATUSES as string[]).includes(s)
++}
++
++export function financialStatementInvoiceWhere(
++  where: Prisma.SaleInvoiceWhereInput,
++  f: Pick<SaleReportFilter, 'status'> | null | undefined
++): Prisma.SaleInvoiceWhereInput {
++  return isReportExcludedSaleStatus(f?.status) ? { ...where, status: { in: [] } } : where
++}
++
++export async function excludedStatusStatementWarning(
++  where: Prisma.SaleInvoiceWhereInput,
++  f: Pick<SaleReportFilter, 'status'> | null | undefined
++): Promise<string | null> {
++  if (!isReportExcludedSaleStatus(f?.status)) return null
++  const [inv, pay] = await Promise.all([
++    prisma.saleInvoice.aggregate({ where, _sum: { grandTotal: true }, _count: { _all: true } }),
++    prisma.payment.aggregate({ where: { voidedAt: null, invoice: where }, _sum: { amount: true }, _count: { _all: true } })
++  ])
++  const count = Number(inv._count?._all ?? 0)
++  if (count <= 0) return null
++  const label = String(f?.status) === SaleStatus.CANCELED ? 'لغو شده' : 'پیش‌نویس'
++  const grand = Number(inv._sum?.grandTotal ?? 0)
++  const paid = Number(pay._sum?.amount ?? 0)
++  return (
++    `وضعیت «${label}» انتخاب شده: ${count} فاکتور لغوشده/پیش‌نویس به جمع ${grand} ریال` +
++    (paid > 0 ? ` با ${paid} ریال پرداخت/چک ثبت‌شده (${Number(pay._count?._all ?? 0)} ردیف)` : '') +
++    ' فقط در فهرست فاکتورها دیده می‌شود و در صورت‌های مالی (پل تطبیق، بلوک چک، دفتر رویداد، نقد مورد انتظار صندوق) ' +
++    'حساب نمی‌شود، چون فاکتور لغوشده/پیش‌نویس رویداد مالی نیست (همان قاعده‌ی تب‌های نسیه/چک/برگشت). ' +
++    (paid > 0 ? 'اگر این پول واقعاً دریافت شده، مدیر باید سند را بررسی و تعیین تکلیف کند.' : '')
++  ).trim()
++}
++
+ export interface ReturnReportScopeFilter {
+   fromJalali?: string | null
+   toJalali?: string | null
+--- a/src/main/services/SalesLedger.ts
++++ b/src/main/services/SalesLedger.ts
+@@ -9,7 +9,9 @@
+   paymentEventOwnerWhere,
+   resolveReportEventShiftIds,
+   returnEventOwnerWhere,
+-  resolveReportPeriod
++  resolveReportPeriod,
++  financialStatementInvoiceWhere,
++  excludedStatusStatementWarning
+ } from './SalesService'
+ import {
+   ChequeStatus,
+@@ -141,7 +143,9 @@
+    */
+   async ledger(filter: SaleReportFilter = {}): Promise<SaleLedgerResult> {
+     const sectionCap = (filter as any).fullRange === true ? 2_000_000_000 : SECTION_CAP
+-    const where = saleWhere(filter)
++    /** نشست ۱۷۱ · S171-D2 — وضعیت صریح لغو شده/پیش‌نویس رویداد مالی نیست (هم‌معنای پل و تب‌ها) */
++    const listWhere = saleWhere(filter)
++    const where = financialStatementInvoiceWhere(listWhere, filter)
+     const eventShiftIds = await resolveReportEventShiftIds(filter)
+     const eventInvoiceContext = eventInvoiceContextWhere(filter)
+     const createdPaymentOwner = paymentEventOwnerWhere(filter, 'created', eventShiftIds)
+@@ -152,6 +156,8 @@
+     const rows: SaleLedgerRow[] = []
+     const warnings: string[] = []
+     const notes: string[] = []
++    const excludedWarning = await excludedStatusStatementWarning(listWhere, filter)
++    if (excludedWarning) warnings.push(excludedWarning)
+ 
+     // ------------------------------- ۱) فروش -------------------------------
+     const invoiceQuery = {
+--- a/src/shared/accounting.ts
++++ b/src/shared/accounting.ts
+@@ -238,6 +238,9 @@
+   /** نشست ۱۷۰ · S169-D4 — «باقی‌مانده»ی مصرف جزئی اعتبار یک‌بارمصرف */
+   issuedRemainder?: Rial
+   issuedRemainderCount?: number
++  /** نشست ۱۷۱ · S170-D3 — «باقی‌مانده»ی مصرف جزئی اعتبار اضافه‌دریافت (داخل issuedFromOverpay) */
++  issuedOverpayRemainder?: Rial
++  issuedOverpayRemainderCount?: number
+ }
+ 
+ export interface AccrualInput {
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -1068,6 +1068,8 @@
+   issuedBacked?: number
+   issuedUnbacked?: number
+   issuedRemainder?: number
++  /** نشست ۱۷۱ · S170-D3 — باقی‌مانده‌ی اعتبار اضافه‌دریافت (داخل issuedFromOverpay) */
++  issuedOverpayRemainder?: number
+   used: number
+   active: number
+   expired: number
+--- a/tests/audit-fixes/fix-s121-report-export-page-warning.mjs
++++ b/tests/audit-fixes/fix-s121-report-export-page-warning.mjs
+@@ -11,7 +11,8 @@
+  * اجرا کند. تست canonical نشست ۱۳۴ در فایل S133 است.
+  */
+ import './fix-s133-report-export-full-range.mjs'
+-process.exit(0)
++// نشست ۱۷۱ · S171-D3 — نتیجه‌ی تست canonical حفظ شود (exitCode=1 نباید به ۰ تبدیل شود)
++process.exit(process.exitCode ?? 0)
+ 
+ import { readFileSync } from 'node:fs'
+ import { resolve } from 'node:path'
+--- /dev/null
++++ b/tests/audit-fixes/fix-s170b-overpay-remainder-hint.mjs
+@@ -0,0 +1,133 @@
++/**
++ * ===========================================================================
++ * نشست ۱۷۰ · خوشه D · S170-D3 — «باقی‌مانده»ی اعتبار اضافه‌دریافت (OVERPAY) در توضیح پل
++ *
++ * اعتبار OVERPAY یک‌بارمصرف که در روز قبل صادر شده، امروز جزئی مصرف می‌شود ⇒ سرویس یک
++ * اعتبار «باقی‌مانده» با همان source=OVERPAY و issuedAt=امروز می‌سازد. عدد پل درست است (OVERPAY
++ * از ردیف اعتبار صادرشده بیرون است) ولی توضیح ردیف «دریافت پول اضافه» امروز می‌گفت
++ * «X ریال از آن به کد اعتبار خرید تبدیل شد» در حالی که امروز هیچ اضافه‌دریافتی نبوده ⇒ متن
++ * گمراه‌کننده (عدد با عدد نمی‌خواند). انتظار: توضیح فقط اعتبار OVERPAY *تازه* را بگوید و
++ * باقی‌مانده را جدا («باقی‌مانده‌ی ...») نام ببرد؛ پل بسته؛ گزارش اعتبار ۴-۴۸ دست‌نخورده.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s170b-overpay-remainder-hint.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s170b-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { salesService, saleWhere } = await import('../../src/main/services/SalesService.ts')
++const { storeCreditService } = await import('../../src/main/services/StoreCreditService.ts')
++const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
++const { RefundMethod } = await import('@shared/enums')
++const { DEFAULT_MANAGER_PASSWORD } = await import('@shared/receipt')
++const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++const PW = DEFAULT_MANAGER_PASSWORD
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (got === want) { ok++; console.log(`  ✓ ${label} = ${want}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${want}، دریافت ${got}`) }
++}
++const truthy = (label, cond, extra = '') => {
++  if (cond) { ok++; console.log(`  ✓ ${label}`) } else { bad++; console.log(`  ✗ ${label} ${extra}`) }
++}
++const safe = async (label, fn) => {
++  try { return await fn() } catch (e) { bad++; console.log(`  ✗ ${label} — خطای نامنتظره: ${String(e?.message ?? e).split('\n')[0]}`); return null }
++}
++
++const userId = seed.user('مدیر تست نشست ۱۷۰')
++const cat = seed.category('پوشاک')
++const product = seed.product('شلوار جین', cat)
++const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
++const today = toJalaliDate(new Date())
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - 3600_000, userId })
++let vseq = 0
++const variant = (price) => {
++  const id = seed.variant(product, `سایز ${++vseq}`)
++  sql.prepare('UPDATE "ProductVariant" SET stock = 100, salePrice = ? WHERE id = ?').run(price, id)
++  return id
++}
++const itemsOf = (invoiceId) => seed.rows('SELECT id, qty, lineTotal FROM "SaleInvoiceItem" WHERE invoiceId = ? ORDER BY id', invoiceId)
++const sale = (price, paid, extra = {}) => salesService.create({
++  userId, shiftId,
++  lines: [{ variantId: variant(price), qty: 1, unitPrice: price, discount: 0, tax: 0 }],
++  payments: paid > 0 ? [{ methodId: cash, amount: paid, destination: 'CASH' }] : [],
++  ...extra
++})
++const report = async () => {
++  const filter = { fromJalali: today, toJalali: today }
++  const { statements } = await buildStatements({
++    where: saleWhere(filter), from: jalaliStartOfDay(today), to: jalaliEndOfDay(today),
++    period: { fromJalali: today, toJalali: today, source: 'explicit' }, filter
++  }, { withDrillDown: true, bridgeSourceKey: 'storeCreditIssued' })
++  return statements
++}
++const rowsOf = (s) => Object.fromEntries((s?.bridge?.rows ?? []).map((r) => [r.key, r.sign * r.amount]))
++const closed = (s, label = 'پل تطبیق بسته است (مانده‌ی بی‌توضیح)') => eq(label, s?.bridge?.unexplained, 0)
++const creditByCode = (code) => seed.rows('SELECT * FROM "StoreCredit" WHERE code = ?', code)[0]
++const overRow = (s) => (s?.bridge?.rows ?? []).find((r) => r.key === 'overpayReceived')
++
++console.log('\n۱) دو روز پیش: نسیه‌ی ۱٬۰۰۰٬۰۰۰ با دریافت ۱٬۳۰۰٬۰۰۰ و اعتبار ۳۰۰٬۰۰۰ از اضافه‌دریافت')
++const inv = await safe('فروش نسیه', () => sale(1000000, 0))
++await safe('دریافت ۱٬۳۰۰٬۰۰۰ با اعتبار', () => salesService.addPayment({ invoiceId: inv?.id, amount: 1300000, methodId: cash, destination: 'CASH', userId, confirmOverpay: true, overpayAsCredit: true }))
++const oc = seed.rows(`SELECT * FROM "StoreCredit" WHERE source = 'OVERPAY' ORDER BY id`)[0]
++eq('اعتبار اضافه‌دریافت ۳۰۰٬۰۰۰', Number(oc?.amount ?? 0), 300000)
++const t2 = Date.now() - 86400000 * 2
++const j2 = toJalaliDate(new Date(t2))
++sql.prepare('UPDATE "SaleInvoice" SET issuedAt=?, issuedAtJalali=? WHERE id=?').run(t2, j2, inv?.id)
++sql.prepare('UPDATE "Payment" SET paidAt=?, paidAtJalali=?, createdAt=? WHERE invoiceId=?').run(t2, j2, t2, inv?.id)
++sql.prepare('UPDATE "StoreCredit" SET issuedAt=?, issuedAtJalali=? WHERE id=?').run(t2, j2, oc?.id ?? -1)
++const s0 = await report()
++closed(s0, 'پل امروز پیش از مصرف بسته است')
++eq('امروز اضافه‌دریافتی نیست', rowsOf(s0).overpayReceived ?? 0, 0)
++
++console.log('\n۲) امروز: مصرف جزئی ۱۰۰٬۰۰۰ از اعتبار اضافه‌دریافت ⇒ باقی‌مانده‌ی ۲۰۰٬۰۰۰ (OVERPAY)')
++await safe('فروش ۱۰۰٬۰۰۰ با اعتبار', () => sale(100000, 0, { storeCreditCode: oc?.code }))
++const parent = creditByCode(oc?.code)
++const rem = seed.rows('SELECT * FROM "StoreCredit" WHERE id = ?', parent?.remainderCreditId ?? -1)[0]
++eq('باقی‌مانده ۲۰۰٬۰۰۰ صادر شد', Number(rem?.amount ?? 0), 200000)
++eq('منبع باقی‌مانده همان OVERPAY است (رفتار فعلی سرویس)', rem?.source, 'OVERPAY')
++const s1 = await report()
++closed(s1, 'پل بعد از مصرف جزئی بسته است')
++eq('ردیف «دریافت پول اضافه»ی امروز همچنان صفر', rowsOf(s1).overpayReceived ?? 0, 0)
++eq('ردیف اعتبار صادرشده‌ی پل تغییر نکرد', (rowsOf(s1).storeCreditIssued ?? 0) - (rowsOf(s0).storeCreditIssued ?? 0), 0)
++const hint = String(overRow(s1)?.hint ?? '')
++truthy('توضیح «دریافت پول اضافه» ادعا نمی‌کند امروز ۲۰۰٬۰۰۰ از اضافه‌دریافت به اعتبار تبدیل شد',
++  !hint.includes('200000 ریال از آن به کد اعتبار'), `hint=${hint}`)
++truthy('باقی‌مانده‌ی اعتبار اضافه‌دریافت پنهان نشد (در توضیح/یادداشت با واژه‌ی «باقی‌مانده»)',
++  (hint.includes('200000') && hint.includes('باقی‌مانده')) ||
++  (s1?.notes ?? []).some((x) => String(x).includes('200000') && String(x).includes('باقی‌مانده')),
++  `hint=${hint} notes=${JSON.stringify(s1?.notes)}`)
++eq('گزارش اعتبار (بند ۴-۴۸): صادرشده‌ی امروز شامل باقی‌مانده است', s1?.storeCredits?.issued - s0?.storeCredits?.issued, 200000)
++
++console.log('\n۳) همان روز: یک اضافه‌دریافت تازه‌ی ۵۰٬۰۰۰ با اعتبار ⇒ توضیح فقط ۵۰٬۰۰۰ تازه را «تبدیل‌شده» بگوید')
++const inv3 = await safe('فروش نسیه‌ی ۴۰۰٬۰۰۰', () => sale(400000, 0))
++await safe('دریافت ۴۵۰٬۰۰۰ با اعتبار', () => salesService.addPayment({ invoiceId: inv3?.id, amount: 450000, methodId: cash, destination: 'CASH', userId, confirmOverpay: true, overpayAsCredit: true }))
++const s2 = await report()
++closed(s2, 'پل با اضافه‌دریافت تازه + باقی‌مانده بسته است')
++eq('ردیف «دریافت پول اضافه» = ۵۰٬۰۰۰', rowsOf(s2).overpayReceived ?? 0, -50000)
++const hint2 = String(overRow(s2)?.hint ?? '')
++truthy('توضیح، ۵۰٬۰۰۰ تازه را تبدیل‌شده می‌گوید', /(^|[^0-9])50000 ریال از آن به کد اعتبار/.test(hint2), `hint=${hint2}`)
++truthy('توضیح، ۲۵۰٬۰۰۰ (تازه + باقی‌مانده) را تبدیل‌شده نمی‌گوید', !hint2.includes('250000 ریال از آن'), `hint=${hint2}`)
++truthy('باقی‌مانده‌ی ۲۰۰٬۰۰۰ همچنان جدا نام برده می‌شود', hint2.includes('200000') && hint2.includes('باقی‌مانده'), `hint=${hint2}`)
++eq('storeCredits.issuedFromOverpay (سازگاری عقب‌رو: همه‌ی OVERPAYهای بازه)', s2?.storeCredits?.issuedFromOverpay, 250000)
++eq('storeCredits.issuedOverpayRemainder', s2?.storeCredits?.issuedOverpayRemainder, 200000)
++eq('OVERPAY وارد «بی‌سند» نمی‌شود (S61-2)', s2?.storeCredits?.issuedUnbacked ?? 0, 0)
++eq('باقی‌مانده‌ی OVERPAY وارد «باقی‌مانده»ی اعتبار برگشتی نمی‌شود', s2?.storeCredits?.issuedRemainder ?? 0, 0)
++truthy('توضیح ردیف «اعتبار خرید صادرشده» اعتبار اضافه‌دریافت را «بی‌سند/باقی‌مانده» نمی‌خواند',
++  !/بی‌سند|باقی‌مانده/.test(String((s2?.bridge?.rows ?? []).find((r) => r.key === 'storeCreditIssued')?.hint ?? '')))
++
++console.log(`\nنتیجه: ${ok} موفق، ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)
+--- /dev/null
++++ b/tests/audit-fixes/fix-s171-cancelled-status-statements.mjs
+@@ -0,0 +1,87 @@
++/**
++ * نشست ۱۷۱ · مشاهده‌ی باز AUDIT-PROGRESS ردیف ۱۲۲ (P3) · S171-D2 — مسیر صریح «وضعیت = لغو شده/پیش‌نویس»
++ * روی داده‌ی قدیمی (CANCELED/DRAFT بی‌voidedAt). قبلاً با status=CANCELED پل وجه واقعی ۲۰۰٬۰۰۰، نسیه
++ * ۳٬۳۰۰٬۰۰۰، چک ۵۰۰٬۰۰۰ و ۱٬۵۰۰٬۰۰۰ مانده‌ی بی‌توضیح می‌داد و دفتر ردیف فروش/برگشت فاکتور لغوشده را داشت،
++ * در حالی که تب‌های نسیه/چک/برگشت ۰ بودند (D28). انتظار: صورت‌های مالی (پل، بلوک چک، دفتر) این فاکتورها را
++ * رویداد مالی نمی‌شمارند (هم‌معنای تب‌ها و مسیر پیش‌فرض S122-1)، پل بسته، و مبلغ ثبت‌شده‌ی آن‌ها در هشدار
++ * صریح نوشته می‌شود (پنهان نمی‌شود). فهرست فاکتورها (reportRows.rows) همچنان فاکتور لغوشده را نشان می‌دهد.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s171-cancelled-status-statements.mjs
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label}`) }
++  else { bad++; console.log(`  ✗ ${label} · دریافت ${JSON.stringify(got)} · انتظار ${JSON.stringify(want)}`) }
++}
++const root = process.env.MAHAK_ROOT ? resolve(process.env.MAHAK_ROOT) : resolve('.')
++process.env.HARNESS_DIR = mkdtempSync(join(tmpdir(), 'mahak-s122-'))
++process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
++const { harnessClient } = await import(join(root, 'test/harness/stubs/prismaClient.mjs'))
++const { makeSeeder } = await import(join(root, 'test/harness/seed.mjs'))
++const { salesService } = await import(join(root, 'src/main/services/SalesService.ts'))
++const { reportLimitsService } = await import(join(root, 'src/main/services/reportLimits.ts'))
++const { salesLedger } = await import(join(root, 'src/main/services/SalesLedger.ts'))
++const { jalaliToday, jalaliStartOfDay } = await import('@shared/jalali')
++const db = harnessClient(); const seed = makeSeeder(db)
++const today = jalaliToday(); const T0 = jalaliStartOfDay(today).getTime(); const now = Date.now()
++const d = Math.max(60_000, now - T0); const t = (f) => T0 + Math.floor(d * f)
++const A = seed.user('فروشنده')
++const S = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: T0 + 1000, userId: A })
++const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
++const chq = seed.insert('PaymentMethod', { key: 'CHEQUE', label: 'چک', kind: 'CUSTOM', isActive: 1, sortOrder: 2 })
++let no = 1220
++const inv = (status, total, paid, f) => seed.insert('SaleInvoice', { receiptNo: ++no, userId: A, shiftId: S, status, orderType: 'IN_STORE', grandTotal: total, goodsTotal: total, paidTotal: paid, discountTotal: 0, issuedAt: t(f), issuedAtJalali: today, deductInventory: 1 })
++const pay = (invoiceId, amount, f, extra = {}) => seed.insert('Payment', { invoiceId, methodId: cash, amount, kind: 'CASH', destination: 'CASH', paidAt: t(f), paidAtJalali: today, createdAt: t(f), createdShiftId: S, createdByUserId: A, ...extra })
++const cheque = (invoiceId, amount, f, no) => pay(invoiceId, amount, f, { methodId: chq, kind: 'CHEQUE', chequeNo: no, chequeStatus: 'PENDING', destination: 'MANAGER', dueDate: t(f) })
++const ret = (invoiceId, amount, f) => seed.insert('SaleReturn', { invoiceId, kind: 'RETURN', userId: A, shiftId: S, returnedAt: t(f), returnedAtJalali: today, total: amount })
++
++const L = inv('SETTLED', 1_000_000, 400_000, 0.10)        // نسیه‌ی زنده: مانده ۶۰۰٬۰۰۰
++pay(L, 100_000, 0.11); cheque(L, 300_000, 0.12, 'L-1')
++const X = inv('CANCELED', 5_000_000, 700_000, 0.20)       // لغوشده‌ی قدیمی بی‌voidedAt: مانده‌ی ظاهری ۴٬۳۰۰٬۰۰۰
++pay(X, 200_000, 0.21); cheque(X, 500_000, 0.22, 'X-1')
++const D = inv('DRAFT', 2_000_000, 0, 0.30)                // پیش‌نویس قدیمی
++cheque(D, 900_000, 0.31, 'D-1')
++const P = inv('SETTLED', 800_000, 800_000, 0.40); pay(P, 800_000, 0.41)
++ret(P, 300_000, 0.5); ret(X, 1_000_000, 0.51); ret(D, 250_000, 0.52)
++
++const safe = async (fn) => { try { return await fn() } catch (e) { return { __error: String(e?.message ?? e).slice(0, 160) } } }
++const arr = (r) => (Array.isArray(r) ? r : r?.rows ?? [])
++const base = { fromJalali: today, toJalali: today }
++const lim = async (f, key) => (await safe(() => reportLimitsService.limits(f)))?.rows?.find((r) => r.key === key)?.total
++
++
++for (const [status, id, no, paid] of [['CANCELED', X, 1222, 700_000], ['DRAFT', D, 1223, 900_000]]) {
++  console.log(`\n— وضعیت صریح ${status}`)
++  const f = { ...base, status }
++  const r = await safe(() => salesService.reportRows(f))
++  eq(`${status}: فهرست فاکتورها همچنان همان فاکتور`, arr(r).map((x) => x.id), [id])
++  const acc = r?.accounting
++  const rows = acc?.bridge?.rows ?? []
++  const v = (k) => Number(rows.find((x) => x.key === k)?.amount ?? 0)
++  eq(`${status}: پل بسته (بی‌توضیح ۰)`, acc?.bridge?.unexplained, 0)
++  eq(`${status}: وجه واقعی پل ۰ (هم‌معنای دفتر و تب‌ها)`, v('realCash'), 0)
++  eq(`${status}: نسیه‌ی وصول‌نشده‌ی پل ۰ (تب نسیه ۰)`, v('uncollectedCredit'), 0)
++  eq(`${status}: بلوک چک ثبت‌شده ۰ (تب چک ۰)`, Number(acc?.cheques?.registered ?? 0), 0)
++  eq(`${status}: برگشت پل/تب ۰`, arr(await safe(() => salesService.returnList(f))).length, 0)
++  const lg = await safe(() => salesLedger.ledger(f))
++  const lr = lg?.rows ?? []
++  eq(`${status}: دفتر رویداد هیچ ردیفی از فاکتور ${no} ندارد`, lr.filter((x) => x.receiptNo === no).length, 0)
++  eq(`${status}: جمع اثر نقدی دفتر ۰ = وجه واقعی پل`, lr.reduce((s, x) => s + Number(x.cashEffect ?? 0), 0), v('realCash'))
++  const warn = [...(r?.warnings ?? []), ...(acc?.notes ?? [])].join(' | ')
++  eq(`${status}: مبلغ ثبت‌شده‌ی فاکتور بیرون از صورت‌ها در هشدار گزارش نوشته شده (${paid})`, warn.includes(String(paid)) && warn.includes('صورت'), true)
++  const lwarn = [...(lg?.warnings ?? []), ...(lg?.notes ?? [])].join(' | ')
++  eq(`${status}: دفتر هم هشدار صریح دارد`, lwarn.includes(String(paid)), true)
++}
++
++console.log('\n— مسیر پیش‌فرض (بدون وضعیت) دست‌نخورده')
++const r0 = await safe(() => salesService.reportRows(base))
++const rows0 = r0?.accounting?.bridge?.rows ?? []
++eq('پیش‌فرض: وجه واقعی ۹۰۰٬۰۰۰', rows0.find((x) => x.key === 'realCash')?.amount, 900_000)
++eq('پیش‌فرض: نسیه‌ی وصول‌نشده ۶۰۰٬۰۰۰', rows0.find((x) => x.key === 'uncollectedCredit')?.amount, 600_000)
++eq('پیش‌فرض: هشدار «بیرون از صورت‌ها» نیست', [...(r0?.warnings ?? [])].some((w) => String(w).includes('لغوشده/پیش‌نویس')), false)
++
++console.log(`\n${bad ? '✗' : '✓'} ${ok} بررسی موفق · ${bad} ناموفق`)
++if (bad) process.exit(1)
+--- /dev/null
++++ b/tests/audit-fixes/fix-s171-s121-bridge-exitcode.mjs
+@@ -0,0 +1,34 @@
++/**
++ * نشست ۱۷۱ · مشاهده‌ی باز AUDIT-PROGRESS ردیف ۱۳۴ (P3، فقط تست‌ها) · S171-D3
++ *
++ * fix-s121-report-export-page-warning.mjs پل تاریخی به fix-s133 است و بعد از import همیشه
++ * `process.exit(0)` می‌زد. تا وقتی fix-s133 با `process.exit(1)` خارج می‌شود شکست دیده می‌شود،
++ * ولی اگر روزی به `process.exitCode = 1` تغییر کند، پل همیشه سبز می‌شد (تست دروغ).
++ * این تست پل را کنار یک fix-s133 ساختگی که فقط exitCode=1 می‌گذارد اجرا می‌کند؛ انتظار: خروج ≠ ۰.
++ * و کنار ساختگیِ سبز: خروج ۰.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s171-s121-bridge-exitcode.mjs
++ */
++import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++import { spawnSync } from 'node:child_process'
++
++const root = process.env.MAHAK_ROOT ? resolve(process.env.MAHAK_ROOT) : resolve('.')
++const bridge = readFileSync(resolve(root, 'tests/audit-fixes/fix-s121-report-export-page-warning.mjs'), 'utf8')
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (got === want) { ok++; console.log(`  ✓ ${label}`) } else { bad++; console.log(`  ✗ ${label} · دریافت ${got} · انتظار ${want}`) }
++}
++const runWith = (fakeBody) => {
++  const dir = mkdtempSync(join(tmpdir(), 'mahak-s171-bridge-'))
++  writeFileSync(join(dir, 'fix-s121-report-export-page-warning.mjs'), bridge)
++  writeFileSync(join(dir, 'fix-s133-report-export-full-range.mjs'), fakeBody)
++  const r = spawnSync(process.execPath, [join(dir, 'fix-s121-report-export-page-warning.mjs')], { cwd: root, encoding: 'utf8' })
++  return r.status
++}
++eq('پل با fix-s133 ساختگی که فقط process.exitCode = 1 می‌گذارد ⇒ شکست (خروج ۱)', runWith('process.exitCode = 1\n'), 1)
++eq('پل با fix-s133 ساختگی که process.exit(1) می‌زند ⇒ شکست (خروج ۱)', runWith('process.exit(1)\n'), 1)
++eq('پل با fix-s133 ساختگیِ سبز ⇒ خروج ۰', runWith('console.log("ok")\n'), 0)
++console.log(`\n${bad ? '✗' : '✓'} ${ok} بررسی موفق · ${bad} ناموفق`)
++if (bad) process.exit(1)
+--- a/tests/pending/fix-s170b-overpay-remainder-hint.mjs
++++ /dev/null
+@@ -1,113 +0,0 @@
+-/**
+- * ===========================================================================
+- * نشست ۱۷۰ · خوشه D · S170-D3 — «باقی‌مانده»ی اعتبار اضافه‌دریافت (OVERPAY) در توضیح پل
+- *
+- * اعتبار OVERPAY یک‌بارمصرف که در روز قبل صادر شده، امروز جزئی مصرف می‌شود ⇒ سرویس یک
+- * اعتبار «باقی‌مانده» با همان source=OVERPAY و issuedAt=امروز می‌سازد. عدد پل درست است (OVERPAY
+- * از ردیف اعتبار صادرشده بیرون است) ولی توضیح ردیف «دریافت پول اضافه» امروز می‌گفت
+- * «X ریال از آن به کد اعتبار خرید تبدیل شد» در حالی که امروز هیچ اضافه‌دریافتی نبوده ⇒ متن
+- * گمراه‌کننده (عدد با عدد نمی‌خواند). انتظار: توضیح فقط اعتبار OVERPAY *تازه* را بگوید و
+- * باقی‌مانده را جدا («باقی‌مانده‌ی ...») نام ببرد؛ پل بسته؛ گزارش اعتبار ۴-۴۸ دست‌نخورده.
+- *
+- *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s170b-overpay-remainder-hint.mjs
+- * ===========================================================================
+- */
+-import { mkdtempSync } from 'node:fs'
+-import { tmpdir } from 'node:os'
+-import { join } from 'node:path'
+-
+-const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s170b-'))
+-process.env.HARNESS_DIR = DIR
+-process.env.HARNESS_DB = join(DIR, 'shop.db')
+-
+-const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
+-const { makeSeeder } = await import('../../test/harness/seed.mjs')
+-const { salesService, saleWhere } = await import('../../src/main/services/SalesService.ts')
+-const { storeCreditService } = await import('../../src/main/services/StoreCreditService.ts')
+-const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
+-const { RefundMethod } = await import('@shared/enums')
+-const { DEFAULT_MANAGER_PASSWORD } = await import('@shared/receipt')
+-const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
+-
+-const db = harnessClient()
+-const seed = makeSeeder(db)
+-const sql = db.$harness.db
+-const PW = DEFAULT_MANAGER_PASSWORD
+-
+-let ok = 0
+-let bad = 0
+-const eq = (label, got, want) => {
+-  if (got === want) { ok++; console.log(`  ✓ ${label} = ${want}`) }
+-  else { bad++; console.log(`  ✗ ${label} — انتظار ${want}، دریافت ${got}`) }
+-}
+-const truthy = (label, cond, extra = '') => {
+-  if (cond) { ok++; console.log(`  ✓ ${label}`) } else { bad++; console.log(`  ✗ ${label} ${extra}`) }
+-}
+-const safe = async (label, fn) => {
+-  try { return await fn() } catch (e) { bad++; console.log(`  ✗ ${label} — خطای نامنتظره: ${String(e?.message ?? e).split('\n')[0]}`); return null }
+-}
+-
+-const userId = seed.user('مدیر تست نشست ۱۷۰')
+-const cat = seed.category('پوشاک')
+-const product = seed.product('شلوار جین', cat)
+-const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
+-const today = toJalaliDate(new Date())
+-const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - 3600_000, userId })
+-let vseq = 0
+-const variant = (price) => {
+-  const id = seed.variant(product, `سایز ${++vseq}`)
+-  sql.prepare('UPDATE "ProductVariant" SET stock = 100, salePrice = ? WHERE id = ?').run(price, id)
+-  return id
+-}
+-const itemsOf = (invoiceId) => seed.rows('SELECT id, qty, lineTotal FROM "SaleInvoiceItem" WHERE invoiceId = ? ORDER BY id', invoiceId)
+-const sale = (price, paid, extra = {}) => salesService.create({
+-  userId, shiftId,
+-  lines: [{ variantId: variant(price), qty: 1, unitPrice: price, discount: 0, tax: 0 }],
+-  payments: paid > 0 ? [{ methodId: cash, amount: paid, destination: 'CASH' }] : [],
+-  ...extra
+-})
+-const report = async () => {
+-  const filter = { fromJalali: today, toJalali: today }
+-  const { statements } = await buildStatements({
+-    where: saleWhere(filter), from: jalaliStartOfDay(today), to: jalaliEndOfDay(today),
+-    period: { fromJalali: today, toJalali: today, source: 'explicit' }, filter
+-  }, { withDrillDown: true, bridgeSourceKey: 'storeCreditIssued' })
+-  return statements
+-}
+-const overRow = (s) => (s?.bridge?.rows ?? []).find((r) => r.key === 'overpayReceived')
+-
+-console.log('\n۱) دو روز پیش: نسیه‌ی ۱٬۰۰۰٬۰۰۰ با دریافت ۱٬۳۰۰٬۰۰۰ و اعتبار ۳۰۰٬۰۰۰ از اضافه‌دریافت')
+-const inv = await safe('فروش نسیه', () => sale(1000000, 0))
+-await safe('دریافت ۱٬۳۰۰٬۰۰۰ با اعتبار', () => salesService.addPayment({ invoiceId: inv?.id, amount: 1300000, methodId: cash, destination: 'CASH', userId, confirmOverpay: true, overpayAsCredit: true }))
+-const oc = seed.rows(`SELECT * FROM "StoreCredit" WHERE source = 'OVERPAY' ORDER BY id`)[0]
+-eq('اعتبار اضافه‌دریافت ۳۰۰٬۰۰۰', Number(oc?.amount ?? 0), 300000)
+-const t2 = Date.now() - 86400000 * 2
+-const j2 = toJalaliDate(new Date(t2))
+-sql.prepare('UPDATE "SaleInvoice" SET issuedAt=?, issuedAtJalali=? WHERE id=?').run(t2, j2, inv?.id)
+-sql.prepare('UPDATE "Payment" SET paidAt=?, paidAtJalali=?, createdAt=? WHERE invoiceId=?').run(t2, j2, t2, inv?.id)
+-sql.prepare('UPDATE "StoreCredit" SET issuedAt=?, issuedAtJalali=? WHERE id=?').run(t2, j2, oc?.id ?? -1)
+-const s0 = await report()
+-closed(s0, 'پل امروز پیش از مصرف بسته است')
+-eq('امروز اضافه‌دریافتی نیست', rowsOf(s0).overpayReceived ?? 0, 0)
+-
+-console.log('\n۲) امروز: مصرف جزئی ۱۰۰٬۰۰۰ از اعتبار اضافه‌دریافت ⇒ باقی‌مانده‌ی ۲۰۰٬۰۰۰ (OVERPAY)')
+-await safe('فروش ۱۰۰٬۰۰۰ با اعتبار', () => sale(100000, 0, { storeCreditCode: oc?.code }))
+-const parent = creditByCode(oc?.code)
+-const rem = seed.rows('SELECT * FROM "StoreCredit" WHERE id = ?', parent?.remainderCreditId ?? -1)[0]
+-eq('باقی‌مانده ۲۰۰٬۰۰۰ صادر شد', Number(rem?.amount ?? 0), 200000)
+-eq('منبع باقی‌مانده همان OVERPAY است (رفتار فعلی سرویس)', rem?.source, 'OVERPAY')
+-const s1 = await report()
+-closed(s1, 'پل بعد از مصرف جزئی بسته است')
+-eq('ردیف «دریافت پول اضافه»ی امروز همچنان صفر', rowsOf(s1).overpayReceived ?? 0, 0)
+-eq('ردیف اعتبار صادرشده‌ی پل تغییر نکرد', (rowsOf(s1).storeCreditIssued ?? 0) - (rowsOf(s0).storeCreditIssued ?? 0), 0)
+-const hint = String(overRow(s1)?.hint ?? '')
+-truthy('توضیح «دریافت پول اضافه» ادعا نمی‌کند امروز ۲۰۰٬۰۰۰ از اضافه‌دریافت به اعتبار تبدیل شد',
+-  !hint.includes('200000 ریال از آن به کد اعتبار'), `hint=${hint}`)
+-truthy('باقی‌مانده‌ی اعتبار اضافه‌دریافت پنهان نشد (در توضیح/یادداشت با واژه‌ی «باقی‌مانده»)',
+-  (hint.includes('200000') && hint.includes('باقی‌مانده')) ||
+-  (s1?.notes ?? []).some((x) => String(x).includes('200000') && String(x).includes('باقی‌مانده')),
+-  `hint=${hint} notes=${JSON.stringify(s1?.notes)}`)
+-eq('گزارش اعتبار (بند ۴-۴۸): صادرشده‌ی امروز شامل باقی‌مانده است', s1?.storeCredits?.issued - s0?.storeCredits?.issued, 200000)
+-
+-console.log(`\nنتیجه: ${ok} موفق، ${bad} ناموفق`)
+-process.exit(bad ? 1 : 0)

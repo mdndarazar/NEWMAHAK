@@ -1,0 +1,250 @@
+--- /dev/null	2026-09-18 16:14:58.868125097 +0000
++++ fix-s176-price-adjust-in-chunk.mjs	2026-09-27 14:58:43.774490237 +0000
+@@ -0,0 +1,154 @@
++/**
++ * ===========================================================================
++ * نشست ۱۷۶ · خوشه D · S176-D1 — تغییر گروهی قیمت (PriceAdjustService) با ۵۰۱+ کالا و سقف IN ۵۰۰
++ *
++ * قبل از رفع: بازگردانی (revert)، پایان خودکار زمان‌بندی (endScheduledBatch)، حذف سابقه با
++ * «برگرداندن قیمت‌ها» (deleteBatches restore)، ویرایش دامنه (editBatch، کالاهای بیرون‌رفته)،
++ * دامنه‌ی «کالاهای انتخابی» (scopeWhere/loadAllProductVariants در preview/apply/editBatch)،
++ * نمایش تخفیف فعال پنل فروش (activeDiscounts) و فهرست سابقه (batches، تا ۲٬۰۰۰ دسته) شناسه‌ها را
++ * بی‌سقف در id in / batchId in می‌گذاشتند. یک تخفیف «همه‌ی کالاها» روی ۶۲۰ کالا ⇒ بازگردانی و
++ * پایان خودکارش از سقف رد و rollback می‌شد (قیمت تخفیف‌خورده بی‌پایان روی کالا می‌ماند).
++ * انتظار: هیچ in بالای ۵۰۰؛ همه‌ی اعداد قیمت دقیقاً همان رفتار قبلی.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s176-price-adjust-in-chunk.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s176a-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { priceAdjustService } = await import('../../src/main/services/PriceAdjustService.ts')
++const { prisma } = await import('../../src/main/db/client.ts')
++const { DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/receipt')
++const { toJalaliDate, faDigits } = await import('@shared/jalali')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)?.slice(0, 240)}`) }
++}
++const run = async (label, fn) => {
++  try { return await fn() } catch (e) { bad++; console.log(`  ✗ ${label} — خطا: ${String(e?.message ?? e).split('\n')[0].slice(0, 200)}`); return null }
++}
++
++let maxIn = 0
++const walk = (w) => {
++  if (!w || typeof w !== 'object') return
++  for (const [k, v] of Object.entries(w)) {
++    if ((k === 'in' || k === 'notIn') && Array.isArray(v)) { maxIn = Math.max(maxIn, v.length); if (v.length > 500 && !process.env.S176_NO_CAP) throw new Error('HARNESS: سقف IN برابر ۵۰۰ است') }
++    else if (v && typeof v === 'object') walk(v)
++  }
++}
++for (const model of ['productVariant', 'priceChangeItem', 'priceChangeBatch']) {
++  for (const m of ['findMany', 'count', 'aggregate', 'groupBy', 'updateMany', 'deleteMany']) {
++    if (typeof prisma[model]?.[m] !== 'function') continue
++    const orig = prisma[model][m].bind(prisma[model])
++    prisma[model][m] = (args) => { walk(args?.where); return orig(args) }
++  }
++}
++
++const N = 620
++const cat = seed.category('جین ۱۷۶')
++const pid = seed.product('شلوار جین ۱۷۶', cat)
++const ids = []
++for (let i = 0; i < N; i++) ids.push(seed.insert('ProductVariant', { productId: pid, code: `S176-${i}`, barcode: `B176-${i}`, salePrice: 1000, purchasePrice: 500, stock: 1 }))
++const prices = () => {
++  const m = new Map()
++  for (const r of seed.rows('SELECT salePrice p, COUNT(*) c FROM "ProductVariant" GROUP BY salePrice ORDER BY salePrice')) m.set(Number(r.p), Number(r.c))
++  return Object.fromEntries(m)
++}
++
++console.log('\n۱) افزایش ۱۰٪ «همه‌ی کالاها» (۶۲۰ کالا)')
++maxIn = 0
++const A = await run('apply A', () => priceAdjustService.apply({ kind: 'INCREASE', mode: 'PERCENT', value: 10, scope: 'ALL', password: PW }))
++eq('changedCount A', A?.changedCount ?? null, N)
++eq('قیمت‌ها پس از A', prices(), { 1100: N })
++
++console.log('\n۲) تخفیف ۱۰٪ «همه» + نمایش تخفیف فعال پنل فروش')
++const B = await run('apply B', () => priceAdjustService.apply({ kind: 'DISCOUNT', mode: 'PERCENT', value: 10, scope: 'ALL', password: PW }))
++eq('قیمت‌ها پس از B', prices(), { 990: N })
++maxIn = 0
++const act = await run('activeDiscounts', () => priceAdjustService.activeDiscounts({}))
++eq('activeDiscounts: ۶۲۰ کالا', act?.length ?? null, N)
++eq('activeDiscounts: قیمت پایه/فروش', act?.length ? [act[0].basePrice, act[0].salePrice] : null, [1100, 990])
++const actW = await run('activeDiscounts wanted', () => priceAdjustService.activeDiscounts({ variantIds: ids, password: PW }))
++eq('activeDiscounts با ۶۲۰ شناسه‌ی درخواستی', actW?.length ?? null, N)
++eq('هیچ in بالای ۵۰۰ نبود (activeDiscounts)', maxIn <= 500, true)
++
++console.log('\n۳) پایان خودکار زمان‌بندی B (endScheduledBatch)')
++sql.prepare('UPDATE "PriceChangeBatch" SET endAt = ? WHERE id = ?').run(Date.now() - 60_000, B?.batchId ?? -1)
++maxIn = 0
++const due = await run('runDueSchedules', () => priceAdjustService.runDueSchedules(new Date()))
++eq('ended/failed', due ? [due.ended, due.failed] : null, [1, 0])
++eq('قیمت‌ها پس از پایان خودکار B', prices(), { 1100: N })
++eq('وضعیت B = ENDED', seed.rows('SELECT state FROM "PriceChangeBatch" WHERE id = ?', B?.batchId ?? -1)[0]?.state ?? null, 'ENDED')
++
++console.log('\n۴) تخفیف ۲۰٪ «همه» و بازگردانی دستی')
++const C = await run('apply C', () => priceAdjustService.apply({ kind: 'DISCOUNT', mode: 'PERCENT', value: 20, scope: 'ALL', password: PW }))
++eq('قیمت‌ها پس از C', prices(), { 880: N })
++maxIn = 0
++const rv = await run('revert C', () => priceAdjustService.revert({ batchId: C?.batchId, password: PW }))
++eq('restoredCount C', rv?.restoredCount ?? null, N)
++eq('قیمت‌ها پس از بازگردانی C', prices(), { 1100: N })
++eq('هیچ in بالای ۵۰۰ نبود (revert)', maxIn <= 500, true)
++
++console.log('\n۵) دامنه‌ی «کالاهای انتخابی» با ۶۲۰ شناسه (preview + apply)')
++maxIn = 0
++const pv = await run('preview D', () => priceAdjustService.preview({ kind: 'INCREASE', mode: 'AMOUNT', value: 100, scope: 'VARIANTS', variantIds: ids, password: PW }))
++eq('preview count/changedCount', pv ? [pv.count, pv.changedCount, pv.deltaTotal] : null, [N, N, N * 100])
++const D = await run('apply D', () => priceAdjustService.apply({ kind: 'INCREASE', mode: 'AMOUNT', value: 100, scope: 'VARIANTS', variantIds: ids, password: PW }))
++eq('changedCount D', D?.changedCount ?? null, N)
++eq('قیمت‌ها پس از D', prices(), { 1200: N })
++
++console.log('\n۶) ویرایش دامنه‌ی D به ۱۰ کالا (۶۱۰ کالای بیرون‌رفته به قیمت قبل)')
++maxIn = 0
++const ed = await run('editBatch D', () => priceAdjustService.editBatch({ batchId: D?.batchId, scope: 'VARIANTS', variantIds: ids.slice(0, 10), password: PW }))
++eq('removedCount/keptCount', ed ? [ed.removedCount, ed.keptCount] : null, [N - 10, 10])
++eq('قیمت‌ها پس از ویرایش D', prices(), { 1100: N - 10, 1200: 10 })
++eq('اقلام باقی‌مانده‌ی D', Number(seed.rows('SELECT COUNT(*) c FROM "PriceChangeItem" WHERE batchId = ?', D?.batchId ?? -1)[0].c), 10)
++
++console.log('\n۷) حذف سابقه‌ی A و D با برگرداندن قیمت‌ها')
++maxIn = 0
++const del = await run('deleteBatches restore', () => priceAdjustService.deleteBatches({ batchIds: [A?.batchId, D?.batchId], restorePrices: true, password: PW }))
++eq('deletedCount/restoredCount', del ? [del.deletedCount, del.restoredCount] : null, [2, N + 10])
++eq('قیمت‌ها پس از حذف با بازگردانی', prices(), { 1000: N })
++eq('هیچ in بالای ۵۰۰ نبود (deleteBatches)', maxIn <= 500, true)
++
++console.log('\n۸) ۵۲۰ ردیف سابقه: فهرست (batches) و حذف گروهی بدون بازگردانی')
++const junk = []
++for (let i = 0; i < 520; i++) junk.push(seed.insert('PriceChangeBatch', { kind: 'DISCOUNT', mode: 'PERCENT', value: 1, target: 'SALE', scope: 'ALL', title: `سابقه‌ی ۱۷۶ شماره ${i}`, state: 'REVERTED', itemCount: 0, deltaTotal: 0, at: new Date(), revertedAt: new Date() }))
++maxIn = 0
++const list = await run('batches', () => priceAdjustService.batches({ take: 2000 }))
++eq('batches: همه‌ی ردیف‌ها', list ? list.length >= 520 : null, true)
++const del2 = await run('deleteBatches 520', () => priceAdjustService.deleteBatches({ batchIds: junk, restorePrices: false, password: PW }))
++eq('deletedCount ۵۲۰', del2?.deletedCount ?? null, 520)
++eq('هیچ ردیف سابقه‌ی ۱۷۶ نماند', Number(seed.rows(`SELECT COUNT(*) c FROM "PriceChangeBatch" WHERE title LIKE 'سابقه‌ی ۱۷۶%'`)[0].c), 0)
++eq('قیمت‌ها دست‌نخورده', prices(), { 1000: N })
++eq('هیچ in بالای ۵۰۰ نبود (batches/deleteBatches)', maxIn <= 500, true)
++
++console.log('\n۹) زمان‌بندی آینده با دامنه‌ی ۶۲۰ کالای انتخابی (شمارش + شروع خودکار)')
++maxIn = 0
++const F = await run('apply future', () => priceAdjustService.apply({ kind: 'INCREASE', mode: 'AMOUNT', value: 50, scope: 'VARIANTS', variantIds: ids, startDate: toJalaliDate(new Date(Date.now() + 3 * 86400_000)), password: PW }))
++const fRow = seed.rows('SELECT state, title FROM "PriceChangeBatch" WHERE id = ?', F?.batchId ?? -1)[0] ?? {}
++eq('قرار آینده SCHEDULED', fRow.state ?? null, 'SCHEDULED')
++eq('عنوان قرار شمار ۶۲۰ کالا را دارد', String(fRow.title ?? '').includes(faDigits(String(N))) || String(fRow.title ?? '').includes(faDigits(N.toLocaleString('en-US'))), true)
++eq('قیمت‌ها هنوز دست‌نخورده', prices(), { 1000: N })
++sql.prepare('UPDATE "PriceChangeBatch" SET startAt = ? WHERE id = ?').run(Date.now() - 60_000, F?.batchId ?? -1)
++const dueF = await run('runDueSchedules F', () => priceAdjustService.runDueSchedules(new Date()))
++eq('started/failed', dueF ? [dueF.started, dueF.failed] : null, [1, 0])
++eq('قیمت‌ها پس از شروع خودکار', prices(), { 1050: N })
++eq('اقلام دسته‌ی F', Number(seed.rows('SELECT COUNT(*) c FROM "PriceChangeItem" WHERE batchId = ?', F?.batchId ?? -1)[0].c), N)
++eq('هیچ in بالای ۵۰۰ نبود (زمان‌بندی)', maxIn <= 500, true)
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)
+--- /dev/null	2026-09-18 16:14:58.868125097 +0000
++++ fix-s176-schedule-end-failure.mjs	2026-09-27 14:57:12.266067514 +0000
+@@ -0,0 +1,90 @@
++/**
++ * ===========================================================================
++ * نشست ۱۷۶ · خوشه D · S176-D2 — «پایان خودکار» ناموفق تغییر قیمت نباید دسته را «تمام‌شده» جا بزند
++ *
++ * قبل از رفع: اگر endScheduledBatch به هر دلیلی خطا می‌داد (مثلاً همان سقف IN در S176-D1)،
++ * تراکنش rollback می‌شد و قیمت‌ها تخفیف‌خورده می‌ماندند، ولی markScheduleFailure دسته را
++ * state=ENDED + revertedAt می‌زد. نتیجه: revert با پیام «قیمت‌ها همان موقع برگشته‌اند» رد می‌شد
++ * و deleteBatches(restorePrices) هم آن را بی‌صدا رد می‌کرد ⇒ تخفیف برای همیشه و بی‌راه برگشت
++ * روی کالا می‌ماند و سابقه دروغ می‌گفت.
++ * انتظار: دسته APPLIED بماند، endAt پاک شود (بدون تلاش بی‌پایان)، یادداشت و Audit صریح، و
++ * بازگردانی دستی بعدش قیمت‌ها را دقیقاً برگرداند. شکست «شروع خودکار» مثل قبل ENDED می‌خورد.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s176-schedule-end-failure.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s176b-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { priceAdjustService } = await import('../../src/main/services/PriceAdjustService.ts')
++const { prisma } = await import('../../src/main/db/client.ts')
++const { DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/receipt')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++
++let ok = 0, bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)?.slice(0, 240)}`) }
++}
++const run = async (label, fn) => {
++  try { return await fn() } catch (e) { bad++; console.log(`  ✗ ${label} — خطا: ${String(e?.message ?? e).split('\n')[0].slice(0, 200)}`); return null }
++}
++
++const pid = seed.product('کت ۱۷۶', seed.category('پوشاک ۱۷۶'))
++const ids = [0, 1, 2].map((i) => seed.insert('ProductVariant', { productId: pid, code: `E176-${i}`, barcode: `EB176-${i}`, salePrice: 1000, purchasePrice: 500, stock: 1 }))
++const prices = () => seed.rows('SELECT salePrice p FROM "ProductVariant" ORDER BY id').map((r) => Number(r.p))
++const row = (id) => seed.rows('SELECT state, endAt, revertedAt, note FROM "PriceChangeBatch" WHERE id = ?', id)[0] ?? {}
++
++console.log('\n۱) تخفیف ۱۰٪ و شکست عمدی پایان خودکار')
++const B = await run('apply', () => priceAdjustService.apply({ kind: 'DISCOUNT', mode: 'PERCENT', value: 10, scope: 'ALL', password: PW }))
++eq('قیمت‌ها پس از تخفیف', prices(), [900, 900, 900])
++sql.prepare('UPDATE "PriceChangeBatch" SET endAt = ? WHERE id = ?').run(Date.now() - 60_000, B?.batchId ?? -1)
++const origUpdate = prisma.productVariant.update.bind(prisma.productVariant)
++prisma.productVariant.update = async () => { throw new Error('خطای شبیه‌سازی‌شده‌ی دیسک ۱۷۶') }
++const origErr = console.error
++console.error = () => {}
++const due = await run('runDueSchedules', () => priceAdjustService.runDueSchedules(new Date()))
++console.error = origErr
++prisma.productVariant.update = origUpdate
++eq('ended/failed', due ? [due.ended, due.failed] : null, [0, 1])
++eq('قیمت‌ها هنوز تخفیف‌خورده (rollback)', prices(), [900, 900, 900])
++const r1 = row(B?.batchId ?? -1)
++eq('دسته در جریان ماند (APPLIED)', r1.state ?? null, 'APPLIED')
++eq('revertedAt خالی', r1.revertedAt ?? null, null)
++eq('endAt پاک شد (بدون تلاش بی‌پایان)', r1.endAt ?? null, null)
++eq('یادداشت صریح «برنگشتند»', String(r1.note ?? '').includes('برنگشتند'), true)
++eq('Audit شکست پایان خودکار', Number(seed.rows(`SELECT COUNT(*) c FROM "AuditLog" WHERE action = 'PRICE_SCHEDULE_END' AND entityId = ? AND note LIKE '%برنگشتند%'`, B?.batchId ?? -1)[0].c), 1)
++
++console.log('\n۲) نوبت بعدی زمان‌بند همان دسته را دوباره نمی‌گیرد')
++const due2 = await run('runDueSchedules 2', () => priceAdjustService.runDueSchedules(new Date()))
++eq('ended/failed نوبت دوم', due2 ? [due2.ended, due2.failed] : null, [0, 0])
++
++console.log('\n۳) بازگردانی دستی قیمت‌ها را دقیقاً برمی‌گرداند')
++const rv = await run('revert', () => priceAdjustService.revert({ batchId: B?.batchId, password: PW }))
++eq('restoredCount', rv?.restoredCount ?? null, 3)
++eq('قیمت‌ها پس از بازگردانی', prices(), [1000, 1000, 1000])
++eq('وضعیت پس از بازگردانی', row(B?.batchId ?? -1).state ?? null, 'REVERTED')
++
++console.log('\n۴) شکست «شروع خودکار» مثل قبل ENDED می‌خورد (قیمتی عوض نشده)')
++const S = seed.insert('PriceChangeBatch', { kind: 'DISCOUNT', mode: 'PERCENT', value: 10, target: 'SALE', scope: 'ALL', title: 'شروع خراب ۱۷۶', state: 'SCHEDULED', startAt: new Date(Date.now() - 60_000), itemCount: 0, deltaTotal: 0, at: new Date() })
++console.error = () => {}
++prisma.productVariant.update = async () => { throw new Error('خطای شبیه‌سازی‌شده‌ی دیسک ۱۷۶ (شروع)') }
++const due3 = await run('runDueSchedules 3', () => priceAdjustService.runDueSchedules(new Date()))
++prisma.productVariant.update = origUpdate
++console.error = origErr
++eq('started/failed', due3 ? [due3.started, due3.failed] : null, [0, 1])
++eq('شروع خراب ⇒ ENDED', row(S).state ?? null, 'ENDED')
++eq('قیمت‌ها دست‌نخورده', prices(), [1000, 1000, 1000])
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)

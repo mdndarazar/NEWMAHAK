@@ -1,0 +1,1823 @@
+// ---------------------------------------------------------------------------
+// نرم‌افزار فروش و انبارداری - Schema فاز اول (SQLite)
+// نکته: SQLite در Prisma از enum پشتیبانی نمی‌کند، پس از String با مقادیر
+// ثابت (constants در src/shared/enums.ts) استفاده شده است.
+// ---------------------------------------------------------------------------
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------- کاربران و تنظیمات ----------------------------
+model User {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  passwordHash String
+  displayName  String
+  role         String   @default("MANAGER") // MANAGER | CASHIER | STOCKKEEPER
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  shifts       Shift[]
+  saleInvoices SaleInvoice[]
+  auditLogs    AuditLog[]
+}
+
+model Setting {
+  key   String @id
+  value String
+}
+
+// ------------------------------ کالا و انبار ------------------------------
+model Category {
+  id       Int        @id @default(autoincrement())
+  name     String
+  parentId Int?
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  products Product[]
+
+  @@index([parentId])
+}
+
+model Warehouse {
+  id     Int     @id @default(autoincrement())
+  name   String  @unique
+  isMain Boolean @default(false)
+
+  movements StockMovement[]
+}
+
+/// محصول پایه، مثلاً «شلوار نیم‌بگ». موجودی و بارکد روی واریانت است، نه اینجا.
+model Product {
+  id         Int       @id @default(autoincrement())
+  name       String
+  categoryId Int?
+  category   Category? @relation(fields: [categoryId], references: [id])
+  unit       String    @default("عدد") // عدد | متر | بسته ...
+  isActive   Boolean   @default(true)
+  note       String?
+  /// بند ۴-۳۴ — تیک «در گزارش آخرین نام را نشان بده». پیش‌فرض خاموش: گزارش
+  /// همان `variantName` روز فروش را نگه می‌دارد. فیش چاپی هیچ‌وقت از این تیک
+  /// پیروی نمی‌کند.
+  reportLiveName Boolean @default(false)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  variants ProductVariant[]
+
+  @@index([name])
+}
+
+/// واریانت = آنچه واقعاً فروخته و شمرده می‌شود: «شلوار نیم‌بگ سایز ۳۲»
+model ProductVariant {
+  id                Int       @id @default(autoincrement())
+  productId         Int
+  product           Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  code              String    @unique // کد کالا (نمایشی/عددی، مثل ستون «کد» محک)
+  barcode           String    @unique // Code128
+  size              String?
+  color             String?
+  salePrice         BigInt    @default(0) // ریال، بدون اعشار
+  purchasePrice     BigInt    @default(0)
+  stock             Int       @default(0) // کش موجودی؛ منبع حقیقت = StockMovement
+  minStock          Int       @default(0)
+  ledgerAccountCode String? // کد حساب تفصیلی
+  /// false = حذف‌شده (حذف نرم). رکورد و همه‌ی سابقه‌اش سر جایش می‌ماند و از
+  /// «سطل آشغال» پنل کالاها قابل بازگردانی است.
+  isActive          Boolean   @default(true)
+  /// لحظه‌ی حذف نرم (برای نمایش و مرتب‌سازی در سطل آشغال). null = حذف نشده.
+  deletedAt         DateTime?
+
+  // --- فاز دوم: مپ با ووکامرس. فعلاً همیشه null و بدون هیچ منطقی. ---
+  externalSku          String?
+  woocommerceProductId Int?
+  lastSyncedAt         DateTime?
+  // ----------------------------------------------------------------
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  saleItems     SaleInvoiceItem[]
+  purchaseItems PurchaseInvoiceItem[]
+  returnItems   SaleReturnItem[]
+  movements     StockMovement[]
+
+  @@index([barcode])
+  @@index([code])
+  @@index([externalSku])
+  // سطل آشغال و فهرست کالاهای فعال روی جدول بزرگ، بدون اسکن کامل
+  @@index([isActive])
+  @@index([deletedAt])
+  @@index([productId])
+}
+
+/// دفتر کل حرکات انبار. هر تغییر موجودی حتماً یک رکورد اینجا می‌سازد.
+/// state: PENDING = کسر موقت هنگام فروش، FINAL = قطعی‌شده در «تجمیع و انتقال»
+model StockMovement {
+  id              Int            @id @default(autoincrement())
+  variantId       Int
+  variant         ProductVariant @relation(fields: [variantId], references: [id])
+  warehouseId     Int?
+  warehouse       Warehouse?     @relation(fields: [warehouseId], references: [id])
+  delta           Int // مثبت = ورود، منفی = خروج
+  reason          String // SALE | SALE_RETURN | PURCHASE | ADJUSTMENT | STOCKTAKE
+  state           String         @default("FINAL") // PENDING | FINAL
+  refType         String? // SaleInvoice | PurchaseInvoice | SaleReturn | Manual
+  refId           Int?
+  consolidationId Int?
+  consolidation   Consolidation? @relation(fields: [consolidationId], references: [id])
+  note            String?
+  createdAt       DateTime       @default(now())
+
+  @@index([variantId, createdAt])
+  @@index([state])
+  @@index([refType, refId])
+  // پاک‌سازی/آرشیو بازه‌ای حرکات انبار
+  @@index([createdAt])
+}
+
+// ------------------------- اشخاص (مشتری/تامین‌کننده) -------------------------
+model Customer {
+  id                  Int      @id @default(autoincrement())
+  code                String   @unique
+  name                String
+  phone               String?
+  address             String?
+  isDefault           Boolean  @default(false) // «مشتری عمومی»
+  /// مشتری *عمده* است؟ (مورد ۶)
+  ///
+  /// false (پیش‌فرض) = مشتری تکی؛ همان مشتری‌هایی که از «پنل فروش تکی» و با
+  /// فیلد شماره تلفن ساخته می‌شوند. true = مشتری عمده‌ای که از «ثبت سریع خریدار»
+  /// پنل فاکتور فروش عمده (یا از پنل مشتریانِ تنظیمات) ثبت شده است.
+  /// فیلد جستجوی خریدارِ پنل عمده فقط مشتری‌های عمده (به‌علاوه‌ی «مشتری عمومی»)
+  /// را نشان می‌دهد و پنل مشتریانِ تنظیمات، دو دسته را با برچسب جدا می‌کند.
+  isWholesale         Boolean  @default(false)
+  /// «مجموع مبلغ خریدِ ثبت‌شده‌ی دستی» (ریال — مورد ۳).
+  ///
+  /// جمع خرید واقعی همیشه از فاکتورهای ثبت‌شده حساب می‌شود؛ این فیلد برای
+  /// مشتری‌ای است که سابقه‌اش در برنامه نیست (مثلاً خرید قبل از نصب) یا مدیر
+  /// می‌خواهد عددی را دستی برای فیلتر قرعه‌کشی ثبت کند.
+  /// «جمع خرید» نمایشی = جمع فاکتورها + همین عدد.
+  manualPurchaseTotal BigInt   @default(0)
+  createdAt           DateTime @default(now())
+
+  saleInvoices SaleInvoice[]
+
+  @@index([phone])
+  @@index([isWholesale])
+}
+
+model Supplier {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  name      String
+  phone     String?
+  address   String?
+  createdAt DateTime @default(now())
+
+  purchaseInvoices PurchaseInvoice[]
+}
+
+// ------------------------------ شیفت و صندوق ------------------------------
+/// یک شیفت کاری. سه شیفت در روز: number = 1..3 و dayJalali روز شمسی همان شیفت.
+/// فاکتورهای فروش به شیفت *باز* همان روز گره می‌خورند (خودکار)، پس گزارش فروش
+/// می‌تواند به تفکیک شیفت نمایش داده شود.
+/// -----------------------------------------------------------------------------
+/// جلسه ۱۹ — هر ردیف این جدول یک «نشست» (Session) است، نه «یک رکورد ثابت به ازای
+/// هر بازه‌ی ساعتی در روز». هر بار که صندوق واقعاً دست‌به‌دست شود (بستن و باز
+/// کردن صندوق، یا ثبت دستی تعویض کارمند وسط کار) یک ردیف *تازه* ساخته می‌شود و
+/// هیچ ردیفی هیچ‌وقت رونویسی یا حذف نمی‌شود.
+/// -----------------------------------------------------------------------------
+model Shift {
+  id                         Int       @id @default(autoincrement())
+  name                       String
+  /// شماره‌ی ترتیبی نشست در همان روز (۱، ۲، ۳ ... مستقل از نام شیفت)
+  number                     Int       @default(1)
+  /// روز شمسی شیفت به قالب yyyy/MM/dd (برای گروه‌بندی سریع گزارش)
+  dayJalali                  String    @default("")
+  /// شماره‌ی نشست *زیر همان نام شیفت* در همان روز ⇒ «شیفت شب — نشست ۲»
+  sessionSeq                 Int       @default(1)
+  /// نامی که سیستم بر اساس ساعت لحظه‌ی باز شدن نشست پیشنهاد داده بود
+  suggestedName              String?
+  /// شماره‌ی بازه‌ی پیشنهادی سیستم (۱-based، ترتیب جدول «شیفت‌های روز»)
+  suggestedSlot              Int?
+  /// شماره‌ی بازه‌ی نام *نهایی* انتخاب‌شده
+  slotNumber                 Int?
+  /// نام نهایی با پیشنهاد سیستم فرق داشت؟ (سیگنال کنترل داخلی)
+  nameOverridden             Boolean   @default(false)
+  /// دلیل اجباری override نام نشست (هیچ‌وقت رونویسی نمی‌شود)
+  overrideReason             String?
+  /// کارمند این نشست با کلیک صریح کاربر تأیید شده است؟
+  staffConfirmed             Boolean   @default(false)
+  /// این نشست چطور باز شد: AUTO (خودکار) · MANUAL (فرم) · HANDOVER (تعویض کارمند)
+  openedVia                  String    @default("AUTO")
+  /// کلید یکتای درخواست بازکردن نشست؛ برای retry بعد از timeout همان نشست را برمی‌گرداند.
+  openIdempotencyKey         String?   @unique
+  /// fingerprint پارامترهای درخواست؛ reuse همان کلید با ورودی متفاوت ممنوع است.
+  openIdempotencyFingerprint String?
+  userId                     Int?
+  user                       User?     @relation(fields: [userId], references: [id])
+  openedAt                   DateTime  @default(now())
+  closedAt                   DateTime?
+  note                       String?
+
+  saleInvoices SaleInvoice[]
+  cashSessions CashSession[]
+
+  @@index([dayJalali])
+  @@index([closedAt])
+  @@index([dayJalali, name])
+}
+
+/// «بستن صندوق»: شمارش دریافتی‌های یک شیفت/روز
+model CashSession {
+  id                         Int       @id @default(autoincrement())
+  shiftId                    Int?
+  shift                      Shift?    @relation(fields: [shiftId], references: [id])
+  fromDate                   DateTime
+  toDate                     DateTime
+  /// روز شمسی بستن صندوق (yyyy/MM/dd)
+  dayJalali                  String    @default("")
+  cashTotal                  BigInt    @default(0)
+  cardTotal                  BigInt    @default(0)
+  creditTotal                BigInt    @default(0)
+  otherTotal                 BigInt    @default(0)
+  /// جمع کل فروش بازه‌ای که صندوقش بسته شده
+  grandTotal                 BigInt    @default(0)
+  invoiceCount               Int       @default(0)
+  /// مبلغ شمرده‌شده‌ی صندوق (اختیاری) و اختلافش با جمع سیستم
+  countedTotal               BigInt?
+  /// snapshot افزایشی برای بستن صندوق دقیق؛ فیلدهای قدیمی عمداً حذف نشده‌اند.
+  openingFloat               BigInt    @default(0)
+  cashSales                  BigInt    @default(0)
+  cardSales                  BigInt    @default(0)
+  otherSales                 BigInt    @default(0)
+  clearedChequeSales         BigInt    @default(0)
+  priorCreditSettlements     BigInt    @default(0)
+  cashReturnRefunds          BigInt    @default(0)
+  cardReturnRefunds          BigInt    @default(0)
+  cashExchangeRefunds        BigInt    @default(0)
+  storeCreditIssued          BigInt    @default(0)
+  storeCreditUsed            BigInt    @default(0)
+  pendingCheques             BigInt    @default(0)
+  bouncedCheques             BigInt    @default(0)
+  withdrawals                BigInt    @default(0)
+  deposits                   BigInt    @default(0)
+  expectedCash               BigInt    @default(0)
+  cashDifference             BigInt    @default(0)
+  /// ---------------- کار الف (جلسه ۳۶): مقصد پول در سابقه‌ی صندوق ----------------
+  /// «دریافتی به حساب مدیر» همین بازه: مشتری پرداخته و بدهی‌اش کم شده، ولی پول به
+  /// صندوق و کارتخوانِ فروشگاه نیامده. عمداً فقط *اطلاعاتی* است و در
+  /// `expectedCash`/`cashDifference` هیچ نقشی ندارد.
+  managerAccountReceived     BigInt    @default(0)
+  /// دریافتیِ قدیمیِ بدون مقصد ثبت‌شده («نامشخص») — بدون هیچ حدسی.
+  destinationUnknownReceived BigInt    @default(0)
+  accountingSnapshotJson     String?
+  reportVersion              String?
+  closedAt                   DateTime?
+  closedBy                   Int?
+  note                       String?
+  createdAt                  DateTime  @default(now())
+
+  @@index([dayJalali])
+  @@index([shiftId])
+}
+
+/// گردش مستقل نقدی، برای جدا کردن فروش از واریز/برداشت و بازپرداخت.
+model CashMovement {
+  id               Int      @id @default(autoincrement())
+  amount           BigInt
+  type             String
+  occurredAt       DateTime @default(now())
+  occurredAtJalali String?
+  occurredAtTime   String?
+  shiftId          Int?
+  userId           Int?
+  description      String?
+  refType          String?
+  refId            Int?
+  auditLogId       Int?
+  createdAt        DateTime @default(now())
+
+  @@index([shiftId])
+  @@index([occurredAt])
+  @@index([type])
+  @@index([refType, refId])
+}
+
+/// «تجمیع و انتقال»: بستن نهایی حساب یک بازه + قطعی‌کردن کسر انبار
+model Consolidation {
+  id            Int       @id @default(autoincrement())
+  fromDate      DateTime
+  toDate        DateTime
+  /// روز شمسی تجمیع‌شده (yyyy/MM/dd). خالی = تجمیع بازه‌ای/دستی.
+  /// وجود یک رکورد با این روز یعنی «این روز قبلاً تجمیع شده است».
+  dayJalali     String?
+  shiftId       Int?
+  goodsTotal    BigInt    @default(0)
+  taxTotal      BigInt    @default(0)
+  serviceTotal  BigInt    @default(0)
+  discountTotal BigInt    @default(0)
+  deliveryTotal BigInt    @default(0)
+  grandTotal    BigInt    @default(0)
+  receivedTotal BigInt    @default(0)
+  returnedTotal BigInt    @default(0)
+  invoiceCount  Int       @default(0)
+  movementCount Int       @default(0)
+  finalizedAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  invoices  SaleInvoice[]
+  movements StockMovement[]
+
+  @@index([dayJalali])
+}
+
+// ------------------------------ فروش (POS) ------------------------------
+model PaymentMethod {
+  id        Int     @id @default(autoincrement())
+  key       String  @unique // CASH | CARD | SEPAH | MELLI | CREDIT ...
+  label     String // نقدی | کارت | سپه | ملی
+  kind      String  @default("CUSTOM") // CASH | CARD | CREDIT | CUSTOM
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  payments Payment[]
+}
+
+model SaleInvoice {
+  id              Int            @id @default(autoincrement())
+  receiptNo       Int            @unique // شماره فیش فروش
+  customerId      Int?
+  customer        Customer?      @relation(fields: [customerId], references: [id])
+  userId          Int?
+  user            User?          @relation(fields: [userId], references: [id])
+  shiftId         Int?
+  shift           Shift?         @relation(fields: [shiftId], references: [id])
+  consolidationId Int?
+  consolidation   Consolidation? @relation(fields: [consolidationId], references: [id])
+
+  issuedAt       DateTime @default(now())
+  issuedAtJalali String // yyyy/MM/dd برای فیلتر و نمایش سریع
+  status         String   @default("SETTLED") // DRAFT | SETTLED | RETURNED | PARTIALLY_RETURNED | CANCELED
+  orderType      String   @default("INTERNAL") // INTERNAL | DELIVERY | PHONE | WHOLESALE
+
+  /// فروش عمده: اگر false باشد این فاکتور هیچ حرکت انباری نمی‌سازد و موجودی
+  /// فروشگاه دست‌نخورده می‌ماند (کالا از انبار دیگری تامین شده یا فاکتور فقط
+  /// جنبه‌ی مدارک/حسابداری دارد). تصمیم در سطح «هر فاکتور» ذخیره می‌شود.
+  deductInventory          Boolean @default(true)
+  /// درصد تخفیف عمده‌ی اعمال‌شده روی کل فاکتور (فقط برای سابقه و نمایش بعدی)
+  wholesaleDiscountPercent Int?
+
+  /// «کد فاکتور»: کد کوتاه رندوم (حروف+عدد) که روی رسید فروش تکی چاپ می‌شود
+  /// (به‌صورت متن و بارکد Code128) و در پنل «برگشت از فروش» برای پیدا کردن
+  /// همین فاکتور استفاده می‌گردد. یکتایی فقط در بازه‌ی اعتبار تضمین می‌شود؛
+  /// بعد از انقضا همان کد می‌تواند برای فاکتور جدیدی تولید شود.
+  returnCode          String?
+  /// پایان اعتبار کد (پیش‌فرض: یک هفته بعد از صدور فاکتور)
+  returnCodeExpiresAt DateTime?
+  /// شماره میز / توضیح نوع سفارش روی رسید (اختیاری)
+  tableNo             String?
+
+  goodsTotal    BigInt @default(0)
+  taxTotal      BigInt @default(0)
+  serviceCharge BigInt @default(0)
+  discountTotal BigInt @default(0)
+  deliveryFee   BigInt @default(0)
+  grandTotal    BigInt @default(0)
+  /// جمع پرداختی‌های *دریافت‌شده* (نقدی + چک‌های پاس‌شده). باقی‌مانده = grandTotal − paidTotal.
+  paidTotal     BigInt @default(0)
+
+  /// لحظه‌ی «تسویه‌ی کامل» (باقی‌مانده صفر شد). null = هنوز تسویه نشده.
+  ///
+  /// ⚠️ برای فاکتورهای *قدیمی* (قبل از این نسخه) null است، پس نمایش وضعیت
+  /// همیشه از مقایسه‌ی paidTotal با grandTotal حساب می‌شود و این فیلد فقط
+  /// «تاریخ تسویه» را نگه می‌دارد؛ هیچ داده‌ای لازم نیست مهاجرت کند.
+  settledAt       DateTime?
+  settledAtJalali String?
+
+  /// -------------------------- تعویض کالا (بخش ۶) --------------------------
+  /// اگر این فاکتور یک «سند تعویض» باشد (orderType = EXCHANGE)، شناسه‌ی برگشتی
+  /// که تعویض از آن شروع شد. scalar عمدی (بدون relation) تا مدل SaleReturn و
+  /// کلیدهای خارجی موجود دست‌نخورده بمانند — همان الگوی SaleReturn.userId.
+  exchangeReturnId Int?
+  /// فاکتور *اصلیِ* مشتری که کالا از آن برگشت خورد (مبنای تعویض)
+  sourceInvoiceId  Int?
+
+  /// نشست ۶۵ · بند ۴-۲۲ — ابطال (void) سند، نه حذف فیزیکی. فعلاً فقط «سند تعویض»
+  /// با ابطال اتمیک کل گراف تعویض باطل می‌شود. null = فعال. فاکتور باطل در
+  /// saleWhere و همه‌ی گزارش‌ها بیرون است ولی ردیف، اقلام و شماره فیشش می‌ماند.
+  voidedAt       DateTime?
+  voidedByUserId Int?
+  voidReason     String?
+
+  note String?
+
+  items    SaleInvoiceItem[]
+  payments Payment[]
+  returns  SaleReturn[]
+
+  @@index([issuedAtJalali])
+  @@index([status])
+  @@index([consolidationId])
+  @@index([orderType])
+  @@index([returnCode])
+  @@index([shiftId])
+  // گزارش‌گیریِ بازه‌ای و پاک‌سازی/آرشیو، حتی با میلیون‌ها فاکتور
+  @@index([issuedAt])
+  @@index([issuedAtJalali, orderType])
+  @@index([customerId])
+  // فهرست «فاکتورهای تسویه‌نشده» (فروش نسیه) بدون اسکن کامل
+  @@index([settledAt])
+  // ردیابی سندهای تعویض (بخش ۶)
+  @@index([exchangeReturnId])
+  @@index([sourceInvoiceId])
+  @@index([voidedAt])
+}
+
+model SaleInvoiceItem {
+  id          Int            @id @default(autoincrement())
+  invoiceId   Int
+  invoice     SaleInvoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  variantId   Int
+  /// ⚠️ کلید خارجی این رابطه در سطح دیتابیس عمداً برداشته می‌شود (اولین بار که
+  /// «حذف همیشگی» در سطل آشغال اجرا شود). دلیلش در MaintenanceService و در
+  /// prisma/manual/2026_variant_purge_drop_variant_fk.sql توضیح داده شده:
+  /// کالا واقعاً از دیتابیس پاک می‌شود ولی ردیف فاکتورهای گذشته باید دست‌نخورده
+  /// بماند. نام و کد کالا در همین ردیف snapshot می‌شود تا گزارش قدیمی خوانا بماند.
+  variant     ProductVariant @relation(fields: [variantId], references: [id])
+  /// نام کامل کالا در لحظه‌ی حذف همیشگی (برای خوانا ماندن فاکتور قدیمی)
+  variantName String?
+  /// کد کالا در لحظه‌ی حذف همیشگی
+  variantCode String?
+  qty         Int
+  unitPrice   BigInt
+  discount    BigInt         @default(0)
+  tax         BigInt         @default(0)
+  lineTotal   BigInt
+
+  returnItems SaleReturnItem[]
+
+  @@index([invoiceId])
+  // «جزئیات فروش» و گردش هر کالا روی جدول بزرگ
+  @@index([variantId])
+}
+
+/// یک «پرداختی» روی فاکتور فروش.
+///
+/// از این نسخه، هر فاکتور می‌تواند *چند* پرداختی داشته باشد (فروش نسیه/اقساطی):
+/// پرداختی اول در لحظه‌ی صدور فاکتور، و پرداختی‌های بعدی هر وقت مشتری پول
+/// آورد — هر کدام با تاریخ و ساعت خودش. جمع پرداختی‌های *دریافت‌شده* در
+/// `SaleInvoice.paidTotal` نگه داشته می‌شود و «باقی‌مانده» = جمع کل − همین عدد.
+///
+/// چک (`kind = CHEQUE`) هم یک رکورد پرداختی است، ولی تا وقتی «پاس» نشده باشد
+/// پول دریافت‌شده به‌حساب نمی‌آید: نه در `paidTotal` شمرده می‌شود و نه در
+/// دریافتی‌های گزارش فروش و بستن صندوق. لحظه‌ای که کاربر چک را «پاس شد» علامت
+/// بزند، مبلغش مثل یک پرداخت نقدی به جمع پرداختی‌ها اضافه می‌گردد.
+model Payment {
+  id              Int           @id @default(autoincrement())
+  invoiceId       Int
+  invoice         SaleInvoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  methodId        Int
+  method          PaymentMethod @relation(fields: [methodId], references: [id])
+  amount          BigInt
+  reference       String?
+  paidAt          DateTime      @default(now())
+  /// زمان واقعی ثبت در سیستم؛ با paidAt (تاریخ کسب‌وکاری) قاطی نمی‌شود.
+  createdAt       DateTime      @default(now())
+  /// کارمند واقعی ثبت‌کننده‌ی پرداخت، مستقل از userId فاکتور.
+  createdByUserId Int?
+  /// نشست بازِ لحظه‌ی ثبت پرداخت.
+  createdShiftId  Int?
+  /// نشست بازِ لحظه‌ی پاس‌شدن چک؛ برای پرداخت‌های غیرچکی تهی می‌ماند.
+  clearedShiftId  Int?
+  /// ممیزی A71-01 — کارمندِ پاس فعلی چک (با برگشت از «پاس شد» تهی می‌شود).
+  clearedByUserId Int?
+
+  // ------------------- پرداخت چندمرحله‌ای (نسیه) و چک -------------------
+  /// CASH = پرداخت دریافت‌شده (نقدی/کارتی/…) · CHEQUE = چک
+  kind         String  @default("CASH")
+  /// شماره‌ی ترتیبی پرداختی در همین فاکتور (۱ = پرداختی اول، ۲ = دوم، ...)
+  seq          Int     @default(1)
+  /// تاریخ شمسی لحظه‌ی ثبت پرداختی (yyyy/MM/dd) — برای نمایش و فیلتر سریع
+  paidAtJalali String?
+  /// ساعت ثبت پرداختی (HH:mm:ss)
+  paidAtTime   String?
+  /// توضیح آزاد همان پرداختی
+  note         String?
+
+  /// شماره چک (فقط برای kind = CHEQUE)
+  chequeNo        String?
+  /// بانک چک
+  bankName        String?
+  /// موعد/سررسید چک
+  dueDate         DateTime?
+  /// موعد چک به شمسی (yyyy/MM/dd)
+  dueDateJalali   String?
+  /// PENDING = در جریان · CLEARED = پاس شد · BOUNCED = برگشت خورد
+  chequeStatus    String?
+  /// لحظه‌ای که چک «پاس شد» علامت خورد
+  clearedAt       DateTime?
+  clearedAtJalali String?
+
+  /// -------------------- بخش ۸: مبلغ اضافه‌ی دریافتی --------------------
+  /// اگر مبلغ این پرداختی از «باقی‌مانده‌ی بدهی فاکتور در همان لحظه» بیشتر بوده
+  /// باشد، مقدار اضافه *همین‌جا و در لحظه‌ی ثبت* محاسبه و ذخیره می‌شود
+  /// (amount − باقی‌مانده‌ی قبل از این پرداختی).
+  ///
+  /// چرا ذخیره و نه محاسبه‌ی لحظه‌ی نمایش؟ چون «باقی‌مانده‌ی قبل از این پرداختی»
+  /// بعداً با ویرایش مبالغ فاکتور یا حذف پرداختی‌های دیگر عوض می‌شود و عدد
+  /// بازمحاسبه‌شده دیگر همان چیزی نیست که آن روز واقعاً اضافه گرفته شد.
+  /// پیش‌فرض صفر، پس هیچ پرداختی قدیمی‌ای تغییر نمی‌کند.
+  overpayAmount BigInt @default(0)
+
+  /// اگر این ردیف، مصرف یک «بارکد اعتبار خرید بعدی» باشد، شناسه‌ی آن اعتبار
+  /// (scalar، بدون relation). فقط برای ردیابی در گزارش.
+  storeCreditId Int?
+
+  /// ------------------- کار الف (جلسه ۳۶): «مقصد پول» -------------------
+  /// پولی که *از مشتری* گرفته شده، کجا نشست؟
+  ///   CARD    = با کارتخوانِ فروشگاه آمد   ⇒ جزو «دریافتی کارت»
+  ///   CASH    = نقد در صندوقِ فروشگاه آمد  ⇒ جزو «دریافتی نقد»
+  ///   MANAGER = به حساب شخصی مدیر رفت؛ نه به کارتخوان و نه به صندوقِ فروشگاه
+  ///             ⇒ بدهی مشتری را کم می‌کند و فاکتور را تسویه می‌کند، ولی در
+  ///             «دریافتی فروشگاه»، «نقد/کارت مورد انتظار صندوق» و مقایسه با
+  ///             کارتخوان *نمی‌آید* و در کسری/اضافی صندوق اثری ندارد.
+  ///
+  /// ⚠️ این ستون **منبع حقیقتِ یگانه‌ی** تفکیک دریافتی‌ها است. برای پرداختی
+  /// نقد/کارت، در لحظه‌ی ثبت با `kind` روش پرداخت اعتبارسنجی می‌شود تا هرگز دو
+  /// عدد متفاوت ساخته نشود (توضیح کامل در `src/shared/enums.ts` بالای
+  /// `PaymentDestination`).
+  ///
+  /// null = داده‌ی قدیمی («نامشخص»). هیچ حدسی برایش زده نمی‌شود و هیچ عددی از
+  /// گزارش‌های قبلی با آمدن این ستون عوض نمی‌شود.
+  destination String?
+
+  voidedAt       DateTime?
+  voidedByUserId Int?
+  voidReason     String?
+
+  chequeStatusHistory PaymentChequeStatusHistory[]
+
+  @@index([invoiceId])
+  @@index([methodId])
+  @@index([kind])
+  @@index([chequeStatus])
+  @@index([dueDate])
+  @@index([destination])
+  @@index([createdAt])
+  @@index([createdByUserId])
+  @@index([createdShiftId])
+  @@index([clearedShiftId])
+  @@index([clearedByUserId])
+  /// تفکیک «چکِ پاس‌شده بر اساس مقصد» در بازه — همان کوئری بلوک چک گزارش فروش
+  @@index([clearedAt, destination])
+  @@index([voidedAt])
+}
+
+/// دفتر append-only گذارهای وضعیت چک؛ مقدارهای قبلی Payment هیچ‌وقت overwrite نمی‌شوند.
+model PaymentChequeStatusHistory {
+  id              Int       @id @default(autoincrement())
+  paymentId       Int
+  payment         Payment   @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  status          String
+  destination     String?
+  clearedAt       DateTime?
+  clearedAtJalali String?
+  clearedShiftId  Int?
+  userId          Int?
+  changedAt       DateTime  @default(now())
+  changedAtJalali String?
+
+  @@index([paymentId, id])
+  @@index([status])
+  @@index([clearedAt])
+}
+
+// --------------------------- برگشت از فروش ---------------------------
+model SaleReturn {
+  id               Int         @id @default(autoincrement())
+  invoiceId        Int
+  invoice          SaleInvoice @relation(fields: [invoiceId], references: [id])
+  isFull           Boolean     @default(false)
+  total            BigInt      @default(0)
+  returnedAt       DateTime    @default(now())
+  returnedAtJalali String
+  /// ساعت دقیق ثبت برگشت (HH:mm:ss) — گزارش تعویض «دقیق به ثانیه» می‌خواهد
+  returnedAtTime   String      @default("")
+
+  /// ------------------------ تعویض کالا (بخش ۶) ------------------------
+  /// RETURN (پیش‌فرض، همه‌ی برگشت‌های قبلی) = برگشت ساده
+  /// EXCHANGE = تعویض کالا: همین برگشت + یک «سند تعویض» با اقلام جایگزین
+  kind               String    @default("RETURN")
+  /// شناسه‌ی «سند تعویض» (SaleInvoice با orderType = EXCHANGE). scalar عمدی.
+  exchangeInvoiceId  Int?
+  /// شماره فیش همان سند تعویض (snapshot، برای خوانا ماندن گزارش)
+  exchangeReceiptNo  Int?
+  /// جمع مبلغ اقلام *جایگزین*
+  exchangeTotal      BigInt    @default(0)
+  /// مابه‌التفاوت = exchangeTotal − total
+  /// مثبت ⇒ مشتری باید بپردازد · منفی ⇒ ما به مشتری بدهکاریم
+  exchangeDiff       BigInt    @default(0)
+  /// CASH = مشتری پرداخت کرد · CREDIT = بارکد اعتبار صادر شد · NONE = صفر بود
+  exchangeSettlement String?
+  /// اعتبار خرید بعدیِ صادرشده برای این تعویض (اگر ما بدهکار شدیم)
+  storeCreditId      Int?
+  storeCreditCode    String?
+  /// کاربر ثبت‌کننده‌ی برگشت (scalar، بدون relation تا مدل User تغییر نکند)
+  userId             Int?
+  /// شیفتی که برگشت در آن ثبت شده
+  shiftId            Int?
+  /// در این برگشت، قلمی وجود داشته که کالایش از فهرست انبار حذف شده بود
+  hasRemovedItems    Boolean   @default(false)
+  note               String?
+  /// روش بازپرداخت؛ برای برگشت‌های قدیمی تهی می‌ماند تا فرض تاریخی جعل نشود.
+  refundMethod       String?
+  refundAmount       BigInt    @default(0)
+  refundPaymentId    Int?
+  /// نشست ۶۰ · خوشه B (بند ۴-۵) — فقط برای تعویض (kind = EXCHANGE): بخشی از
+  /// مابه‌التفاوت منفی که به‌جای پرداخت پول، از بدهی فاکتور اصلی کم شد.
+  /// همیشه ≤ −exchangeDiff؛ بخش بازپرداخت‌شده = −exchangeDiff − debtReduction.
+  /// پیش‌فرض ۰ ⇒ همه‌ی تعویض‌های قبلی دقیقاً مثل قبل.
+  debtReduction      BigInt    @default(0)
+  /// نشست ۶۴ · بند ۴-۲۲ — «حذف» برگشت = ابطال با مهر کی/کِی/چرا؛ سند و اقلامش
+  /// به‌عنوان مدرک می‌مانند ولی از همه‌ی محاسبه‌ها (بدهی، سقف برگشت، گزارش، پل)
+  /// بیرون می‌روند. null = فعال.
+  voidedAt           DateTime?
+  voidedByUserId     Int?
+  voidReason         String?
+  refundedAt         DateTime?
+  refundedAtJalali   String?
+  refundedAtTime     String?
+  refundReference    String?
+  refundNote         String?
+  legacyAssumption   String?
+
+  /// ------------- جلسه ۴۰ · کار ب — «کالای در انتظار تأیید مدیر» -------------
+  /// true یعنی کالای این برگشت **فیزیکی در فروشگاه هست ولی هنوز به موجودی
+  /// قابل‌فروش اضافه نشده**، چون بازپرداختش «کارت‌به‌کارت توسط مدیر» است و مدیر
+  /// هنوز «پرداخت شد» نزده. در همین حالت `SaleReturnItem.restockedQty = 0`
+  /// می‌ماند و تنها نقطه‌ی آزادسازی، `CardTransferService.pay` است.
+  ///
+  /// ⚠️ چرا یک ستون جدا لازم است و `restockedQty = 0` کافی نیست؟ چون
+  /// `restockedQty = 0` دو معنای کاملاً متفاوت دارد: (۱) «فاکتور اصلی بدون کسر
+  /// از موجودی بود، پس هیچ‌وقت چیزی برنمی‌گردد» و (۲) «معلق تا تأیید مدیر».
+  /// بدون این ستون، برگشت‌های فروش عمده‌ی بدون کسر موجودی هم «معلق» شمرده
+  /// می‌شدند و انبارگردانی یک کسری کاذب می‌ساخت.
+  /// پیش‌فرض false ⇒ همه‌ی برگشت‌های قبلی دقیقاً مثل امروز رفتار می‌کنند.
+  restockPending          Boolean   @default(false)
+  /// لحظه‌ای که کالای معلق واقعاً به موجودی قابل‌فروش برگشت (پرداخت مدیر یا
+  /// آزادسازی صریح مدیر). فقط برای سابقه و گزارش.
+  restockReleasedAt       DateTime?
+  restockReleasedAtJalali String?
+
+  items SaleReturnItem[]
+
+  @@index([invoiceId])
+  @@index([returnedAtJalali])
+  @@index([returnedAt])
+  @@index([kind])
+  @@index([exchangeInvoiceId])
+  /// جلسه ۴۰ · کار ب — کوئری «معلق‌های برگشتی» فقط همین ستون را فیلتر می‌کند
+  @@index([voidedAt])
+  @@index([restockPending])
+}
+
+model SaleReturnItem {
+  id               Int             @id @default(autoincrement())
+  returnId         Int
+  return           SaleReturn      @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  saleItemId       Int
+  saleItem         SaleInvoiceItem @relation(fields: [saleItemId], references: [id])
+  variantId        Int
+  /// (مثل SaleInvoiceItem: کلید خارجی سطح دیتابیس با اولین «حذف همیشگی» برداشته می‌شود)
+  variant          ProductVariant  @relation(fields: [variantId], references: [id])
+  /// نام/کد کالا در لحظه‌ی حذف همیشگی
+  variantName      String?
+  variantCode      String?
+  qty              Int
+  unitPrice        BigInt
+  lineTotal        BigInt
+  /// کالای این قلم در لحظه‌ی برگشت از فهرست کالاهای انبار حذف شده بود
+  removedFromStock Boolean         @default(false)
+  /// تعدادی که واقعاً به موجودی انبار برگشت (۰ = فقط سند مالی)
+  restockedQty     Int             @default(0)
+
+  @@index([returnId])
+  @@index([variantId])
+}
+
+// ----------------------------- فاکتور خرید -----------------------------
+model PurchaseInvoice {
+  id             Int       @id @default(autoincrement())
+  invoiceNo      Int       @unique
+  supplierId     Int?
+  supplier       Supplier? @relation(fields: [supplierId], references: [id])
+  issuedAt       DateTime  @default(now())
+  issuedAtJalali String
+  goodsTotal     BigInt    @default(0)
+  discountTotal  BigInt    @default(0)
+  grandTotal     BigInt    @default(0)
+  paidTotal      BigInt    @default(0)
+  settlementType String    @default("CASH") // CASH | CHEQUE | ACCOUNT
+  status         String    @default("CONFIRMED") // DRAFT | CONFIRMED
+  note           String?
+
+  items PurchaseInvoiceItem[]
+
+  @@index([issuedAtJalali])
+  @@index([issuedAt])
+}
+
+model PurchaseInvoiceItem {
+  id          Int             @id @default(autoincrement())
+  invoiceId   Int
+  invoice     PurchaseInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  variantId   Int
+  /// (مثل SaleInvoiceItem: کلید خارجی سطح دیتابیس با اولین «حذف همیشگی» برداشته می‌شود)
+  variant     ProductVariant  @relation(fields: [variantId], references: [id])
+  /// نام/کد کالا در لحظه‌ی حذف همیشگی
+  variantName String?
+  variantCode String?
+  warehouseId Int?
+  qty         Int
+  unitPrice   BigInt
+  lineTotal   BigInt
+
+  @@index([invoiceId])
+}
+
+// --------------------------- انبار مرکزی (ذخیره) ---------------------------
+/// «انبار مرکزی» — یک فهرست کاملاً مستقل و اطلاعاتی (مورد ۵).
+///
+/// هیچ ارتباطی با Product / ProductVariant / موجودی فروشگاه ندارد و هیچ‌جای
+/// برنامه (پنل فروش، فاکتور خرید، فاکتور فروش، تجمیع، گزارش‌ها) از آن کسر
+/// نمی‌کند یا به آن اضافه نمی‌کند. عمداً هیچ relation ای ندارد تا این استقلال
+/// در سطح خود دیتابیس هم تضمین شده باشد.
+model SecondaryStockItem {
+  id   Int     @id @default(autoincrement())
+  /// نام کالا (هر چه خودتان بنویسید؛ لازم نیست با کالاهای فروشگاه یکی باشد)
+  name String
+  /// کد دلخواه (اختیاری، بدون هیچ اعتبارسنجی یا یکتایی)
+  code String?
+  /// تعداد؛ منفی هم پذیرفته می‌شود
+  qty  Int     @default(0)
+  /// توضیح آزاد (محل نگه‌داری، وضعیت، ...)
+  note String?
+
+  /// ---------------------- چند انبار / چند شعبه (بخش ۵) ----------------------
+  /// انباری که این ردیف در آن است. `null` = «انبار مرکزی» (انبار پیش‌فرض)،
+  /// پس همه‌ی ردیف‌های قبلی بدون هیچ مهاجرتی سر جای خودشان می‌مانند و ماژول
+  /// دقیقاً مثل قبل کار می‌کند.
+  warehouseId Int?
+  warehouse   SecondaryWarehouse? @relation(fields: [warehouseId], references: [id])
+  /// حد اقل موجودی هشدار (۰ = بدون هشدار) — فقط نمایشی
+  minQty      Int                 @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+  @@index([code])
+  @@index([warehouseId])
+}
+
+/// -------------------------- انبارهای ماژول انبار مرکزی --------------------------
+/// یک «انبار / محل نگه‌داری» در ماژول انبار مرکزی: انبار مرکزی خودِ فروشگاه،
+/// انبار شعبه ۲، انبار اجاره‌ای و ...
+///
+/// ⚠️ این مدل عمداً **هیچ ارتباطی با مدل `Warehouse`** (که به StockMovement و
+/// موجودی فروشگاه وصل است) ندارد. استقلال کامل ماژول انبار مرکزی از انبار
+/// فروشگاه، همان‌طور که بود، در سطح خود دیتابیس حفظ می‌شود.
+model SecondaryWarehouse {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  /// انبار پیش‌فرض («انبار مرکزی»). ردیف‌های بدون انبار به همین تعلق دارند و
+  /// این انبار قابل حذف نیست.
+  isDefault Boolean  @default(false)
+  /// آدرس / محل (اختیاری)
+  location  String?
+  note      String?
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items SecondaryStockItem[]
+
+  @@index([isActive])
+  @@index([sortOrder])
+}
+
+/// ------------------- تاریخچه‌ی تغییرات انبار مرکزی (بخش ۵) -------------------
+/// هر تغییر روی هر ردیف انبار مرکزی یک رکورد اینجا می‌سازد: ثبت، ویرایش، حذف،
+/// انتقال بین انبارها، و برداشت خودکار برای پوشش کمبود فروشگاه.
+///
+/// همه‌ی کلیدها scalar اند (بدون relation) تا حذف یک ردیف یا یک انبار، سابقه را
+/// پاک نکند — همان اصل «سابقه هیچ‌وقت حذف نمی‌شود» بقیه‌ی برنامه.
+model SecondaryStockLog {
+  id            Int      @id @default(autoincrement())
+  itemId        Int?
+  warehouseId   Int?
+  /// نام انبار در همان لحظه (snapshot، برای خوانا ماندن سابقه)
+  warehouseName String?
+  /// CREATE | UPDATE | DELETE | TRANSFER_IN | TRANSFER_OUT | WITHDRAW
+  action        String
+  /// نام و کد کالا در همان لحظه (snapshot)
+  name          String
+  code          String?
+  qtyBefore     Int      @default(0)
+  qtyAfter      Int      @default(0)
+  /// qtyAfter − qtyBefore
+  delta         Int      @default(0)
+  note          String?
+  userId        Int?
+  at            DateTime @default(now())
+  /// تاریخ و ساعت شمسی همان لحظه (برای نمایش و فیلتر سریع)
+  atJalali      String   @default("")
+  atTime        String   @default("")
+
+  @@index([itemId])
+  @@index([warehouseId])
+  @@index([at])
+  @@index([action])
+}
+
+/// ==================== «بارکد اعتبار خرید بعدی» (بخش ۶) ====================
+/// وقتی مشتری کالای گران‌تر را با ارزان‌تر تعویض می‌کند، *ما* به او بدهکار
+/// می‌شویم. جای پرداخت نقدی، روی سند تعویض یک کد کوتاه + بارکد Code128 چاپ
+/// می‌شود که **مبلغ** دارد. مشتری بعداً همان بارکد را می‌آورد و فروشنده آن را
+/// در فاکتور فروش جدید اسکن می‌کند تا مبلغش از فاکتور کم شود.
+///
+/// مکانیزم کد، همان مکانیزم `SaleInvoice.returnCode` است (کد کوتاه رندوم بدون
+/// حروف گمراه‌کننده + تاریخ انقضا)، با یک تفاوت: این یکی مبلغ و وضعیت مصرف دارد
+/// و **یک‌بار‌مصرف** است.
+/// ---------------------------------------------------------------------------
+/// جلسه ۲۰ — ماژول «مدیریت اعتبار خرید» *همین مدل* را گسترش داد و هیچ مدل موازی
+/// نساخت (§۱ سند مرجع). همه‌ی ستون‌های تازه Nullable یا Default‌دارند، پس هر
+/// رکورد «اعتبار تعویض کالا»ی قبلی مو‌به‌مو مثل قبل کار می‌کند:
+///   source = 'EXCHANGE' · maxUses = 1 · multiUse = false · usedAmount = 0 ·
+///   restrictScope = 'ALL'
+/// یعنی «یک‌بارمصرف روی همه‌ی کالاها» — دقیقاً رفتار تاریخی.
+///
+/// تنها تغییر *ساختاریِ* غیرافزایشی، یکتا شدنِ واقعی ستون `code` در سطح دیتابیس
+/// است (§۶). چون قبلاً یکتایی فقط سطح اپلیکیشن و فقط بین کدهای ACTIVE بود،
+/// migration اول کدهای تکراریِ تاریخی را با پسوند `X<id>` بی‌تصادم می‌کند و کد
+/// اصلی‌شان را در `legacyCode` نگه می‌دارد (هیچ سابقه‌ای پاک نمی‌شود).
+/// ---------------------------------------------------------------------------
+model StoreCredit {
+  id         Int     @id @default(autoincrement())
+  /// کد کوتاه (حروف بزرگ + عدد) که روی سند اعتبار چاپ و بعداً اسکن می‌شود.
+  /// از جلسه ۲۰ در سطح دیتابیس `@unique` است (نه فقط چک اپلیکیشنی).
+  code       String  @unique
+  /// کد *اصلیِ* یک رکورد تاریخیِ تکراری، قبل از بی‌تصادم شدن در migration جلسه ۲۰
+  legacyCode String?
+  /// مبلغ اعتبار به ریال. ⚠️ این «مبلغ اولیه» است و با مصرف هیچ‌وقت کم نمی‌شود؛
+  /// باقی‌مانده = amount − usedAmount (§۴).
+  amount     BigInt  @default(0)
+
+  // ------------------- جلسه ۲۰ · نوع اعتبار (§۲) -------------------
+  /// EXCHANGE = ناشی از تعویض کالا (پیش‌فرض و مسیر تاریخی) ·
+  /// MANUAL = صادرشده توسط مدیریت
+  source String @default("EXCHANGE")
+
+  // ------------------- جلسه ۲۰ · مصرف بخشی و چندباره (§۴) -------------------
+  /// جمع مبلغی که تا این لحظه از این اعتبار مصرف شده است
+  usedAmount BigInt  @default(0)
+  /// چند بار مصرف شده (هر ردیف StoreCreditRedemption یک بار)
+  usedCount  Int     @default(0)
+  /// حداکثر دفعات مجاز مصرف (۱ = یک‌بارمصرف — پیش‌فرض و رفتار تاریخی)
+  maxUses    Int     @default(1)
+  /// «چندباره تا سقف مبلغ» فعال است؟ منطقش کاملاً از یک‌بارمصرف جداست (§۴):
+  /// در حالت یک‌بارمصرف، اولین مصرف — حتی جزئی — وضعیت را قطعاً می‌بندد.
+  multiUse   Boolean @default(false)
+  /// نشست ۱۸۳ — تکلیف باقی‌مانده وقتی این اعتبار یک‌بارمصرف است:
+  /// true (پیش‌فرض) = باقی‌مانده به بارکد جدید برمی‌گردد · false = می‌سوزد.
+  /// عمداً روی خودِ رکورد **اسنپ‌شات** می‌شود، نه خوانده‌شده از تنظیمات لحظه‌ی
+  /// مصرف: مشتری بارکد را در جیبش دارد و قاعده‌اش نباید بعداً زیر پایش عوض شود.
+  carryRemainder   Boolean  @default(true)
+
+  // ------------- جلسه ۲۰ · Override تنظیمات روی همین رکورد (§۳) -------------
+  /// این اعتبار با مقادیر غیر از پیش‌فرضِ نوعش صادر شده است؟
+  settingsOverride Boolean @default(false)
+  /// دلیل/توضیح همان استثنا (روی خود رکورد می‌ماند، هیچ‌وقت رونویسی نمی‌شود)
+  overrideReason   String?
+  /// مدت اعتباری که در لحظه‌ی صدور اعمال شد (روز · null = بدون انقضا)
+  issuedDays       Int?
+
+  // ------------- جلسه ۲۰ · محدودیت اعمال: کالا/دسته/مشتری (§۱۸) -------------
+  /// ALL (پیش‌فرض) | CATEGORY | VARIANTS — همان الگوی PriceChangeBatch.scope
+  restrictScope           String  @default("ALL")
+  /// دسته‌های مجاز به شکل JSON (فقط در scope = CATEGORY)
+  restrictCategoryIdsJson String?
+  /// کالاهای مجاز به شکل JSON (فقط در scope = VARIANTS)
+  restrictVariantIdsJson  String?
+  /// حداقل مبلغ خرید برای استفاده (۰ = بدون شرط)
+  minPurchase             BigInt  @default(0)
+  /// حداکثر مبلغ قابل استفاده در هر تراکنش (۰ = بدون سقف)
+  maxPerTransaction       BigInt  @default(0)
+  /// فقط برای همان مشتری/شرکتِ ثبت‌شده قابل استفاده است؟
+  customerLocked          Boolean @default(false)
+
+  // ------------- جلسه ۲۰ · اطلاعات گیرنده (§۱۲ — هیچ‌کدام اجباری نیست) -------------
+  holderCompany    String?
+  holderNationalId String?
+  holderPhone      String?
+  holderAddress    String?
+  holderAgent      String?
+  holderNote       String?
+
+  // ------------- جلسه ۲۰ · تولید گروهی و چاپ (§۵ و §۱۳) -------------
+  /// دسته‌ی تولید گروهی (null = صدور تکی)
+  batchId       Int?
+  /// پیشوند نمایشیِ لحظه‌ی صدور (صرفاً نمایشی — §۲۲)
+  prefix        String?
+  /// چند بار چاپ شده (۰ = هنوز چاپ نشده · ≥۲ ⇒ برچسب «نسخه‌ی مجدد»)
+  printCount    Int       @default(0)
+  lastPrintedAt DateTime?
+
+  // ------------- جلسه ۲۰ · یادآوری (§۱۴ — بدون اتصال واقعی پیامک) -------------
+  reminderOptOut   Boolean   @default(false)
+  reminderCount    Int       @default(0)
+  lastReminderAt   DateTime?
+  lastReminderKind String?
+
+  // ------------- جلسه ۲۰ · ابطال / تعلیق / آرشیو (§۱۱) -------------
+  voidedAt     DateTime?
+  voidedReason String?
+  suspendedAt  DateTime?
+  /// Soft Delete اعتبارِ *مصرف‌شده* (سابقه‌ی حسابداری هیچ‌وقت خراب نمی‌شود).
+  /// اعتبارِ بدون هیچ مصرف، واقعاً از دیتابیس حذف می‌شود.
+  deletedAt    DateTime?
+
+  issuedAt        DateTime  @default(now())
+  issuedAtJalali  String    @default("")
+  issuedAtTime    String    @default("")
+  /// پایان اعتبار (null = بدون انقضا)
+  expiresAt       DateTime?
+  expiresAtJalali String?
+
+  /// ACTIVE | USED | EXPIRED | CANCELED
+  status String @default("ACTIVE")
+
+  /// برگشتی/تعویضی که این اعتبار از آن صادر شد (scalar)
+  returnId          Int?
+  /// سند تعویضی که این اعتبار رویش چاپ شد (scalar)
+  exchangeInvoiceId Int?
+  /// فاکتور اصلی مشتری (scalar)
+  sourceInvoiceId   Int?
+  customerId        Int?
+  /// نام مشتری در لحظه‌ی صدور (snapshot)
+  customerName      String?
+
+  /// لحظه‌ی مصرف
+  usedAt            DateTime?
+  usedAtJalali      String?
+  usedAtTime        String?
+  /// فاکتوری که اعتبار رویش مصرف شد (scalar)
+  usedInvoiceId     Int?
+  /// شماره فیش همان فاکتور (snapshot)
+  usedReceiptNo     Int?
+  /// رکورد Payment ساخته‌شده برای مصرف (scalar)
+  usedPaymentId     Int?
+  /// اگر مبلغ اعتبار از جمع فاکتور بیشتر بود، اعتبار *جدیدِ* باقی‌مانده
+  remainderCreditId Int?
+
+  note   String?
+  userId Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([issuedAt])
+  @@index([usedInvoiceId])
+  @@index([returnId])
+  // جلسه ۲۰ — فیلترهای داشبورد و گزارش‌های تفکیکی (§۱۵) بدون اسکن کامل
+  @@index([source])
+  @@index([customerId])
+  @@index([expiresAt])
+  @@index([batchId])
+  @@index([deletedAt])
+  @@index([source, status])
+}
+
+/// ===========================================================================
+/// جلسه ۲۰ — «هر بار مصرف» یک ردیف اینجا (§۴، §۸، §۱۶، §۲۱).
+///
+/// چرا یک جدول جدا لازم بود و چرا این «سیستم موازی» نیست؟ چون تا این نسخه یک
+/// اعتبار فقط *یک* مصرف داشت و همان چند ستون `usedAt/usedInvoiceId/...` روی خود
+/// StoreCredit کافی بود. با «چندباره تا سقف مبلغ»، یک اعتبار می‌تواند N مصرف
+/// داشته باشد و هر مصرف باید مبلغ، فاکتور، پرداختی و کاربر خودش را داشته باشد.
+/// این جدول *دفتر مصرف* است، نه یک مدل اعتبار دوم؛ ستون‌های قبلی StoreCredit هم
+/// دست‌نخورده مانده‌اند و همیشه «آخرین مصرف» را نشان می‌دهند تا هیچ گزارش قدیمی
+/// نشکند.
+///
+/// `idempotencyKey` یکتاست: اگر یک درخواست مصرف به‌خاطر قطعی/Timeout/دوبار-کلیک
+/// دوبار برسد، درج دوم با خطای یکتایی رد می‌شود و سرویس همان نتیجه‌ی قبلی را
+/// برمی‌گرداند — پس هیچ‌وقت دو بار کم نمی‌شود (§۲۱).
+///
+/// همه‌ی کلیدها عمداً scalar اند (همان اصل CardTransferRequest و SecondaryStockLog):
+/// حذف همیشگی یک فاکتور یا کاربر نباید سابقه‌ی مالی را بشکند.
+/// ===========================================================================
+model StoreCreditRedemption {
+  id             Int    @id @default(autoincrement())
+  creditId       Int
+  /// کد اعتبار در همان لحظه (snapshot، برای خوانا ماندن سابقه)
+  code           String @default("")
+  /// مبلغی که در همین مصرف کم شد
+  amount         BigInt @default(0)
+  /// باقی‌مانده *بعد از* این مصرف (snapshot، تا گزارش به بازمحاسبه تکیه نکند)
+  remainderAfter BigInt @default(0)
+  /// شماره‌ی ترتیبی این مصرف روی همان اعتبار (۱، ۲، ...)
+  seq            Int    @default(1)
+
+  invoiceId Int?
+  receiptNo Int?
+  /// رکورد Payment ساخته‌شده برای این مصرف
+  paymentId Int?
+
+  at       DateTime @default(now())
+  atJalali String   @default("")
+  atTime   String   @default("")
+  userId   Int?
+  shiftId  Int?
+
+  /// کلید Idempotency همان درخواست (§۲۱). null = مسیرهای قدیمی/داخلی.
+  idempotencyKey String?
+
+  /// اگر فاکتور مرجع بعداً Refund/Reverse شد، این مصرف برگشت خورد (§۸)
+  reversedAt     DateTime?
+  reversedReason String?
+
+  note String?
+
+  @@unique([idempotencyKey])
+  @@index([creditId])
+  @@index([invoiceId])
+  @@index([at])
+  @@index([code])
+}
+
+/// ===========================================================================
+/// جلسه ۲۰ · §۵ — یک «دسته‌ی تولید گروهی» اعتبار.
+///
+/// هر ردیف StoreCredit تولیدشده با `batchId` به همین دسته وصل می‌شود، ولی خودش
+/// کد/بارکد/وضعیت/تاریخچه‌ی کاملاً مستقل دارد (سند مرجع صریحاً همین را خواسته).
+/// این جدول فقط «چه کسی، کِی، با چه قواعدی، چند عدد ساخت» را نگه می‌دارد و
+/// مبنای «چاپ گروهی در یک PDF چندصفحه‌ای» است.
+/// ===========================================================================
+model StoreCreditBatch {
+  id     Int    @id @default(autoincrement())
+  /// متن خوانای همان دسته («۵۰۰ اعتبار ۲٬۰۰۰٬۰۰۰ ریالی · شرکت فلان»)
+  title  String @default("")
+  /// MANUAL | EXCHANGE (عملاً همیشه MANUAL)
+  source String @default("MANUAL")
+
+  count       Int    @default(0)
+  amountEach  BigInt @default(0)
+  totalAmount BigInt @default(0)
+
+  /// قواعد اعمال‌شده روی کل دسته (snapshot، برای سابقه و چاپ مجدد)
+  days           Int?
+  maxUses        Int     @default(1)
+  multiUse       Boolean @default(false)
+  codeLength     Int     @default(8)
+  prefix         String?
+  alphabet       String  @default("ALNUM")
+  excludeSimilar Boolean @default(true)
+  /// طول کد به‌خاطر کمبود فضا خودکار زیاد شد؟ (§۶ — باید قابل مشاهده باشد)
+  lengthGrown    Boolean @default(false)
+
+  restrictScope           String  @default("ALL")
+  restrictCategoryIdsJson String?
+  restrictVariantIdsJson  String?
+  minPurchase             BigInt  @default(0)
+  maxPerTransaction       BigInt  @default(0)
+
+  customerId    Int?
+  customerName  String?
+  holderCompany String?
+
+  userId          Int?
+  createdAt       DateTime @default(now())
+  createdAtJalali String   @default("")
+  createdAtTime   String   @default("")
+  note            String?
+
+  @@index([createdAt])
+  @@index([source])
+}
+
+/// ===========================================================================
+/// جلسه ۲۰ · §۱۴ — زیرساخت یادآوری، *بدون* هیچ اتصال واقعی پیامک.
+///
+/// هیچ سرویس SMS در این فاز وصل نمی‌شود و هیچ API خارجی صدا زده نمی‌شود. ولی
+/// چون به‌زودی یک «پنل پیامک» جدا اضافه می‌شود، ساختار داده از همین حالا کامل
+/// است: کدام اعتبار، چه زمانی، چه نوع پیامی، با چه Placeholderهای پرشده، و
+/// نتیجه‌اش چه بود. وقتی آن پنل آمد، فقط پیاده‌سازی `NotificationSender`
+/// (src/main/services/NotificationSender.ts) عوض می‌شود و این جدول یک ستون هم
+/// تغییر نمی‌کند.
+///
+/// قواعد ضد‌اسپم (فاصله‌ی مجاز، سقف تعداد، Opt-out) از همین ردیف‌ها + ستون‌های
+/// `reminderCount/lastReminderAt/reminderOptOut` روی StoreCredit خوانده می‌شوند،
+/// پس منطق «باید بفرستد یا نه» همین حالا کامل کار می‌کند.
+/// ===========================================================================
+model CreditReminderLog {
+  id       Int    @id @default(autoincrement())
+  creditId Int
+  code     String @default("")
+
+  /// UNUSED (مصرف‌نشده) | NEAR_EXPIRY (نزدیک انقضا)
+  kind   String @default("UNUSED")
+  /// READY | LOGGED | SKIPPED | OPTED_OUT — هیچ‌کدام «ارسال واقعی» نیست
+  status String @default("READY")
+
+  /// شماره‌ی مقصد در همان لحظه (snapshot)
+  phone            String?
+  /// متن نهاییِ پرشده (همان چیزی که پنل پیامک آینده باید بفرستد)
+  text             String  @default("")
+  /// مقدار هر Placeholder به شکل JSON (customer_name, credit_amount, ...)
+  placeholdersJson String?
+
+  /// دلیل فارسیِ تصمیم (چه ثبت شد، چه رد شد)
+  reason String?
+
+  plannedAt DateTime  @default(now())
+  /// لحظه‌ای که «فرستنده» پردازشش کرد (در این فاز فقط لاگ می‌کند)
+  sentAt    DateTime?
+  atJalali  String    @default("")
+  atTime    String    @default("")
+  userId    Int?
+
+  @@index([creditId])
+  @@index([status])
+  @@index([plannedAt])
+  @@index([kind])
+}
+
+/// ============ قفل موقت بعد از ورود رمز اشتباه (بخش ۲) ============
+/// یک ردیف برای هر «گیت» ورود رمز: `__manager__` برای صفحه‌ی رمز مدیر و کلید
+/// هر پنل قفل‌دار برای خودش (src/shared/panels.ts → `gateIdOf`).
+///
+/// چرا در دیتابیس و نه در حافظه؟ چون اگر شمارنده در حافظه بود، کافی بود کاربر
+/// برنامه را ببندد و باز کند تا قفل دور زده شود. اینجا قفل با بستن برنامه
+/// از بین نمی‌رود.
+model AuthLockout {
+  id          Int       @id @default(autoincrement())
+  /// شناسه‌ی گیت (`__manager__` یا کلید پنل)
+  gate        String    @unique
+  /// تعداد رمز اشتباهِ پشت‌سرهم (با اولین ورود موفق صفر می‌شود)
+  failCount   Int       @default(0)
+  /// لحظه‌ی آخرین رمز اشتباه
+  lastFailAt  DateTime?
+  /// تا این لحظه هیچ رمزی — حتی رمز درست — پذیرفته نمی‌شود. null = قفل نیست.
+  lockedUntil DateTime?
+  /// چند بار تا حالا این گیت قفل شده (فقط آمار/حسابرسی)
+  lockCount   Int       @default(0)
+  updatedAt   DateTime  @updatedAt
+
+  @@index([lockedUntil])
+}
+
+// ------------------------------ لاگ مالی ------------------------------
+model AuditLog {
+  id       Int      @id @default(autoincrement())
+  at       DateTime @default(now())
+  userId   Int?
+  user     User?    @relation(fields: [userId], references: [id])
+  action   String // SALE_CREATE | SALE_RETURN | PRICE_EDIT | DELETE | STOCK_ADJUST | CONSOLIDATE ...
+  entity   String
+  entityId Int?
+  before   String? // JSON
+  after    String? // JSON
+  note     String?
+
+  @@index([at])
+  @@index([action])
+  @@index([entity, entityId])
+}
+
+/// ==================== بند ۴ — سابقه‌ی تغییر گروهی قیمت ====================
+/// هر بار که ماژول «تخفیف و افزایش/کاهش قیمت» اجرا می‌شود، یک `PriceChangeBatch`
+/// ساخته می‌شود و قیمت *قبلِ* هر کالا در `PriceChangeItem` نگه داشته می‌شود.
+///
+/// چرا این دو جدول لازم‌اند و یک سطر AuditLog کافی نیست؟
+/// چون این ماژول با یک کلیک قیمت *همه‌ی* کالاهای فروشگاه را عوض می‌کند. بدون
+/// قیمت قبلی هر کالا، یک اشتباه ساده («۵۰٬۰۰۰ ریال» جای «۵۰۰۰ ریال») هیچ راه
+/// برگشتی ندارد و مالک باید تک‌تک کالاها را دستی اصلاح کند. با این دو جدول،
+/// دکمه‌ی «بازگردانی» همان دسته را دقیقاً به قیمت‌های قبلش برمی‌گرداند.
+///
+/// هر دو جدول جدیدند و هیچ ستونی از جدول‌های موجود عوض نمی‌شود، پس روی دیتابیس
+/// پرِ فعلی بدون ریسک اجرا می‌شوند.
+model PriceChangeBatch {
+  id               Int       @id @default(autoincrement())
+  /// DISCOUNT | INCREASE | DECREASE
+  kind             String
+  /// PERCENT | AMOUNT
+  mode             String
+  /// درصد یا مبلغ واردشده
+  value            BigInt    @default(0)
+  /// SALE | PURCHASE — کدام قیمت عوض شد
+  target           String    @default("SALE")
+  /// ALL | CATEGORY | VARIANTS
+  scope            String
+  /// دسته‌ی انتخاب‌شده (فقط در scope = CATEGORY)
+  categoryId       Int?
+  /// نام دسته در همان لحظه (snapshot، تا حذف دسته سابقه را خوانا نگه دارد)
+  categoryName     String?
+  /// رُند کردن قیمت نهایی (۱ = بدون رُند)
+  roundStep        BigInt    @default(1)
+  /// کف قیمت همان لحظه
+  minPrice         BigInt    @default(0)
+  /// متن خوانای همان کار («۱۰٪ افزایش قیمت روی همه‌ی کالاها»)
+  title            String    @default("")
+  note             String?
+  /// تعداد کالاهایی که واقعاً قیمتشان عوض شد
+  itemCount        Int       @default(0)
+  /// جمع اختلاف قیمت‌ها (منفی = ارزان‌تر شد)
+  deltaTotal       BigInt    @default(0)
+  userId           Int?
+  at               DateTime  @default(now())
+  atJalali         String    @default("")
+  atTime           String    @default("")
+  /// لحظه‌ی بازگردانی. null = بازگردانی نشده و قابل بازگردانی است.
+  revertedAt       DateTime?
+  revertedAtJalali String?
+
+  // ------------------------------------------------------------------------
+  // نشست دهم — مورد ۱: «زمان‌بندی خودکار» یک دسته‌ی تغییر قیمت.
+  //
+  // هر سه ستون زمان اختیاری‌اند و اگر خالی بمانند رفتار *مو‌به‌مو* همان قبل است
+  // (دائمی، تا وقتی مدیر دستی «بازگردانی» بزند). پس این migration روی دیتابیس
+  // پرِ فروشگاه هیچ رفتاری را عوض نمی‌کند.
+  // ------------------------------------------------------------------------
+  /// SCHEDULED = هنوز شروع نشده · APPLIED = اعمال‌شده و در جریان ·
+  /// ENDED = پایان خودکار طبق زمان‌بندی · REVERTED = بازگردانی دستی
+  state          String    @default("APPLIED")
+  /// لحظه‌ی شروع زمان‌بندی‌شده (null = همین حالا / دائمی)
+  startAt        DateTime?
+  startAtJalali  String?
+  startAtTime    String?
+  /// لحظه‌ی پایان زمان‌بندی‌شده (null = بی‌پایان تا بازگردانی دستی)
+  endAt          DateTime?
+  endAtJalali    String?
+  endAtTime      String?
+  /// لحظه‌ای که زمان‌بند، این دسته را *خودکار* اعمال کرد
+  autoStartedAt  DateTime?
+  /// لحظه‌ای که زمان‌بند، این دسته را *خودکار* به قیمت قبل برگرداند
+  autoEndedAt    DateTime?
+  /// کالاهای انتخابی یک دسته‌ی زمان‌بندی‌شده (scope = VARIANTS) به شکل JSON،
+  /// چون در لحظه‌ی «شروع خودکار» باید دقیقاً همان دامنه دوباره ساخته شود.
+  variantIdsJson String?
+  /// مورد ۲ — آخرین ویرایش دامنه‌ی همین دسته (null = ویرایش نشده)
+  editedAt       DateTime?
+  editedAtJalali String?
+  editCount      Int       @default(0)
+
+  items PriceChangeItem[]
+
+  @@index([at])
+  @@index([kind])
+  @@index([revertedAt])
+  @@index([state])
+  @@index([startAt])
+  @@index([endAt])
+}
+
+/// قیمت قبل و بعدِ یک کالا در یک دسته‌ی تغییر قیمت.
+/// `variantId` عمداً بدون relation است تا حذف همیشگی یک کالا، سابقه را نشکند
+/// (همان اصل «سابقه هیچ‌وقت حذف نمی‌شود» بقیه‌ی برنامه).
+model PriceChangeItem {
+  id        Int              @id @default(autoincrement())
+  batchId   Int
+  batch     PriceChangeBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  variantId Int
+  /// نام و کد کالا در همان لحظه (snapshot)
+  name      String           @default("")
+  code      String?
+  oldPrice  BigInt           @default(0)
+  newPrice  BigInt           @default(0)
+
+  @@index([batchId])
+  @@index([variantId])
+}
+
+// ===========================================================================
+// جلسه ۱۷ — سه مدل تازه (فقط افزایشی؛ هیچ ستون یا مدل قبلی لمس نشده است)
+// ===========================================================================
+
+/// «درخواست کارت‌به‌کارت توسط مدیر» — یک مسیر تسویه‌ی کاملاً جدا از دستگاه
+/// کارت‌خوان فروشگاه (`refundMethod = CARD`). فروشنده فقط *درخواست* می‌سازد؛
+/// پول در همان لحظه جابه‌جا نمی‌شود و مدیر بعداً «پرداخت شد» را ثبت می‌کند.
+///
+/// اصل «سابقه هیچ‌وقت پاک نمی‌شود»: رکورد پرداخت‌شده نه ویرایش می‌شود و نه حذف؛
+/// اصلاح = یک ردیف *جدید* با `kind = ADJUSTMENT` که به ردیف قبلی اشاره می‌کند.
+/// همه‌ی کلیدها عمداً scalar هستند (مثل SaleReturn.userId) تا حذف همیشگی یک
+/// فاکتور یا کاربر، سابقه‌ی مالی را نشکند.
+model CardTransferRequest {
+  id Int @id @default(autoincrement())
+
+  /// REQUEST = درخواست پرداخت · ADJUSTMENT = رویداد اصلاحی روی یک درخواست قبلی
+  kind   String @default("REQUEST")
+  /// PENDING = در انتظار پرداخت · PAID = پرداخت شد · ADJUSTED = با رویداد بعدی اصلاح شد
+  status String @default("PENDING")
+
+  /// RETURN | EXCHANGE — عملیات مرجع (هیچ‌وقت خالی نیست؛ قاعده‌ی سیستم)
+  operationKind     String @default("RETURN")
+  /// سند برگشت/تعویض مرجع (SaleReturn.id) — بدون آن درخواست ساخته نمی‌شود
+  returnId          Int
+  /// فاکتور اصلی مشتری
+  sourceInvoiceId   Int?
+  sourceReceiptNo   Int?
+  /// سند تعویض (اگر عملیات مرجع تعویض بوده)
+  exchangeInvoiceId Int?
+  exchangeReceiptNo Int?
+
+  /// مبلغ کل فاکتور اصلی در لحظه‌ی ثبت (snapshot)
+  invoiceTotal BigInt  @default(0)
+  /// مبلغ کل برگشت/ارزش کالای برگشتی (snapshot)
+  returnTotal  BigInt  @default(0)
+  /// مبلغی که باید کارت‌به‌کارت شود
+  amount       BigInt  @default(0)
+  /// کالاهای مربوطه در لحظه‌ی ثبت (snapshot خوانا، JSON)
+  itemsJson    String?
+  /// وضعیت موجودی کالاها در لحظه‌ی ثبت («برگشت به انبار» یا «بدون برگشت»)
+  stockNote    String?
+
+  /// کارمند ثبت‌کننده‌ی عملیات + شیفت همان لحظه
+  userId    Int?
+  userName  String?
+  shiftId   Int?
+  shiftName String?
+
+  createdAt       DateTime @default(now())
+  createdAtJalali String   @default("")
+  createdAtTime   String   @default("")
+
+  /// ---- ثبت پرداخت توسط مدیر ----
+  paidAmount     BigInt?
+  paidAt         DateTime?
+  paidAtJalali   String?
+  paidAtTime     String?
+  /// روش پرداخت (پیش‌فرض: کارت‌به‌کارت توسط مدیر)
+  paidMethod     String?
+  /// شماره پیگیری تراکنش (اختیاری)
+  trackingNo     String?
+  paidByUserId   Int?
+  paidByUserName String?
+  paidShiftId    Int?
+  /// شیفتی که پرداخت در آن تایید شد
+  paidShiftName  String?
+
+  /// ---- جلسه ۴۰ · کار ب — رد/لغو درخواست و آزادسازی کالای معلق ----
+  /// لحظه‌ای که مدیر درخواست را «رد/لغو» کرد (status = CANCELED). رکورد هیچ‌وقت
+  /// حذف نمی‌شود؛ فقط برچسب و دلیل می‌گیرد (همان قاعده‌ی ۲ بالای سرویس).
+  canceledAt       DateTime?
+  cancelReason     String?
+  /// لحظه‌ای که کالای معلقِ این درخواست به موجودی قابل‌فروش برگشت. تنها دو مسیر
+  /// این ستون را پر می‌کنند و هر دو پشت قفل «پرداخت‌های مدیر» هستند: `pay` و
+  /// آزادسازی صریح در `cancel({ releaseStock: true })`.
+  stockReleasedAt  DateTime?
+  /// تعداد کالایی که در همان لحظه آزاد شد (برای سابقه‌ی خوانا)
+  stockReleasedQty Int?
+
+  /// این ردیف، رویداد اصلاحیِ کدام ردیف است؟ (فقط برای kind = ADJUSTMENT)
+  adjustsRequestId Int?
+  /// دلیل اصلاح (اجباری برای رویداد اصلاحی)
+  adjustReason     String?
+
+  note String?
+
+  @@index([status])
+  @@index([kind])
+  @@index([returnId])
+  @@index([sourceInvoiceId])
+  @@index([createdAt])
+  @@index([userId])
+  @@index([shiftId])
+  @@index([adjustsRequestId])
+}
+
+/// یک جلسه‌ی «شمارش فیزیکی دوره‌ای انبار» در یک تاریخ مشخص.
+/// موجودی سیستمیِ همان لحظه کنار عدد شمارش‌شده snapshot می‌شود، پس گزارش مغایرت
+/// هیچ‌وقت به موجودی *امروز* تکیه نمی‌کند.
+model StockCountSession {
+  id Int @id @default(autoincrement())
+
+  /// تاریخ شمارش (همان تاریخی که مدیر انتخاب می‌کند)
+  countedAt       DateTime @default(now())
+  countedAtJalali String   @default("")
+  countedAtTime   String   @default("")
+
+  userId   Int?
+  userName String?
+  note     String?
+
+  createdAt DateTime @default(now())
+
+  items StockCountItem[]
+
+  @@index([countedAt])
+  @@index([countedAtJalali])
+}
+
+/// شمارش یک کالا در یک جلسه‌ی شمارش فیزیکی.
+/// `variantId` عمداً بدون relation است (همان اصل PriceChangeItem).
+model StockCountItem {
+  id        Int               @id @default(autoincrement())
+  sessionId Int
+  session   StockCountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  variantId         Int
+  /// نام و کد کالا در همان لحظه (snapshot)
+  name              String  @default("")
+  code              String?
+  /// عددی که روی قفسه شمرده شد
+  countedQty        Int     @default(0)
+  /// موجودی سیستمی در همان لحظه (snapshot)
+  systemQty         Int     @default(0)
+  /// countedQty − systemQty (منفی = کمبود فیزیکی)
+  diffQty           Int     @default(0)
+  /// ------------- جلسه ۴۰ · کار ب — snapshot «معلق برگشتی» -------------
+  /// تعداد کالای برگشتیِ همین واریانت که در لحظه‌ی شمارش «در انتظار پرداخت
+  /// مدیر» بود: فیزیکی روی قفسه هست ولی در موجودی سیستمی نیست.
+  /// موجودی فیزیکیِ *مورد انتظار* = systemQty + pendingRestockQty.
+  ///
+  /// ⚠️ چرا snapshot و نه محاسبه‌ی لحظه‌ی نمایش؟ چون معلق‌ها فردا پرداخت و آزاد
+  /// می‌شوند و بعد از آن، عددِ بازمحاسبه‌شده دیگر آن چیزی نیست که آن روز روی
+  /// قفسه بود — همان دلیلی که `systemQty` هم snapshot است.
+  /// پیش‌فرض صفر ⇒ شمارش‌های قبلی مو‌به‌مو همان عدد قبلی را می‌دهند.
+  pendingRestockQty Int     @default(0)
+  note              String?
+
+  @@index([sessionId])
+  @@index([variantId])
+}
+
+/// ===========================================================================
+/// جلسه ۴۷ — «دفتر مبدأ کسر موجودی» یک قلم فاکتور (فقط فاکتور فروش عمده).
+///
+/// چون یک قلم می‌تواند از چند انبار تأمین شود، مبدأ کسر در همین جدول جزئیات
+/// نگه داشته می‌شود و **ویرایش، حذف و برگشت دقیقاً از همین جدول برمی‌گردند**؛
+/// کالا به همان انباری برمی‌گردد که از آن برداشته شده بود.
+///
+/// ⚠️ عمداً هیچ relation ای ندارد (نه به فاکتور، نه به کالا، نه به انبار) —
+/// همان قاعده‌ی `SecondaryStockLog`: این یک دفتر سابقه است و حذف همیشگی کالا یا
+/// حذف یک انبار نباید سابقه را نابود کند. نام انبار snapshot می‌شود.
+///
+/// ⚠️ «نبودِ ردیف» معنای صریح دارد: فاکتور از انبار فروشگاه کسر شده است. پس
+/// همه‌ی فاکتورهای قبلِ این نسخه بدون هیچ مهاجرتی مو‌به‌مو مثل قبل رفتار می‌کنند.
+/// ===========================================================================
+model SaleItemStockAllocation {
+  id            Int      @id @default(autoincrement())
+  invoiceId     Int
+  saleItemId    Int
+  variantId     Int
+  /// STORE = انبار فروشگاه · WAREHOUSE = یکی از انبارهای ماژول انبار مرکزی
+  sourceKind    String
+  /// null = انبار پیش‌فرض ماژول انبار مرکزی («انبار مرکزی»)، یا منبع فروشگاه
+  warehouseId   Int?
+  /// نام انبار در همان لحظه (snapshot)
+  warehouseName String   @default("")
+  qty           Int      @default(0)
+  /// موجودی همان منبع بعد از کسر (snapshot) — ورودیِ «خلاصه‌ی کسری‌ها»
+  balanceAfter  Int?
+  /// این برداشت موجودی منبع را منفی کرد؟
+  wentNegative  Boolean  @default(false)
+  /// ردیف‌های واقعیِ SecondaryStockItem که از آن‌ها کم شد (JSON snapshot):
+  /// `[{ id, name, code, taken, remaining }]`
+  rowDetails    String?
+  /// چه مقدار از همین برداشت دوباره برگشته (برگشت از فروش / ویرایش / حذف)
+  restoredQty   Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  @@index([invoiceId])
+  @@index([saleItemId])
+  @@index([variantId])
+  @@index([warehouseId])
+}
+
+/// ===========================================================================
+/// گزارش مدیریت · دفتر هزینه (لات FIFO + قفل فی فروش).
+/// عمداً هیچ relation / FK به فاکتور فروش یا خرید ندارد تا شکل ردیف فروش
+/// و گزارشات فروش کوچک‌ترین تغییری نکنند. حذف کالا سابقه را پاک نمی‌کند.
+/// ===========================================================================
+model PurchaseLot {
+  id                 Int      @id @default(autoincrement())
+  purchaseInvoiceId  Int?
+  variantId          Int
+  qtyIn              Int      @default(0)
+  qtyLeft            Int      @default(0)
+  unitCost           BigInt   @default(0)
+  lotDate            DateTime
+  /// PURCHASE | OPENING | NO_INVOICE
+  source             String   @default("PURCHASE")
+  approx             Boolean  @default(false)
+  createdAt          DateTime @default(now())
+
+  @@index([variantId, lotDate, id])
+  @@index([purchaseInvoiceId])
+}
+
+model SaleItemCost {
+  id                            Int      @id @default(autoincrement())
+  saleItemId                    Int      @unique
+  invoiceId                     Int
+  variantId                     Int
+  qty                           Int      @default(0)
+  fifoCost                      BigInt   @default(0)
+  replacementCost               BigInt   @default(0)
+  /// PURCHASE_INVOICE | PRODUCT_CARD | NO_INVOICE | LEGACY
+  replacementSource             String   @default("LEGACY")
+  /// منبع دقیقِ فی جایگزینی؛ nullable چون فیِ کارت یا لاتِ بی‌فاکتور invoice ندارد.
+  replacementPurchaseInvoiceId  Int?
+  revenue                       BigInt   @default(0)
+  /// EXACT | APPROX | UNKNOWN
+  costStatus                    String   @default("EXACT")
+  lockedAt                      DateTime @default(now())
+
+  @@index([invoiceId])
+  @@index([variantId])
+  @@index([replacementPurchaseInvoiceId])
+}
+
+model CostConsumption {
+  id          Int      @id @default(autoincrement())
+  movementId  Int
+  lotId       Int
+  saleItemId  Int?
+  qty         Int      @default(0)
+  unitCost    BigInt   @default(0)
+  /// SALE | RETURN | SHRINK | EDIT_ADJ
+  kind        String
+  createdAt   DateTime @default(now())
+
+  @@index([movementId])
+  @@index([lotId])
+  @@index([saleItemId])
+}
+
+model CostEngineState {
+  key             String    @id
+  lastMovementId  Int       @default(0)
+  activatedAt     DateTime?
+  openingMode     String    @default("fromActivation")
+}
+
+model CostEngineLock {
+  key    String    @id
+  busyAt DateTime?
+}
+
+model CostEngineFailure {
+  id          Int      @id @default(autoincrement())
+  movementId  Int      @unique
+  message     String
+  createdAt   DateTime @default(now())
+}
+
+/// هدف فروش ماهانهٔ گزارش مدیریت. به فاکتور فروش وصل نیست.
+/// userId = 0 یعنی کل مغازه. مبلغ هدف همیشه فروش خالص تعهدی است، نه سود.
+model MgmtTarget {
+  id          Int      @id @default(autoincrement())
+  monthJalali String
+  userId      Int      @default(0)
+  amount      BigInt   @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([monthJalali, userId])
+}
+
+/// ===========================================================================
+/// پنل پیامکی — کاملاً مستقل.
+///
+/// قانون این بخش: هیچ‌کدام از این جدول‌ها به فروش، برگشت، تعویض یا اعتبار
+/// «قلاب» نشده‌اند. تنها ارتباط، دو شناسه‌ی اختیاری (`relatedEntityId` و
+/// `customerId`) است که **scalar** مانده‌اند — یعنی حذف مشتری یا ابطال فاکتور
+/// هرگز سابقه‌ی پیام را پاک یا خراب نمی‌کند. همان اصلی که در
+/// `SecondaryStockLog` هم رعایت شده.
+/// ===========================================================================
+
+/// تنظیمات یک سرویس‌دهنده‌ی پیامک.
+///
+/// رازها (`apiKey`) در `credentialsEncrypted` می‌نشینند و با همان گاوصندوق
+/// پنل‌ها (`PanelVault` → AES-256-GCM با کلید بیرون از فایل دیتابیس) مهر
+/// می‌شوند. متن خام کلید **هرگز** در SQLite نمی‌نشیند و از IPC هم برنمی‌گردد.
+model SmsProviderConfig {
+  id        Int     @id @default(autoincrement())
+  name      String
+  /// LOG_ONLY | SMS_IR | KAVENEGAR  (فهرست مجاز در `@shared/sms.ts`)
+  providerKey String  @default("LOG_ONLY")
+  isActive  Boolean @default(false)
+
+  /// آدرس پایه و سرشماره — برای سرویس‌دهنده‌هایی که امکان تغییرشان را می‌دهند
+  baseUrl      String?
+  senderNumber String?
+  /// SERVICE | ADS | BOTH — کدام نوع پیام از این خط برود (قاعده‌ی مقرراتی)
+  purpose      String  @default("BOTH")
+  /// شناسه‌ی «پترن» تأییدشده در پنل سرویس‌دهنده
+  patternId    String?
+  /// پیام‌های خدماتی (تشکر/یادآوری) با «الگوی تأییدشده» بروند یا با متن ویرایش‌شده؟
+  /// پیش‌فرض `true` = رفتار قبلی (اگر `patternId` پر باشد، الگو می‌رود).
+  patternForService Boolean @default(true)
+
+  /// رازِ مهرشده (JSON: { apiKey, username, password, ... }) — نه متن خام
+  credentialsEncrypted String?
+  credentialsVersion   Int     @default(1)
+
+  lastHealthCheckAt DateTime?
+  /// OK | FAILED | NEEDS_RECONFIGURATION | null
+  lastHealthStatus  String?
+  lastHealthNote    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([providerKey])
+}
+
+/// قالب متن پیام. `code` کلید ثابت برنامه است (مثل SALE_THANK_YOU).
+///
+/// قالب‌های سیستمی (`isSystem`) حذف نمی‌شوند — فقط می‌شود متنشان را عوض کرد.
+/// دو قالب جدا برای اعتبارِ تاریخ‌دار و بی‌تاریخ نگه داشته می‌شود تا آنجا که
+/// «تا {credit_expiry} معتبر است» برای کد بدون تاریخ تبدیل به «تا بدون انقضا
+/// معتبر است» نشود.
+model SmsTemplate {
+  id       Int    @id @default(autoincrement())
+  code     String @unique
+  title    String
+  /// SALE | CREDIT | CAMPAIGN | SYSTEM
+  category String @default("SYSTEM")
+  body     String @default("")
+
+  isActive Boolean @default(true)
+  isSystem Boolean @default(false)
+  version  Int     @default(1)
+
+  createdByUserId Int?
+  updatedByUserId Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([category])
+  @@index([isActive])
+}
+
+/// صف پیام‌ها — قلب پنل پیامکی.
+///
+/// هر پیام **دو** وضعیت دارد و این عمدی است:
+///   • وضعیت کسب‌وکاری (کسب‌وکار تصمیم گرفته بفرستد یا نه) در ماژول خودش می‌ماند،
+///   • وضعیت ارسال واقعی (`status` این جدول) فقط اینجا زندگی می‌کند.
+/// هیچ‌وقت این دو یکی نیستند؛ باگ «سهمیه‌ی یادآوری بدون ارسال سوخت» از قاطی
+/// کردن همین دو می‌آمد.
+model SmsOutbox {
+  id        Int    @id @default(autoincrement())
+  /// یکتا: جلوگیری از پیام تکراری (شرط «دو بار کلیک ⇒ یک پیام»)
+  dedupeKey String @unique
+
+  /// SALE_THANK_YOU | CREDIT_REMINDER | CAMPAIGN | MANUAL | TEST
+  eventType String
+  templateId       Int?
+  providerConfigId Int?
+  customerId       Int?
+  /// کمپین تبلیغاتی که این ردیف به آن تعلق دارد (گروه‌بندی «لغو گروهی»)
+  campaignId       Int?
+
+  /// snapshot — تغییر بعدیِ شماره/نام مشتری، متن تاریخی را عوض نمی‌کند
+  phoneSnapshot        String  @default("")
+  customerNameSnapshot String?
+  bodySnapshot         String  @default("")
+  variablesJson        String?
+
+  /// سند مرتبط. عمداً scalar و بدون relation (حذف سند ⇒ سابقه می‌ماند)
+  relatedEntity   String?
+  relatedEntityId Int?
+
+  /// PENDING | PROCESSING | SENT | FAILED_RETRYABLE | FAILED_FINAL
+  /// | CANCELED | SKIPPED | UNKNOWN
+  status   String @default("PENDING")
+  /// کمتر = زودتر. پیامک تراکنشی (۳) از جلوی کمپین (۷) می‌پرد.
+  priority Int    @default(5)
+
+  attemptCount Int @default(0)
+  maxAttempts  Int @default(5)
+  /// تعداد بخش‌های پیام (فارسی ⇒ هر ۷۰ نویسه یک بخش)
+  segments     Int @default(1)
+
+  /// زمان‌بندی دلخواه کاربر — تا نرسیده، کارگر برنمی‌داردش
+  scheduledAt   DateTime?
+  nextAttemptAt DateTime?
+
+  /// قفل نرمِ کارگر (بدون دیتابیس قفل‌کننده‌ی دوم)
+  lockedAt DateTime?
+  lockedBy String?
+
+  lastAttemptAt    DateTime?
+  sentAt           DateTime?
+  providerMessageId String?
+  providerStatus    String?
+  lastErrorCode     String?
+  lastErrorMessage  String?
+
+  canceledAt       DateTime?
+  canceledByUserId Int?
+  cancelReason     String?
+
+  createdByUserId Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// ایندکس اصلی کارگر: «چه چیزی الان باید برود؟»
+  @@index([status, nextAttemptAt])
+  @@index([scheduledAt])
+  @@index([eventType])
+  @@index([customerId])
+  @@index([relatedEntity, relatedEntityId])
+  @@index([campaignId])
+  @@index([createdAt])
+}
+
+/// سابقه‌ی هر تلاش ارسال. برای «چرا نرفت؟» و «چند بار تلاش شد؟».
+/// اطلاعات محرمانه‌ی سرویس‌دهنده هرگز اینجا ثبت نمی‌شود.
+model SmsAttempt {
+  id       Int @id @default(autoincrement())
+  outboxId Int
+  attemptNo Int
+
+  startedAt  DateTime
+  finishedAt DateTime?
+
+  /// OK | RETRYABLE | WAITING | FINAL | UNKNOWN
+  result String
+
+  httpStatus        Int?
+  providerMessageId String?
+  errorCode         String?
+  errorMessage      String?
+  responseMetadataJson String?
+
+  @@index([outboxId])
+  @@index([result])
+}
+
+/// انصراف از پیامک تبلیغاتی — **به تفکیک شماره**، نه مشتری.
+///
+/// چرا شماره و نه `customerId`: مشتری می‌تواند شماره‌اش را عوض کند و بعد
+/// «شماره‌ی قبلی» دوباره پیام بگیرد. «لغو ۱۱» یعنی همین شماره دیگر تبلیغ
+/// نگیرد، پس مرجع هم باید شماره باشد.
+model SmsOptOut {
+  id        Int      @id @default(autoincrement())
+  phone     String   @unique
+  /// PANEL | CAMPAIGN | IMPORT
+  source    String   @default("PANEL")
+  reason    String?
+  note      String?
+  createdAt DateTime @default(now())
+  createdByUserId Int?
+
+  @@index([createdAt])
+}
+
+/// کمپین پیامک انبوه — سرگروهِ ردیف‌های صف.
+///
+/// بدون این جدول، «لغو گروهی» یعنی جست‌وجو در میلیون‌ها ردیف صف و تاریخچه‌ی
+/// «چرا این ۱۰۰۰ پیام رفت» گم می‌شد. شمارنده‌ها **snapshot** لحظه‌ی ثبت‌اند.
+model SmsCampaign {
+  id       Int     @id @default(autoincrement())
+  name     String
+  body     String
+  templateId Int?
+  /// BANK | PASTE | MIXED
+  audienceSource String @default("BANK")
+  /// متنی که همان لحظه به پیام‌ها چسبید (اگر بعداً عوض شود، سابقه دست‌نخورده می‌ماند)
+  optOutNote    String @default("")
+  audienceCount Int    @default(0)
+  queuedCount   Int    @default(0)
+  skippedCount  Int    @default(0)
+  optOutSkipped Int    @default(0)
+  invalidCount  Int    @default(0)
+  duplicateCount Int   @default(0)
+  segments      Int    @default(1)
+  costEstimate  Int    @default(0)
+  /// QUEUED | CANCELED
+  status        String @default("QUEUED")
+  scheduledAt   DateTime?
+  createdAt     DateTime @default(now())
+  createdByUserId Int?
+  canceledAt      DateTime?
+  canceledByUserId Int?
+  cancelReason    String?
+
+  @@index([status, createdAt])
+  @@index([createdAt])
+}

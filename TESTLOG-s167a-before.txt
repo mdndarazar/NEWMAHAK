@@ -1,0 +1,38 @@
+(node:4892) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:4892) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) نسیه‌ی دیروز ۱٬۰۰۰ (۳۰۰ پرداخت دیروز) ⇒ برگشت ۶۰۰ امروز ⇒ بدهی ۱۰۰ ⇒ دریافت ۷۰۰ با تأیید (اضافه‌دریافت ۶۰۰)
+  ✓ اضافه‌دریافت روی پرداخت = 600
+  ✓ پل امروز بسته = 0
+  ✓ وصول نسیه‌ی دوره‌ی قبل ۷۰۰ (بدون تغییر عدد) = 700
+  ✓ ردیف overpayReceived امروز ۰ (بدون دوبار کسر) = 0
+  ✗ statements.credit.settledPriorOverpay = ۶۰۰ — انتظار 600، دریافت undefined
+  ✗ hint پل «وصول نسیه‌ی دوره‌ی قبل» مبلغ ۶۰۰ اضافه‌دریافت را صریح می‌گوید
+  ✗ hint صریحاً «فروش نیست»
+
+۲) کنترل: اضافه‌دریافت روی فاکتور *امروز* در این عدد نمی‌آید (ردیف overpayReceived خودش را دارد)
+  ✓ پل امروز بسته = 0
+  ✓ overpayReceived امروز ۳۰۰ = 300
+  ✗ settledPriorOverpay هنوز ۶۰۰ — انتظار 600، دریافت undefined
+
+۳) کنترل: وصول دوره‌ی قبل *بدون* اضافه‌دریافت ⇒ پسوند hint ظاهر نمی‌شود
+  ✗ settledPriorOverpay بدون تغییر ۶۰۰ (وصول ۲۰۰ اضافه ندارد) — انتظار 600، دریافت undefined
+  ✓ وصول دوره‌ی قبل ۹۰۰ = 900
+
+۴) ابطال پرداخت اضافه‌دار ⇒ برچسب هم صفر می‌شود و پسوند hint حذف
+  ✓ پل امروز بسته = 0
+  ✗ settledPriorOverpay = ۰ — انتظار 0، دریافت undefined
+  ✓ hint بدون پسوند اضافه‌دریافت
+
+۵) UI: بلوک ۶ ردیف نمایشی sign=0 دارد و در خالص جمع نمی‌شود
+  ✗ ردیف settledPriorOverpay در AccountingBlocks.tsx
+  ✗ ردیف با sign={0} (فقط نمایشی)
+  ✗ برچسب «فروش نیست»
+
+SNAPSHOT-NUMBERS (باید قبل/بعد از رفع یکسان باشد): {"bridge":[["realCash",700],["managerAccountReceived",0],["destinationUnknownReceived",0],["storeCreditIssued",0],["priorCreditSettlements",-700],["priorClearedCheques",0],["priorManagerAccountReceived",0],["priorDestinationUnknownReceived",0],["storeCreditUsed",0],["uncollectedCredit",0],["cashRefunds",0],["cardRefunds",0],["cardToCardRefunds",0],["exchangeCashRefunds",0],["exchangeCardRefunds",0],["exchangeCardToCardRefunds",0],["priorDebtReturns",-600],["overpayReceived",0]],"unexplained":0,"cash":700,"settledPrior":700,"settledPriorCash":700}
+
+✗ 9 بررسی موفق · 9 ناموفق

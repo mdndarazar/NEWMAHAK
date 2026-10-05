@@ -1,0 +1,497 @@
+diff -ruN '--exclude=node_modules' /home/user/work/orig162/src/main/services/CashboxService.ts src/main/services/CashboxService.ts
+--- /home/user/work/orig162/src/main/services/CashboxService.ts	2026-09-27 10:26:31.904482782 +0000
++++ src/main/services/CashboxService.ts	2026-09-27 10:31:43.880202472 +0000
+@@ -414,7 +414,7 @@
+     clearedManagerCheques: acc?.cheques.clearedToManager ?? 0,
+     /** کل چکِ پاس‌شده‌ی بازه (جمع چهار ردیف بالا) — فقط برای نمایش و تطبیق */
+     clearedChequesAll: acc?.cheques.cleared ?? 0,
+-    /** وصول نسیه‌ی بازه‌های قبل، فقط سهم نقد */
++    /** وصول نسیه‌ی بازه‌های قبل، فقط سهم نقد — نشست ۱۶۴ · Y21: داخل cashReceived است، فقط نمایشی */
+     priorCreditSettlements: acc?.credit.settledPriorCash ?? 0,
+     priorCreditSettlementsCard: acc?.credit.settledPriorCard ?? 0,
+     priorCreditSettlementsOther: acc?.credit.settledPriorOther ?? 0,
+@@ -427,8 +427,12 @@
+     managerAccountReceived: acc?.cash.managerAccountReceived ?? 0,
+     destinationUnknownReceived: acc?.cash.destinationUnknownReceived ?? 0,
+     /** «انتظار کارتخوان» = دریافتی کارت + چکی که با کارتخوان وصول شد + سهم کارتِ وصولی قبل */
++    /**
++     * نشست ۱۶۴ · Y21 — `cardReceived` و `clearedToCard` از قبل وصول دوره‌ی قبل را دارند؛
++     * `settledPriorCard` دیگر جدا جمع زده نمی‌شود (همان دوبارشماریِ نقد، سمت کارتخوان).
++     */
+     cardExpected:
+-      (acc?.cash.cardReceived ?? 0) + (acc?.cheques.clearedToCard ?? 0) + (acc?.credit.settledPriorCard ?? 0)
++      (acc?.cash.cardReceived ?? 0) + (acc?.cheques.clearedToCard ?? 0)
+   }
+ }
+ 
+@@ -534,7 +538,7 @@
+      *   expectedCash = openingFloat
+      *                + cashReceived            (فقط نقد فیزیکی)
+      *                + clearedCashChequeAmount (چکی که در این بازه پاس شد)
+-     *                + priorCashSettlements    (وصول نسیه‌ی بازه‌های قبل)
++     *                (وصول نسیه‌ی بازه‌های قبل داخل cashReceived است و جدا جمع زده نمی‌شود — نشست ۱۶۴ · Y21)
+      *                + deposits
+      *                − cashReturnRefunds
+      *                − cashExchangeRefunds
+@@ -633,6 +637,8 @@
+      *   ۳) `priorCashSettlements` فقط **سهم نقدِ** وصول نسیه‌ی بازه‌های قبل است.
+      *      قبلاً کل وصولی (نقد + کارت + سایر) اینجا می‌آمد، پس پولی که روی
+      *      کارتخوان نشسته بود «نقد مورد انتظار» را بالا می‌برد.
++     *      نشست ۱۶۴ · Y21 (S163-D2): این مبلغ داخل `cashReceived` است؛ فقط نمایشی پاس می‌شود و
++     *      `calculateCashClose` دیگر آن را به نقد مورد انتظار اضافه نمی‌کند (دوبارشماری).
+      * و `managerAccountReceived` فقط برای *نمایش* پاس می‌شود؛ در فرمول هیچ نقشی
+      * ندارد و نباید داشته باشد (آن پول داخل کشو نیست).
+      */
+diff -ruN '--exclude=node_modules' /home/user/work/orig162/src/main/services/SalesService.ts src/main/services/SalesService.ts
+--- /home/user/work/orig162/src/main/services/SalesService.ts	2026-09-27 10:26:31.908482830 +0000
++++ src/main/services/SalesService.ts	2026-09-27 10:31:46.164229701 +0000
+@@ -1011,6 +1011,139 @@
+   )
+ }
+ 
++/**
++ * ===========================================================================
++ * نشست ۱۶۴ · Y22 · بند ۴-۵۲ (S163-D3) — چک در جریان روی فاکتوری که برگشت خورده.
++ *
++ *   • برگشتی که بدهی فاکتور را **صفر** کند (remaining ≤ ۰ بعد از recalcSettlement، در حالی که
++ *     قبل از همین برگشت > ۰ بود) ⇒ هر چک در جریانِ باطل‌نشده‌ی همان فاکتور خودکار void می‌شود:
++ *     voidedAt، voidedByUserId = actor، voidReason با ارجاع به بند ۴-۵۲ و شماره‌ی سند برگشت،
++ *     و یک ردیف Audit VOID روی Payment. بدون این، چک بعداً پاس می‌شد و کل مبلغش اضافه‌دریافت
++ *     بی‌پشتوانه می‌ساخت (مشتری هم کالا را پس داده بود و هم پول چک را داده بود).
++ *   • برگشت جزئی (بدهی هنوز باقی است) ⇒ چک دست‌نخورده + Audit با needsManagerReview=true.
++ *     علامت «این چک نیاز به بازبینی دارد» در زمان خواندن از خودِ داده مشتق می‌شود (چک PENDING و
++ *     باطل‌نشده + برگشت باطل‌نشده‌ی بعد از ثبت چک روی همان فاکتور) تا داده‌ی قدیمی هم علامت بگیرد.
++ *   • ابطال همان برگشت (returnDelete) ⇒ چکی که به‌خاطر همان سند خودکار باطل شده بود، طبق ۴-۲۲
++ *     خودکار برمی‌گردد (restoreChequesAfterReturnVoid).
++ * ===========================================================================
++ */
++const chequeAutoVoidMarker = (returnId: number) => `(بند ۴-۵۲): برگشت سند ${faDigits(returnId)} `
++
++async function chequePolicyAfterReturn(
++  tx: Prisma.TransactionClient,
++  ctx: { invoiceId: number; receiptNo: number; returnId: number; remainingBefore: number; remainingAfter: number; userId: number | null }
++): Promise<{ voided: number[]; flagged: number[] }> {
++  const cheques = await tx.payment.findMany({
++    where: { invoiceId: ctx.invoiceId, voidedAt: null, kind: PaymentEntryKind.CHEQUE, chequeStatus: ChequeStatus.PENDING },
++    select: { id: true, amount: true, seq: true, chequeNo: true }
++  })
++  if (!cheques.length) return { voided: [], flagged: [] }
++  const receipt = faDigits(ctx.receiptNo)
++  if (ctx.remainingBefore > 0 && ctx.remainingAfter <= 0) {
++    const voidedAt = new Date()
++    const reason = `ابطال خودکار ${chequeAutoVoidMarker(ctx.returnId)}بدهی فاکتور ${receipt} را صفر کرد`
++    for (const c of cheques) {
++      await tx.payment.update({
++        where: { id: c.id },
++        data: { voidedAt, voidedByUserId: ctx.userId ?? null, voidReason: reason }
++      })
++      await audit(tx, {
++        action: AuditAction.VOID,
++        entity: 'Payment',
++        entityId: c.id,
++        userId: ctx.userId ?? null,
++        before: JSON.stringify({ invoiceId: ctx.invoiceId, amount: c.amount, seq: c.seq, chequeNo: c.chequeNo, chequeStatus: ChequeStatus.PENDING }),
++        after: JSON.stringify({ voidedAt, voidedByUserId: ctx.userId ?? null, voidReason: reason, returnId: ctx.returnId }),
++        note:
++          `چک ${c.chequeNo ? `شماره ${c.chequeNo} ` : ''}به مبلغ ${money(Math.round(c.amount ?? 0))} ریال روی فاکتور ${receipt} خودکار باطل شد: ` +
++          `برگشت سند ${faDigits(ctx.returnId)} بدهی این فاکتور را صفر کرد (بند ۴-۵۲). چک فیزیکی را به مشتری پس بدهید یا نزد مدیر نگه دارید؛ نباید به بانک برود.`
++      })
++    }
++    return { voided: cheques.map((c) => c.id), flagged: [] }
++  }
++  for (const c of cheques) {
++    await audit(tx, {
++      action: AuditAction.CHEQUE_STATUS,
++      entity: 'Payment',
++      entityId: c.id,
++      userId: ctx.userId ?? null,
++      after: JSON.stringify({ needsManagerReview: true, returnId: ctx.returnId, remaining: ctx.remainingAfter, chequeAmount: c.amount }),
++      note:
++        `⚠️ رسیدگی مدیر · این چک نیاز به بازبینی دارد: فاکتور ${receipt} بعد از ثبت چک برگشت جزئی خورد (سند ${faDigits(ctx.returnId)}). ` +
++        `مبلغ چک ${money(Math.round(c.amount ?? 0))} ریال، بدهی باقی‌مانده ${money(Math.max(0, ctx.remainingAfter))} ریال (بند ۴-۵۲).`
++    })
++  }
++  return { voided: [], flagged: cheques.map((c) => c.id) }
++}
++
++/** نشست ۱۶۴ · Y22 · بند ۴-۲۲ — ابطال برگشت ⇒ چکی که همین سند خودکار باطل کرده بود برمی‌گردد */
++async function restoreChequesAfterReturnVoid(
++  tx: Prisma.TransactionClient,
++  ctx: { invoiceId: number; receiptNo: number; returnId: number; userId: number | null; reason: string }
++): Promise<number[]> {
++  const rows = await tx.payment.findMany({
++    where: {
++      invoiceId: ctx.invoiceId,
++      kind: PaymentEntryKind.CHEQUE,
++      chequeStatus: ChequeStatus.PENDING,
++      NOT: { voidedAt: null },
++      voidReason: { contains: chequeAutoVoidMarker(ctx.returnId) }
++    },
++    select: { id: true, amount: true, chequeNo: true, voidedAt: true, voidReason: true, voidedByUserId: true }
++  })
++  for (const c of rows) {
++    await tx.payment.update({ where: { id: c.id }, data: { voidedAt: null, voidedByUserId: null, voidReason: null } })
++    await audit(tx, {
++      action: AuditAction.VOID,
++      entity: 'Payment',
++      entityId: c.id,
++      userId: ctx.userId ?? null,
++      before: JSON.stringify({ voidedAt: c.voidedAt, voidedByUserId: c.voidedByUserId, voidReason: c.voidReason }),
++      after: JSON.stringify({ voidedAt: null, restoredBecauseReturnVoided: ctx.returnId }),
++      note:
++        `چک ${c.chequeNo ? `شماره ${c.chequeNo} ` : ''}به مبلغ ${money(Math.round(c.amount ?? 0))} ریال روی فاکتور ${faDigits(ctx.receiptNo)} دوباره «در جریان» شد، ` +
++        `چون سند برگشت ${faDigits(ctx.returnId)} که آن را خودکار باطل کرده بود ابطال شد (بند ۴-۲۲) · دلیل: ${ctx.reason}. ` +
++        'اگر چک فیزیکی به مشتری پس داده شده، آن را دستی باطل کنید.'
++    })
++  }
++  return rows.map((r) => r.id)
++}
++
++/**
++ * نشست ۱۶۴ · Y22 — علامت مشتقِ «نیاز به بازبینی» برای چک‌های در جریان: برگشت باطل‌نشده‌ای که
++ * بعد از ثبت چک روی همان فاکتور ثبت شده. خروجی: شناسه‌ی پرداخت ⇒ متن هشدار.
++ */
++async function chequeReviewNotes(
++  client: any,
++  payments: { id: number; invoiceId: number; kind?: string | null; chequeStatus?: string | null; voidedAt?: any; createdAt?: any; amount?: number | null }[]
++): Promise<Map<number, string>> {
++  const out = new Map<number, string>()
++  const pend = payments.filter(
++    (p) => (p.kind ?? '') === PaymentEntryKind.CHEQUE && (p.chequeStatus ?? ChequeStatus.PENDING) === ChequeStatus.PENDING && p.voidedAt == null
++  )
++  if (!pend.length) return out
++  const invoiceIds = [...new Set(pend.map((p) => p.invoiceId))]
++  const rets: { id: number; invoiceId: number; returnedAt: any }[] = []
++  for (let i = 0; i < invoiceIds.length; i += 500)
++    rets.push(
++      ...(await client.saleReturn.findMany({
++        where: { invoiceId: { in: invoiceIds.slice(i, i + 500) }, voidedAt: null },
++        select: { id: true, invoiceId: true, returnedAt: true }
++      }))
++    )
++  for (const p of pend) {
++    const created = p.createdAt ? new Date(p.createdAt).getTime() : 0
++    const hits = rets.filter((r) => r.invoiceId === p.invoiceId && new Date(r.returnedAt).getTime() >= created)
++    if (!hits.length) continue
++    out.set(
++      p.id,
++      `⚠️ این چک نیاز به بازبینی دارد: فاکتورش بعد از ثبت چک برگشت خورده (سند برگشت ${hits.map((h) => faDigits(h.id)).join('، ')}). ` +
++        'مبلغ چک را با بدهی باقی‌مانده‌ی فاکتور تطبیق دهید و پیش از خواباندن به حساب با مشتری تصمیم بگیرید (بند ۴-۵۲).'
++    )
++  }
++  return out
++}
++
+ /** روش پرداخت مخصوص چک؛ اگر نبود، همان لحظه ساخته می‌شود (در فهرست‌ها دیده نمی‌شود). */
+ async function chequeMethodId(client: Client): Promise<number> {
+   const existing = await client.paymentMethod.findUnique({ where: { key: CHEQUE_METHOD_KEY } })
+@@ -2446,6 +2579,15 @@
+       include: { items: true, returns: { where: { voidedAt: null }, include: { items: true } } }
+     })
+     if (!invoice) throw new BusinessError('این فاکتور پیدا نشد؛ ممکن است حذف شده باشد.')
++    /** نشست ۱۶۴ · Y22 · بند ۴-۵۲ — بدهی فاکتور *پیش از* این برگشت (برای تشخیص «این برگشت بدهی را صفر کرد») */
++    const remainingBeforeReturn = (
++      await invoiceRemaining(
++        tx,
++        invoice.id,
++        Math.round(invoice.grandTotal ?? 0),
++        receivedTotalOf(await tx.payment.findMany({ where: { invoiceId: invoice.id, voidedAt: null }, select: { amount: true, kind: true, chequeStatus: true } }) as any[])
++      )
++    ).remaining
+     /**
+      * نشست ۲ زنجیره رفع · C7 (بند ۴-۲۰) — برگشت روی فاکتور لغوشده یا پیش‌نویس
+      * کاملاً ممنوع است؛ این دیوار مستقل از UI در main است.
+@@ -2853,6 +2995,15 @@
+       userId: input.userId ?? null,
+       why: `ثبت برگشت ${faDigits(ret.id)}`
+     })
++    /** نشست ۱۶۴ · Y22 · بند ۴-۵۲ — چک در جریان: صفر شدن بدهی ⇒ void خودکار؛ جزئی ⇒ علامت بازبینی */
++    const chequePolicy = await chequePolicyAfterReturn(tx, {
++      invoiceId: invoice.id,
++      receiptNo: invoice.receiptNo,
++      returnId: ret.id,
++      remainingBefore: remainingBeforeReturn,
++      remainingAfter: settleAfter.remaining,
++      userId: input.userId ?? null
++    })
+ 
+     return {
+       id: ret.id,
+@@ -2863,6 +3014,9 @@
+       /** نشست ۵۸ — بدهی و اضافه‌دریافت فاکتور بعد از این برگشت */
+       invoiceRemaining: settleAfter.remaining,
+       invoiceOverpaid: settleAfter.overpaid,
++      /** نشست ۱۶۴ · Y22 — چک‌های خودکار باطل‌شده / نیازمند بازبینی (بند ۴-۵۲) */
++      chequesAutoVoided: chequePolicy.voided,
++      chequesNeedReview: chequePolicy.flagged,
+       restockedQty: restockNow ? items.reduce((s, i) => s + i.qty, 0) : 0,
+       /** ---- جلسه ۴۰ · کار ب ---- */
+       restockPending: deferRestock,
+@@ -6724,6 +6878,14 @@
+           })
+         }
+ 
++        /** نشست ۱۶۴ · Y22 · بند ۴-۲۲ — چکی که همین سند خودکار باطل کرده بود برمی‌گردد */
++        await restoreChequesAfterReturnVoid(tx, {
++          invoiceId: ret.invoiceId,
++          receiptNo: ret.invoice?.receiptNo ?? 0,
++          returnId: ret.id,
++          userId: input.userId ?? null,
++          reason
++        })
+         // ---- ۵) وضعیت، بدهی و اضافه‌دریافت فاکتور بدون این سند ----
+         const status = await refreshInvoiceStatus(tx, ret.invoiceId)
+         const settleAfter = await recalcSettlement(tx, ret.invoiceId, { userId: input.userId ?? null })
+@@ -6831,7 +6993,13 @@
+     if (!inv) throw new BusinessError('این فاکتور پیدا نشد؛ ممکن است حذف شده باشد. فهرست فاکتورها را تازه کنید.')
+ 
+     const issuedAt = inv.issuedAt instanceof Date ? inv.issuedAt : new Date(inv.issuedAt)
+-    const rows = inv.payments.map(shapePaymentRow)
++    /** نشست ۱۶۴ · Y22 · بند ۴-۵۲ — علامت «این چک نیاز به بازبینی دارد» */
++    const reviewNotes = await chequeReviewNotes(prisma, inv.payments as any[])
++    const rows = inv.payments.map((p: any) => {
++      const row = shapePaymentRow(p)
++      const note = reviewNotes.get(p.id)
++      return note ? { ...row, chequeNeedsReview: true, chequeReviewNote: note } : row
++    })
+     const paidTotal = receivedTotalOf(inv.payments as any[])
+     const grandTotal = Math.round(inv.grandTotal ?? 0)
+     // نشست ۵۸ · C2 — بدهی واحد (برگشت + بازپرداخت)
+@@ -6850,6 +7018,7 @@
+       paidTotal,
+       remaining: debt.remaining,
+       pendingChequeTotal: pendingChequeTotalOf(inv.payments as any[]),
++      chequeReviewCount: reviewNotes.size,
+       settlementState: state,
+       settlementLabel: SETTLEMENT_STATE_LABELS[state],
+       settled: state === 'SETTLED',
+@@ -7772,6 +7941,8 @@
+ 
+     // نشست ۵۸ · C2 — «مانده‌ی فاکتور» چک هم از بدهی واحد می‌آید
+     const debtAdj = await debtAdjustmentsByInvoice(prisma, rows.map((p) => p.invoiceId))
++    /** نشست ۱۶۴ · Y22 · بند ۴-۵۲ — همان علامت بازبینی پنجره‌ی پرداختی‌ها */
++    const reviewNotes = await chequeReviewNotes(prisma, rows as any[])
+     const out = rows.map((p) => {
+       const inv = p.invoice
+       const grandTotal = Math.round(inv?.grandTotal ?? 0)
+@@ -7784,7 +7955,8 @@
+         invoiceDateJalali: inv?.issuedAtJalali ?? '—',
+         customerName: inv?.customer?.name ?? 'مشتری عمومی',
+         invoiceTotal: grandTotal,
+-        invoiceRemaining: debt.remaining
++        invoiceRemaining: debt.remaining,
++        ...(reviewNotes.has(p.id) ? { chequeNeedsReview: true, chequeReviewNote: reviewNotes.get(p.id) } : {})
+       }
+     })
+     return attachReportPage(out, page)
+diff -ruN '--exclude=node_modules' /home/user/work/orig162/src/renderer/src/components/AccountingBlocks.tsx src/renderer/src/components/AccountingBlocks.tsx
+--- /home/user/work/orig162/src/renderer/src/components/AccountingBlocks.tsx	2026-09-27 10:26:31.908482830 +0000
++++ src/renderer/src/components/AccountingBlocks.tsx	2026-09-27 10:27:03.896864218 +0000
+@@ -338,7 +338,8 @@
+           <Row label="کارت دریافتی" value={s.cash.cardReceived} sign={1} onClick={jump('ledger')} />
+           <Row label="سایر روش‌های دریافتی" value={s.cash.otherReceived} sign={1} onClick={jump('ledger')} />
+           <Row label="چک پاس‌شده (تاریخ پاس‌شدن)" value={s.cash.clearedChequeReceived} sign={1} onClick={jump('cheques')} />
+-          <Row label="وصول نسیه‌ی بازه‌های قبل (تاریخ پرداخت)" value={s.cash.priorCreditSettlements} sign={1} onClick={jump('credit')} />
++          {/* نشست ۱۶۴ · Y21 (بند ۴-۵۳) — داخل ردیف‌های نقد/کارت/چک بالاست؛ فقط نمایشی، در خالص دوباره جمع نمی‌شود */}
++          <Row label="از دریافتی‌های بالا: وصول نسیه‌ی دوره‌ی قبل (تاریخ پرداخت)" value={s.cash.priorCreditSettlements} sign={0} onClick={jump('credit')} />
+           <Row label="بازپرداخت نقدی برگشت" value={s.cash.cashRefundsForReturns} sign={-1} onClick={jump('returns')} />
+           <Row label="بازپرداخت کارتی برگشت" value={s.cash.cardRefundsForReturns} sign={-1} onClick={jump('returns')} />
+           <Row label="بازپرداخت نقدی تعویض" value={s.cash.cashRefundsForExchanges} sign={-1} onClick={jump('exchanges')} />
+diff -ruN '--exclude=node_modules' /home/user/work/orig162/src/renderer/src/components/InvoicePaymentsModal.tsx src/renderer/src/components/InvoicePaymentsModal.tsx
+--- /home/user/work/orig162/src/renderer/src/components/InvoicePaymentsModal.tsx	2026-09-27 10:26:31.908482830 +0000
++++ src/renderer/src/components/InvoicePaymentsModal.tsx	2026-09-27 10:30:07.895058047 +0000
+@@ -509,6 +509,13 @@
+                       <td className={r.counted ? 'text-emerald-700' : 'text-amber-700 font-bold'}>
+                         {r.kind === 'CHEQUE' ? r.chequeStatusLabel : 'دریافت شد'}
+                         {r.clearedAtJalali ? <span className="kbd"> ({faDigits(r.clearedAtJalali)})</span> : null}
++                        {/* نشست ۱۶۴ · Y22 · بند ۴-۵۲ — هشدار کهربایی (نارنجی فقط برای ردیف ارجاعی است) */}
++                        {r.chequeNeedsReview ? (
++                          <div className="mt-1 rounded bg-amber-100 px-1 text-amber-900 font-bold whitespace-normal" title={r.chequeReviewNote ?? ''}>
++                            ⚠️ نیاز به بازبینی
++                            {r.chequeReviewNote ? <div className="kbd font-normal leading-5">{r.chequeReviewNote}</div> : null}
++                          </div>
++                        ) : null}
+                       </td>
+                       {/* بخش ۸: مبلغ اضافه‌ی همین پرداختی، واضح و جدا */}
+                       <td className={r.overpayAmount > 0 ? 'text-amber-700 font-bold' : ''}>
+diff -ruN '--exclude=node_modules' /home/user/work/orig162/src/renderer/src/components/ReportExtraTables.tsx src/renderer/src/components/ReportExtraTables.tsx
+--- /home/user/work/orig162/src/renderer/src/components/ReportExtraTables.tsx	2026-09-27 10:26:31.908482830 +0000
++++ src/renderer/src/components/ReportExtraTables.tsx	2026-09-27 10:30:07.891057999 +0000
+@@ -50,7 +50,10 @@
+   daysLate: 'روز تأخیر',
+   daysLeft: 'روز مانده'
+   ,
+-  chequeHistoryText: 'تاریخچه وضعیت چک'
++  chequeHistoryText: 'تاریخچه وضعیت چک',
++  /** نشست ۱۶۴ · Y22 · بند ۴-۵۲ */
++  chequeNeedsReview: 'نیاز به بازبینی',
++  chequeReviewNote: 'هشدار بازبینی چک'
+ }
+ 
+ const MONEY_KEYS = /amount|total|price|refund|diff|balance|credit|cash|card|value/i
+diff -ruN '--exclude=node_modules' /home/user/work/orig162/src/renderer/src/pages/CashClose.tsx src/renderer/src/pages/CashClose.tsx
+--- /home/user/work/orig162/src/renderer/src/pages/CashClose.tsx	2026-09-27 10:26:31.912482878 +0000
++++ src/renderer/src/pages/CashClose.tsx	2026-09-27 10:27:03.896864218 +0000
+@@ -525,7 +525,7 @@
+                  * سهمِ واقعی چاپ می‌شود و فقط دو سهمِ اول در نقد انتظاری هستند.
+                  */
+                 { label: 'چک پاس‌شده (نقد به صندوق)', value: money(components.clearedCashCheques) },
+-                { label: 'وصول نسیه‌ی بازه‌های قبل (نقد)', value: money(components.priorCreditSettlements) },
++                { label: 'از نقد دریافتی: وصول نسیه‌ی دوره‌ی قبل (جدا جمع نمی‌شود)', value: money(components.priorCreditSettlements) },
+                 { label: 'واریز به صندوق', value: money(components.deposits) },
+                 { label: 'بازپرداخت نقدی برگشت', value: `− ${money(components.cashReturnRefunds)}` },
+                 { label: 'بازپرداخت نقدی تعویض', value: `− ${money(components.cashExchangeRefunds)}` },
+@@ -881,12 +881,11 @@
+                 1,
+                 'بر اساس تاریخ پاس‌شدن، نه تاریخ فاکتور.'
+               ],
+-              [
+-                'وصول نسیه‌ی بازه‌های قبل — سهم نقد',
+-                components?.priorCreditSettlements ?? 0,
+-                1,
+-                'بر اساس تاریخ دریافت واقعی. سهم کارت و سایرش پایین، در ردیف‌های فقط نمایشی است.'
+-              ],
++              /**
++               * نشست ۱۶۴ · Y21 (S163-D2) — ردیف «وصول نسیه‌ی بازه‌های قبل — سهم نقد» از این فرمول بیرون رفت:
++               * آن مبلغ داخل «نقد دریافتی این بازه» است و جمع‌زدن دوباره‌اش کسری کاذب می‌ساخت. حالا در
++               * ردیف‌های فقط نمایشی پایین با برچسب «داخل نقد دریافتی» آمده است.
++               */
+               ['واریز به صندوق', components?.deposits ?? 0, 1, ''],
+               ['بازپرداخت نقدی برگشت', components?.cashReturnRefunds ?? 0, -1, 'از کشو بیرون رفته است.'],
+               ['بازپرداخت نقدی تعویض', components?.cashExchangeRefunds ?? 0, -1, ''],
+@@ -949,7 +948,7 @@
+               [
+                 'انتظار کارتخوان این بازه',
+                 components?.cardExpected ?? 0,
+-                'دریافتی کارت + چکی که با کارتخوان وصول شد + سهم کارتِ وصولی بازه‌های قبل. همین عدد را با رسید دستگاه کارتخوان مقایسه کنید، نه با ستون قدیمیِ «کارت».'
++                'دریافتی کارت (شامل سهم کارتِ وصول نسیه‌ی بازه‌های قبل) + چکی که با کارتخوان وصول شد. همین عدد را با رسید دستگاه کارتخوان مقایسه کنید، نه با ستون قدیمیِ «کارت».'
+               ],
+               [
+                 'چک پاس‌شده — با کارتخوان وصول شد',
+@@ -968,9 +967,14 @@
+                 DESTINATION_UNKNOWN_ROW_NOTE
+               ],
+               [
++                'وصول نسیه‌ی دوره‌ی قبل — سهم نقد (داخل «نقد دریافتی این بازه»)',
++                components?.priorCreditSettlements ?? 0,
++                'بر اساس تاریخ دریافت واقعی. این پول امروز واقعاً وارد کشو شده ولی بابت فروش روزهای قبل است؛ از «نقد دریافتی» بالا همین مقدار مال وصول نسیه‌ی قدیمی است و جدا جمع زده نمی‌شود.'
++              ],
++              [
+                 'وصول نسیه‌ی بازه‌های قبل — سهم کارت',
+                 components?.priorCreditSettlementsCard ?? 0,
+-                'در «انتظار کارتخوان» بالا آمده است.'
++                'داخل «انتظار کارتخوان» بالا هست (از طریق دریافتی کارت)، جدا جمع زده نمی‌شود.'
+               ],
+               [
+                 'وصول نسیه‌ی بازه‌های قبل — سهم سایر',
+diff -ruN '--exclude=node_modules' /home/user/work/orig162/src/renderer/src/pages/SalesReports.tsx src/renderer/src/pages/SalesReports.tsx
+--- /home/user/work/orig162/src/renderer/src/pages/SalesReports.tsx	2026-09-27 10:26:31.912482878 +0000
++++ src/renderer/src/pages/SalesReports.tsx	2026-09-27 10:30:07.895058047 +0000
+@@ -1298,7 +1298,7 @@
+             faDigits(r.dateJalali ?? '—'),
+             faDigits(r.dueDateJalali ?? '—'),
+             faDigits(r.clearedAtJalali ?? '—'),
+-            r.chequeStatusLabel ?? r.chequeStatus ?? '—',
++            (r.chequeStatusLabel ?? r.chequeStatus ?? '—') + (r.chequeNeedsReview ? ' · ⚠️ نیاز به بازبینی' : ''),
+             money(Number(r.amount ?? 0)),
+             r.chequeHistoryText ?? '—'
+           ])
+@@ -1545,7 +1545,7 @@
+             r.dateJalali ?? '',
+             r.dueDateJalali ?? '',
+             r.clearedAtJalali ?? '',
+-            r.chequeStatusLabel ?? r.chequeStatus ?? '',
++            (r.chequeStatusLabel ?? r.chequeStatus ?? '') + (r.chequeNeedsReview ? ' · ⚠️ نیاز به بازبینی' : ''),
+             Number(r.amount ?? 0),
+             r.chequeHistoryText ?? ''
+           ])
+diff -ruN '--exclude=node_modules' /home/user/work/orig162/src/shared/accounting.ts src/shared/accounting.ts
+--- /home/user/work/orig162/src/shared/accounting.ts	2026-09-27 10:26:31.912482878 +0000
++++ src/shared/accounting.ts	2026-09-27 10:31:43.880202472 +0000
+@@ -308,6 +308,7 @@
+    * به فرمول اضافه کند.
+    */
+   managerAccountReceived?: number
++  /** نشست ۱۶۴ · Y21 — فقط نمایشی (داخل cashReceived است)؛ در expectedCash جمع زده نمی‌شود */
+   priorCashSettlements?: number
+   deposits?: number
+   cashReturnRefunds?: number
+@@ -339,6 +340,11 @@
+    * `expectedCash` و `cashDifference`، فقط برای ردیف و هشدار صریح پنل بستن صندوق.
+    */
+   unknownDestinationOutside: Rial
++  /**
++   * نشست ۱۶۴ · Y21 — سهم نقدِ وصول نسیه‌ی دوره‌های قبل که **داخل** `cashReceived`/چک نقدی است.
++   * فقط نمایشی؛ در `expectedCash` دوباره جمع زده نمی‌شود.
++   */
++  priorCashSettlementsIncluded: Rial
+ }
+ 
+ export interface BridgeInput {
+@@ -787,7 +793,14 @@
+     clearedChequeUnknown, priorCreditSettlements,
+     cashRefundsForReturns, cardRefundsForReturns, cashRefundsForExchanges, cardRefundsForExchanges,
+     cashWithdrawals, cashDeposits,
+-    netCashMovement: cashReceived + cardReceived + otherReceived + clearedChequeInflow + priorCreditSettlements
++    /**
++     * نشست ۱۶۴ · Y21 · بند ۴-۵۳ و ۴-۴۹ (S163-D2) — `priorCreditSettlements` دیگر اینجا جمع زده
++     * نمی‌شود: از رفع A1 به بعد `cashReceived/cardReceived/otherReceived` (totals.cash/card/other)
++     * و `clearedChequeInflow` (چک پاس‌شده‌ی بازه بر اساس clearedAt) **از قبل** وصول فاکتورهای
++     * دوره‌های قبل را دارند. جمع‌زدن دوباره‌اش هر وصول نسیه‌ی قدیمی را دو بار در «خالص وجه واقعی»
++     * می‌نشاند. `priorCreditSettlements` فقط ردیف نمایشیِ «از این مقدار، وصول نسیه‌ی دوره‌ی قبل» است.
++     */
++    netCashMovement: cashReceived + cardReceived + otherReceived + clearedChequeInflow
+       - cashRefundsForReturns - cardRefundsForReturns - cashRefundsForExchanges - cardRefundsForExchanges
+       - cashWithdrawals + cashDeposits }
+ }
+@@ -804,15 +817,23 @@
+    * ⚠️ کار الف — «دریافتی به حساب مدیر» در این فرمول **نیست** و نباید باشد:
+    * آن پول داخل کشو نیست، پس نه کسری می‌سازد و نه اضافه.
+    */
++  /**
++   * نشست ۱۶۴ · Y21 · بند ۴-۵۳ (S163-D2) — `priorCashSettlements` **در فرمول نیست**: `cashReceived`
++   * (همه‌ی پرداخت‌های نقد کشوی بازه/نشست) و `clearedCashChequeAmount` (چک نقدیِ پاس‌شده بر اساس
++   * clearedAt) از قبل وصول فاکتورهای دوره‌های قبل را دارند. تا نشست ۱۶۳ این مبلغ دوباره جمع می‌شد
++   * ⇒ هر وصول نسیه‌ی قدیمی به همان اندازه «کسری کاذب» در بستن صندوق می‌ساخت. این ورودی فقط برای
++   * نمایش «از نقد دریافتی، این مقدار وصول دوره‌ی قبل است» نگه داشته شده (`priorCashSettlementsIncluded`).
++   */
+   const expectedCash = openingFloat + n(input.cashReceived) + n(input.clearedCashChequeAmount)
+-    + n(input.priorCashSettlements) + n(input.deposits) - n(input.cashReturnRefunds)
++    + n(input.deposits) - n(input.cashReturnRefunds)
+     - n(input.cashExchangeRefunds) - n(input.withdrawals)
+   const cashDifference = countedCash - expectedCash
+   return { openingFloat, expectedCash, countedCash, cashDifference,
+     state: cashDifference < 0 ? 'SHORTAGE' : cashDifference > 0 ? 'OVERAGE' : 'MATCHED',
+     requiresNote: Math.abs(cashDifference) > Math.max(0, n(threshold)),
+     managerAccountReceived: n(input.managerAccountReceived),
+-    unknownDestinationInExpected, unknownDestinationOutside }
++    unknownDestinationInExpected, unknownDestinationOutside,
++    priorCashSettlementsIncluded: n(input.priorCashSettlements) }
+ }
+ 
+ export function calculateReconciliationBridge(input: BridgeInput = {}): ReconciliationBridge {
+diff -ruN '--exclude=node_modules' /home/user/work/orig162/src/shared/types.ts src/shared/types.ts
+--- /home/user/work/orig162/src/shared/types.ts	2026-09-27 10:26:31.916482925 +0000
++++ src/shared/types.ts	2026-09-27 10:29:42.602756475 +0000
+@@ -269,6 +269,12 @@
+   reachedStore: boolean
+   /** تاریخچه‌ی append-only وضعیت چک، از دفتر PaymentChequeStatusHistory */
+   chequeHistoryText?: string | null
++  /**
++   * نشست ۱۶۴ · Y22 · بند ۴-۵۲ — چک در جریانی که فاکتورش بعد از ثبت چک برگشت خورده (بدهی صفر
++   * نشده). چک دست‌نخورده می‌ماند ولی مدیر باید بازبینی‌اش کند.
++   */
++  chequeNeedsReview?: boolean
++  chequeReviewNote?: string | null
+ }
+ 
+ /** نمای کامل پرداختی‌های یک فاکتور (مودال «پرداختی‌ها / اقساط»). */
+@@ -286,6 +292,8 @@
+   remaining: number
+   /** جمع چک‌های در جریان (پاس‌نشده) — پول دریافت‌شده نیست */
+   pendingChequeTotal: number
++  /** نشست ۱۶۴ · Y22 — شمار چک‌های در جریانِ نیازمند بازبینی (بند ۴-۵۲) */
++  chequeReviewCount?: number
+   /** UNPAID | PARTIAL | SETTLED */
+   settlementState: string
+   settlementLabel: string

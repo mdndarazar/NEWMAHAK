@@ -1,0 +1,443 @@
+diff --git a/src/main/ipc/index.ts b/src/main/ipc/index.ts
+index b14915b..76d5c87 100644
+--- a/src/main/ipc/index.ts
++++ b/src/main/ipc/index.ts
+@@ -145,14 +145,20 @@ async function withOptionalSessionActor<T extends Record<string, any> | null | u
+  * Setting، گیت‌های تنظیمات حساس را دور بزند. کلید ناشناس fail-closed است و
+  * کلیدهای حساس فقط با رمز مدیر و actor واقعی نشست ثبت می‌شوند.
+  */
+-const RAW_SETTING_SAFE_KEYS = new Set([
++/**
++ * نشست ۱۸۰ (S180-D6، گام ۰ خوشه M) — این دو مجموعه بدون تایپ صریح، `Set` از
++ * *literal*های کلید می‌شدند، پس `has(key: string)` زیر `strict` خطای TS2345
++ * می‌داد و allowlist عملاً typecheck نمی‌شد. `Set<string>` همان مقادیر و همان
++ * رفتار زمان‌اجرا را دارد؛ فقط ورودی `has` را درست می‌کند.
++ */
++const RAW_SETTING_SAFE_KEYS = new Set<string>([
+   SETTING_KEYS.receiptTemplate,
+   SETTING_KEYS.labelTemplate,
+   SETTING_KEYS.backupConfig,
+   SETTING_KEYS.backupImports
+ ])
+ 
+-const RAW_SETTING_MANAGER_KEYS = new Set([
++const RAW_SETTING_MANAGER_KEYS = new Set<string>([
+   SETTING_KEYS.saleDefaults,
+   SETTING_KEYS.shiftConfig,
+   SETTING_KEYS.securityConfig,
+diff --git a/src/main/services/InventoryService.ts b/src/main/services/InventoryService.ts
+index 5e4936d..ac92284 100644
+--- a/src/main/services/InventoryService.ts
++++ b/src/main/services/InventoryService.ts
+@@ -170,7 +170,20 @@ class LocalInventoryService implements IInventoryService {
+     }
+     if (!need.size) return []
+ 
+-    const variants: Awaited<ReturnType<typeof client.productVariant.findMany>> = []
++    /**
++     * نشست ۱۸۰ (S180-D7، گام ۰ خوشه M) — `Awaited<ReturnType<typeof
++     * findMany>>` بدون آرگومان به تایپ *کاملِ* ProductVariant حل می‌شد، نه شکل
++     * `select` زیر؛ در نتیجه `v.product` وجود نداشت (TS2551) و push هم رد
++     * می‌شد (TS2345). تایپ صریح دقیقاً همان ستون‌های انتخاب‌شده است. حلقه‌ی
++     * ترتیبی و رفتار زمان‌اجرا دست‌نخورده می‌ماند.
++     */
++    const variants: Array<{
++      id: number
++      stock: number
++      size: string | null
++      color: string | null
++      product: { name: string; unit: string }
++    }> = []
+     for (const ids of variantIdChunks(need.keys())) {
+       variants.push(
+         ...(await client.productVariant.findMany({
+diff --git a/src/main/services/PendingRestockService.ts b/src/main/services/PendingRestockService.ts
+index 4783b14..172ba59 100644
+--- a/src/main/services/PendingRestockService.ts
++++ b/src/main/services/PendingRestockService.ts
+@@ -58,9 +58,33 @@ function chunksOf<T>(values: T[], size = PENDING_RESTOCK_IN_CHUNK): T[][] {
+  * ===========================================================================
+  */
+ 
++/**
++ * نشست ۱۸۰ (S180-D3، گام ۰ خوشه M) — شکل ردیف برگشتِ معلق.
++ *
++ * `client` عمداً `any` است (هارنس تست و Prisma واقعی هر دو باید کار کنند)، پس
++ * `findMany` تایپ `any` می‌داد و `readAll<T>` نمی‌توانست `T` را استنتاج کند ⇒
++ * `unknown[]` و ۱۰ خطای TS18046 روی `r`. این تایپ دقیقاً همان فیلدهایی است که
++ * `include` بالا برمی‌گرداند و بدنه‌ی سرویس مصرف می‌کند. هیچ تغییر زمان‌اجرا.
++ */
++type PendingReturnRow = {
++  id: number
++  kind: string | null
++  returnedAt: Date
++  returnedAtJalali: string | null
++  items: Array<{
++    variantId: number
++    /** در schema هر دو `Int` غیرنال‌اند (`restockedQty` با پیش‌فرض ۰). */
++    qty: number
++    restockedQty: number
++    variantName: string | null
++    variantCode: string | null
++  }>
++  invoice: { id: number; receiptNo: number } | null
++}
++
+ /** فقط برگشت‌های معلق را می‌خواند (یک کوئری، با ایندکس `restockPending`). */
+-async function pendingReturns(client: any = prisma) {
+-  return readAll((page) => client.saleReturn.findMany({
++async function pendingReturns(client: any = prisma): Promise<PendingReturnRow[]> {
++  return readAll<PendingReturnRow>((page) => client.saleReturn.findMany({
+     where: { restockPending: true, voidedAt: null },
+     orderBy: [{ returnedAt: 'asc' }, { id: 'asc' }],
+     include: {
+diff --git a/src/main/services/SalesLedger.ts b/src/main/services/SalesLedger.ts
+index e5d3ee9..1e1a51c 100644
+--- a/src/main/services/SalesLedger.ts
++++ b/src/main/services/SalesLedger.ts
+@@ -174,9 +174,17 @@ export const salesLedger = {
+           select: { amount: true, kind: true, chequeStatus: true, destination: true, method: { select: { kind: true, label: true } } }
+         }
+       },
+-      orderBy: [{ issuedAt: 'asc' }, { receiptNo: 'asc' }] as const,
++      orderBy: [{ issuedAt: 'asc' }, { receiptNo: 'asc' }],
+       take: sectionCap + 1
+-    }
++      /**
++       * نشست ۱۸۰ (S180-D2، گام ۰ خوشه M): `as const` روی `orderBy` یک تاپل
++       * readonly می‌ساخت که به آرگومان `findMany` اسایْن نمی‌شد (TS2345)؛ در
++       * نتیجه TypeScript کل نتیجه را به تایپ پیش‌فرض (بدون `select`) برمی‌گرداند
++       * و ۲۴ خطای آبشاری «payments/items/customer/user/shift وجود ندارد»
++       * می‌ساخت. `satisfies` هم literalهای 'asc' را نگه می‌دارد و هم شکل
++       * آرگومان را همان‌جا اعتبارسنجی می‌کند، بدون هیچ تغییر زمان‌اجرا.
++       */
++    } satisfies Prisma.SaleInvoiceFindManyArgs
+     const [invoices, invoiceTotal] = await Promise.all([
+       prisma.saleInvoice.findMany(invoiceQuery),
+       prisma.saleInvoice.count({ where })
+@@ -242,7 +250,8 @@ export const salesLedger = {
+       },
+       orderBy: [{ returnedAt: 'asc' }, { id: 'asc' }],
+       take: sectionCap + 1
+-    }
++      /** نشست ۱۸۰ (S180-D2) — همان دلیل بالا: حفظ literal و اعتبارسنجی آرگومان. */
++    } satisfies Prisma.SaleReturnFindManyArgs
+     const [returns, returnTotal] = await Promise.all([
+       prisma.saleReturn.findMany(returnsQuery),
+       prisma.saleReturn.count({ where: returnWhere })
+diff --git a/src/main/services/SalesService.ts b/src/main/services/SalesService.ts
+index 8857ca7..e251ff9 100644
+--- a/src/main/services/SalesService.ts
++++ b/src/main/services/SalesService.ts
+@@ -712,7 +712,14 @@ export type PaymentEventPhase = 'created' | 'cleared'
+  * می‌خواندش ⇒ فاکتورها بی‌فیلتر و پرداخت/برگشت خالی در یک گزارش. ورودی نامعتبر
+  * رد می‌شود تا گزارش بی‌صدا گسترده یا تهی نشود.
+  */
+-export function reportShiftNumber(f: Pick<SaleReportFilter, 'shiftNumber'>): number | null {
++/**
++ * نشست ۱۸۰ (S180-D10، گام ۰ خوشه M) — پارامتر `Pick<SaleReportFilter,
++ * 'shiftNumber'>` بود (فقط `number | null`)، ولی بدنه‌اش عمداً `as unknown` و
++ * `Number(raw)` می‌زند چون فیلترهای واقعیِ IPC رشته هم می‌فرستند و یکی از
++ * صداکننده‌ها دقیقاً `string | number | null` می‌داد (TS2345). امضا با رفتار
++ * واقعی هم‌تراز شد؛ منطق اعتبارسنجی و پیام خطای فارسی دست‌نخورده است.
++ */
++export function reportShiftNumber(f: { shiftNumber?: string | number | null }): number | null {
+   const raw = f.shiftNumber as unknown
+   if (raw == null || raw === '') return null
+   const n = Number(raw)
+@@ -5679,7 +5686,21 @@ export const salesService = {
+     type ExchangeReturnRecord = Awaited<ReturnType<typeof loadReturns>>[number]
+     const shapeRows = async (returns: ExchangeReturnRecord[]): Promise<ExchangeReportRow[]> => {
+       const exchangeIds = returns.map((r) => r.exchangeInvoiceId).filter((n): n is number => !!n)
+-      const exchangeInvoices: any[] = []
++      /**
++       * نشست ۱۸۰ (S180-D8، گام ۰ خوشه M) — این آرایه `any[]` بود، پس `exMap`
++       * هم `any` می‌داد و همه‌ی `reduce`/`map`های پایین‌دست زیر `noImplicitAny`
++       * خطای TS7006 می‌گرفتند (پارامترهای `it`/`s`/`p`). تایپ دقیقاً از همان
++       * `include` کوئری زیر ساخته شده؛ هیچ تغییر زمان‌اجرا.
++       */
++      type ExchangeInvoiceRecord = Prisma.SaleInvoiceGetPayload<{
++        include: {
++          items: true
++          user: true
++          shift: true
++          payments: { include: { method: true } }
++        }
++      }>
++      const exchangeInvoices: ExchangeInvoiceRecord[] = []
+       for (const ids of reportIdChunks(exchangeIds)) {
+         exchangeInvoices.push(
+           ...(await prisma.saleInvoice.findMany({
+@@ -5923,7 +5944,16 @@ export const salesService = {
+       CREDIT_PAGE_MAX,
+       Math.max(1, Math.round(Number(filter.take ?? CREDIT_PAGE_MAX) || CREDIT_PAGE_MAX))
+     )
+-    const invoices: any[] = []
++    /** نشست ۱۸۰ (S180-D8) — همان الگو: `any[]` باعث TS7006 روی reduceهای پایین‌دست می‌شد. */
++    type CreditInvoiceRecord = Prisma.SaleInvoiceGetPayload<{
++      include: {
++        customer: true
++        user: true
++        shift: true
++        payments: { include: { method: true } }
++      }
++    }>
++    const invoices: CreditInvoiceRecord[] = []
+     for (let batchSkip = 0; ; batchSkip += CREDIT_READ_BATCH) {
+       const batch = await prisma.saleInvoice.findMany({
+       where: {
+@@ -6677,8 +6707,18 @@ export const salesService = {
+       overrideReason: input.overrideReason ?? null
+     })
+ 
+-    /** از این نقطه به بعد هر ردِ کسب‌وکاری = «ابطال ناممکن» ⇒ ردیف رسیدگی مدیر */
+-    let stage: 'validate' | 'effects' = 'validate'
++    /**
++     * از این نقطه به بعد هر ردِ کسب‌وکاری = «ابطال ناممکن» ⇒ ردیف رسیدگی مدیر
++     *
++     * نشست ۱۸۰ (S180-D9، گام ۰ خوشه M): مقدار `effects` داخل callback تراکنش
++     * نوشته می‌شود، پس control-flow analysis در `catch` همچنان `'validate'`
++     * می‌بیند و مقایسه را «بی‌معنا» اعلام می‌کرد (TS2367). این یک false-positive
++     * تایپی است، نه باگ زمان‌اجرا؛ `stageOf()` فقط narrowing را باز می‌کند.
++     * (قرینه‌اش `reviewCtx` است که همان‌جا با cast دستی حل شده بود.)
++     */
++    type VoidStage = 'validate' | 'effects'
++    let stage: VoidStage = 'validate'
++    const stageOf = (): VoidStage => stage
+     let reviewCtx: { invoiceId: number; receiptNo: number | null; total: number } | null = null
+     try {
+       return await prisma.$transaction(async (tx) => {
+@@ -7026,7 +7066,7 @@ export const salesService = {
+         }
+       }, TX_OPTIONS)
+     } catch (e) {
+-      if (stage === 'effects' && e instanceof BusinessError) {
++      if (stageOf() === 'effects' && e instanceof BusinessError) {
+         const ctx = reviewCtx as { invoiceId: number; receiptNo: number | null; total: number } | null
+         // بیرون از تراکنش ردشده — این ردیف باید بماند (بند ۴-۲۲: «مورد رسیدگی مدیر»)
+         await audit(prisma as any, {
+diff --git a/src/main/services/ShiftService.ts b/src/main/services/ShiftService.ts
+index 02b556b..cb5a214 100644
+--- a/src/main/services/ShiftService.ts
++++ b/src/main/services/ShiftService.ts
+@@ -887,7 +887,14 @@ export const shiftService = {
+         returns: { where: { voidedAt: null }, select: { total: true } }
+       }
+     })
+-    const totals = sumTotals(invoices.map(shapeSaleRow))
++    /**
++     * نشست ۱۸۰ (S180-D11، گام ۰ خوشه M): `.map(shapeSaleRow)` آرگومان دومِ
++     * `Array.map` (یعنی index عددی) را به پارامتر `opts?: ShapeSaleRowOptions`
++     * پاس می‌داد (TS2345). زمان اجرا بی‌خطر بود (عدد به‌جای آبجکت ⇒ همه‌ی
++     * `opts?.x` برابر undefined)، ولی امضا دروغ بود و هر گزینه‌ای که بعداً به
++     * ShapeSaleRowOptions اضافه شود، بی‌صدا از index خوانده می‌شد.
++     */
++    const totals = sumTotals(invoices.map((inv) => shapeSaleRow(inv)))
+     return {
+       id: shift.id,
+       name: shift.name,
+@@ -967,7 +974,12 @@ export const shiftService = {
+       }),
+       prisma.shift.count({ where })
+     ])
+-    const out = [] as PagedRows<ShiftInfo>
++    /**
++     * نشست ۱۸۰ (S180-D12): `PagedRows<T>` یک آرایه است که `page`/`warnings`
++     * بعداً روی همان شیء ست می‌شوند؛ `[] as PagedRows<...>` مستقیم رد می‌شد
++     * (TS2352، همان چیزی که خود کامپایلر پیشنهاد `unknown` می‌داد). الگو حفظ شد.
++     */
++    const out = [] as unknown as PagedRows<ShiftInfo>
+     for (const s of shifts) {
+       const info = await this.info(s.id)
+       if (info) out.push(info)
+diff --git a/src/main/services/StaffReportService.ts b/src/main/services/StaffReportService.ts
+index 5190a9b..7cbe3b4 100644
+--- a/src/main/services/StaffReportService.ts
++++ b/src/main/services/StaffReportService.ts
+@@ -122,9 +122,20 @@ async function returnLookups(returns: Array<{ userId: number | null; shiftId: nu
+       )
+     ).then((parts) => parts.flat())
+   ])
++  const userMap = new Map(users.map((u) => [u.id, u]))
++  const shiftMap = new Map(shifts.map((s) => [s.id, s]))
+   return {
+-    users: new Map(users.map((u) => [u.id, u])),
+-    shifts: new Map(shifts.map((s) => [s.id, s]))
++    users: userMap,
++    shifts: shiftMap,
++    /**
++     * نشست ۱۸۰ (S180-D4، گام ۰ خوشه M) — `SaleReturn.userId/shiftId` در schema
++     * nullable اند، ولی همه‌ی مصرف‌کننده‌ها `map.get(r.shiftId)` می‌زدند و زیر
++     * `strict` خطای TS2345 («number | null به number اسایْن نمی‌شود») می‌دادند.
++     * این دو helper همان معنا را با پذیرش null می‌دهند: نبودِ شناسه ⇒ undefined،
++     * که دقیقاً همان مسیر fallbackِ «—»/«نامشخص» قبلی است. رفتار عوض نمی‌شود.
++     */
++    userOf: (id: number | null | undefined) => (id == null ? undefined : userMap.get(id)),
++    shiftOf: (id: number | null | undefined) => (id == null ? undefined : shiftMap.get(id))
+   }
+ }
+ 
+@@ -223,7 +234,7 @@ export const staffReportService = {
+       kind: r.kind,
+       total: r.total,
+       userId: r.userId,
+-      userName: userLabel(returnMaps.users.get(r.userId)),
++      userName: userLabel(returnMaps.userOf(r.userId)),
+       refundMethod: r.refundMethod,
+       refundAmount: r.refundAmount,
+       returnedAt: r.returnedAt,
+@@ -403,6 +414,14 @@ export const staffReportService = {
+           exchangeSettlement: true,
+           storeCreditCode: true,
+           invoice: { select: { receiptNo: true } },
++          /**
++           * نشست ۱۸۰ (S180-D5، ایراد واقعی): `userId` در این یکی از سه
++           * `saleReturn.findMany` این فایل انتخاب نمی‌شد (دو تای دیگر می‌کنند)،
++           * ولی نتیجه به `returnLookups` داده می‌شد که روی `r.userId` نگاشت
++           * می‌زند ⇒ فهرست شناسه‌ها همیشه خالی و lookup کاربر بی‌اثر. قرارداد
++           * تابع را برآورده نمی‌کرد و زیر Prisma واقعی TS2345 می‌داد.
++           */
++          userId: true,
+           shiftId: true
+         },
+         orderBy: { id: 'desc' },
+@@ -468,7 +487,7 @@ export const staffReportService = {
+         exchangeDiff: r.exchangeDiff,
+         exchangeSettlement: r.exchangeSettlement,
+         storeCreditCode: r.storeCreditCode,
+-        shiftName: returnMaps.shifts.get(r.shiftId)?.name ?? null
++        shiftName: returnMaps.shiftOf(r.shiftId)?.name ?? null
+       })),
+       cardTransfers: transfers.map((t) => ({
+         id: t.id,
+@@ -696,12 +715,12 @@ export const staffReportService = {
+           amount: r.total,
+           dateJalali: r.returnedAtJalali,
+           time: clockOf(r.returnedAtTime, r.returnedAt),
+-          shiftName: returnMaps.shifts.get(r.shiftId)?.name ?? null,
+-          sessionLabel: returnMaps.shifts.get(r.shiftId)?.name
+-            ? sessionLabelOf(returnMaps.shifts.get(r.shiftId)!.name, returnMaps.shifts.get(r.shiftId)!.sessionSeq ?? 1)
++          shiftName: returnMaps.shiftOf(r.shiftId)?.name ?? null,
++          sessionLabel: returnMaps.shiftOf(r.shiftId)?.name
++            ? sessionLabelOf(returnMaps.shiftOf(r.shiftId)!.name, returnMaps.shiftOf(r.shiftId)!.sessionSeq ?? 1)
+             : null,
+-          nameOverridden: !!returnMaps.shifts.get(r.shiftId)?.nameOverridden,
+-          userName: userLabel(returnMaps.users.get(r.userId)) ?? 'نامشخص'
++          nameOverridden: !!returnMaps.shiftOf(r.shiftId)?.nameOverridden,
++          userName: userLabel(returnMaps.userOf(r.userId)) ?? 'نامشخص'
+         }))
+         .map(decorate)
+         .filter(keep)
+diff --git a/src/main/services/StoreCreditService.ts b/src/main/services/StoreCreditService.ts
+index 5c19a5a..7dc43d6 100644
+--- a/src/main/services/StoreCreditService.ts
++++ b/src/main/services/StoreCreditService.ts
+@@ -528,7 +528,8 @@ export async function linesForInvoice(client: Client, invoiceId: number): Promis
+   })
+   if (!items.length) return []
+ 
+-  const variants: Awaited<ReturnType<typeof client.productVariant.findMany>> = []
++  /** نشست ۱۸۰ (S180-D7) — همان ایراد InventoryService: تایپ باید شکل `select` باشد، نه مدل کامل. */
++  const variants: Array<{ id: number; product: { categoryId: number | null } | null }> = []
+   for (const ids of chunkIds(items.map((i) => i.variantId))) {
+     variants.push(
+       ...(await client.productVariant.findMany({
+@@ -3080,7 +3081,7 @@ export const storeCreditService = {
+       take: clampInt(filter.take ?? 500, 1, 5000, 500)
+     })
+ 
+-    const customerIds = [...new Set(rows.map((r) => r.customerId).filter((n): n is number => Number.isInteger(n) && n > 0))]
++    const customerIds = [...new Set(rows.map((r) => r.customerId).filter((n): n is number => n != null && Number.isInteger(n) && n > 0))]
+     /** نشست ۱۷۵ · S175-D4 — تا ۵٬۰۰۰ ردیف ⇒ شناسه‌ی مشتری‌ها در دسته‌های ۵۰۰تایی (سقف IN، S99-2) */
+     const customers: Array<{ id: number; name: string; phone: string | null }> = []
+     for (const part of chunkIds(customerIds))
+diff --git a/src/main/services/reportLimits.ts b/src/main/services/reportLimits.ts
+index 4e53851..76c41c1 100644
+--- a/src/main/services/reportLimits.ts
++++ b/src/main/services/reportLimits.ts
+@@ -137,7 +137,14 @@ export const reportLimitsService = {
+           priorTake: 1,
+           priorSkip: 0
+         })
+-        .then((result) => result.page.totalCount)
++        /**
++         * نشست ۱۸۰ (S180-D13، گام ۰ خوشه M): در `CreditReportResult` فیلد
++         * `page` اختیاری است (TS18048)، هرچند پیاده‌سازی فعلی `creditList`
++         * همیشه آن را ست می‌کند. fallback عمداً `rows.length` است نه صفر:
++         * صفر یعنی «هیچ ردیفی نیست» و می‌توانست یک برش واقعی را پنهان کند،
++         * که دقیقاً خلاف معیار مالک است.
++         */
++        .then((result) => result.page?.totalCount ?? result.rows.length)
+     ])
+ 
+     const rows: SaleReportLimitRow[] = [
+diff --git a/src/types/vendor.d.ts b/src/types/vendor.d.ts
+new file mode 100644
+index 0000000..2c58512
+--- /dev/null
++++ b/src/types/vendor.d.ts
+@@ -0,0 +1,50 @@
++/**
++ * نشست ۱۸۰ (S180-D1، گام ۰ خوشه M) — اعلان تایپ برای کتابخانه‌های بدون تایپ.
++ *
++ * `jalaali-js` هیچ فایل تعریف تایپی ندارد و زیر `strict` باعث خطای TS7016 روی
++ * `src/shared/jalali.ts` می‌شد. امضاها عیناً از README و کاربرد واقعی پروژه
++ * (`toJalaali`، `toGregorian`، `isValidJalaaliDate`) گرفته شده‌اند.
++ *
++ * هیچ رفتار زمان‌اجرایی تغییر نمی‌کند؛ این فایل فقط برای typecheck است.
++ */
++declare module 'jalaali-js' {
++  export interface JalaaliDate {
++    jy: number
++    jm: number
++    jd: number
++  }
++
++  export interface GregorianDate {
++    gy: number
++    gm: number
++    gd: number
++  }
++
++  export function toJalaali(date: Date): JalaaliDate
++  export function toJalaali(gy: number, gm: number, gd: number): JalaaliDate
++
++  export function toGregorian(jy: number, jm: number, jd: number): GregorianDate
++
++  export function isValidJalaaliDate(jy: number, jm: number, jd: number): boolean
++
++  export function isLeapJalaaliYear(jy: number): boolean
++  export function jalaaliMonthLength(jy: number, jm: number): number
++  export function j2d(jy: number, jm: number, jd: number): number
++  export function d2j(jdn: number): JalaaliDate
++  export function g2d(gy: number, gm: number, gd: number): number
++  export function d2g(jdn: number): GregorianDate
++
++  const jalaali: {
++    toJalaali: typeof toJalaali
++    toGregorian: typeof toGregorian
++    isValidJalaaliDate: typeof isValidJalaaliDate
++    isLeapJalaaliYear: typeof isLeapJalaaliYear
++    jalaaliMonthLength: typeof jalaaliMonthLength
++    j2d: typeof j2d
++    d2j: typeof d2j
++    g2d: typeof g2d
++    d2g: typeof d2g
++  }
++
++  export default jalaali
++}
+diff --git a/tsconfig.json b/tsconfig.json
+index 52c00e4..448fa27 100644
+--- a/tsconfig.json
++++ b/tsconfig.json
+@@ -15,7 +15,8 @@
+     "paths": {
+       "@shared/*": ["src/shared/*"],
+       "@main/*": ["src/main/*"],
+-      "@renderer/*": ["src/renderer/src/*"]
++      "@renderer/*": ["src/renderer/src/*"],
++      "bwip-js": ["node_modules/bwip-js/dist/bwip-js-node.d.ts"]
+     }
+   },
+   "include": ["src/**/*.ts", "src/**/*.tsx"]

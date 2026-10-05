@@ -1,0 +1,26 @@
+
+۱) صدور تکی دستی بدون رمز/رمز غلط ⇒ رد و صفر StoreCredit
+  ✗ issueManual بدون رمز — بدون رمز معتبر پذیرفته شد
+  ✗ issueManual با رمز غلط — بدون رمز معتبر پذیرفته شد
+  ✗ StoreCredit پس از دو تلاش ناموفق — انتظار 0، دریافت 2
+
+۲) صدور گروهی بدون رمز/رمز غلط ⇒ رد و صفر Batch/StoreCredit
+  ✗ bulkIssue بدون رمز — بدون رمز معتبر پذیرفته شد
+  ✗ bulkIssue با رمز غلط — بدون رمز معتبر پذیرفته شد
+  ✗ StoreCredit پس از تلاش گروهی ناموفق — انتظار 0، دریافت 8
+  ✗ StoreCreditBatch پس از تلاش گروهی ناموفق — انتظار 0، دریافت 2
+
+۳) با رمز درست ⇒ صدور + Audit با actor
+  ✓ کد اعتبار تکی صادر شد
+  ✗ StoreCredit پس از صدور تکی — انتظار 1، دریافت 9
+  ✓ actor Audit صدور تکی = 1
+  ✓ تعداد ساخته‌شده‌ی گروهی = 3
+  ✗ StoreCredit پس از صدور گروهی — انتظار 4، دریافت 12
+
+۴) سیم‌کشی IPC و رندرر
+  ✗ creditIssue با actor نشست (withSessionActor)
+  ✗ creditBulkIssue با actor نشست (withSessionActor)
+  ✗ هیچ‌کدام دیگر withUser نیستند
+  ✗ CreditManagement رمز مدیر را در payload صدور می‌فرستد
+
+✗ 3 بررسی موفق · 13 ناموفق

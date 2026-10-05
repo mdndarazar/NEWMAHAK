@@ -1,0 +1,31 @@
+[0] test/fix-s56-harness.mjs :: ✓ 6 بررسی موفق · 0 ناموفق
+[0] test/fix-s56-reports.mjs :: ✓ 17 بررسی موفق · 0 ناموفق
+[0] tests/audit-fixes/fix-s57-returns.mjs :: ✓ 14 بررسی موفق · 0 ناموفق
+[0] tests/audit-fixes/fix-s58-remaining.mjs :: ✓ 27 بررسی موفق · 0 ناموفق
+[0] tests/audit-fixes/fix-s59-bridge-exchange.mjs :: ✓ 45 بررسی موفق · 0 ناموفق
+[0] test/acceptance-db-session35.mjs :: هارنس واقعی دیتابیس (جلسه ۳۵): 204 PASS · 0 FAIL
+[0] test/acceptance-db-session36.mjs :: سوییت کار الف (مقصد پول · جلسه ۳۶/۴۱): 137 PASS · 0 FAIL
+[0] test/acceptance-db-session40.mjs :: سوییت کار ب (کالای در انتظار تأیید مدیر · جلسه ۴۰/۴۵): 185 PASS · 0 FAIL
+[0] test/acceptance-db-session47.mjs :: سوییت «از کدام انبار کسر شود؟» (جلسه ۴۷): 97 PASS · 0 FAIL
+[0] test/acceptance-db-session48.mjs :: سوییت «انتخاب انبار مبدأ کسر» (جلسه ۴۸): 29 PASS · 0 FAIL
+[0] test/acceptance-db-session54.mjs :: ✓ 92 بررسی موفق · 0 ناموفق
+[0] test/acceptance-session14.mjs :: session 14 acceptance: 24 passed, 0 failed
+[0] test/acceptance-session21.mjs :: Session 21: 34 PASS · 0 FAIL
+[0] test/acceptance-session25.mjs :: Session 25: 32 PASS · 0 FAIL
+[0] test/acceptance-src-session46.mjs :: نگهبان ساختاری (جلسه ۴۶): 36 PASS · 0 FAIL
+[0] test/stock-source-display-session53.mjs :: 60 PASS · 0 FAIL
+[0] test/stock-source-logic-session47.mjs :: منطق خالص «انتخاب انبار مبدأ» (جلسه ۴۷): 60 PASS · 0 FAIL
+[0] test/stock-source-note-session50.mjs :: ✔ منطق خالص «ردیابی برداشت انبار در تعویض» (جلسه ۵۰): 26 PASS · 0 FAIL
+[1] test/stock-source-pick-session51.mjs :: ✗ منطق خالص «انتخاب انبار مبدأ کسر» (جلسه ۵۱ · مرحله ۲-الف + ۲-ب): 107 PASS · 1 FAIL
+[0] test/stock-source-pos-session52.mjs :: 33 PASS · 0 FAIL
+[0] test/accounting-session13.ts :: session 13 accounting acceptance tests: PASS
+[0] test/credit-logic-session21.ts :: نتیجه‌ی سوییت منطق خالص: 44 PASS · 0 FAIL
+[0] test/credit-print-logic-session25.ts :: credit-print-logic (جلسه ۲۵): 24 PASS · 0 FAIL
+[0] test/credit-ui-logic-session22.ts :: credit-ui-logic (session 22): 32 PASS · 0 FAIL
+[0] test/credit-ui-logic-session28.ts :: credit-ui-logic (session 28): 51 PASS · 0 FAIL
+[0] test/credit-ui-logic-session29.ts :: credit-ui-logic (session 29): 38 PASS · 0 FAIL
+[0] test/credit-ui-logic-session30.ts :: credit-ui-logic (session 30): 35 PASS · 0 FAIL
+[0] test/credit-ui-logic-session31.ts :: credit-ui-logic (session 31): 35 PASS · 0 FAIL
+[0] test/credit-ui-logic-session32.ts :: credit-ui-logic (session 32): 39 PASS · 0 FAIL
+[0] test/credit-ui-logic-session33.ts :: credit-ui-logic (session 33): 39 PASS · 0 FAIL
+[0] test/credit-ui-logic-session34.ts :: credit-ui-logic (session 34): 42 PASS · 0 FAIL

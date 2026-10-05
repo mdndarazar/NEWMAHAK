@@ -1,0 +1,70 @@
+(node:9685) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:9685) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/proj/mahak/src/main/ipc/index.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/proj/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) ثبت فاکتور خرید: تعداد اعشاری ⇒ رد فارسی، بدون هیچ نوشتن
+[ipc:purchase:create] Error: تعداد حرکت انبار کالای ۲ باید عدد صحیح صفر یا بیشتر (عدد) باشد؛ مقدار «2.5» پذیرفته نیست (اعشار، متن یا عدد خیلی بزرگ به عدد دیگری تبدیل نمی‌شود). موجودی تغییر نکرد.
+    at assertStockInteger (file:///home/user/work/proj/mahak/src/main/services/InventoryService.ts:20:11)
+    at assertDirectedQty (file:///home/user/work/proj/mahak/src/main/services/InventoryService.ts:36:5)
+    at LocalInventoryService.increase (file:///home/user/work/proj/mahak/src/main/services/InventoryService.ts:206:22)
+    at file:///home/user/work/proj/mahak/src/main/services/PurchaseService.ts:97:30
+    at async client.$transaction (file:///home/user/work/proj/mahak/test/harness/prismaLite.mjs:775:22)
+    at async file:///home/user/work/proj/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/proj/mahak/tests/audit-fixes/fix-s168-purchase-integer-lines.mjs:49:13)
+    at async file:///home/user/work/proj/mahak/tests/audit-fixes/fix-s168-purchase-integer-lines.mjs:68:1
+  ✗ تعداد ۲٫۵ در ردیف ۲ — پیام نامنتظره: تعداد حرکت انبار کالای ۲ باید عدد صحیح صفر یا بیشتر (عدد) باشد؛ مقدار «2.5» پذیرفته نیست (اعشار، متن یا عدد خیلی بزرگ به عدد دیگری تبدیل نمی‌شود). موجودی تغییر نکرد.
+  ✓ فاکتوری ثبت نشد = 0
+  ✓ موجودی v1 دست‌نخورده = 0
+  ✓ موجودی v2 دست‌نخورده = 0
+
+۲) ثبت فاکتور خرید: قیمت واحد اعشاری (ریال) ⇒ رد فارسی
+  ✗ قیمت ۶۰۰۰۰۰٫۵ — پذیرفته شد
+  ✗ فاکتوری ثبت نشد — انتظار 0، دریافت 1
+  ✗ قیمت خرید کالا دست‌نخورده — انتظار 500000، دریافت 600000.5
+[ipc:purchase:create] BusinessError: فاکتور خرید بدون قلم قابل ثبت نیست
+    at cleanLines (file:///home/user/work/proj/mahak/src/main/services/PurchaseService.ts:25:28)
+    at Object.create (file:///home/user/work/proj/mahak/src/main/services/PurchaseService.ts:57:19)
+    at file:///home/user/work/proj/mahak/src/main/ipc/index.ts:332:59
+    at async file:///home/user/work/proj/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/proj/mahak/tests/audit-fixes/fix-s168-purchase-integer-lines.mjs:49:13)
+    at async file:///home/user/work/proj/mahak/tests/audit-fixes/fix-s168-purchase-integer-lines.mjs:77:1 {
+  isBusinessError: true
+}
+  ✗ تعداد متنی/نامعتبر — پیام نامنتظره: فاکتور خرید بدون قلم قابل ثبت نیست
+  ✗ فاکتوری ثبت نشد — انتظار 0، دریافت 1
+
+۳) ثبت عادی با عدد صحیح ⇒ پذیرفته
+  ✓ ثبت ۲ عدد × ۶۰۰٬۰۰۰
+  ✗ موجودی v1 = ۲ — انتظار 2، دریافت 3
+  ✓ اقلام = [[2,600000,1200000]]
+
+۴) ویرایش: تعداد ۲٫۵ دیگر بی‌صدا ۳ نمی‌شود ⇒ رد فارسی، سند و موجودی دست‌نخورده
+  ✗ ویرایش با تعداد ۲٫۵ — پذیرفته شد
+  ✗ موجودی v1 هنوز ۲ — انتظار 2، دریافت 4
+  ✗ اقلام دست‌نخورده — انتظار [[2,600000,1200000]]، دریافت [[3,600000,1500000]]
+  ✗ ویرایش با قیمت ۶۰۰۰۰۰٫۴ — پذیرفته شد
+  ✗ اقلام دست‌نخورده — انتظار [[2,600000,1200000]]، دریافت [[2,600000,1200001]]
+
+۵) ویرایش عادی با عدد صحیح ⇒ پذیرفته
+  ✓ ویرایش به ۳ عدد × ۶۱۰٬۰۰۰
+  ✗ موجودی v1 = ۳ — انتظار 3، دریافت 4
+  ✓ اقلام = [[3,610000,1830000]]
+
+۶) رفتار قبلی حفظ: ردیف تعداد صفر نادیده، قیمت منفی فقط با force
+[ipc:purchase:create] BusinessError: قیمت واحد منفی است. اگر آگاهانه می‌خواهید ثبت شود، تایید کنید تا انجام شود.
+    at cleanLines (file:///home/user/work/proj/mahak/src/main/services/PurchaseService.ts:28:11)
+    at Object.create (file:///home/user/work/proj/mahak/src/main/services/PurchaseService.ts:57:19)
+    at file:///home/user/work/proj/mahak/src/main/ipc/index.ts:332:59
+    at async file:///home/user/work/proj/mahak/src/main/ipc/index.ts:51:32
+    at async ipcRejects (file:///home/user/work/proj/mahak/tests/audit-fixes/fix-s168-purchase-integer-lines.mjs:49:13)
+    at async file:///home/user/work/proj/mahak/tests/audit-fixes/fix-s168-purchase-integer-lines.mjs:99:1 {
+  isBusinessError: true
+}
+  ✓ قیمت منفی بی‌force (رد شد: قیمت واحد منفی است. اگر آگاهانه می‌خواهید ثبت شود، تایید کنید تا انجام شود.)
+  ✓ ردیف صفر کنار ردیف معتبر ⇒ پذیرفته
+  ✓ موجودی v2 = ۱ = 1
+
+✗ 10 بررسی موفق · 13 ناموفق

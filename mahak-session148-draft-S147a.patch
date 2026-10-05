@@ -1,0 +1,232 @@
+--- /home/user/work/pristine/src/main/services/SecondaryStockService.ts	2026-09-24 09:57:36.000000000 +0000
++++ src/main/services/SecondaryStockService.ts	2026-09-25 13:21:11.142822983 +0000
+@@ -3,11 +3,11 @@
+ import { inventoryService } from './InventoryService'
+ import { audit } from './AuditService'
+ import { assertPanelPassword } from './AuthService'
+-import { createVariantInTx } from './ProductService'
++import { assertPriceInteger, createVariantInTx } from './ProductService'
+ import { TX_OPTIONS } from '../db/tx'
+ import { BusinessError } from '../errors'
+ import { PANEL_KEYS } from '@shared/panels'
+-import { faDigits, jalaliEndOfDay, jalaliStartOfDay, toClock, toJalaliDate } from '@shared/jalali'
++import { faDigits, jalaliEndOfDay, jalaliStartOfDay, money, toClock, toJalaliDate } from '@shared/jalali'
+ import { AuditAction, SecondaryStockAction, SECONDARY_STOCK_ACTION_LABELS } from '@shared/enums'
+ import type {
+   SecondaryStockInput,
+@@ -95,6 +95,84 @@
+   return Number.isInteger(n) && n > 0 ? n : null
+ }
+ 
++/**
++ * ---------------------------------------------------------------------------
++ * نشست ۱۴۸ · S147-a · بند ۳، ۴-۴۲ و ۴-۲۸(د) — ورودی‌های عددی انبار مرکزی.
++ *
++ * تا نشست ۱۴۷ این ماژول عددها را بی‌صدا تبدیل می‌کرد (Math.round / Math.trunc /
++ * Math.abs و «شناسه‌ی نامعتبر ⇒ انبار پیش‌فرض»): ۲٫۶ ⇒ ۳، ‎-۲ ⇒ ۲، متن «7» ⇒ ۷،
++ * ۲٫۹ ⇒ ۲ عدد به موجودی واقعی فروشگاه. کالاها تکی‌اند و کمیت فقط عدد صحیح است و
++ * سابقه‌ی انبار append-only؛ پس به‌جای تبدیل، کل عملیات با پیام فارسی رد می‌شود و
++ * هیچ موجودی‌ای جابه‌جا نمی‌شود.
++ *
++ * سقف: ستون‌های انبار مرکزی (و ProductVariant.stock) از نوع Prisma Int هستند و سقف
++ * واقعی Int با Prisma تولیدی هنوز قطعی نشده (گام ۰-ج)؛ سقف ۳۲ بیتی در هر دو حالت
++ * خطای خام انگلیسی را حذف می‌کند و برای فروشگاه پوشاک محدودکننده نیست (S147-D2).
++ * `warehouseIdOf` بالا فقط برای فیلترهای خواندنی (history) و حذف انبار می‌ماند.
++ * ---------------------------------------------------------------------------
++ */
++export const CENTRAL_QTY_MAX = 2_147_483_647
++
++function assertCentralInt(
++  value: unknown,
++  label: string,
++  opts: { positive?: boolean; allowNegative?: boolean; unit?: string } = {}
++): number {
++  const ok =
++    typeof value === 'number' &&
++    Number.isSafeInteger(value) &&
++    Math.abs(value) <= CENTRAL_QTY_MAX &&
++    (opts.allowNegative === true || value >= 0) &&
++    (opts.positive !== true || value > 0)
++  if (!ok) {
++    const range = opts.positive ? 'بزرگ‌تر از صفر' : opts.allowNegative ? '(مثبت، صفر یا منفی)' : 'صفر یا بیشتر'
++    const unit = opts.unit ?? 'عدد'
++    throw new BusinessError(
++      `${label} باید عدد صحیح ${range} باشد (سقف مجاز: ${opts.allowNegative ? 'مثبت یا منفی ' : ''}` +
++        `${money(CENTRAL_QTY_MAX)}${unit ? ' ' + unit : ''})؛ مقدار «${String(value)}» پذیرفته نیست ` +
++        '(اعشار، متن یا عدد خیلی بزرگ گرد یا تبدیل نمی‌شود). هیچ موجودی‌ای جابه‌جا نشد.'
++    )
++  }
++  return value as number
++}
++
++/** شناسه‌ی اجباری: خالی/صفر ⇒ همان پیام قدیمی «انتخاب کنید»، هر مقدار نامعتبر دیگر ⇒ رد صریح. */
++function requiredCentralId(raw: unknown, missingMessage: string, label: string): number {
++  if (raw === undefined || raw === null || raw === 0) throw new BusinessError(missingMessage)
++  return assertCentralInt(raw, label, { positive: true, unit: '' })
++}
++
++/**
++ * انبار مقصد/ردیف در ثبت و انتقال: فقط null/undefined/۰ (= انبار پیش‌فرض) یا عدد
++ * صحیح مثبت. قبلاً ۲٫۵ یا متن بی‌صدا «انبار پیش‌فرض» می‌شد و موجودی جای دیگری می‌رفت.
++ */
++function strictWarehouseId(raw: unknown, label: string): number | null {
++  if (raw === undefined || raw === null || raw === 0) return null
++  return assertCentralInt(raw, label, { positive: true, unit: '' })
++}
++
++/** موجودی حاصل (قبل ± تعداد) هم باید در سقف ستون Int بماند، وگرنه Prisma خطای خام می‌دهد. */
++function assertCentralResult(value: number, what: string): number {
++  if (!Number.isSafeInteger(value) || Math.abs(value) > CENTRAL_QTY_MAX)
++    throw new BusinessError(
++      `${what} به ${faDigits(String(value))} عدد می‌رسد که از سقف مجاز (مثبت یا منفی ${money(CENTRAL_QTY_MAX)} عدد) ` +
++        'بیرون است؛ تعداد را کم کنید. هیچ موجودی‌ای جابه‌جا نشد.'
++    )
++  return value
++}
++
++/** سنجش مشترک ورودی «انتقال به انبار فروشگاه» — پیش از تراکنش در toStore و دوباره در toStoreWithin. */
++function toStoreArgs(input: SecondaryToStoreInput): { itemId: number; variantId: number; qty: number } {
++  const itemId = requiredCentralId(input?.itemId, 'ردیف مبدأ در انبار مرکزی مشخص نیست.', 'شناسه‌ی ردیف مبدأ در انبار مرکزی')
++  const variantId = requiredCentralId(
++    input?.variantId,
++    'کالای مقصد در انبار فروشگاه را انتخاب کنید.',
++    'شناسه‌ی کالای مقصد در انبار فروشگاه'
++  )
++  const qty = assertCentralInt(input?.qty, 'تعداد انتقال', { positive: true })
++  return { itemId, variantId, qty }
++}
++
+ /** ردیف مجازی انبار پیش‌فرض (ردیف‌های بدون انبار). */
+ function defaultWarehouseRow(agg: { itemCount: number; totalQty: number; lowCount: number }): SecondaryWarehouseRow {
+   const now = new Date().toISOString()
+@@ -288,13 +366,8 @@
+   tx: Prisma.TransactionClient,
+   input: SecondaryToStoreInput
+ ): Promise<SecondaryToStoreResult> {
+-  const itemId = Number(input.itemId)
+-  const variantId = Number(input.variantId)
+-  const qty = Math.trunc(Number(input.qty))
+-  if (!Number.isFinite(itemId) || itemId <= 0) throw new BusinessError('ردیف مبدأ در انبار مرکزی مشخص نیست.')
+-  if (!Number.isFinite(variantId) || variantId <= 0)
+-    throw new BusinessError('کالای مقصد در انبار فروشگاه را انتخاب کنید.')
+-  if (!Number.isFinite(qty) || qty <= 0) throw new BusinessError('تعداد انتقال باید عددی بزرگ‌تر از صفر باشد.')
++  // نشست ۱۴۸ · S147-a — بدون Math.trunc: ۲٫۹ دیگر بی‌صدا ۲ عدد به موجودی واقعی فروشگاه اضافه نمی‌کند.
++  const { itemId, variantId, qty } = toStoreArgs(input)
+ 
+   const src = await tx.secondaryStockItem.findUnique({ where: { id: itemId }, include: { warehouse: true } })
+   if (!src) throw new BusinessError('ردیف مبدأ پیدا نشد (ممکن است حذف شده باشد).')
+@@ -314,19 +387,25 @@
+     )
+ 
+   const fromWarehouseName = src.warehouse?.name ?? DEFAULT_SECONDARY_WAREHOUSE_NAME
++  const variantName = [variant.product?.name ?? '', variant.size ?? '', variant.color ?? '']
++    .filter((p) => String(p).trim().length > 0)
++    .join(' - ')
+   const fromBefore = src.qty
+-  const fromRemaining = fromBefore - qty
++  // S147-a — هر دو حاصل پیش از اولین نوشتن در سقف ستون Int سنجیده می‌شوند
++  const fromRemaining = assertCentralResult(
++    fromBefore - qty,
++    `موجودی باقی‌مانده‌ی «${src.name}» در «${fromWarehouseName}»`
++  )
++  const storeBefore = variant.stock
++  const storeAfter = assertCentralResult(
++    storeBefore + qty,
++    `موجودی کالای «${variantName || variant.code}» در انبار فروشگاه`
++  )
+   await tx.secondaryStockItem.update({ where: { id: itemId }, data: { qty: fromRemaining } })
+ 
+-  const storeBefore = variant.stock
+   await inventoryService.increase([{ variantId, qty }], { reason: 'CENTRAL_WITHDRAW', userId: input.userId ?? null }, tx)
+-  const storeAfter = storeBefore + qty
+   const shortageCovered = storeBefore < 0 ? Math.min(qty, -storeBefore) : 0
+ 
+-  const variantName = [variant.product?.name ?? '', variant.size ?? '', variant.color ?? '']
+-    .filter((p) => String(p).trim().length > 0)
+-    .join(' - ')
+-
+   const noteText =
+     clean(input.note) ||
+     `انتقال ${faDigits(qty)} عدد از «${fromWarehouseName}» به انبار فروشگاه (کالا: ${variantName || variant.code})` +
+@@ -410,28 +489,56 @@
+     const name = clean(input?.name)
+     if (!name) throw new BusinessError('نام کالای انبار مرکزی را وارد کنید.')
+     /**
++     * نشست ۱۴۸ · S147-a — شناسه‌ی ویرایش: خالی/صفر ⇒ ثبت تازه؛ هر مقدار دیگر باید
++     * عدد صحیح مثبتِ یک ردیف موجود باشد (قبلاً ۱٫۵ مستقیم به Prisma می‌رسید).
++     */
++    const rawId = input?.id
++    const id =
++      rawId === undefined || rawId === null || rawId === 0
++        ? null
++        : assertCentralInt(rawId, 'شناسه‌ی ردیف انبار مرکزی', { positive: true, unit: '' })
++    const prev = id ? await prisma.secondaryStockItem.findUnique({ where: { id } }) : null
++    if (id && !prev) throw new BusinessError('ردیف انبار مرکزی پیدا نشد (ممکن است حذف شده باشد)؛ صفحه را تازه کنید.')
++    /**
+      * بخش ۵: `warehouseId` و `minQty` هم ذخیره می‌شوند (قبلاً در `data` نبودند و
+      * بی‌صدا دور ریخته می‌شدند). `warehouseId = null` = انبار پیش‌فرض.
++     *
++     * نشست ۱۴۸ · S147-a — بدون Math.round و بدون «نامعتبر ⇒ ۰/انبار پیش‌فرض»:
++     * تعداد عدد صحیح (منفی طبق طراحی ماژول مجاز)، حد هشدار عدد صحیح ≥ ۰، انبار
++     * null/۰ یا عدد صحیح مثبت. فیلدی که در ویرایش فرستاده نشده ⇒ همان مقدار قبلی
++     * (قبلاً موجودی ردیف بی‌صدا صفر می‌شد ⇒ کسری کاذب انبارگردانی؛ S147-D3، S148-D2)؛
++     * در ثبت تازه ⇒ ۰ / انبار پیش‌فرض.
+      */
++    const qty =
++      input?.qty === undefined || input?.qty === null
++        ? (prev?.qty ?? 0)
++        : assertCentralInt(input.qty, `تعداد «${name}» در انبار مرکزی`, { allowNegative: true })
++    const minQty =
++      input?.minQty === undefined || input?.minQty === null
++        ? (prev?.minQty ?? 0)
++        : assertCentralInt(input.minQty, `حد هشدار موجودی «${name}»`)
++    const warehouseId =
++      input?.warehouseId === undefined
++        ? (prev?.warehouseId ?? null)
++        : strictWarehouseId(input.warehouseId, `شناسه‌ی انبار ردیف «${name}»`)
++    if (warehouseId && !(await prisma.secondaryWarehouse.findUnique({ where: { id: warehouseId } })))
++      throw new BusinessError('انبار انتخاب‌شده برای این ردیف پیدا نشد (ممکن است حذف شده باشد)؛ صفحه را تازه کنید.')
+     const data = {
+       name,
+       code: clean(input?.code) || null,
+-      qty: Math.round(Number(input?.qty ?? 0)) || 0,
++      qty,
+       note: clean(input?.note) || null,
+-      warehouseId: warehouseIdOf(input?.warehouseId),
+-      minQty: Math.max(0, Math.round(Number(input?.minQty ?? 0)) || 0)
++      warehouseId,
++      minQty
+     }
+-    const prev = input?.id
+-      ? await prisma.secondaryStockItem.findUnique({ where: { id: Number(input.id) } })
+-      : null
+-    const saved = input?.id
+-      ? await prisma.secondaryStockItem.update({ where: { id: Number(input.id) }, data })
++    const saved = id
++      ? await prisma.secondaryStockItem.update({ where: { id }, data })
+       : await prisma.secondaryStockItem.create({ data })
+     // با include خوانده می‌شود تا نام انبار هم در خروجی باشد (بخش ۵)
+     const row =
+       (await prisma.secondaryStockItem.findUnique({ where: { id: saved.id }, include: { warehouse: true } })) ?? saved
+     await audit(prisma, {
+-      action: input?.id ? 'SECONDARY_STOCK_UPDATE' : 'SECONDARY_STOCK_CREATE',
++      action: id ? 'SECONDARY_STOCK_UPDATE' : 'SECONDARY_STOCK_CREATE',
+       entity: 'SecondaryStockItem',
+       entityId: row.id,
+       userId: input?.userId ?? null,
+@@ -442,13 +549,13 @@
+       itemId: row.id,
+       warehouseId: data.warehouseId,
+       warehouseName: (row as any).warehouse?.name ?? DEFAULT_SECONDARY_WAREHOUSE_NAME,
+-      action: input?.id ? SecondaryStockAction.UPDATE : SecondaryStockAction.CREATE,
++      action: id ? SecondaryStockAction.UPDATE : SecondaryStockAction.CREATE,
+       name: data.name,
+       code: data.code,
+       qtyBefore: prev?.qty ?? 0,
+       qtyAfter: data.qty,
+       userId: input?.userId ?? null,
+-      note: input?.id ? 'ویرایش ردیف' : 'ثبت ردیف جدید'
++      note: id ? 'ویرایش ردیف' : 'ثبت ردیف جدید'
+     })
+     return shape(row)
+   },

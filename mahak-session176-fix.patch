@@ -1,0 +1,278 @@
+--- /home/user/work/base/mahak/src/main/services/PriceAdjustService.ts	2026-09-27 09:08:46.000000000 +0000
++++ src/main/services/PriceAdjustService.ts	2026-09-27 15:01:03.715136702 +0000
+@@ -73,6 +73,44 @@
+ const PRICE_ADJUST_READ_BATCH = 5000
+ /** زمان‌بند هم مثل دامنه‌ی تغییر قیمت، حق ندارد سند رسیده را بی‌صدا جا بگذارد. */
+ const PRICE_SCHEDULE_READ_BATCH = 200
++/**
++ * نشست ۱۷۶ · S176-D1 — قاعده‌ی پروژه (S99-2): هیچ فهرست شناسه‌ای بیش از ۵۰۰ عضو یکجا در
++ * `in` نمی‌نشیند. تخفیف «همه‌ی کالاها» روی ۵۰۱+ کالا قبلاً بازگردانی، پایان خودکار و حذف
++ * سابقه با برگرداندن قیمت را از سقف رد و rollback می‌کرد. همه‌ی خواندن/نوشتن‌ها دسته‌ای و
++ * داخل همان تراکنش‌اند، پس اتمیک بودن عملیات عوض نمی‌شود.
++ */
++const PRICE_ADJUST_IN_CHUNK = 500
++
++function chunksOf<T>(values: readonly T[], size = PRICE_ADJUST_IN_CHUNK): T[][] {
++  const out: T[][] = []
++  for (let i = 0; i < values.length; i += size) out.push(values.slice(i, i + size))
++  return out
++}
++
++/** شناسه‌های واریانتی که هنوز وجود دارند (دسته‌ای؛ جای `findMany({ id: { in } })` بی‌سقف). */
++async function aliveVariantIds(client: Client, ids: readonly number[]): Promise<Set<number>> {
++  const alive = new Set<number>()
++  for (const chunk of chunksOf([...new Set(ids)])) {
++    const rows = await client.productVariant.findMany({ where: { id: { in: chunk } }, select: { id: true } })
++    for (const r of rows) alive.add(r.id)
++  }
++  return alive
++}
++
++/** اگر دامنه `id: { in: [...] }` دارد، همان فهرست را برمی‌گرداند (برای دسته‌بندی). */
++function idInOf(where: Prisma.ProductVariantWhereInput): number[] | null {
++  const idCond = (where as any)?.id
++  return idCond && typeof idCond === 'object' && Array.isArray(idCond.in) ? (idCond.in as number[]) : null
++}
++
++/** شمارش کالاهای دامنه؛ دامنه‌ی «کالاهای انتخابی» دسته‌ای شمرده می‌شود. */
++async function countProductVariants(client: Client, where: Prisma.ProductVariantWhereInput): Promise<number> {
++  const idIn = idInOf(where)
++  if (!idIn || idIn.length <= PRICE_ADJUST_IN_CHUNK) return client.productVariant.count({ where })
++  let n = 0
++  for (const chunk of chunksOf([...new Set(idIn)])) n += await client.productVariant.count({ where: { ...where, id: { in: chunk } } })
++  return n
++}
+ 
+ const normalizeKind = (v: unknown): PriceAdjustKind =>
+   v === 'INCREASE' ? 'INCREASE' : v === 'DECREASE' ? 'DECREASE' : 'DISCOUNT'
+@@ -130,6 +168,14 @@
+   where: Prisma.ProductVariantWhereInput,
+   select: Prisma.ProductVariantSelect
+ ): Promise<any[]> {
++  // نشست ۱۷۶ · S176-D1 — دامنه‌ی «کالاهای انتخابی» (id in) با ۵۰۱+ شناسه دسته‌ای خوانده و به ترتیب id چیده می‌شود
++  const idIn = idInOf(where)
++  if (idIn && idIn.length > PRICE_ADJUST_IN_CHUNK) {
++    const merged: any[] = []
++    for (const chunk of chunksOf([...new Set(idIn)]))
++      merged.push(...(await loadAllProductVariants(client, { ...where, id: { in: chunk } }, select)))
++    return merged.sort((a, b) => a.id - b.id)
++  }
+   const rows: any[] = []
+   for (let skip = 0; ; skip += PRICE_ADJUST_READ_BATCH) {
+     const batch = await client.productVariant.findMany({
+@@ -586,7 +632,7 @@
+      * -----------------------------------------------------------------------
+      */
+     if (isFutureStart(win, now)) {
+-      const count = await prisma.productVariant.count({ where })
++      const count = await countProductVariants(prisma, where)
+       if (!count)
+         throw new BusinessError(
+           'در این دامنه هیچ کالای فعالی پیدا نشد؛ زمان‌بندی ثبت نشد. انتخاب دسته یا فهرست کالاها را بررسی کنید.'
+@@ -785,10 +831,14 @@
+     const ids = rows.map((r) => r.id)
+     const laterByBatch = new Map<number, number>()
+     if (ids.length) {
+-      const items = await prisma.priceChangeItem.findMany({
+-        where: { batchId: { in: ids } },
+-        select: { batchId: true, variantId: true }
+-      })
++      const items: { batchId: number; variantId: number }[] = []
++      for (const chunk of chunksOf(ids))
++        items.push(
++          ...(await prisma.priceChangeItem.findMany({
++            where: { batchId: { in: chunk } },
++            select: { batchId: true, variantId: true }
++          }))
++        )
+       const variantsOf = new Map<number, Set<number>>()
+       for (const it of items) {
+         const set = variantsOf.get(it.batchId) ?? new Set<number>()
+@@ -946,9 +996,10 @@
+         )
+       if (!batch.items.length) throw new BusinessError('این دسته هیچ کالایی ندارد؛ چیزی برای بازگردانی نیست.')
+ 
+-      const ids = batch.items.map((i) => i.variantId)
+-      const alive = await tx.productVariant.findMany({ where: { id: { in: ids } }, select: { id: true } })
+-      const aliveSet = new Set(alive.map((v) => v.id))
++      const aliveSet = await aliveVariantIds(
++        tx,
++        batch.items.map((i) => i.variantId)
++      )
+ 
+       let restored = 0
+       let missing = 0
+@@ -1161,13 +1212,10 @@
+ 
+       // ---- ۱) کالاهایی که از دامنه بیرون رفته‌اند: قیمت به «قبل از این دسته» ----
+       const out = batch.items.filter((i) => !inScopeIds.has(i.variantId))
+-      const alive = out.length
+-        ? await tx.productVariant.findMany({
+-            where: { id: { in: out.map((i) => i.variantId) } },
+-            select: { id: true }
+-          })
+-        : []
+-      const aliveSet = new Set(alive.map((v) => v.id))
++      const aliveSet = await aliveVariantIds(
++        tx,
++        out.map((i) => i.variantId)
++      )
+       let removedCount = 0
+       for (const item of out) {
+         if (aliveSet.has(item.variantId)) {
+@@ -1280,7 +1328,9 @@
+     const gate = await adjustGate(input?.password, 'حذف سابقه‌ی تغییر گروهی قیمت')
+ 
+     return prisma.$transaction(async (tx) => {
+-      const batches = await tx.priceChangeBatch.findMany({ where: { id: { in: ids } }, include: { items: true } })
++      const batches: any[] = []
++      for (const chunk of chunksOf(ids))
++        batches.push(...(await tx.priceChangeBatch.findMany({ where: { id: { in: chunk } }, include: { items: true } })))
+       if (!batches.length) throw new BusinessError('این ردیف‌ها پیدا نشدند؛ صفحه را تازه کنید.')
+ 
+       let restoredCount = 0
+@@ -1293,11 +1343,10 @@
+           // دسته‌ای که اصلاً در جریان نیست (زمان‌بندی‌شده / بازگردانی‌شده / تمام‌شده)
+           // قیمتی برای برگرداندن ندارد و بی‌صدا رد می‌شود
+           if (state !== 'APPLIED' || !batch.items.length) continue
+-          const alive = await tx.productVariant.findMany({
+-            where: { id: { in: batch.items.map((i) => i.variantId) } },
+-            select: { id: true }
+-          })
+-          const aliveSet = new Set(alive.map((v) => v.id))
++          const aliveSet = await aliveVariantIds(
++            tx,
++            batch.items.map((i: any) => i.variantId)
++          )
+           for (const item of batch.items) {
+             if (!aliveSet.has(item.variantId)) continue
+             await tx.productVariant.update({
+@@ -1314,7 +1363,8 @@
+       }
+ 
+       // ردیف‌های اقلام با onDelete: Cascade خودشان پاک می‌شوند
+-      await tx.priceChangeBatch.deleteMany({ where: { id: { in: batches.map((b) => b.id) } } })
++      for (const chunk of chunksOf(batches.map((b) => b.id)))
++        await tx.priceChangeBatch.deleteMany({ where: { id: { in: chunk } } })
+ 
+       await audit(tx, {
+         action: AuditAction.PRICE_HISTORY_DELETE,
+@@ -1374,28 +1424,38 @@
+     if (!batches.length) return []
+ 
+     const items: any[] = []
+-    const itemWhere = {
+-      batchId: { in: batches.map((b) => b.id) },
+-      ...(wanted.length ? { variantId: { in: wanted } } : {})
+-    }
+-    for (let skip = 0; ; skip += PRICE_ADJUST_READ_BATCH) {
+-      const batch = await prisma.priceChangeItem.findMany({
+-        where: itemWhere,
+-        select: { batchId: true, variantId: true, oldPrice: true, newPrice: true },
+-        orderBy: { id: 'asc' },
+-        skip,
+-        take: PRICE_ADJUST_READ_BATCH
+-      })
+-      items.push(...batch)
+-      if (batch.length < PRICE_ADJUST_READ_BATCH) break
++    // نشست ۱۷۶ · S176-D1 — شناسه‌ی دسته‌ها و کالاهای درخواستی دسته‌ای (هر ترکیب جدا صفحه‌خوانی می‌شود)
++    const wantedChunks: (number[] | null)[] = wanted.length ? chunksOf(wanted) : [null]
++    for (const batchChunk of chunksOf(batches.map((b) => b.id))) {
++      for (const wantedChunk of wantedChunks) {
++        const itemWhere = {
++          batchId: { in: batchChunk },
++          ...(wantedChunk ? { variantId: { in: wantedChunk } } : {})
++        }
++        for (let skip = 0; ; skip += PRICE_ADJUST_READ_BATCH) {
++          const batch = await prisma.priceChangeItem.findMany({
++            where: itemWhere,
++            select: { batchId: true, variantId: true, oldPrice: true, newPrice: true },
++            orderBy: { id: 'asc' },
++            skip,
++            take: PRICE_ADJUST_READ_BATCH
++          })
++          items.push(...batch)
++          if (batch.length < PRICE_ADJUST_READ_BATCH) break
++        }
++      }
+     }
+     if (!items.length) return []
+ 
+     const variantIds = [...new Set(items.map((i) => i.variantId))]
+-    const variants = await prisma.productVariant.findMany({
+-      where: { id: { in: variantIds }, isActive: true },
+-      select: { id: true, salePrice: true }
+-    })
++    const variants: { id: number; salePrice: number }[] = []
++    for (const chunk of chunksOf(variantIds))
++      variants.push(
++        ...(await prisma.productVariant.findMany({
++          where: { id: { in: chunk }, isActive: true },
++          select: { id: true, salePrice: true }
++        }))
++      )
+     const priceOf = new Map(variants.map((v) => [v.id, v.salePrice]))
+ 
+     // batchId ⇒ ردیف همان دسته (برای برچسب و زمان پایان)
+@@ -1524,13 +1584,10 @@
+     if (normalizeAdjustState(batch.state, batch.revertedAt) !== 'APPLIED') return 0
+ 
+     const target = normalizeTarget(batch.target)
+-    const alive = batch.items.length
+-      ? await tx.productVariant.findMany({
+-          where: { id: { in: batch.items.map((i) => i.variantId) } },
+-          select: { id: true }
+-        })
+-      : []
+-    const aliveSet = new Set(alive.map((v) => v.id))
++    const aliveSet = await aliveVariantIds(
++      tx,
++      batch.items.map((i) => i.variantId)
++    )
+ 
+     let restored = 0
+     for (const item of batch.items) {
+@@ -1625,7 +1682,7 @@
+           batch.id,
+           e
+         )
+-        await markScheduleFailure(batch.id, e)
++        await markScheduleFailure(batch.id, e, phase)
+       }
+     }
+   }
+@@ -1638,10 +1695,33 @@
+  * نباید بی‌صدا بماند. پس یادداشتش در سابقه‌ی سیستم ثبت و خودش «تمام‌شده» علامت
+  * می‌خورد تا مدیر در جدول سابقه ببیندش.
+  */
+-async function markScheduleFailure(batchId: number, error: unknown): Promise<void> {
++async function markScheduleFailure(batchId: number, error: unknown, phase: 'START' | 'END' = 'START'): Promise<void> {
+   const message = String((error as any)?.message ?? error).split('\n')[0]
+   try {
+     const at = new Date()
++    /**
++     * نشست ۱۷۶ · S176-D2 — «پایان خودکار» ناموفق یعنی تراکنش rollback شده و قیمت‌ها هنوز همان
++     * قیمت تخفیف‌خورده/تغییرکرده‌اند. قبلاً دسته «ENDED + revertedAt» می‌خورد: هم دروغ می‌گفت
++     * («قیمت‌ها برگشته‌اند») و هم بازگردانی دستی و «حذف با برگرداندن قیمت» را برای همیشه می‌بست.
++     * حالا دسته APPLIED (در جریان) می‌ماند، فقط endAt پاک می‌شود تا هر ۳۰ ثانیه دوباره تلاش نکند،
++     * و یادداشت/Audit صریح می‌گوید قیمت‌ها برنگشته‌اند و باید دستی بازگردانی شود.
++     */
++    if (phase === 'END') {
++      await prisma.priceChangeBatch.update({
++        where: { id: batchId },
++        data: {
++          endAt: null,
++          note: `پایان خودکار ناموفق بود و قیمت‌ها برنگشتند؛ از سابقه دستی «بازگردانی» کنید: ${message}`
++        }
++      })
++      await audit(prisma, {
++        action: AuditAction.PRICE_SCHEDULE_END,
++        entity: 'PriceChangeBatch',
++        entityId: batchId,
++        note: `پایان خودکار تغییر قیمت ناموفق بود؛ دسته در جریان ماند و قیمت‌ها برنگشتند (بازگردانی دستی لازم است): ${message}`
++      })
++      return
++    }
+     await prisma.priceChangeBatch.update({
+       where: { id: batchId },
+       data: {

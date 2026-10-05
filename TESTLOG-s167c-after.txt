@@ -1,0 +1,24 @@
+(node:8720) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:8720) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/mahak/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) قرارداد سرور (بدون تغییر): قیمت کمتر از مرجع بی‌رمز ⇒ پیام «رمز مدیر را وارد کنید»، با رمز ⇒ پذیرفته
+  ✓ بی‌رمز رد شد («قیمت کمتر از قیمت مرجع (کد PW-1: واردشده ۸۰۰٬۰۰۰ ریال، مرجع ۱٬۰۰۰٬۰۰۰ ریال)» تایید مدیر ل)
+  ✓ پیام با needsManagerPassword شناخته می‌شود
+  ✓ پیام هشدار اضافه‌دریافت نیست (پس فلو اضافه‌دریافت آن را نمی‌گیرد)
+  ✓ پیام فارسی، با مبلغ واردشده و مرجع
+  ✓ با رمز مدیر پذیرفته شد
+
+۲) SalesInvoice.tsx: خطای رمز مدیر ⇒ کادر رمز نمایش داده می‌شود
+  ✓ state priceNeedPw تعریف شده
+  ✓ در شاخه‌ی خطای عمومی needsManagerPassword ⇒ setPriceNeedPw
+  ✓ کادر رمز با priceNeedPw هم نمایش داده می‌شود
+  ✓ برچسب «قیمت کمتر از قیمت مرجع» در کادر
+  ✓ همان chargePw به managerPassword می‌رود (بدون مسیر تازه‌ی سرور)
+  ✓ پس از ثبت موفق priceNeedPw پاک می‌شود
+  ✓ resetForm هم priceNeedPw را پاک می‌کند
+
+✓ 12 بررسی موفق · 0 ناموفق

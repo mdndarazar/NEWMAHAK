@@ -1,0 +1,542 @@
+diff -ruN pristine/mahak/src/main/ipc/index.ts s165/mahak/src/main/ipc/index.ts
+--- pristine/mahak/src/main/ipc/index.ts	2026-09-27 09:08:46.000000000 +0000
++++ s165/mahak/src/main/ipc/index.ts	2026-09-27 10:59:23.683817172 +0000
+@@ -594,7 +594,8 @@
+   // نشست ۱۵۷ (Y13، S157-D2/D3) — گیت رمز پنل انبارگردانی در سرویس؛ actor از نشست
+   handle(IPC.stocktakeScheduleSet, async (p) => stocktakeReminderService.set(await withOptionalSessionActor(p ?? {})))
+   handle(IPC.stocktakeDue, () => stocktakeReminderService.due())
+-  handle(IPC.stocktakeDismiss, () => stocktakeReminderService.dismiss())
++  // نشست ۱۶۶ (S166-D1) — گیت رمز پنل انبارگردانی در سرویس؛ actor از نشست (نه userId رندرر)
++  handle(IPC.stocktakeDismiss, async (p) => stocktakeReminderService.dismiss(await withOptionalSessionActor(p ?? {})))
+ 
+   // بندهای ۲، ۳ و ۶ — عملکرد کارمندان، تخفیف غیرعادی، خارج از بازه‌ی شیفت
+   handle(IPC.staffList, () => staffReportService.staff())
+diff -ruN pristine/mahak/src/main/services/SettingsService.ts s165/mahak/src/main/services/SettingsService.ts
+--- pristine/mahak/src/main/services/SettingsService.ts	2026-09-27 09:08:46.000000000 +0000
++++ s165/mahak/src/main/services/SettingsService.ts	2026-09-27 11:03:09.257881238 +0000
+@@ -548,6 +548,7 @@
+      *   • charges ⇒ رمز پنل همان نوع/اسکوپ (مثل chargesSave).
+      * «تغییر» با مقدار parse‌شده‌ی همان بخش در برابر مقدار فعلی سنجیده می‌شود، پس Pos.tsx و
+      * useAutoCentralWithdraw که کل sale را با یک فیلد عوض‌شده می‌فرستند فقط گیت همان فیلد را می‌خورند.
++     * ⚠️ نشست ۱۶۶ (S166-D4): printEnabled دیگر بی‌رمز نیست ⇒ رمز پنل posPrintToggle (پایین‌تر).
+      * رمز مدیر هر درخواست حداکثر یک بار سنجیده می‌شود.
+      */
+     const managerSections: string[] = []
+@@ -558,11 +559,14 @@
+     if (input?.time && !sameJson(parseOfficialTimeConfig(input.time), await this.officialTime()))
+       managerSections.push('افست ساعت رسمی')
+     let autoCentralChanged = false
++    let printChanged: boolean | null = null
+     if (input?.sale) {
+       const curSale = await this.saleDefaults()
+       const nextSale = parseSaleDefaults(input.sale)
+       const changed = (Object.keys(curSale) as (keyof SaleDefaults)[]).filter((k) => !sameJson(curSale[k], nextSale[k]))
+       autoCentralChanged = changed.includes('autoCentralWithdraw')
++      // نشست ۱۶۶ (S166-D4) — printEnabled دیگر بی‌رمز نیست؛ مقدار تازه برای گیت و یادداشت Audit
++      if (changed.includes('printEnabled')) printChanged = nextSale.printEnabled !== false
+       if (changed.some((k) => k !== 'printEnabled' && k !== 'autoCentralWithdraw'))
+         managerSections.push('تنظیمات فروش (عوارض/حق سرویس پیش‌فرض، کد برگشت، نام صندوق‌دار)')
+     }
+@@ -586,6 +590,18 @@
+         input?.panelPassword ?? input?.managerPassword ?? null,
+         'تغییر گزینه‌ی «برداشت خودکار از انبار مرکزی هنگام کمبود موجودی»'
+       )
++    /**
++     * نشست ۱۶۶ (S166-D4، ریسک باز «posPrintToggle فقط UI»، بازنگری S155-D2) — قفل چک‌باکس «چاپ فاکتور»
++     * فقط در UI بود و این کانال printEnabled را بی‌رمز می‌نوشت. بی‌رسید، مشتری مبلغ ثبت‌شده را نمی‌بیند و
++     * کم‌ثبتی (مثلاً تخفیف داخل بازه‌ی مجاز روی مبلغی که کامل گرفته شده) پنهان می‌ماند. حالا مثل
++     * autoCentralWithdraw: رمز پنل posPrintToggle (رمز مدیر هم بازش می‌کند؛ قفل خاموش ⇒ آزاد، بند ۴-۳۹).
++     */
++    if (printChanged !== null && !managerSections.length)
++      await assertPanelPassword(
++        PANEL_KEYS.posPrintToggle,
++        input?.panelPassword ?? input?.managerPassword ?? null,
++        printChanged ? 'روشن کردن چاپ فاکتور' : 'خاموش کردن چاپ فاکتور'
++      )
+     for (const c of chargePanels)
+       if (!managerSections.length)
+         await assertPanelPassword(c.panel, input?.panelPassword ?? input?.managerPassword ?? null, `تغییر «${c.title}»`)
+@@ -654,7 +670,9 @@
+       userId: input.userId ?? null,
+       before: JSON.stringify(before),
+       after: JSON.stringify(after),
+-      note: 'تنظیمات قالب فاکتور / فروش / شیفت / چاپ لیبل / امنیت'
++      note:
++        'تنظیمات قالب فاکتور / فروش / شیفت / چاپ لیبل / امنیت' +
++        (printChanged === null ? '' : printChanged ? ' · چاپ فاکتور روشن شد' : ' · چاپ فاکتور خاموش شد')
+     })
+     return after
+   }
+diff -ruN pristine/mahak/src/main/services/StocktakeReminderService.ts s165/mahak/src/main/services/StocktakeReminderService.ts
+--- pristine/mahak/src/main/services/StocktakeReminderService.ts	2026-09-27 09:08:46.000000000 +0000
++++ s165/mahak/src/main/services/StocktakeReminderService.ts	2026-09-27 10:59:23.683817172 +0000
+@@ -53,7 +53,15 @@
+     const { dismissedJalali: _nd, ...nextCore } = parseStocktakeSchedule((payload?.schedule ?? {}) as any) as any
+     if (JSON.stringify(beforeCore) !== JSON.stringify(nextCore))
+       await assertPanelPassword(PANEL_KEYS.stocktake, payload?.panelPassword ?? null, 'تغییر برنامه‌ی یادآوری انبارگردانی')
+-    const clean = await writeSchedule((payload?.schedule ?? {}) as StocktakeSchedule)
++    /**
++     * نشست ۱۶۶ (S166-D2) — dismissedJalali فقط از کانال مستقل dismiss (با گیت و Audit) نوشته می‌شود.
++     * قبلاً همین کانال با برنامه‌ی بی‌تغییر + dismissedJalali=امروز، بی‌رمز یادآوری را می‌خواباند.
++     * پس مقدار فعلی ذخیره‌شده عیناً حفظ می‌شود و مقدار ارسالی رندرر نادیده گرفته می‌شود.
++     */
++    const clean = await writeSchedule({
++      ...((payload?.schedule ?? {}) as StocktakeSchedule),
++      dismissedJalali: before.dismissedJalali
++    })
+     await prisma.auditLog.create({
+       data: {
+         action: AuditAction.STOCKTAKE_SCHEDULE_UPDATE,
+@@ -129,9 +137,36 @@
+     return { ...base, due: reasons.length > 0, reasons, dismissed }
+   },
+ 
+-  /** «امروز دیدم» — فقط یادآوری امروز را می‌خواباند، تنظیمات را عوض نمی‌کند. */
+-  async dismiss() {
+-    const schedule = await readSchedule()
+-    return writeSchedule({ ...schedule, dismissedJalali: jalaliToday() })
++  /**
++   * «امروز دیدم» — فقط یادآوری امروز را می‌خواباند، تنظیمات را عوض نمی‌کند.
++   *
++   * نشست ۱۶۶ (S166-D1، بند ۳ انبارگردانی ماهانه + بند ۵ «هر گیت در main» + بند ۴-۳۰ Audit) —
++   * قبلاً بی‌رمز و بی‌رد بود ⇒ فروشنده می‌توانست نشان «وقت انبارگردانی» را پیش از دیدن مدیر پنهان
++   * کند. حالا رمز پنل انبارگردانی (رمز مدیر یا رمز دوم همین پنل؛ قفل خاموش ⇒ آزاد، بند ۴-۳۹) پیش از
++   * هر نوشتن، و هر خواباندن با actor نشست در Audit می‌نشیند.
++   */
++  async dismiss(payload?: { userId?: number | null; panelPassword?: string | null }) {
++    const scope = await assertPanelPassword(
++      PANEL_KEYS.stocktake,
++      payload?.panelPassword ?? null,
++      'خواباندن یادآوری انبارگردانی امروز'
++    )
++    const before = await readSchedule()
++    const today = jalaliToday()
++    const clean = await writeSchedule({ ...before, dismissedJalali: today })
++    await prisma.auditLog.create({
++      data: {
++        action: AuditAction.STOCKTAKE_SCHEDULE_UPDATE,
++        entity: 'Setting',
++        entityId: 0,
++        userId: payload?.userId ?? null,
++        before: JSON.stringify(before),
++        after: JSON.stringify(clean),
++        note:
++          `یادآوری انبارگردانی امروز (${today}) خوابانده شد («امروز دیدم») · ` +
++          (scope === 'MANAGER' ? 'با رمز مدیر' : scope === 'PANEL' ? 'با رمز پنل انبارگردانی' : 'قفل پنل انبارگردانی خاموش')
++      }
++    })
++    return clean
+   }
+ }
+diff -ruN pristine/mahak/src/renderer/src/components/StocktakeReminderBadge.tsx s165/mahak/src/renderer/src/components/StocktakeReminderBadge.tsx
+--- pristine/mahak/src/renderer/src/components/StocktakeReminderBadge.tsx	2026-09-27 09:08:46.000000000 +0000
++++ s165/mahak/src/renderer/src/components/StocktakeReminderBadge.tsx	2026-09-27 10:59:52.156077702 +0000
+@@ -3,6 +3,7 @@
+ import { call, CH } from '../lib/api'
+ import { faDigits } from '@shared/jalali'
+ import type { StocktakeSchedule } from '@shared/receipt'
++import PasswordField from './PasswordField'
+ 
+ /**
+  * ===========================================================================
+@@ -35,7 +36,11 @@
+ }
+ 
+ /** خواندن وضعیت «امروز موعد انبارگردانی است؟» — خطا بی‌صدا نادیده می‌شود. */
+-export function useStocktakeDue(): { due: StocktakeDue | null; reload: () => void; dismiss: () => Promise<void> } {
++export function useStocktakeDue(): {
++  due: StocktakeDue | null
++  reload: () => void
++  dismiss: (panelPassword: string) => Promise<void>
++} {
+   const [due, setDue] = useState<StocktakeDue | null>(null)
+ 
+   const reload = useCallback(() => {
+@@ -48,13 +53,18 @@
+     reload()
+   }, [reload])
+ 
+-  const dismiss = useCallback(async () => {
+-    try {
+-      await call(CH.stocktakeDismiss)
+-    } finally {
+-      reload()
+-    }
+-  }, [reload])
++  // نشست ۱۶۶ (S166-D1/D3) — «امروز دیدم» رمز پنل انبارگردانی می‌خواهد (گیت اصلی در main)؛
++  // خطای فارسی سرور به صدازننده برمی‌گردد تا زیر کادر رمز نشان داده شود.
++  const dismiss = useCallback(
++    async (panelPassword: string) => {
++      try {
++        await call(CH.stocktakeDismiss, { panelPassword })
++      } finally {
++        reload()
++      }
++    },
++    [reload]
++  )
+ 
+   return { due, reload, dismiss }
+ }
+@@ -88,8 +98,26 @@
+ }) {
+   const nav = useNavigate()
+   const { due, dismiss } = useStocktakeDue()
++  const [askPw, setAskPw] = useState(false)
++  const [pw, setPw] = useState('')
++  const [pwErr, setPwErr] = useState('')
++  const [busy, setBusy] = useState(false)
+   if (!due?.due || due.dismissed) return null
+ 
++  const confirmDismiss = async () => {
++    setBusy(true)
++    setPwErr('')
++    try {
++      await dismiss(pw)
++      setAskPw(false)
++    } catch (e: any) {
++      setPwErr(String(e?.message ?? e ?? 'خواباندن یادآوری انجام نشد.'))
++    } finally {
++      setPw('')
++      setBusy(false)
++    }
++  }
++
+   return (
+     <div className="rounded border-2 border-amber-500 bg-amber-50 p-3 space-y-2">
+       <div className="font-bold text-amber-900">وقت انبارگردانی فیزیکی رسیده است</div>
+@@ -112,10 +140,30 @@
+             ثبت شمارش فیزیکی
+           </button>
+         )}
+-        <button className="btn" onClick={() => void dismiss()} title="فقط یادآوری امروز خوابانده می‌شود">
+-          امروز دیدم
+-        </button>
++        {!askPw && (
++          <button className="btn" onClick={() => setAskPw(true)} title="فقط یادآوری امروز خوابانده می‌شود (رمز مدیر یا رمز انبارگردانی)">
++            امروز دیدم
++          </button>
++        )}
+       </div>
++      {askPw && (
++        <div className="flex gap-2 flex-wrap items-center">
++          <PasswordField
++            placeholder="رمز مدیر / رمز انبارگردانی"
++            value={pw}
++            onChange={(e) => setPw(e.target.value)}
++            onKeyDown={(e) => e.key === 'Enter' && !busy && void confirmDismiss()}
++            autoFocus
++          />
++          <button className="btn" disabled={busy} onClick={() => void confirmDismiss()}>
++            تأیید «امروز دیدم»
++          </button>
++          <button className="btn" disabled={busy} onClick={() => { setAskPw(false); setPw(''); setPwErr('') }}>
++            انصراف
++          </button>
++          {pwErr && <div className="text-red-700 w-full">{pwErr}</div>}
++        </div>
++      )}
+     </div>
+   )
+ }
+diff -ruN pristine/mahak/src/renderer/src/pages/Pos.tsx s165/mahak/src/renderer/src/pages/Pos.tsx
+--- pristine/mahak/src/renderer/src/pages/Pos.tsx	2026-09-27 09:08:46.000000000 +0000
++++ s165/mahak/src/renderer/src/pages/Pos.tsx	2026-09-27 11:03:09.257881238 +0000
+@@ -7,6 +7,7 @@
+ import { usePanelLock, usePanelOpen } from '../hooks/usePanelLocks'
+ import { useAutoCentralWithdraw } from '../hooks/useAutoCentralWithdraw'
+ import AutoCentralPasswordBox from '../components/AutoCentralPasswordBox'
++import PasswordField from '../components/PasswordField'
+ import { useCharges } from '../hooks/useCharges'
+ import VariantSearchBox, { type VariantSearchBoxHandle } from '../components/VariantSearchBox'
+ import { ColGroup, ResizableHeaderCells, useResizableColumns } from '../components/ResizableColumns'
+@@ -296,12 +297,21 @@
+    * روشن/خاموش کردن چاپ فاکتور. همان لحظه ذخیره می‌شود (مثل سوییچ‌های رفتاری
+    * دیگر برنامه) تا «یادم رفت ذخیره کنم» باعث چاپ ناخواسته نشود.
+    */
++  // نشست ۱۶۶ (S166-D4/D6) — سرور تغییر چاپ را با رمز پنل posPrintToggle می‌سنجد (قفل خاموش ⇒ بی‌رمز)؛
++  // باز شدن ManagerGate فقط چک‌باکس را نشان می‌دهد، پس رمز کنار چک‌باکس گرفته و بعد از هر تلاش پاک می‌شود.
++  const { lockEnabled: printLockOn, loaded: printLockLoaded } = usePanelLock(PANEL_KEYS.posPrintToggle)
++  const printNeedPw = !printLockLoaded || printLockOn
++  const [printPw, setPrintPw] = useState('')
+   const togglePrintEnabled = useCallback(
+     async (next: boolean) => {
++      if (printNeedPw && !printPw.trim()) {
++        setErr('برای روشن/خاموش کردن چاپ فاکتور، رمز مدیر (یا رمز دوم همین گزینه) را در کادر کنار آن وارد کنید.')
++        return
++      }
+       setPrintEnabled(next) // نمایش فوری
+       const nextSale = { ...settings.sale, printEnabled: next }
+       try {
+-        await call(CH.settingsSaveBundle, { sale: nextSale })
++        await call(CH.settingsSaveBundle, { sale: nextSale, panelPassword: printNeedPw ? printPw : undefined })
+         setSettings((p) => ({ ...p, sale: nextSale }))
+         broadcastSettingsChanged()
+         setErr(null)
+@@ -313,9 +323,11 @@
+       } catch (e: any) {
+         setPrintEnabled(!next)
+         setErr(`ذخیره‌ی وضعیت چاپ انجام نشد: ${e.message}`)
++      } finally {
++        setPrintPw('')
+       }
+     },
+-    [settings.sale, setSettings]
++    [settings.sale, setSettings, printNeedPw, printPw]
+   )
+ 
+   /**
+@@ -1701,6 +1713,15 @@
+               </span>
+             </span>
+           </label>
++          {printNeedPw && (
++            <div className="mt-1 max-w-xs" title="رمز مدیر یا رمز دوم همین گزینه؛ بعد از هر تلاش پاک می‌شود">
++              <PasswordField
++                value={printPw}
++                placeholder="رمز تغییر چاپ فاکتور"
++                onChange={(e) => setPrintPw(e.target.value)}
++              />
++            </div>
++          )}
+           </ManagerGate>
+ 
+           {/**
+diff -ruN pristine/mahak/tests/audit-fixes/fix-s151c-gates.mjs s165/mahak/tests/audit-fixes/fix-s151c-gates.mjs
+--- pristine/mahak/tests/audit-fixes/fix-s151c-gates.mjs	2026-09-27 09:08:46.000000000 +0000
++++ s165/mahak/tests/audit-fixes/fix-s151c-gates.mjs	2026-09-27 11:03:27.038043920 +0000
+@@ -109,7 +109,10 @@
+ 
+ console.log('\n۲) مسیرهای رسمی POS که فقط sale می‌فرستند (Pos.tsx ~۳۰۳، useAutoCentralWithdraw ~۸۶)')
+ let cur = await settingsService.saleDefaults()
+-await ipcOk('فقط printEnabled عوض شد بی‌رمز ⇒ پذیرفته (S155-D2)', IPC.settingsSaveBundle, { sale: { ...cur, printEnabled: !cur.printEnabled } })
++// نشست ۱۶۶ (S166-D4/D5) — S155-D2 بازنگری شد: printEnabled حالا رمز پنل posPrintToggle می‌خواهد (قبلاً بی‌رمز =
++// همان حفره‌ی «posPrintToggle فقط UI»). قصد این بند (مسیر رسمی Pos.tsx فقط sale با یک فیلد عوض‌شده می‌فرستد و فقط گیت
++// همان فیلد را می‌خورد) حفظ شد؛ فقط panelPassword به setup اضافه شد. تست کامل: fix-s166-print-toggle-gate.mjs.
++await ipcOk('فقط printEnabled عوض شد با رمز پنل چاپ ⇒ پذیرفته (S166-D4)', IPC.settingsSaveBundle, { sale: { ...cur, printEnabled: !cur.printEnabled }, panelPassword: PW })
+ eq('printEnabled ذخیره شد', (await settingsService.saleDefaults()).printEnabled, !cur.printEnabled)
+ cur = await settingsService.saleDefaults()
+ await ipcRejects('printEnabled + returnCodeDays بی‌رمز ⇒ رد (میان‌بر نیست)', IPC.settingsSaveBundle, { sale: { ...cur, printEnabled: !cur.printEnabled, returnCodeDays: 30 } }, 'رمز')
+diff -ruN pristine/mahak/tests/audit-fixes/fix-s166-print-toggle-gate.mjs s165/mahak/tests/audit-fixes/fix-s166-print-toggle-gate.mjs
+--- pristine/mahak/tests/audit-fixes/fix-s166-print-toggle-gate.mjs	1970-01-01 00:00:00.000000000 +0000
++++ s165/mahak/tests/audit-fixes/fix-s166-print-toggle-gate.mjs	2026-09-27 11:02:43.949649652 +0000
+@@ -0,0 +1,104 @@
++/**
++ * ===========================================================================
++ * نشست ۱۶۶ · S166-D4/D5 — گیت سمت main برای چک‌باکس «چاپ فاکتور» (ریسک باز «posPrintToggle فقط UI»، S155-D2).
++ *
++ * قبل از رفع: قفل posPrintToggle فقط در UI بود؛ settings:saveBundle با sale که فقط printEnabled عوض شده
++ * بی‌هیچ رمزی ذخیره می‌شد ⇒ فروشنده با دور زدن صفحه چاپ رسید را خاموش می‌کرد. بی‌رسید، مشتری نمی‌تواند
++ * مبلغ ثبت‌شده را با مبلغ پرداختی‌اش مقایسه کند (کم‌ثبتی با تخفیف داخل بازه‌ی مجاز پنهان می‌ماند) — هدف ضدسرقت.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s166-print-toggle-gate.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s166-print-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const electron = await import('electron')
++const handlers = new Map()
++electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const db = harnessClient()
++const seed = makeSeeder(db)
++const { settingsService } = await import('../../src/main/services/SettingsService.ts')
++const { registerIpcHandlers } = await import('../../src/main/ipc/index.ts')
++const { IPC } = await import('@shared/ipc')
++const { SETTING_KEYS, DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/receipt')
++const { PANEL_KEYS } = await import('@shared/panels')
++const { jalaliToday } = await import('@shared/jalali')
++registerIpcHandlers()
++const ipc = (ch, payload) => handlers.get(ch)(null, payload)
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
++}
++const ipcOk = async (label, ch, payload) => {
++  const r = await ipc(ch, payload)
++  if (r?.ok) { ok++; console.log(`  ✓ ${label}`) } else { bad++; console.log(`  ✗ ${label} — ${String(r?.error).slice(0, 200)}`) }
++  return r?.data
++}
++const ipcRejects = async (label, ch, payload, needle) => {
++  const r = await ipc(ch, payload)
++  if (r?.ok === false && /[\u0600-\u06FF]/.test(String(r.error)) && (!needle || String(r.error).includes(needle))) { ok++; console.log(`  ✓ ${label} (رد شد: ${String(r.error).slice(0, 110)})`) }
++  else { bad++; console.log(`  ✗ ${label} — ${r?.ok ? 'بدون رمز پذیرفته شد' : 'پیام نامنتظره: ' + String(r?.error).slice(0, 160)}`) }
++}
++const settingRaw = (key) => seed.one('SELECT value FROM "Setting" WHERE key = ?', key)?.value ?? null
++const lastAudit = () => seed.one('SELECT id, userId, note FROM "AuditLog" WHERE action = \'SETTINGS_UPDATE\' ORDER BY id DESC LIMIT 1')
++const auditCount = () => seed.count('AuditLog', "action = 'SETTINGS_UPDATE'")
++
++const actor = seed.user('فروشنده‌ی نشست ۱۶۶-چاپ')
++const forged = seed.user('کارمند جعلی ۱۶۶-چاپ')
++seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: jalaliToday(), openedAt: Date.now() - 3600_000, userId: actor, staffConfirmed: 1 })
++seed.setting(SETTING_KEYS.panelLocks, {})
++await settingsService.bundle() // مهاجرت تنبل تنظیمات عوارض (Audit جدا) پیش از شمارش
++
++console.log('\n۱) قفل posPrintToggle روشن (پیش‌فرض): خاموش‌کردن چاپ بی‌رمز / رمز غلط ⇒ رد، بدون نوشتن و بدون Audit')
++let cur = await settingsService.saleDefaults()
++eq('پیش‌شرط: چاپ روشن است', cur.printEnabled, true)
++let before = settingRaw(SETTING_KEYS.saleDefaults)
++let a0 = auditCount()
++await ipcRejects('خاموش‌کردن چاپ بی‌رمز', IPC.settingsSaveBundle, { sale: { ...cur, printEnabled: false } }, 'رمز')
++await ipcRejects('خاموش‌کردن چاپ با رمز غلط', IPC.settingsSaveBundle, { sale: { ...cur, printEnabled: false }, panelPassword: 'wrong-166' }, 'رمز')
++eq('saleDefaults دست‌نخورده', settingRaw(SETTING_KEYS.saleDefaults), before)
++eq('چاپ هنوز روشن است', (await settingsService.saleDefaults()).printEnabled, true)
++eq('هیچ Audit تازه‌ای ثبت نشد', auditCount(), a0)
++
++console.log('\n۲) با رمز مدیر ⇒ پذیرفته، Audit با actor نشست و یادداشت صریح «چاپ فاکتور خاموش شد»')
++await ipcOk('خاموش‌کردن چاپ با رمز مدیر (panelPassword)', IPC.settingsSaveBundle, { sale: { ...cur, printEnabled: false }, panelPassword: PW, userId: forged })
++eq('چاپ خاموش شد', (await settingsService.saleDefaults()).printEnabled, false)
++eq('یک Audit تازه', auditCount(), a0 + 1)
++eq('Audit با actor نشست', lastAudit()?.userId, actor)
++eq('یادداشت Audit: «چاپ فاکتور خاموش شد»', /چاپ فاکتور خاموش شد/.test(String(lastAudit()?.note)), true)
++
++console.log('\n۳) روشن‌کردن دوباره هم رمز می‌خواهد (هر تغییر = همان قفل)؛ با managerPassword هم باز می‌شود')
++cur = await settingsService.saleDefaults()
++await ipcRejects('روشن‌کردن چاپ بی‌رمز', IPC.settingsSaveBundle, { sale: { ...cur, printEnabled: true } }, 'رمز')
++await ipcOk('روشن‌کردن چاپ با managerPassword', IPC.settingsSaveBundle, { sale: { ...cur, printEnabled: true }, managerPassword: PW })
++eq('چاپ روشن شد', (await settingsService.saleDefaults()).printEnabled, true)
++eq('یادداشت Audit: «چاپ فاکتور روشن شد»', /چاپ فاکتور روشن شد/.test(String(lastAudit()?.note)), true)
++
++console.log('\n۴) sale بی‌تغییر ⇒ بی‌رمز پذیرفته (ذخیره‌ی بی‌اثر گیت نمی‌خورد)')
++await ipcOk('sale بی‌تغییر بی‌رمز', IPC.settingsSaveBundle, { sale: await settingsService.saleDefaults() })
++
++console.log('\n۵) قفل posPrintToggle خاموش ⇒ بی‌رمز مجاز (بند ۴-۳۹)')
++seed.setting(SETTING_KEYS.panelLocks, { [PANEL_KEYS.posPrintToggle]: false })
++cur = await settingsService.saleDefaults()
++await ipcOk('خاموش‌کردن چاپ بی‌رمز با قفل خاموش', IPC.settingsSaveBundle, { sale: { ...cur, printEnabled: false } })
++eq('چاپ خاموش شد', (await settingsService.saleDefaults()).printEnabled, false)
++seed.setting(SETTING_KEYS.panelLocks, {})
++
++console.log('\n۶) UI: Pos.tsx رمز چاپ را می‌گیرد و panelPassword می‌فرستد')
++const ui = readFileSync(resolve('src/renderer/src/pages/Pos.tsx'), 'utf8')
++eq('togglePrintEnabled ⇒ settingsSaveBundle با panelPassword', /CH\.settingsSaveBundle, \{ sale: nextSale, panelPassword: printNeedPw \? printPw : undefined \}/.test(ui), true)
++eq('کادر رمز کنار چک‌باکس چاپ', /<PasswordField[\s\S]{0,160}value=\{printPw\}/.test(ui), true)
++
++console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
++process.exitCode = bad ? 1 : 0
+diff -ruN pristine/mahak/tests/audit-fixes/fix-s166-stocktake-dismiss-gate.mjs s165/mahak/tests/audit-fixes/fix-s166-stocktake-dismiss-gate.mjs
+--- pristine/mahak/tests/audit-fixes/fix-s166-stocktake-dismiss-gate.mjs	1970-01-01 00:00:00.000000000 +0000
++++ s165/mahak/tests/audit-fixes/fix-s166-stocktake-dismiss-gate.mjs	2026-09-27 10:59:52.156077702 +0000
+@@ -0,0 +1,111 @@
++/**
++ * ===========================================================================
++ * نشست ۱۶۶ · S166-D1/D2 — گیت سمت main برای «امروز دیدم» یادآوری انبارگردانی
++ * (ریسک باز «dismiss یادآوری انبارگردانی بی‌رمز»، هندآف ۱۶۵ بند ۲-۱).
++ *
++ * قبل از رفع:
++ *   ۱) IPC.stocktakeDismiss بی‌هیچ رمز و بی‌هیچ ردی یادآوری انبارگردانی امروز را می‌خواباند ⇒ فروشنده
++ *      می‌توانست نشان «وقت انبارگردانی رسیده» را پیش از دیدن مدیر پنهان کند (کنترل ضدسرقت بند ۳).
++ *   ۲) کانال جانبی: IPC.stocktakeScheduleSet با همان برنامه و فقط dismissedJalali=امروز بی‌رمز پذیرفته
++ *      می‌شد (Y13 عمداً dismissedJalali را از مقایسه بیرون گذاشته بود) ⇒ همان خواباندن از راه دیگر.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s166-stocktake-dismiss-gate.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s166-dismiss-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const electron = await import('electron')
++const handlers = new Map()
++electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const db = harnessClient()
++const seed = makeSeeder(db)
++const { registerIpcHandlers } = await import('../../src/main/ipc/index.ts')
++const { IPC } = await import('@shared/ipc')
++const { SETTING_KEYS, DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/receipt')
++const { PANEL_KEYS } = await import('@shared/panels')
++const { jalaliToday } = await import('@shared/jalali')
++registerIpcHandlers()
++const ipc = (ch, payload) => handlers.get(ch)(null, payload)
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
++}
++const ipcOk = async (label, ch, payload) => {
++  const r = await ipc(ch, payload)
++  if (r?.ok) { ok++; console.log(`  ✓ ${label}`) } else { bad++; console.log(`  ✗ ${label} — ${String(r?.error).slice(0, 200)}`) }
++  return r?.data
++}
++const ipcRejects = async (label, ch, payload, needle) => {
++  const r = await ipc(ch, payload)
++  if (r?.ok === false && /[\u0600-\u06FF]/.test(String(r.error)) && (!needle || String(r.error).includes(needle))) { ok++; console.log(`  ✓ ${label} (رد شد: ${String(r.error).slice(0, 110)})`) }
++  else { bad++; console.log(`  ✗ ${label} — ${r?.ok ? 'بدون رمز پذیرفته شد' : 'پیام نامنتظره: ' + String(r?.error).slice(0, 160)}`) }
++}
++const dismissedNow = async () => (await ipc(IPC.stocktakeDue, undefined))?.data?.dismissed
++const dueNow = async () => (await ipc(IPC.stocktakeDue, undefined))?.data?.due
++const lastAudit = () => seed.one('SELECT id, userId, note FROM "AuditLog" WHERE action = \'STOCKTAKE_SCHEDULE_UPDATE\' ORDER BY id DESC LIMIT 1')
++const auditCount = () => seed.count('AuditLog', "action = 'STOCKTAKE_SCHEDULE_UPDATE'")
++
++const actor = seed.user('فروشنده‌ی نشست ۱۶۶')
++const forged = seed.user('کارمند جعلی ۱۶۶')
++seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: jalaliToday(), openedAt: Date.now() - 3600_000, userId: actor, staffConfirmed: 1 })
++
++// برنامه‌ای که امروز موعد دارد (تاریخ گذشته، بدون هیچ شمارش ثبت‌شده) و قفل پنل انبارگردانی روشن (پیش‌فرض)
++seed.setting(SETTING_KEYS.panelLocks, {})
++const sched = { enabled: true, dates: ['1400/01/01'], everyDays: 0, startJalali: '', dismissedJalali: '' }
++seed.setting(SETTING_KEYS.stocktakeSchedule, sched)
++eq('پیش‌شرط: امروز موعد انبارگردانی است', await dueNow(), true)
++eq('پیش‌شرط: یادآوری خوابانده نشده', await dismissedNow(), false)
++
++console.log('\n۱) «امروز دیدم» بی‌رمز / با رمز غلط ⇒ رد، یادآوری بیدار می‌ماند، بدون Audit')
++let a0 = auditCount()
++await ipcRejects('خواباندن بی‌رمز', IPC.stocktakeDismiss, undefined, 'رمز')
++await ipcRejects('خواباندن با رمز غلط', IPC.stocktakeDismiss, { panelPassword: 'wrong-166' }, 'رمز')
++eq('یادآوری هنوز بیدار است', await dismissedNow(), false)
++eq('هیچ Audit تازه‌ای ثبت نشد', auditCount(), a0)
++
++console.log('\n۲) کانال جانبی stocktakeScheduleSet: همان برنامه + dismissedJalali=امروز بی‌رمز ⇒ خواباندن نباید رخ دهد')
++await ipc(IPC.stocktakeScheduleSet, { schedule: { ...sched, dismissedJalali: jalaliToday() } })
++eq('یادآوری از راه stocktakeScheduleSet خوابانده نشد', await dismissedNow(), false)
++await ipc(IPC.stocktakeScheduleSet, { schedule: { ...sched, dismissedJalali: jalaliToday() }, panelPassword: PW })
++eq('حتی با رمز، stocktakeScheduleSet dismissedJalali را نمی‌نویسد (فقط کانال مستقل با Audit)', await dismissedNow(), false)
++
++console.log('\n۳) با رمز مدیر ⇒ خوابانده و Audit با actor نشست (نه userId رندرر)')
++a0 = auditCount()
++await ipcOk('خواباندن با رمز مدیر', IPC.stocktakeDismiss, { panelPassword: PW, userId: forged })
++eq('یادآوری امروز خوابانده شد', await dismissedNow(), true)
++eq('یک Audit تازه', auditCount(), a0 + 1)
++eq('Audit با actor نشست', lastAudit()?.userId, actor)
++eq('یادداشت Audit فارسی و صریح', /یادآوری انبارگردانی امروز/.test(String(lastAudit()?.note)), true)
++
++console.log('\n۴) تغییر واقعی برنامه با رمز، dismissedJalali امروز را پاک نمی‌کند (کانال‌ها مستقل)')
++await ipcOk('ذخیره‌ی برنامه با رمز (dismissedJalali خالی در payload)', IPC.stocktakeScheduleSet, { schedule: { ...sched, everyDays: 30 }, panelPassword: PW })
++eq('خواباندن امروز باقی ماند', await dismissedNow(), true)
++
++console.log('\n۵) قفل پنل انبارگردانی خاموش ⇒ خواباندن بی‌رمز مجاز (بند ۴-۳۹) ولی باز هم Audit')
++seed.setting(SETTING_KEYS.stocktakeSchedule, sched)
++seed.setting(SETTING_KEYS.panelLocks, { [PANEL_KEYS.stocktake]: false })
++a0 = auditCount()
++await ipcOk('خواباندن بی‌رمز با قفل خاموش', IPC.stocktakeDismiss, undefined)
++eq('خوابانده شد', await dismissedNow(), true)
++eq('Audit ثبت شد', auditCount(), a0 + 1)
++seed.setting(SETTING_KEYS.panelLocks, {})
++
++console.log('\n۶) UI: دکمه‌ی «امروز دیدم» رمز می‌گیرد و panelPassword می‌فرستد')
++const ui = readFileSync(resolve('src/renderer/src/components/StocktakeReminderBadge.tsx'), 'utf8')
++eq('call(CH.stocktakeDismiss, { panelPassword })', /call\(CH\.stocktakeDismiss, \{ panelPassword/.test(ui), true)
++eq('کادر رمز در بنر (PasswordField)', /<PasswordField[\s\S]{0,120}value=\{pw\}/.test(ui), true)
++
++console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
++process.exitCode = bad ? 1 : 0

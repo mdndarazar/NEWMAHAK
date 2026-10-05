@@ -1,0 +1,47 @@
+(node:5384) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5384) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/pristine/src/main/services/SettingsService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/pristine/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) settingsOfficialTimeSet: تغییر افست بی‌رمز مدیر ⇒ رد، بدون نوشتن و بدون Audit
+  ✗ افست تازه بی‌رمز — بدون تأیید پذیرفته شد
+  ✗ کلید officialTime دست نخورد — انتظار null، دریافت "{\"offsetHours\":1}"
+  ✗ هیچ Audit تازه‌ای ساخته نشد — انتظار 0، دریافت 1
+  ✗ افست تازه با رمز غلط — بدون تأیید پذیرفته شد
+  ✗ کلید officialTime باز هم دست نخورد — انتظار null، دریافت "{\"offsetHours\":1}"
+  ✓ افست تازه با رمز مدیر پذیرفته شد
+  ✓ افست ذخیره شد = 1
+  ✗ Audit افست با actor نشست (نه userId رندرر) — انتظار 1، دریافت 2
+  ✓ ذخیره‌ی بی‌تغییر همان افست بی‌رمز پذیرفته می‌شود (S155-D1)
+  ✓ خروجی کانال همان پیکربندی است
+
+۲) settingsShiftByTime: تغییر سوییچ بی‌رمز مدیر ⇒ رد؛ actor از نشست
+  ✗ سوییچ byTime بی‌رمز — بدون تأیید پذیرفته شد
+  ✗ کلید shiftConfig دست نخورد — انتظار null، دریافت "{\"byTime\":true,\"templates\":[{\"name\":\"شیفت اول\",\"startTime\":\"08:00\",\"endTime\":\"14:00\"},{\"name\":\"شیفت دوم\",\"startTime\":\"14:00\",\"endTime\":\"20:00\"},{\"name\":\"شیفت سوم\",\"startTime\":\"20:00\",\"endTime\":\"00:00\"}],\"names\":[\"شیفت اول\",\"شیفت دوم\",\"شیفت سوم\"],\"clockFormat\":\"12\"}"
+  ✗ هیچ Audit تازه‌ای ساخته نشد — انتظار 4، دریافت 5
+  ✓ سوییچ byTime با رمز مدیر پذیرفته شد
+  ✓ byTime عوض شد = true
+  ✓ قالب شیفت‌ها دست نخورد = "[{\"name\":\"شیفت اول\",\"startTime\":\"08:00\",\"endTime\":\"14:00\"},{\"name\":\"شیفت دوم\",\"startTime\":\"14:00\",\"endTime\":\"20:00\"},{\"name\":\"شیفت سوم\",\"startTime\":\"20:00\",\"endTime\":\"00:00\"}]"
+  ✗ Audit سوییچ با actor نشست — انتظار 1، دریافت 2
+  ✓ همان مقدار فعلی بی‌رمز پذیرفته می‌شود (بی‌تغییر)
+
+۳) stocktakeScheduleSet: قفل پنل انبارگردانی روشن ⇒ رمز لازم؛ خاموش ⇒ آزاد؛ actor از نشست
+  ✗ یادآوری تازه بی‌رمز (قفل روشن) — بدون تأیید پذیرفته شد
+  ✗ کلید stocktakeSchedule دست نخورد — انتظار null، دریافت "{\"enabled\":true,\"dates\":[\"1405/07/15\"],\"everyDays\":30,\"startJalali\":\"1405/07/01\",\"dismissedJalali\":\"\"}"
+  ✗ هیچ Audit تازه‌ای ساخته نشد — انتظار 7، دریافت 8
+  ✓ یادآوری با رمز مدیر پذیرفته شد
+  ✗ Audit یادآوری با actor نشست — انتظار 1، دریافت 2
+  ✓ همان یادآوری بی‌رمز (بی‌تغییر) پذیرفته می‌شود
+  ✓ قفل پنل انبارگردانی خاموش ⇒ تغییر بی‌رمز مجاز (بند ۴-۳۹)
+
+۴) ساختاری: actor نشست در IPC و کادر رمز UI
+  ✗ IPC.settingsShiftByTime ⇒ withOptionalSessionActor
+  ✗ IPC.settingsOfficialTimeSet ⇒ withOptionalSessionActor
+  ✗ IPC.stocktakeScheduleSet ⇒ withOptionalSessionActor
+  ✗ Settings: افست با managerPassword فرستاده می‌شود
+  ✗ Settings: سوییچ شیفت با managerPassword فرستاده می‌شود
+  ✗ Stocktake: یادآوری با panelPassword فرستاده می‌شود
+
+نتیجه: 11 موفق · 20 ناموفق

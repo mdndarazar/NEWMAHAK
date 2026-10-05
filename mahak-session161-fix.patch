@@ -1,0 +1,890 @@
+diff -ruN ../base159/src/main/services/CashboxService.ts mahak/src/main/services/CashboxService.ts
+--- ../base159/src/main/services/CashboxService.ts	2026-09-27 09:34:16.586130107 +0000
++++ mahak/src/main/services/CashboxService.ts	2026-09-27 09:36:42.523365356 +0000
+@@ -432,6 +432,19 @@
+   }
+ }
+ 
++/**
++ * نشست ۱۶۱ · Y18 · بند ۴-۲۴ (S160-D4) — چکِ پاس‌شده‌ی قدیمی با مقصد نامشخص بیرون از «نقد
++ * مورد انتظار» است؛ پیش‌نمایش و ثبت نهایی هر دو همین یک متن هشدار را برمی‌گردانند تا مبلغ
++ * بی‌صدا گم نشود.
++ */
++function unknownDestinationWarning(amount: number): string | null {
++  if (!(amount > 0)) return null
++  return (
++    `${money(amount)} ریال چک پاس‌شده‌ی قدیمی با مقصد نامشخص در نقد مورد انتظار حساب نشده است (بند ۴-۲۴)؛ ` +
++    'اگر وجهش واقعاً در کشو است، اضافه‌ی صندوق به همین اندازه طبیعی است و باید در یادداشت توضیح داده شود.'
++  )
++}
++
+ export const cashboxService = {
+   /** «بستن صندوق»: جمع دریافتی نقد/کارت/اعتباری یک بازه یا شیفت. */
+   async summary(range: SaleReportFilter & { fromJalali?: string; toJalali?: string }) {
+@@ -615,9 +628,8 @@
+      *      مقصدش «نقد در صندوق فروشگاه» ثبت شده. قبلاً چکی که با کارتخوان وصول
+      *      شده یا به حساب مدیر رفته بود هم انتظار نقد را بالا می‌برد.
+      *   ۲) چکِ پاس‌شده‌ی **قدیمیِ** بی‌مقصد از راه `clearedUnknownChequeAmount`
+-     *      می‌آید: با همان علامتِ قبلی در انتظار نقد می‌نشیند (قاعده‌ی «هیچ عدد
+-     *      گزارش قدیمی عوض نشود») ولی جدا شمرده می‌شود تا پنل بتواند با برچسب
+-     *      «نامشخص» نشانش دهد، نه این‌که لای نقد گم شود. برای داده‌ی تازه صفر است.
++     *      می‌آید. نشست ۱۶۱ · Y18 (بند ۴-۲۴، S160-D4): دیگر در انتظار نقد نمی‌نشیند؛
++     *      فقط `unknownDestinationOutside` + هشدار صریح. برای داده‌ی تازه صفر است.
+      *   ۳) `priorCashSettlements` فقط **سهم نقدِ** وصول نسیه‌ی بازه‌های قبل است.
+      *      قبلاً کل وصولی (نقد + کارت + سایر) اینجا می‌آمد، پس پولی که روی
+      *      کارتخوان نشسته بود «نقد مورد انتظار» را بالا می‌برد.
+@@ -838,6 +850,7 @@
+       warnings: [
+         ...(report.warnings ?? []),
+         ...(handoverWarning ? [handoverWarning] : []),
++        ...(unknownDestinationWarning(closeResult.unknownDestinationOutside) ? [unknownDestinationWarning(closeResult.unknownDestinationOutside)!] : []),
+         ...(shiftCloseWarning ? [shiftCloseWarning] : [])
+       ]
+     }
+@@ -928,7 +941,12 @@
+       movementsPage: mv.page,
+       accounting: acc,
+       handoverWarning,
+-      warnings: [...(report.warnings ?? []), ...(mv.warnings ?? []), ...(handoverWarning ? [handoverWarning] : [])]
++      warnings: [
++        ...(report.warnings ?? []),
++        ...(mv.warnings ?? []),
++        ...(handoverWarning ? [handoverWarning] : []),
++        ...(unknownDestinationWarning(result.unknownDestinationOutside) ? [unknownDestinationWarning(result.unknownDestinationOutside)!] : [])
++      ]
+     }
+   },
+ 
+diff -ruN ../base159/src/main/services/accountingReport.ts mahak/src/main/services/accountingReport.ts
+--- ../base159/src/main/services/accountingReport.ts	2026-09-27 09:34:16.586130107 +0000
++++ mahak/src/main/services/accountingReport.ts	2026-09-27 09:40:03.169063694 +0000
+@@ -230,7 +230,7 @@
+     cash: 0, card: 0, credit: 0, other: 0, exchangeCredit: 0, storeCredit: 0,
+     registeredCheques: 0, clearedCheques: 0, pendingCheques: 0, bouncedCheques: 0,
+     currentPeriod: 0, priorPeriod: 0, priorPeriodCash: 0, priorPeriodCard: 0, priorPeriodOther: 0,
+-    priorClearedCheques: 0,
++    priorClearedCheques: 0, priorManagerAccount: 0, priorDestinationUnknown: 0,
+     clearedCashCheques: 0, clearedCardCheques: 0, clearedManagerCheques: 0, clearedUnknownCheques: 0,
+     managerAccount: 0, destinationUnknown: 0, ignoredNonCash: 0, legacyNegativePayments: 0,
+     overpayReceived: 0
+@@ -330,7 +330,10 @@
+         // فقط چکی که *در این بازه* پاس شده، پول واقعی است
+         if (r.chequeStatus === ChequeStatus.CLEARED) {
+           const bucket = receiptBucketOf({ isCheque: true, destination: r.destination, methodKind: PaymentKind.CUSTOM })
+-          if (bucket === 'managerAccount') continue
++          /** نشست ۱۶۱ · Y18 · بند ۴-۲۴ — «نامشخص» هم مثل حساب مدیر وصولِ صندوق نیست */
++          /** نشست ۱۶۱ · Y19 — ولی ردیف منفی جدای پل را می‌سازند */
++          if (bucket === 'managerAccount') { totals.priorManagerAccount = n(totals.priorManagerAccount) + amount; continue }
++          if (bucket === 'unknown') { totals.priorDestinationUnknown = n(totals.priorDestinationUnknown) + amount; continue }
+           totals.priorClearedCheques += amount
+           totals.priorPeriod += amount
+           if (bucket === 'cash') totals.priorPeriodCash += amount
+@@ -344,7 +347,8 @@
+       // مصرف اعتبار خرید پول نقد نیست و در «وصول نسیه» شمرده نمی‌شود
+       if (bucket === 'storeCredit' || bucket === 'exchangeCredit') continue
+       // پولی که به حساب مدیر رفته هم «وصول به صندوق» نیست
+-      if (bucket === 'managerAccount') continue
++      // نشست ۱۶۱ · Y19 — ولی ردیف منفی جدای پل را می‌سازد
++      if (bucket === 'managerAccount') { totals.priorManagerAccount = n(totals.priorManagerAccount) + amount; continue }
+       totals.priorPeriod += amount
+       if (bucket === 'cash') totals.priorPeriodCash += amount
+       else if (bucket === 'card') totals.priorPeriodCard += amount
+@@ -1038,9 +1042,15 @@
+           dateJalali: r.atJalali || toJalaliDate(r.at), invoiceId: r.invoiceId ?? null, receiptNo: r.receiptNo ?? null
+         })
+       return { sources: out, page: makePage(totalCount) }
+-    } else if (key === 'priorCreditSettlements' || key === 'priorClearedCheques') {
++    } else if (
++      key === 'priorCreditSettlements' || key === 'priorClearedCheques' ||
++      key === 'priorManagerAccountReceived' || key === 'priorDestinationUnknownReceived'
++    ) {
+       if (!scope.from) return { sources: out, page: makePage(0) }
+       const isChequeKey = key === 'priorClearedCheques'
++      /** نشست ۱۶۱ · Y19 — همان where گروه‌بندی prior؛ فقط سبد مدیر / نامشخص */
++      const wantPriorManager = key === 'priorManagerAccountReceived'
++      const wantPriorUnknown = key === 'priorDestinationUnknownReceived'
+       // همان where گروه‌بندی prior در paymentStatement
+       const where: any = {
+         invoice: { ...eventWhere(scope), issuedAt: { lt: scope.from } },
+@@ -1052,17 +1062,22 @@
+       return await paymentDrill(
+         [where],
+         (r, b) => {
++          const clearedCheque = r.kind === PaymentEntryKind.CHEQUE && r.chequeStatus === ChequeStatus.CLEARED
++          if (wantPriorManager)
++            return b === 'managerAccount' && (r.kind !== PaymentEntryKind.CHEQUE || clearedCheque) ? n(r.amount) : 0
++          if (wantPriorUnknown) return clearedCheque && b === 'unknown' ? n(r.amount) : 0
+           if (r.kind === PaymentEntryKind.CHEQUE)
+-            return r.chequeStatus === ChequeStatus.CLEARED && b !== 'managerAccount' ? n(r.amount) : 0
++            return r.chequeStatus === ChequeStatus.CLEARED && b !== 'managerAccount' && b !== 'unknown' ? n(r.amount) : 0
+           if (isChequeKey) return 0
+           return isCredit(b) || b === 'managerAccount' ? 0 : n(r.amount)
+         },
+         payLabel
+       )
+-    } else if (key === 'realCash' || key === 'managerAccountReceived') {
++    } else if (key === 'realCash' || key === 'managerAccountReceived' || key === 'destinationUnknownReceived') {
+       /**
+        * realCash = نقد + کارت + سایر (پرداخت غیرچک، رویداد paidAt) + چک پاس‌شده‌ی بازه به سبد
+-       * نقد/کارت/نامشخص (رویداد clearedAt). managerAccountReceived = سبد حساب مدیر از هر دو.
++       * نقد/کارت (رویداد clearedAt). managerAccountReceived = سبد حساب مدیر از هر دو.
++       * نشست ۱۶۱ · Y18 — destinationUnknownReceived = چک پاس‌شده‌ی سبد «نامشخص» (بیرون از realCash).
+        */
+       const nonCheque: any = {
+         invoice: eventWhere(scope), voidedAt: null, amount: { gt: 0 },
+@@ -1077,11 +1092,13 @@
+         ...(range ? { clearedAt: range } : {})
+       }
+       const wantManager = key === 'managerAccountReceived'
++      const wantUnknown = key === 'destinationUnknownReceived'
+       return await paymentDrill(
+         [nonCheque, cleared],
+         (r, b) => {
+           if (wantManager) return b === 'managerAccount' ? n(r.amount) : 0
+-          if (r.kind === PaymentEntryKind.CHEQUE) return b === 'managerAccount' ? 0 : n(r.amount)
++          if (wantUnknown) return b === 'unknown' ? n(r.amount) : 0
++          if (r.kind === PaymentEntryKind.CHEQUE) return b === 'managerAccount' || b === 'unknown' ? 0 : n(r.amount)
+           return b === 'cash' || b === 'card' || b === 'other' ? n(r.amount) : 0
+         },
+         payLabel
+@@ -1222,12 +1239,12 @@
+   // ---- پل تطبیق (بند ۳-ز) ----
+   /**
+    * کار الف — «وجه واقعی» فقط پولی است که به فروشگاه رسیده: سهم مقصد‌مدیر بیرون
+-   * است و سهم «نامشخص» (داده‌ی قدیمی) مثل قبل داخل می‌ماند تا عدد بازه‌های گذشته
+-   * عوض نشود. همان تصمیم `netCashMovement` در `accounting.ts`.
++   * است. نشست ۱۶۱ · Y18 · بند ۴-۲۴ (S160-D4): سهم «نامشخص» (داده‌ی قدیمی) هم دیگر داخل
++   * نیست و ردیف جدای `destinationUnknownReceived` دارد. همان تصمیم `netCashMovement`.
+    */
+   const realCash =
+     cash.cashReceived + cash.cardReceived + cash.otherReceived +
+-    cash.clearedChequeToCash + cash.clearedChequeToCard + cash.clearedChequeUnknown
++    cash.clearedChequeToCash + cash.clearedChequeToCard
+   const bridgeRaw = calculateReconciliationBridge({
+     realCash,
+     /**
+@@ -1235,10 +1252,15 @@
+      * مشتری کم شده (پس `uncollectedCredit` پایین آمده) ولی پول به فروشگاه نرسیده.
+      */
+     managerAccountReceived: cash.managerAccountReceived,
++    /** نشست ۱۶۱ · Y18 · بند ۴-۲۴ — سبد «نامشخص» ردیف مستقل؛ بدون آن پل به همین اندازه باز می‌ماند */
++    destinationUnknownReceived: cash.destinationUnknownReceived,
+     /** نشست ۶۱ (S61-2) — اعتبار اضافه‌دریافت در ردیف «دریافت پول اضافه» توضیح داده شده است */
+     storeCreditIssued: Math.max(0, sc.issued - sc.issuedFromOverpay),
+     priorCreditSettlements: pay.totals.priorPeriod,
+     priorClearedCheques: pay.totals.priorClearedCheques,
++    /** نشست ۱۶۱ · Y19 (S161-D2) */
++    priorManagerAccountReceived: n(pay.totals.priorManagerAccount),
++    priorDestinationUnknownReceived: n(pay.totals.priorDestinationUnknown),
+     storeCreditUsed: sc.used,
+     uncollectedCredit: credit.remaining,
+     /** نشست ۵۹ — بازپرداخت‌ها ردیف مستقل منفی؛ debtOnlyReturns دیگر در پل نیست */
+@@ -1260,9 +1282,19 @@
+     managerAccountReceived:
+       'پولی که مشتری پرداخته ولی به حساب مدیر رفته: بدهی مشتری کم شد، اما این مبلغ به صندوق و ' +
+       'کارتخوان فروشگاه نیامده و در کسری/اضافی صندوق تأثیر ندارد.',
++    destinationUnknownReceived:
++      'چکِ پاس‌شده‌ی قدیمی که مقصد پولش ثبت نشده (بند ۴-۲۴): بدهی مشتری کم شد ولی معلوم نیست ' +
++      'پول به کشو، کارتخوان یا حساب مدیر رفته؛ پس نه در وجه واقعی و نه در نقد مورد انتظار صندوق ' +
++      'حساب شده است. مدیر باید مقصد واقعی را بررسی کند.',
+     storeCreditIssued: 'بدهی ما به مشتری؛ پول نرسید ولی کالا رفت — لینک به سند تعویض/برگشت',
+     priorCreditSettlements: 'پولِ این بازه بابت فروشِ بازه‌های قبل — فروش امروز نیست',
+     priorClearedCheques: 'چکِ بازه‌های قبل که امروز پاس شد — فروش امروز نیست',
++    priorManagerAccountReceived:
++      'بخشی از «دریافتی به حساب مدیر» که بابت فاکتورهای بازه‌های قبل است: فروش و نسیه‌ی این بازه را ' +
++      'تغییر نداده، پس اینجا خنثی می‌شود. به صندوق نرسیده و در وصول نسیه‌ی نقدی هم نیست.',
++    priorDestinationUnknownReceived:
++      'بخشی از «دریافتی با مقصد نامشخص» (چک پاس‌شده‌ی قدیمی بی‌مقصد) که بابت فاکتورهای بازه‌های قبل است؛ ' +
++      'فروش این بازه نیست و در نقد مورد انتظار هم حساب نشده است.',
+     storeCreditUsed: 'کالا خارج شد ولی وجه جدیدی نرسید (مصرف اعتبارِ قبلاً صادرشده)',
+     uncollectedCredit: 'فروشِ این بازه که پولش هنوز نرسیده (نسیه)',
+     cashRefunds: 'پولی که بابت برگشت ساده از کشو به مشتری پس داده شد — لینک به سند برگشت',
+diff -ruN ../base159/src/renderer/src/pages/CashClose.tsx mahak/src/renderer/src/pages/CashClose.tsx
+--- ../base159/src/renderer/src/pages/CashClose.tsx	2026-09-27 09:34:16.590130141 +0000
++++ mahak/src/renderer/src/pages/CashClose.tsx	2026-09-27 09:37:15.255642425 +0000
+@@ -525,15 +525,16 @@
+                  * سهمِ واقعی چاپ می‌شود و فقط دو سهمِ اول در نقد انتظاری هستند.
+                  */
+                 { label: 'چک پاس‌شده (نقد به صندوق)', value: money(components.clearedCashCheques) },
+-                ...(components.clearedUnknownCheques > 0
+-                  ? [{ label: 'چک پاس‌شده‌ی بی‌مقصد (نامشخص)', value: money(components.clearedUnknownCheques) }]
+-                  : []),
+                 { label: 'وصول نسیه‌ی بازه‌های قبل (نقد)', value: money(components.priorCreditSettlements) },
+                 { label: 'واریز به صندوق', value: money(components.deposits) },
+                 { label: 'بازپرداخت نقدی برگشت', value: `− ${money(components.cashReturnRefunds)}` },
+                 { label: 'بازپرداخت نقدی تعویض', value: `− ${money(components.cashExchangeRefunds)}` },
+                 { label: 'برداشت از صندوق', value: `− ${money(components.withdrawals)}` },
+                 /** ---- فقط نمایشی: هیچ‌کدام در نقد انتظاری کشو نیستند ---- */
++                /** نشست ۱۶۱ · Y18 · بند ۴-۲۴ — چک نامشخص بیرون از نقد مورد انتظار (unknownDestinationOutside) */
++                ...(components.clearedUnknownCheques > 0
++                  ? [{ label: 'چک پاس‌شده‌ی بی‌مقصد (نامشخص) — خارج از نقد مورد انتظار', value: money(components.clearedUnknownCheques) }]
++                  : []),
+                 { label: 'انتظار کارتخوان (فقط نمایشی)', value: money(components.cardExpected) },
+                 { label: 'چک پاس‌شده با کارتخوان (فقط نمایشی)', value: money(components.clearedCardCheques) },
+                 { label: 'چک پاس‌شده به حساب مدیر (فقط نمایشی)', value: money(components.clearedManagerCheques) },
+@@ -881,13 +882,6 @@
+                 'بر اساس تاریخ پاس‌شدن، نه تاریخ فاکتور.'
+               ],
+               [
+-                'چک پاس‌شده‌ی قدیمیِ بی‌مقصد',
+-                components?.clearedUnknownCheques ?? 0,
+-                1,
+-                DESTINATION_UNKNOWN_ROW_NOTE +
+-                  ' تا وقتی مقصدش مشخص نشود، مثل قبل در نقد انتظاری می‌ماند؛ برای پرداختی‌های تازه این ردیف همیشه صفر است.'
+-              ],
+-              [
+                 'وصول نسیه‌ی بازه‌های قبل — سهم نقد',
+                 components?.priorCreditSettlements ?? 0,
+                 1,
+@@ -917,6 +911,25 @@
+               </td>
+             </tr>
+             {/*
++              نشست ۱۶۱ · Y18 · بند ۴-۲۴ (S160-D4) — چکِ پاس‌شده‌ی قدیمیِ بی‌مقصد دیگر داخل نقد
++              انتظاری نیست؛ ردیف جدای «خارج از نقد مورد انتظار» با مبلغ سرور (unknownDestinationOutside).
++            */}
++            {Number(expected?.unknownDestinationOutside ?? components?.clearedUnknownCheques ?? 0) > 0 ? (
++              <tr className="bg-amber-50 text-amber-900">
++                <td className="whitespace-normal">
++                  چک پاس‌شده‌ی قدیمیِ بی‌مقصد (نامشخص) — خارج از نقد مورد انتظار
++                  <div className="kbd font-normal leading-5">
++                    {DESTINATION_UNKNOWN_ROW_NOTE}. اگر وجهش واقعاً در کشو است، اضافه‌ی صندوق به همین اندازه
++                    طبیعی است و باید در یادداشت توضیح داده شود.
++                  </div>
++                </td>
++                <td></td>
++                <td className="text-left tabular-nums" dir="ltr">
++                  {money(Number(expected?.unknownDestinationOutside ?? components?.clearedUnknownCheques ?? 0))}
++                </td>
++              </tr>
++            ) : null}
++            {/*
+               =================================================================
+               کار الف — ردیف‌های «فقط نمایشی».
+               این‌ها عمداً *بعد از* جمع نهایی آمده‌اند و علامت + / − ندارند، چون
+diff -ruN ../base159/src/shared/accounting.ts mahak/src/shared/accounting.ts
+--- ../base159/src/shared/accounting.ts	2026-09-27 09:34:16.594130175 +0000
++++ mahak/src/shared/accounting.ts	2026-09-27 09:40:03.169063694 +0000
+@@ -142,6 +142,14 @@
+   priorPeriodOther: Rial
+   priorClearedCheques: Rial
+   /**
++   * نشست ۱۶۱ · Y19 (S161-D2) — دریافتیِ همین بازه بابت فاکتورهای بازه‌های قبل که به «حساب مدیر»
++   * رفته / مقصدش «نامشخص» است. در `priorPeriod` نیستند (به صندوق نرسیده‌اند) ولی باید در پل ردیف
++   * منفی بگیرند، وگرنه ردیف «دریافتی به حساب مدیر»/«نامشخص» پل را به همین اندازه باز می‌گذارد.
++   * اختیاری تا سازندگان قدیمی این نوع نشکنند.
++   */
++  priorManagerAccount?: Rial
++  priorDestinationUnknown?: Rial
++  /**
+    * ⚠️ کار الف (جلسه ۳۶) — معنای این عدد **دقیق** شد: فقط چکِ پاس‌شده‌ای که
+    * مقصدش «نقد در صندوق فروشگاه» ثبت شده است. تا جلسه ۳۵ برابر کلِ
+    * `clearedCheques` بود و همان مبلغ از راه سبد «سایر» به انتظار کارتخوان هم
+@@ -287,11 +295,10 @@
+   /**
+    * کار الف — چکِ پاس‌شده‌ی **قدیمیِ** بدون مقصد ثبت‌شده.
+    *
+-   * عمداً جدا از `clearedCashChequeAmount` است ولی *با همان علامت* در انتظار نقد
+-   * می‌نشیند: نسخه‌های قبل همین کار را می‌کردند و قاعده‌ی «هیچ عدد گزارش قدیمی
+-   * عوض نشود» اجازه نمی‌دهد این مبلغ را یک‌طرفه از انتظار صندوق بیرون بیندازیم.
+-   * جدا بودنش برای این است که پنل بستن صندوق بتواند همین مبلغ را با برچسب
+-   * «نامشخص» و توضیح صریح نشان بدهد، نه این‌که بی‌صدا لای نقد گم شود.
++   * نشست ۱۶۱ · Y18 · بند ۴-۲۴ (S160-D4) — این مبلغ دیگر در انتظار نقد **نمی‌نشیند**؛
++   * فقط در `unknownDestinationOutside` برمی‌گردد تا پنل بستن صندوق آن را با برچسب
++   * «نامشخص» و هشدار صریح بیرون از نقد مورد انتظار نشان دهد. snapshot بستن‌های
++   * قبلی (ستون‌های ذخیره‌شده‌ی CashSession) بازمحاسبه نمی‌شود.
+    * برای داده‌ی تازه همیشه صفر است (مقصد اجباری است).
+    */
+   clearedUnknownChequeAmount?: number
+@@ -322,8 +329,16 @@
+    * `cashDifference` نیست؛ فقط ردیف توضیح‌دار پنل را می‌سازد.
+    */
+   managerAccountReceived: Rial
+-  /** کار الف — سهم «نامشخصِ» داخل `expectedCash` (داده‌ی قدیمی) */
++  /**
++   * نشست ۱۶۱ · Y18 · بند ۴-۲۴ (S160-D4) — همیشه ۰. فقط برای سازگاری فیلد نگه داشته شده؛
++   * سهم «نامشخص» دیگر هرگز داخل `expectedCash` نمی‌نشیند.
++   */
+   unknownDestinationInExpected: Rial
++  /**
++   * نشست ۱۶۱ · Y18 — چکِ پاس‌شده‌ی قدیمی با مقصد نامشخص: سبد جدا، **بیرون** از
++   * `expectedCash` و `cashDifference`، فقط برای ردیف و هشدار صریح پنل بستن صندوق.
++   */
++  unknownDestinationOutside: Rial
+ }
+ 
+ export interface BridgeInput {
+@@ -337,9 +352,17 @@
+    * اندازه‌ی همان مبلغ **باز** می‌ماند و گزارش هشدار «بدون توضیح» می‌داد.
+    */
+   managerAccountReceived?: number
++  /**
++   * نشست ۱۶۱ · Y18 · بند ۴-۲۴ — «دریافتی با مقصد نامشخص» (چکِ پاس‌شده‌ی قدیمیِ بی‌مقصد).
++   * مثل ردیف حساب مدیر: بدهی مشتری کم شده ولی این پول داخل `realCash` نیست.
++   */
++  destinationUnknownReceived?: number
+   storeCreditIssued?: number
+   priorCreditSettlements?: number
+   priorClearedCheques?: number
++  /** نشست ۱۶۱ · Y19 — حساب مدیر / نامشخصِ فاکتورهای بازه‌های قبل (ردیف منفی) */
++  priorManagerAccountReceived?: number
++  priorDestinationUnknownReceived?: number
+   storeCreditUsed?: number
+   uncollectedCredit?: number
+   /**
+@@ -488,7 +511,7 @@
+     cash: 0, card: 0, credit: 0, other: 0, exchangeCredit: 0, storeCredit: 0,
+     registeredCheques: 0, clearedCheques: 0, pendingCheques: 0, bouncedCheques: 0,
+     currentPeriod: 0, priorPeriod: 0, priorPeriodCash: 0, priorPeriodCard: 0, priorPeriodOther: 0,
+-    priorClearedCheques: 0,
++    priorClearedCheques: 0, priorManagerAccount: 0, priorDestinationUnknown: 0,
+     clearedCashCheques: 0, clearedCardCheques: 0, clearedManagerCheques: 0, clearedUnknownCheques: 0,
+     managerAccount: 0, destinationUnknown: 0, ignoredNonCash: 0, legacyNegativePayments: 0
+   }
+@@ -519,7 +542,13 @@
+          * چکِ بازه‌های قبل که *در این بازه* پاس شد. پولی که به حساب مدیر رفته
+          * «وصولِ صندوق» نیست، پس در این عدد و در `priorPeriod` نمی‌آید.
+          */
+-        if (p.invoiceIssuedAt && !inPeriod(p.invoiceIssuedAt, period) && bucket !== 'managerAccount') {
++        /** نشست ۱۶۱ · Y19 — سهم مدیر/نامشخصِ فاکتور قبلی فقط ردیف منفی جدای پل را می‌سازد */
++        if (p.invoiceIssuedAt && !inPeriod(p.invoiceIssuedAt, period)) {
++          if (bucket === 'managerAccount') out.priorManagerAccount = n(out.priorManagerAccount) + amount
++          else if (bucket === 'unknown') out.priorDestinationUnknown = n(out.priorDestinationUnknown) + amount
++        }
++        /** نشست ۱۶۱ · Y18 — سهم «نامشخص» هم مثل حساب مدیر «وصولِ صندوق» نیست (بند ۴-۲۴) */
++        if (p.invoiceIssuedAt && !inPeriod(p.invoiceIssuedAt, period) && bucket !== 'managerAccount' && bucket !== 'unknown') {
+           out.priorClearedCheques += amount
+           out.priorPeriod += amount
+           if (bucket === 'cash') out.priorPeriodCash += amount
+@@ -543,7 +572,11 @@
+     else if (bucket === 'unknown') out.destinationUnknown += amount
+     else out.other += amount
+     // پولی که به حساب مدیر رفته نه «دریافتیِ این بازه» است و نه «وصول نسیه‌ی قبل»
+-    if (bucket === 'managerAccount') continue
++    if (bucket === 'managerAccount') {
++      /** نشست ۱۶۱ · Y19 — ولی اگر بابت فاکتور قبلی است، ردیف منفی جدای پل را می‌سازد */
++      if (!(p.invoiceIssuedAt && inPeriod(p.invoiceIssuedAt, period))) out.priorManagerAccount = n(out.priorManagerAccount) + amount
++      continue
++    }
+     if (p.invoiceIssuedAt && inPeriod(p.invoiceIssuedAt, period)) out.currentPeriod += amount
+     else {
+       out.priorPeriod += amount
+@@ -739,12 +772,15 @@
+   /**
+    * ============== چکِ پاس‌شده در «وجه واقعی»: کدام سهم می‌آید؟ ==============
+    * سهم مدیر **بیرون** می‌ماند (به فروشگاه نرسیده).
+-   * سهم «نامشخص» (داده‌ی قدیمی) عمداً **داخل** می‌ماند، چون در نسخه‌های قبل هم
+-   * دقیقاً یک بار داخل همین عدد بود؛ بیرون گذاشتنش «وجه واقعیِ» بازه‌های گذشته
+-   * را کم نشان می‌داد و قاعده‌ی «هیچ عدد گزارش قدیمی عوض نشود» را می‌شکست.
+-   * برای داده‌ی تازه این شاخه همیشه صفر است، چون مقصد اجباری است.
++   * سهم «نامشخص» (داده‌ی قدیمی) تا نشست ۱۶۰ داخل بود؛ از نشست ۱۶۱ (Y18) بیرون است (پایین).
++   */
++  /**
++   * نشست ۱۶۱ · Y18 · بند ۴-۲۴ (S160-D4) — سهم «نامشخص» دیگر داخل نیست: حدس «این پول به
++   * صندوق رسیده» همان جمع‌زدن با نقد است که بند ۴-۲۴ صریحاً ممنوع کرده. ردیف جدای خودش را
++   * (`destinationUnknownReceived`) در گزارش و پل تطبیق دارد. snapshot بستن‌های قبلی از
++   * ستون‌های ذخیره‌شده خوانده می‌شود و عوض نمی‌شود.
+    */
+-  const clearedChequeInflow = clearedChequeToCash + clearedChequeToCard + clearedChequeUnknown
++  const clearedChequeInflow = clearedChequeToCash + clearedChequeToCard
+   return { cashReceived, cardReceived, otherReceived,
+     managerAccountReceived, destinationUnknownReceived,
+     clearedChequeReceived, clearedChequeToCash, clearedChequeToCard, clearedChequeToManager,
+@@ -758,13 +794,17 @@
+ 
+ export function calculateCashClose(input: CashCloseInput = {}, threshold = 100000): CashCloseResult {
+   const openingFloat = n(input.openingFloat), countedCash = n(input.countedCash)
+-  const unknownDestinationInExpected = n(input.clearedUnknownChequeAmount)
++  /**
++   * نشست ۱۶۱ · Y18 · بند ۴-۲۴ (S160-D4) — چک نامشخص **بیرون** از نقد مورد انتظار؛ فقط
++   * در `unknownDestinationOutside` برمی‌گردد تا پنل ردیف و هشدار جدا نشان دهد.
++   */
++  const unknownDestinationOutside = n(input.clearedUnknownChequeAmount)
++  const unknownDestinationInExpected = 0
+   /**
+    * ⚠️ کار الف — «دریافتی به حساب مدیر» در این فرمول **نیست** و نباید باشد:
+    * آن پول داخل کشو نیست، پس نه کسری می‌سازد و نه اضافه.
+    */
+   const expectedCash = openingFloat + n(input.cashReceived) + n(input.clearedCashChequeAmount)
+-    + unknownDestinationInExpected
+     + n(input.priorCashSettlements) + n(input.deposits) - n(input.cashReturnRefunds)
+     - n(input.cashExchangeRefunds) - n(input.withdrawals)
+   const cashDifference = countedCash - expectedCash
+@@ -772,16 +812,24 @@
+     state: cashDifference < 0 ? 'SHORTAGE' : cashDifference > 0 ? 'OVERAGE' : 'MATCHED',
+     requiresNote: Math.abs(cashDifference) > Math.max(0, n(threshold)),
+     managerAccountReceived: n(input.managerAccountReceived),
+-    unknownDestinationInExpected }
++    unknownDestinationInExpected, unknownDestinationOutside }
+ }
+ 
+ export function calculateReconciliationBridge(input: BridgeInput = {}): ReconciliationBridge {
+   const rows: BridgeRow[] = [
+     { key: 'realCash', label: 'وجه واقعی این بازه', amount: n(input.realCash), sign: 1, sourceIds: [] },
+     { key: 'managerAccountReceived', label: 'دریافتی به حساب مدیر', amount: n(input.managerAccountReceived), sign: 1, sourceIds: [] },
++    /** نشست ۱۶۱ · Y18 · بند ۴-۲۴ — سبد جدای «نامشخص»، هرگز با نقد یا حساب مدیر جمع زده نمی‌شود */
++    { key: 'destinationUnknownReceived', label: 'دریافتی با مقصد نامشخص (داده‌ی قدیمی)', amount: n(input.destinationUnknownReceived), sign: 1, sourceIds: [] },
+     { key: 'storeCreditIssued', label: 'اعتبار خرید صادرشده', amount: n(input.storeCreditIssued), sign: -1, sourceIds: [] },
+     { key: 'priorCreditSettlements', label: 'وصول نسیه‌ی بازه‌های قبل', amount: n(input.priorCreditSettlements), sign: -1, sourceIds: [] },
+     { key: 'priorClearedCheques', label: 'پاس‌شدن چک‌های بازه‌های قبل', amount: n(input.priorClearedCheques), sign: -1, sourceIds: [] },
++    /**
++     * نشست ۱۶۱ · Y19 (S161-D2) — دریافتیِ حساب مدیر/نامشخص که بابت فاکتورهای بازه‌های قبل است:
++     * در ردیف‌های + بالا آمده ولی فروش یا نسیه‌ی این بازه را کم نکرده ⇒ ردیف منفی مستقل، دقیقاً یک‌بار.
++     */
++    { key: 'priorManagerAccountReceived', label: 'دریافتی حساب مدیر بابت فاکتورهای بازه‌های قبل', amount: n(input.priorManagerAccountReceived), sign: -1, sourceIds: [] },
++    { key: 'priorDestinationUnknownReceived', label: 'دریافتی با مقصد نامشخص بابت فاکتورهای بازه‌های قبل', amount: n(input.priorDestinationUnknownReceived), sign: -1, sourceIds: [] },
+     { key: 'storeCreditUsed', label: 'مصرف اعتبار خرید', amount: n(input.storeCreditUsed), sign: 1, sourceIds: [] },
+     { key: 'uncollectedCredit', label: 'نسیه‌ی وصول‌نشده‌ی این بازه', amount: n(input.uncollectedCredit), sign: 1, sourceIds: [] },
+     /**
+diff -ruN ../base159/test/acceptance-db-session36.mjs mahak/test/acceptance-db-session36.mjs
+--- ../base159/test/acceptance-db-session36.mjs	2026-09-27 09:34:16.594130175 +0000
++++ mahak/test/acceptance-db-session36.mjs	2026-09-27 09:37:30.747773547 +0000
+@@ -547,14 +547,19 @@
+   eq('چکِ پاس‌شده‌ی قدیمی در سبد «نامشخص» نشست', v.acc.cheques.clearedUnknown, CHEQUE_AMOUNT)
+   eq('و در سبد کارت نیفتاد (باگ اصلی)', v.acc.cheques.clearedToCard, 0)
+   eq('انتظار کارتخوان از داده‌ی قدیمی بالا نرفت', v.c.cardExpected, 0)
++  /**
++   * نشست ۱۶۱ · Y18 · بند ۴-۲۴ (S160-D4) — قاعده‌ی قدیمی «چکِ نامشخص در انتظار نقد می‌ماند» کنار رفت:
++   * سبد «نامشخص» هرگز با نقد جمع زده نمی‌شود؛ فقط نقدِ قدیمی در انتظار نقد است و چکِ نامشخص در
++   * سبد جدای unknownDestinationOutside (بیرون از expectedCash) با هشدار صریح.
++   */
+   eq(
+-    'عدد قدیمی عوض نشد: چکِ نامشخص + نقدِ قدیمی هر دو در انتظار نقد ماندند',
++    'بند ۴-۲۴: فقط نقدِ قدیمی در انتظار نقد است؛ چکِ نامشخص نه',
+     v.expected.expectedCash,
+-    CHEQUE_AMOUNT + 2_000_000
++    2_000_000
+   )
+-  eq('ولی با برچسب «نامشخص» قابل تفکیک است', v.expected.unknownDestinationInExpected, CHEQUE_AMOUNT)
++  eq('سهم «نامشخص» داخل انتظار نقد همیشه صفر', v.expected.unknownDestinationInExpected, 0)
+   eq('پرداختیِ نقدیِ قدیمی مو‌به‌مو همان سبد قبلی (نقد از kind روش) را گرفت', v.acc.cash.cashReceived, 2_000_000)
+-  eq('سهم «نامشخص» جدا قابل خواندن است', v.expected.unknownDestinationInExpected, CHEQUE_AMOUNT)
++  eq('سهم «نامشخص» جدا و بیرون از انتظار نقد قابل خواندن است', v.expected.unknownDestinationOutside, CHEQUE_AMOUNT)
+   ok(
+     'ردیف «نامشخص» در اجزای صندوق جداست',
+     v.c.clearedUnknownCheques === CHEQUE_AMOUNT && v.c.clearedCashCheques === 0,
+diff -ruN ../base159/tests/audit-fixes/fix-y18-unknown-destination-outside-expected.mjs mahak/tests/audit-fixes/fix-y18-unknown-destination-outside-expected.mjs
+--- ../base159/tests/audit-fixes/fix-y18-unknown-destination-outside-expected.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-y18-unknown-destination-outside-expected.mjs	2026-09-27 09:40:21.253216752 +0000
+@@ -0,0 +1,149 @@
++/**
++ * ===========================================================================
++ * نشست ۱۶۰ · Y18 · بند ۴-۲۴ — پول با مقصد نامشخص (چکِ پاس‌شده‌ی قدیمیِ بی‌مقصد / مقصد CASH|CARD
++ * قدیمی که S113 آن را «نامشخص» می‌داند) هرگز با نقد جمع زده نمی‌شود.
++ *
++ * قبل از رفع: calculateCashClose این مبلغ را با برچسب unknownDestinationInExpected **داخل**
++ * expectedCash می‌گذاشت و calculateCashStatement/accountingReport آن را داخل «وجه واقعی»
++ * (clearedChequeInflow / realCash) می‌شمرد ⇒ حدس «نقد رسیده به کشو»، خلاف بند ۴-۲۴.
++ * بعد از رفع (S160-D4):
++ *   • expectedCash و realCash این مبلغ را ندارند؛ سبد جدای «نامشخص» (unknownDestinationOutside) با
++ *     ردیف و هشدار صریح؛ unknownDestinationInExpected همیشه ۰ (سازگاری فیلد).
++ *   • پل تطبیق ردیف مستقل «دریافتی با مقصد نامشخص» (+) دارد و بسته می‌ماند؛ «پاس‌شدن چک‌های
++ *     بازه‌های قبل» و «وصول نسیه‌ی بازه‌های قبل» سهم نامشخص را ندارند (مثل سهم حساب مدیر).
++ *   • snapshot بستن‌های قبلی دست نمی‌خورد (ستون‌های ذخیره‌شده‌ی CashSession خوانده می‌شوند).
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-y18-unknown-destination-outside-expected.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync, readFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join, resolve } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-y18-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { salesService } = await import('../../src/main/services/SalesService.ts')
++const { cashboxService } = await import('../../src/main/services/CashboxService.ts')
++const { ChequeStatus, PaymentDestination } = await import('@shared/enums')
++const { calculateCashClose, calculateCashStatement, calculatePaymentTotals, calculateReconciliationBridge } = await import('@shared/accounting')
++const { toJalaliDate } = await import('@shared/jalali')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
++}
++const truthy = (label, v, detail) => (v ? (ok++, console.log(`  ✓ ${label}`)) : (bad++, console.log(`  ✗ ${label}${detail ? ' — ' + detail : ''}`)))
++
++const userId = seed.user('مدیر تست Y18')
++const cat = seed.category('پوشاک Y18')
++const variant = seed.variant(seed.product('شلوار Y18', cat), 'مشکی Y18')
++sql.prepare('UPDATE "ProductVariant" SET stock = 10000 WHERE id = ?').run(variant)
++const METHOD = {
++  cash: seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 }),
++  card: seed.insert('PaymentMethod', { key: 'CARD', label: 'کارتخوان', kind: 'CARD', isActive: 1, sortOrder: 2 }),
++  cheque: seed.insert('PaymentMethod', { key: 'CHEQUE', label: 'چک', kind: 'CUSTOM', isActive: 1, sortOrder: 9 })
++}
++const CHQ = 10_000_000
++const TOTAL = 20_000_000
++const HOUR = 3_600_000
++let shiftSeq = 0
++const makeShift = (name) => seed.insert('Shift', { name, number: ++shiftSeq, dayJalali: toJalaliDate(new Date()), openedAt: Date.now() - HOUR, userId })
++const sale = (over = {}) => salesService.create({ userId, lines: [{ variantId: variant, qty: 1, unitPrice: TOTAL, discount: 0, tax: 0 }], payments: [], ...over })
++/**
++ * نشست ۱۶۱ (S161-D3) — در داده‌ی واقعی چکِ پاس‌شده داخل paidTotal فاکتور است (recalcSettlement ⇒
++ * receivedTotalOf). نسخه‌ی ۱۶۰ این تست paidTotal را همگام نمی‌کرد و «نسیه‌ی وصول‌نشده» را به اندازه‌ی
++ * همان چک بزرگ‌تر نشان می‌داد؛ «پل باز» گزارش‌شده در ۱۶۰ برای سناریوی ۲ از همین مصنوع هارنس بود.
++ */
++const legacyCheque = (invoiceId, shiftId, seq, destination = null, amount = CHQ) => {
++  const now = Date.now()
++  sql.prepare('UPDATE "SaleInvoice" SET paidTotal = paidTotal + ? WHERE id = ?').run(amount, invoiceId)
++  return seed.insert('Payment', {
++    invoiceId, methodId: METHOD.cheque, amount, kind: 'CHEQUE', seq, chequeStatus: ChequeStatus.CLEARED,
++    paidAt: now, paidAtJalali: toJalaliDate(new Date(now)), clearedAt: now, clearedAtJalali: toJalaliDate(new Date(now)),
++    destination, createdShiftId: shiftId, clearedShiftId: shiftId
++  })
++}
++const rowOf = (bridge, key) => bridge.rows.find((r) => r.key === key)?.amount ?? null
++
++console.log('\n۱) توابع مشترک (بدون دیتابیس)')
++{
++  const r = calculateCashClose({ openingFloat: 0, cashReceived: 2_000_000, clearedUnknownChequeAmount: CHQ, countedCash: 2_000_000 })
++  eq('expectedCash فقط نقد فیزیکی', r.expectedCash, 2_000_000)
++  eq('مغایرت صفر (چک نامشخص کسری/اضافه نساخت)', r.cashDifference, 0)
++  eq('unknownDestinationInExpected همیشه صفر', r.unknownDestinationInExpected, 0)
++  eq('سبد جدای نامشخص (unknownDestinationOutside)', r.unknownDestinationOutside, CHQ)
++  const s = calculateCashStatement({ payments: { cash: 2_000_000, clearedCheques: CHQ, clearedUnknownCheques: CHQ } })
++  eq('netCashMovement بدون سهم نامشخص', s.netCashMovement, 2_000_000)
++  eq('destinationUnknownReceived جدا', s.destinationUnknownReceived, CHQ)
++  const b = calculateReconciliationBridge({ realCash: 0, destinationUnknownReceived: CHQ, uncollectedCredit: 0, netAccrualSales: CHQ })
++  eq('پل ردیف «دریافتی با مقصد نامشخص» دارد', rowOf(b, 'destinationUnknownReceived'), CHQ)
++  eq('پل بسته', b.unexplained, 0)
++  const from = new Date(Date.now() - HOUR), to = new Date(Date.now() + HOUR)
++  const t = calculatePaymentTotals([
++    { amount: CHQ, kind: 'CHEQUE', chequeStatus: 'CLEARED', clearedAt: new Date(), destination: null, invoiceIssuedAt: new Date(Date.now() - 48 * HOUR) }
++  ], { from, to })
++  eq('چک نامشخصِ فاکتور قبلی در priorClearedCheques نیست', t.priorClearedCheques, 0)
++  eq('و در priorPeriod نیست', t.priorPeriod, 0)
++  eq('ولی در clearedUnknownCheques هست', t.clearedUnknownCheques, CHQ)
++}
++
++console.log('\n۲) یکپارچه: نشست باز، فاکتور همین نشست، چک قدیمی بی‌مقصد + نقد')
++{
++  const shiftId = makeShift('نشست Y18-۱')
++  const inv = await sale({ shiftId, payments: [{ methodId: METHOD.cash, amount: 2_000_000 }] })
++  legacyCheque(inv.id, shiftId, 2, null)
++  const report = await salesService.reportRows({ shiftId })
++  const expected = await cashboxService.expected({ shiftId, countedCash: 2_000_000 })
++  const acc = report.accounting
++  eq('سبد نامشخص در گزارش', acc.cash.destinationUnknownReceived, CHQ)
++  eq('نقد مورد انتظار فقط نقد فیزیکی', expected.expectedCash, 2_000_000)
++  eq('صندوق MATCHED با شمارش ۲٬۰۰۰٬۰۰۰', expected.state, 'MATCHED')
++  eq('unknownDestinationInExpected = ۰', expected.unknownDestinationInExpected, 0)
++  eq('unknownDestinationOutside = مبلغ چک', expected.unknownDestinationOutside, CHQ)
++  eq('وجه واقعی پل بدون سهم نامشخص', rowOf(acc.bridge, 'realCash'), 2_000_000)
++  eq('ردیف پل «دریافتی با مقصد نامشخص»', rowOf(acc.bridge, 'destinationUnknownReceived'), CHQ)
++  eq('پل تطبیق بسته', acc.bridge.unexplained, 0)
++  truthy('هشدار فارسی صریح در پیش‌نمایش بستن صندوق', (expected.warnings ?? []).some((w) => String(w).includes('نامشخص') && String(w).includes('نقد مورد انتظار')), JSON.stringify(expected.warnings))
++  const closed = await cashboxService.close({ shiftId, explicitShift: true, countedCash: 2_000_000, userId, note: 'Y18' })
++  eq('بستن: expectedCash = پیش‌نمایش', closed.cashClose.expectedCash, expected.expectedCash)
++  eq('بستن: ستون نامشخص رکورد', closed.session.destinationUnknownReceived, CHQ)
++  eq('بستن: مغایرت صفر', closed.cashClose.cashDifference, 0)
++}
++
++console.log('\n۳) یکپارچه: چک قدیمی (مقصد CASH قدیمی ⇒ نامشخص) روی فاکتور دیروز، پاس‌شده امروز')
++{
++  const shiftId = makeShift('نشست Y18-۲')
++  const inv = await sale({ shiftId })
++  const yesterday = Date.now() - 30 * HOUR
++  sql.prepare('UPDATE "SaleInvoice" SET issuedAt = ?, issuedAtJalali = ? WHERE id = ?').run(yesterday, toJalaliDate(new Date(yesterday)), inv.id)
++  legacyCheque(inv.id, shiftId, 1, 'CASH')
++  const today = toJalaliDate(new Date())
++  const report = await salesService.reportRows({ fromJalali: today, toJalali: today })
++  const acc = report.accounting
++  eq('priorClearedCheques بدون سهم نامشخص', rowOf(acc.bridge, 'priorClearedCheques'), 0)
++  // بازه‌ی امروز چکِ سناریوی ۲ را هم دارد (همان روز) ⇒ کل «نامشخص» = دو چک
++  eq('ردیف پل «دریافتی با مقصد نامشخص» (چک سناریوی ۲ + این چک)', rowOf(acc.bridge, 'destinationUnknownReceived'), 2 * CHQ)
++  eq('ردیف منفی «نامشخصِ فاکتورهای قبل» (Y19) فقط همین چک', rowOf(acc.bridge, 'priorDestinationUnknownReceived'), CHQ)
++  const expected = await cashboxService.expected({ shiftId })
++  eq('نقد مورد انتظار صفر (چک نامشخص وصول نسیه‌ی نقدی حساب نشد)', expected.expectedCash, 0)
++  truthy('پل تطبیق بازه‌ی امروز بسته', acc.bridge.unexplained === 0, JSON.stringify({ target: acc.bridge.target, explained: acc.bridge.explainedTotal, rows: acc.bridge.rows.filter((r) => r.amount).map((r) => [r.key, r.sign * r.amount]) }))
++}
++
++console.log('\n۴) ساختار UI')
++{
++  const ui = readFileSync(resolve('src/renderer/src/pages/CashClose.tsx'), 'utf8')
++  truthy('CashClose ردیف «خارج از نقد مورد انتظار» را نشان می‌دهد', ui.includes('unknownDestinationOutside'))
++}
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)
+diff -ruN ../base159/tests/audit-fixes/fix-y19-prior-manager-bridge.mjs mahak/tests/audit-fixes/fix-y19-prior-manager-bridge.mjs
+--- ../base159/tests/audit-fixes/fix-y19-prior-manager-bridge.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-y19-prior-manager-bridge.mjs	2026-09-27 09:39:22.896722822 +0000
+@@ -0,0 +1,123 @@
++/**
++ * ===========================================================================
++ * نشست ۱۶۱ · Y19 (یافته‌ی تازه‌ی حین Y18) · بند ۴-۲ / ۴-۱۲ / ۴-۲۴ و هدف «هر عدد با عدد دیگر بخواند»
++ *
++ * باگ: پولی که امروز بابت فاکتورِ بازه‌های قبل به «حساب مدیر» رفته (پرداخت مقصد‌مدیر یا چکِ پاس‌شده‌ی
++ * مقصد‌مدیر) در ردیف «دریافتی به حساب مدیر» (+) پل تطبیق می‌آمد، ولی چون فاکتورش در این بازه نیست
++ * هیچ اثری روی «نسیه‌ی وصول‌نشده‌ی این بازه» یا فروش خالص این بازه نداشت و هیچ ردیف منفی‌ای هم آن را
++ * خنثی نمی‌کرد (عمداً از «وصول نسیه‌ی بازه‌های قبل» بیرون است چون به صندوق نرسیده) ⇒ پل دقیقاً به
++ * اندازه‌ی همان مبلغ باز می‌ماند و هشدار «بدون توضیح» می‌داد. سبد «نامشخص» (Y18) همین رفتار را دارد.
++ *
++ * رفع (S161-D2): دو ردیف منفی مستقل در پل:
++ *   priorManagerAccountReceived  «دریافتی حساب مدیر بابت فاکتورهای بازه‌های قبل»
++ *   priorDestinationUnknownReceived «دریافتی با مقصد نامشخص بابت فاکتورهای بازه‌های قبل»
++ * هیچ‌کدام وارد «وصول نسیه‌ی بازه‌های قبل»/نقد مورد انتظار نمی‌شوند (بند ۴-۱۳/۴-۲۴ حفظ است).
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-y19-prior-manager-bridge.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-y19-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { salesService } = await import('../../src/main/services/SalesService.ts')
++const { cashboxService } = await import('../../src/main/services/CashboxService.ts')
++const { ChequeStatus } = await import('@shared/enums')
++const { calculateReconciliationBridge } = await import('@shared/accounting')
++const { toJalaliDate } = await import('@shared/jalali')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
++}
++const rowOf = (bridge, key) => bridge.rows.find((r) => r.key === key)?.amount ?? null
++const brief = (b) => JSON.stringify({ target: b.target, rows: b.rows.filter((r) => r.amount).map((r) => [r.key, r.sign * r.amount]) })
++
++const userId = seed.user('مدیر تست Y19')
++const cat = seed.category('پوشاک Y19')
++const variant = seed.variant(seed.product('شلوار Y19', cat), 'آبی Y19')
++sql.prepare('UPDATE "ProductVariant" SET stock = 10000 WHERE id = ?').run(variant)
++const METHOD = {
++  cash: seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 }),
++  c2c: seed.insert('PaymentMethod', { key: 'C2C', label: 'کارت‌به‌کارت', kind: 'CARD', isActive: 1, sortOrder: 3 }),
++  cheque: seed.insert('PaymentMethod', { key: 'CHEQUE', label: 'چک', kind: 'CUSTOM', isActive: 1, sortOrder: 9 })
++}
++const HOUR = 3_600_000
++const TOTAL = 20_000_000
++const shiftId = seed.insert('Shift', { name: 'نشست Y19', number: 1, dayJalali: toJalaliDate(new Date()), openedAt: Date.now() - HOUR, userId })
++const sale = (over = {}) => salesService.create({ userId, shiftId, lines: [{ variantId: variant, qty: 1, unitPrice: TOTAL, discount: 0, tax: 0 }], payments: [], ...over })
++/** پرداخت داده‌ی تحت آزمون + همگام‌سازی paidTotal فاکتور مثل مسیر واقعی (recalcSettlement ⇒ receivedTotalOf) */
++const pay = (invoiceId, row) => {
++  const now = Date.now()
++  seed.insert('Payment', {
++    invoiceId, amount: row.amount, seq: row.seq, kind: row.kind ?? 'PAYMENT', methodId: row.methodId,
++    paidAt: now, paidAtJalali: toJalaliDate(new Date(now)), destination: row.destination ?? null,
++    createdShiftId: shiftId,
++    ...(row.kind === 'CHEQUE' ? { chequeStatus: ChequeStatus.CLEARED, clearedAt: now, clearedAtJalali: toJalaliDate(new Date(now)), clearedShiftId: shiftId } : {})
++  })
++  sql.prepare('UPDATE "SaleInvoice" SET paidTotal = paidTotal + ? WHERE id = ?').run(row.amount, invoiceId)
++}
++const toYesterday = (id) => {
++  const y = Date.now() - 30 * HOUR
++  sql.prepare('UPDATE "SaleInvoice" SET issuedAt = ?, issuedAtJalali = ? WHERE id = ?').run(y, toJalaliDate(new Date(y)), id)
++}
++const today = toJalaliDate(new Date())
++
++console.log('\n۱) تابع مشترک پل')
++{
++  const b = calculateReconciliationBridge({ realCash: 0, managerAccountReceived: 7_000_000, priorManagerAccountReceived: 7_000_000,
++    destinationUnknownReceived: 3_000_000, priorDestinationUnknownReceived: 3_000_000, netAccrualSales: 0 })
++  eq('ردیف «دریافتی حساب مدیر بابت فاکتورهای بازه‌های قبل»', rowOf(b, 'priorManagerAccountReceived'), 7_000_000)
++  eq('ردیف «دریافتی نامشخص بابت فاکتورهای بازه‌های قبل»', rowOf(b, 'priorDestinationUnknownReceived'), 3_000_000)
++  eq('علامت منفی', b.rows.find((r) => r.key === 'priorManagerAccountReceived')?.sign ?? null, -1)
++  eq('پل بسته', b.unexplained, 0)
++}
++
++console.log('\n۲) یکپارچه: فاکتور دیروز، امروز کارت‌به‌کارت مقصد مدیر + چک پاس‌شده‌ی مقصد مدیر')
++{
++  const inv = await sale()
++  toYesterday(inv.id)
++  pay(inv.id, { methodId: METHOD.c2c, amount: 4_000_000, seq: 1, destination: 'MANAGER' })
++  pay(inv.id, { methodId: METHOD.cheque, amount: 6_000_000, seq: 2, kind: 'CHEQUE', destination: 'MANAGER' })
++  const acc = (await salesService.reportRows({ fromJalali: today, toJalali: today })).accounting
++  eq('دریافتی به حساب مدیر (کل)', rowOf(acc.bridge, 'managerAccountReceived'), 10_000_000)
++  eq('ردیف منفی حساب مدیرِ فاکتورهای قبل', rowOf(acc.bridge, 'priorManagerAccountReceived'), 10_000_000)
++  eq('وصول نسیه‌ی بازه‌های قبل سهم مدیر را ندارد (بند ۴-۱۳)', rowOf(acc.bridge, 'priorCreditSettlements'), 0)
++  eq('پل تطبیق امروز بسته — ' + brief(acc.bridge), acc.bridge.unexplained, 0)
++  const exp = await cashboxService.expected({ shiftId })
++  eq('نقد مورد انتظار دست نخورد (پول مدیر در کشو نیست)', exp.expectedCash, 0)
++}
++
++console.log('\n۳) یکپارچه: همان روز، فاکتور امروز با نقد + مقصد مدیر (ردیف منفی نباید چیزی بسازد)')
++{
++  const inv = await sale()
++  pay(inv.id, { methodId: METHOD.cash, amount: 2_000_000, seq: 1 })
++  pay(inv.id, { methodId: METHOD.c2c, amount: 5_000_000, seq: 2, destination: 'MANAGER' })
++  const acc = (await salesService.reportRows({ fromJalali: today, toJalali: today })).accounting
++  eq('ردیف منفی فقط سهم فاکتورهای قبل (بدون تغییر)', rowOf(acc.bridge, 'priorManagerAccountReceived'), 10_000_000)
++  eq('دریافتی به حساب مدیر (کل) = ۱۰ + ۵ میلیون', rowOf(acc.bridge, 'managerAccountReceived'), 15_000_000)
++  eq('پل تطبیق امروز بسته — ' + brief(acc.bridge), acc.bridge.unexplained, 0)
++}
++
++console.log('\n۴) ریزجزئیات (drill) ردیف تازه به پرداخت‌های سازنده می‌رسد')
++{
++  const r = await salesService.reportRows({ fromJalali: today, toJalali: today, withDrillDown: true, bridgeSourceKey: 'priorManagerAccountReceived' })
++  const row = r.accounting.bridge.rows.find((x) => x.key === 'priorManagerAccountReceived')
++  const sum = (row?.sources ?? []).reduce((s, x) => s + Number(x.amount ?? 0), 0)
++  eq('جمع اسناد drill = مبلغ ردیف', sum, 10_000_000)
++}
++
++console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)
+diff -ruN ../base159/tests/pending/fix-y18-unknown-destination-outside-expected.mjs mahak/tests/pending/fix-y18-unknown-destination-outside-expected.mjs
+--- ../base159/tests/pending/fix-y18-unknown-destination-outside-expected.mjs	2026-09-27 09:34:16.606130276 +0000
++++ mahak/tests/pending/fix-y18-unknown-destination-outside-expected.mjs	1970-01-01 00:00:00.000000000 +0000
+@@ -1,141 +0,0 @@
+-/**
+- * ===========================================================================
+- * نشست ۱۶۰ · Y18 · بند ۴-۲۴ — پول با مقصد نامشخص (چکِ پاس‌شده‌ی قدیمیِ بی‌مقصد / مقصد CASH|CARD
+- * قدیمی که S113 آن را «نامشخص» می‌داند) هرگز با نقد جمع زده نمی‌شود.
+- *
+- * قبل از رفع: calculateCashClose این مبلغ را با برچسب unknownDestinationInExpected **داخل**
+- * expectedCash می‌گذاشت و calculateCashStatement/accountingReport آن را داخل «وجه واقعی»
+- * (clearedChequeInflow / realCash) می‌شمرد ⇒ حدس «نقد رسیده به کشو»، خلاف بند ۴-۲۴.
+- * بعد از رفع (S160-D4):
+- *   • expectedCash و realCash این مبلغ را ندارند؛ سبد جدای «نامشخص» (unknownDestinationOutside) با
+- *     ردیف و هشدار صریح؛ unknownDestinationInExpected همیشه ۰ (سازگاری فیلد).
+- *   • پل تطبیق ردیف مستقل «دریافتی با مقصد نامشخص» (+) دارد و بسته می‌ماند؛ «پاس‌شدن چک‌های
+- *     بازه‌های قبل» و «وصول نسیه‌ی بازه‌های قبل» سهم نامشخص را ندارند (مثل سهم حساب مدیر).
+- *   • snapshot بستن‌های قبلی دست نمی‌خورد (ستون‌های ذخیره‌شده‌ی CashSession خوانده می‌شوند).
+- *
+- *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-y18-unknown-destination-outside-expected.mjs
+- * ===========================================================================
+- */
+-import { mkdtempSync, readFileSync } from 'node:fs'
+-import { tmpdir } from 'node:os'
+-import { join, resolve } from 'node:path'
+-
+-const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-y18-'))
+-process.env.HARNESS_DIR = DIR
+-process.env.HARNESS_DB = join(DIR, 'shop.db')
+-
+-const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
+-const { makeSeeder } = await import('../../test/harness/seed.mjs')
+-const { salesService } = await import('../../src/main/services/SalesService.ts')
+-const { cashboxService } = await import('../../src/main/services/CashboxService.ts')
+-const { ChequeStatus, PaymentDestination } = await import('@shared/enums')
+-const { calculateCashClose, calculateCashStatement, calculatePaymentTotals, calculateReconciliationBridge } = await import('@shared/accounting')
+-const { toJalaliDate } = await import('@shared/jalali')
+-
+-const db = harnessClient()
+-const seed = makeSeeder(db)
+-const sql = db.$harness.db
+-
+-let ok = 0
+-let bad = 0
+-const eq = (label, got, want) => {
+-  if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label} = ${JSON.stringify(want)}`) }
+-  else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) }
+-}
+-const truthy = (label, v, detail) => (v ? (ok++, console.log(`  ✓ ${label}`)) : (bad++, console.log(`  ✗ ${label}${detail ? ' — ' + detail : ''}`)))
+-
+-const userId = seed.user('مدیر تست Y18')
+-const cat = seed.category('پوشاک Y18')
+-const variant = seed.variant(seed.product('شلوار Y18', cat), 'مشکی Y18')
+-sql.prepare('UPDATE "ProductVariant" SET stock = 10000 WHERE id = ?').run(variant)
+-const METHOD = {
+-  cash: seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 }),
+-  card: seed.insert('PaymentMethod', { key: 'CARD', label: 'کارتخوان', kind: 'CARD', isActive: 1, sortOrder: 2 }),
+-  cheque: seed.insert('PaymentMethod', { key: 'CHEQUE', label: 'چک', kind: 'CUSTOM', isActive: 1, sortOrder: 9 })
+-}
+-const CHQ = 10_000_000
+-const TOTAL = 20_000_000
+-const HOUR = 3_600_000
+-let shiftSeq = 0
+-const makeShift = (name) => seed.insert('Shift', { name, number: ++shiftSeq, dayJalali: toJalaliDate(new Date()), openedAt: Date.now() - HOUR, userId })
+-const sale = (over = {}) => salesService.create({ userId, lines: [{ variantId: variant, qty: 1, unitPrice: TOTAL, discount: 0, tax: 0 }], payments: [], ...over })
+-const legacyCheque = (invoiceId, shiftId, seq, destination = null, amount = CHQ) => {
+-  const now = Date.now()
+-  return seed.insert('Payment', {
+-    invoiceId, methodId: METHOD.cheque, amount, kind: 'CHEQUE', seq, chequeStatus: ChequeStatus.CLEARED,
+-    paidAt: now, paidAtJalali: toJalaliDate(new Date(now)), clearedAt: now, clearedAtJalali: toJalaliDate(new Date(now)),
+-    destination, createdShiftId: shiftId, clearedShiftId: shiftId
+-  })
+-}
+-const rowOf = (bridge, key) => bridge.rows.find((r) => r.key === key)?.amount ?? null
+-
+-console.log('\n۱) توابع مشترک (بدون دیتابیس)')
+-{
+-  const r = calculateCashClose({ openingFloat: 0, cashReceived: 2_000_000, clearedUnknownChequeAmount: CHQ, countedCash: 2_000_000 })
+-  eq('expectedCash فقط نقد فیزیکی', r.expectedCash, 2_000_000)
+-  eq('مغایرت صفر (چک نامشخص کسری/اضافه نساخت)', r.cashDifference, 0)
+-  eq('unknownDestinationInExpected همیشه صفر', r.unknownDestinationInExpected, 0)
+-  eq('سبد جدای نامشخص (unknownDestinationOutside)', r.unknownDestinationOutside, CHQ)
+-  const s = calculateCashStatement({ payments: { cash: 2_000_000, clearedCheques: CHQ, clearedUnknownCheques: CHQ } })
+-  eq('netCashMovement بدون سهم نامشخص', s.netCashMovement, 2_000_000)
+-  eq('destinationUnknownReceived جدا', s.destinationUnknownReceived, CHQ)
+-  const b = calculateReconciliationBridge({ realCash: 0, destinationUnknownReceived: CHQ, uncollectedCredit: 0, netAccrualSales: CHQ })
+-  eq('پل ردیف «دریافتی با مقصد نامشخص» دارد', rowOf(b, 'destinationUnknownReceived'), CHQ)
+-  eq('پل بسته', b.unexplained, 0)
+-  const from = new Date(Date.now() - HOUR), to = new Date(Date.now() + HOUR)
+-  const t = calculatePaymentTotals([
+-    { amount: CHQ, kind: 'CHEQUE', chequeStatus: 'CLEARED', clearedAt: new Date(), destination: null, invoiceIssuedAt: new Date(Date.now() - 48 * HOUR) }
+-  ], { from, to })
+-  eq('چک نامشخصِ فاکتور قبلی در priorClearedCheques نیست', t.priorClearedCheques, 0)
+-  eq('و در priorPeriod نیست', t.priorPeriod, 0)
+-  eq('ولی در clearedUnknownCheques هست', t.clearedUnknownCheques, CHQ)
+-}
+-
+-console.log('\n۲) یکپارچه: نشست باز، فاکتور همین نشست، چک قدیمی بی‌مقصد + نقد')
+-{
+-  const shiftId = makeShift('نشست Y18-۱')
+-  const inv = await sale({ shiftId, payments: [{ methodId: METHOD.cash, amount: 2_000_000 }] })
+-  legacyCheque(inv.id, shiftId, 2, null)
+-  const report = await salesService.reportRows({ shiftId })
+-  const expected = await cashboxService.expected({ shiftId, countedCash: 2_000_000 })
+-  const acc = report.accounting
+-  eq('سبد نامشخص در گزارش', acc.cash.destinationUnknownReceived, CHQ)
+-  eq('نقد مورد انتظار فقط نقد فیزیکی', expected.expectedCash, 2_000_000)
+-  eq('صندوق MATCHED با شمارش ۲٬۰۰۰٬۰۰۰', expected.state, 'MATCHED')
+-  eq('unknownDestinationInExpected = ۰', expected.unknownDestinationInExpected, 0)
+-  eq('unknownDestinationOutside = مبلغ چک', expected.unknownDestinationOutside, CHQ)
+-  eq('وجه واقعی پل بدون سهم نامشخص', rowOf(acc.bridge, 'realCash'), 2_000_000)
+-  eq('ردیف پل «دریافتی با مقصد نامشخص»', rowOf(acc.bridge, 'destinationUnknownReceived'), CHQ)
+-  eq('پل تطبیق بسته', acc.bridge.unexplained, 0)
+-  truthy('هشدار فارسی صریح در پیش‌نمایش بستن صندوق', (expected.warnings ?? []).some((w) => String(w).includes('نامشخص') && String(w).includes('نقد مورد انتظار')), JSON.stringify(expected.warnings))
+-  const closed = await cashboxService.close({ shiftId, explicitShift: true, countedCash: 2_000_000, userId, note: 'Y18' })
+-  eq('بستن: expectedCash = پیش‌نمایش', closed.cashClose.expectedCash, expected.expectedCash)
+-  eq('بستن: ستون نامشخص رکورد', closed.session.destinationUnknownReceived, CHQ)
+-  eq('بستن: مغایرت صفر', closed.cashClose.cashDifference, 0)
+-}
+-
+-console.log('\n۳) یکپارچه: چک قدیمی (مقصد CASH قدیمی ⇒ نامشخص) روی فاکتور دیروز، پاس‌شده امروز')
+-{
+-  const shiftId = makeShift('نشست Y18-۲')
+-  const inv = await sale({ shiftId })
+-  const yesterday = Date.now() - 30 * HOUR
+-  sql.prepare('UPDATE "SaleInvoice" SET issuedAt = ?, issuedAtJalali = ? WHERE id = ?').run(yesterday, toJalaliDate(new Date(yesterday)), inv.id)
+-  legacyCheque(inv.id, shiftId, 1, 'CASH')
+-  const today = toJalaliDate(new Date())
+-  const report = await salesService.reportRows({ fromJalali: today, toJalali: today })
+-  const acc = report.accounting
+-  eq('priorClearedCheques بدون سهم نامشخص', rowOf(acc.bridge, 'priorClearedCheques'), 0)
+-  eq('ردیف پل «دریافتی با مقصد نامشخص»', rowOf(acc.bridge, 'destinationUnknownReceived') , CHQ)
+-  const expected = await cashboxService.expected({ shiftId })
+-  eq('نقد مورد انتظار صفر (چک نامشخص وصول نسیه‌ی نقدی حساب نشد)', expected.expectedCash, 0)
+-  truthy('پل تطبیق بازه‌ی امروز بسته', acc.bridge.unexplained === 0, JSON.stringify({ target: acc.bridge.target, explained: acc.bridge.explainedTotal, rows: acc.bridge.rows.filter((r) => r.amount).map((r) => [r.key, r.sign * r.amount]) }))
+-}
+-
+-console.log('\n۴) ساختار UI')
+-{
+-  const ui = readFileSync(resolve('src/renderer/src/pages/CashClose.tsx'), 'utf8')
+-  truthy('CashClose ردیف «خارج از نقد مورد انتظار» را نشان می‌دهد', ui.includes('unknownDestinationOutside'))
+-}
+-
+-console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
+-process.exit(bad ? 1 : 0)

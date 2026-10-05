@@ -1,0 +1,36 @@
+
+۱) گیت «فقط آخرین درخواست» — رفتاری
+  ✗ ماژول مشترک @shared/latestRequest وجود دارد — انتظار "function"، دریافت "object"
+  ✓ کنترل بدون گیت: پاسخ کهنه برنده می‌شد (سناریو معتبر است) = "قدیم"
+
+۲) هر چهار مؤلفه — متن کد
+  ✗ OutOfShiftPanel.tsx: گیت مشترک import شده — انتظار true، دریافت false
+  ✗ OutOfShiftPanel.tsx: هر درخواست شماره می‌گیرد — انتظار true، دریافت false
+  ✗ OutOfShiftPanel.tsx: پاسخ کهنه پیش از setData(res) کنار گذاشته می‌شود — انتظار true، دریافت false
+  ✗ OutOfShiftPanel.tsx: خطا فقط برای آخرین درخواست — انتظار true، دریافت false
+  ✗ OutOfShiftPanel.tsx: busy/loading فقط برای آخرین درخواست — انتظار true، دریافت false
+  ✗ OutOfShiftPanel.tsx: Excel حین بارگذاری بسته — انتظار true، دریافت false
+  ✗ OverrideSessionsPanel.tsx: گیت مشترک import شده — انتظار true، دریافت false
+  ✗ OverrideSessionsPanel.tsx: هر درخواست شماره می‌گیرد — انتظار true، دریافت false
+  ✗ OverrideSessionsPanel.tsx: پاسخ کهنه پیش از setData(res) کنار گذاشته می‌شود — انتظار true، دریافت false
+  ✗ OverrideSessionsPanel.tsx: خطا فقط برای آخرین درخواست — انتظار true، دریافت false
+  ✗ OverrideSessionsPanel.tsx: busy/loading فقط برای آخرین درخواست — انتظار true، دریافت false
+  ✗ OverrideSessionsPanel.tsx: Excel حین بارگذاری بسته — انتظار true، دریافت false
+  ✗ CardTransferPanel.tsx: گیت مشترک import شده — انتظار true، دریافت false
+  ✗ CardTransferPanel.tsx: هر درخواست شماره می‌گیرد — انتظار true، دریافت false
+  ✗ CardTransferPanel.tsx: پاسخ کهنه پیش از setRows(list?.rows ?? []) کنار گذاشته می‌شود — انتظار true، دریافت false
+  ✗ CardTransferPanel.tsx: خطا فقط برای آخرین درخواست — انتظار true، دریافت false
+  ✗ CardTransferPanel.tsx: busy/loading فقط برای آخرین درخواست — انتظار true، دریافت false
+  ✗ CardTransferPanel.tsx: Excel حین بارگذاری بسته — انتظار true، دریافت false
+  ✗ MovementsModal.tsx: گیت مشترک import شده — انتظار true، دریافت false
+  ✗ MovementsModal.tsx: هر درخواست شماره می‌گیرد — انتظار true، دریافت false
+  ✗ MovementsModal.tsx: پاسخ کهنه پیش از setRows(result) کنار گذاشته می‌شود — انتظار true، دریافت false
+  ✗ MovementsModal.tsx: خطا فقط برای آخرین درخواست — انتظار true، دریافت false
+  ✗ MovementsModal.tsx: busy/loading فقط برای آخرین درخواست — انتظار true، دریافت false
+  ✗ MovementsModal: بستن مودال درخواست در جریان را کهنه می‌کند — انتظار true، دریافت false
+  ✗ MovementsModal: تعویض کالا ردیف‌های قبلی را پاک می‌کند — انتظار true، دریافت false
+  ✗ OutOfShiftPanel.tsx: تعویض بازه داده‌ی قبلی را پاک می‌کند — انتظار true، دریافت false
+  ✗ OverrideSessionsPanel.tsx: تعویض بازه داده‌ی قبلی را پاک می‌کند — انتظار true، دریافت false
+  ✗ CardTransferPanel: تعویض بازه/وضعیت ردیف و جمع قبلی را پاک می‌کند — انتظار true، دریافت false
+
+نتیجه: 1 موفق · 29 ناموفق

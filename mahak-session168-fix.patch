@@ -1,0 +1,117 @@
+diff -ruN base/mahak/src/renderer/src/hooks/useAutoCentralWithdraw.ts proj/mahak/src/renderer/src/hooks/useAutoCentralWithdraw.ts
+--- base/mahak/src/renderer/src/hooks/useAutoCentralWithdraw.ts	2026-09-27 09:08:46.000000000 +0000
++++ proj/mahak/src/renderer/src/hooks/useAutoCentralWithdraw.ts	2026-09-27 11:42:24.408456447 +0000
+@@ -4,7 +4,7 @@
+ import { usePanelOpen, usePanelLock } from './usePanelLocks'
+ import { PANEL_KEYS } from '@shared/panels'
+ import { broadcastSettingsChanged, type SettingsBundle } from './useSettings'
+-import type { SaleDefaults } from '@shared/receipt'
++import { withFreshSale, type SaleDefaults } from '@shared/receipt'
+ 
+ /**
+  * ===========================================================================
+@@ -97,8 +97,10 @@
+       }
+       setError(null)
+       setValue(next) // نمایش فوری
+-      const nextSale = { ...sale, autoCentralWithdraw: next }
+       try {
++        /** نشست ۱۶۸ (S168-D2) — sale تازه‌ی سرور + فقط autoCentralWithdraw (نه sale لحظه‌ی بازشدن پنل). */
++        const fresh = await call<{ sale: SaleDefaults }>(CH.settingsBundle)
++        const nextSale = withFreshSale(fresh.sale, { autoCentralWithdraw: next })
+         await call(CH.settingsSaveBundle, { sale: nextSale, panelPassword: needPassword ? password : undefined })
+         setSettings((p) => ({ ...p, sale: nextSale }))
+         broadcastSettingsChanged()
+diff -ruN base/mahak/src/renderer/src/pages/Pos.tsx proj/mahak/src/renderer/src/pages/Pos.tsx
+--- base/mahak/src/renderer/src/pages/Pos.tsx	2026-09-27 11:28:48.000000000 +0000
++++ proj/mahak/src/renderer/src/pages/Pos.tsx	2026-09-27 11:42:24.404456424 +0000
+@@ -12,6 +12,7 @@
+ import VariantSearchBox, { type VariantSearchBoxHandle } from '../components/VariantSearchBox'
+ import { ColGroup, ResizableHeaderCells, useResizableColumns } from '../components/ResizableColumns'
+ import { money, faDigits } from '@shared/jalali'
++import { withFreshSale, type SaleDefaults } from '@shared/receipt'
+ import { describeChargeRule } from '@shared/charges'
+ import { describeDiscountPolicy, discountCeilingFor, fixedDiscountFor, scaleLineDiscounts } from '@shared/priceAdjust'
+ import ManagerGate from '../components/ManagerGate'
+@@ -309,8 +310,13 @@
+         return
+       }
+       setPrintEnabled(next) // نمایش فوری
+-      const nextSale = { ...settings.sale, printEnabled: next }
+       try {
++        /**
++         * نشست ۱۶۸ (S168-D2) — sale تازه‌ی سرور، نه sale لحظه‌ی بازشدن پنل؛ فقط printEnabled عوض می‌شود تا
++         * تغییر تازه‌ی مدیر (نام صندوق‌دار، مهلت کد برگشت…) نه بازنویسی شود و نه درخواست را به رمز مدیر گیر دهد.
++         */
++        const fresh = await call<{ sale: SaleDefaults }>(CH.settingsBundle)
++        const nextSale = withFreshSale(fresh.sale, { printEnabled: next })
+         await call(CH.settingsSaveBundle, { sale: nextSale, panelPassword: printNeedPw ? printPw : undefined })
+         setSettings((p) => ({ ...p, sale: nextSale }))
+         broadcastSettingsChanged()
+diff -ruN base/mahak/src/renderer/src/pages/Settings.tsx proj/mahak/src/renderer/src/pages/Settings.tsx
+--- base/mahak/src/renderer/src/pages/Settings.tsx	2026-09-27 10:50:57.000000000 +0000
++++ proj/mahak/src/renderer/src/pages/Settings.tsx	2026-09-27 11:40:14.323701730 +0000
+@@ -42,6 +42,7 @@
+   DEFAULT_LABEL_TEMPLATE,
+   DEFAULT_RECEIPT_TEMPLATE,
+   DEFAULT_SALE_DEFAULTS,
++  mergeFreshPosToggles,
+   DEFAULT_SECURITY_CONFIG,
+   DEFAULT_SHIFT_CONFIG,
+   normalizeTime,
+@@ -931,7 +932,15 @@
+        * دکمه‌ی اختصاصی خودش (با رمز) آن را می‌نویسد. سرور هم تغییر discount از
+        * این کانال را بی‌رمز رد می‌کند.
+        */
+-      await call(CH.settingsSaveBundle, { receipt, sale, shift, label, security, time, managerPassword: bundlePw })
++      /**
++       * نشست ۱۶۸ (S168-D1) — «چاپ فاکتور» و «برداشت خودکار از انبار مرکزی» اینجا ویرایش نمی‌شوند و
++       * ممکن است بعد از بازشدن این صفحه از پنل فروش (با رمز پنل) عوض شده باشند. پیش از ذخیره مقدار تازه‌ی
++       * سرور را می‌خوانیم تا مقدار کهنه‌ی صفحه نه بی‌صدا برگردد و نه ذخیره‌ی بی‌ربط به رمز پنل گیر کند.
++       */
++      const fresh = await call<{ sale: SaleDefaults }>(CH.settingsBundle)
++      const saleToSave = mergeFreshPosToggles(sale, { ...DEFAULT_SALE_DEFAULTS, ...fresh.sale })
++      await call(CH.settingsSaveBundle, { receipt, sale: saleToSave, shift, label, security, time, managerPassword: bundlePw })
++      setSale(saleToSave)
+       setDirty(false)
+       /**
+        * بند ۳ — پنل‌های *باز* (پنل فروش، فاکتور عمده) با این رویداد تنظیماتشان را
+diff -ruN base/mahak/src/shared/receipt.ts proj/mahak/src/shared/receipt.ts
+--- base/mahak/src/shared/receipt.ts	2026-09-27 09:08:46.000000000 +0000
++++ proj/mahak/src/shared/receipt.ts	2026-09-27 11:42:41.892557885 +0000
+@@ -435,6 +435,35 @@
+ }
+ 
+ /**
++ * نشست ۱۶۸ (S168-D2، ریسک باز S166-D7 «تنظیمات کهنه در صفحه‌ی باز فروش») — sale برای عوض‌کردن *یک* سوییچ
++ * پنل فروش (چاپ فاکتور / برداشت خودکار از انبار مرکزی): پیش‌فرض‌ها + sale *تازه‌ی سرور* + فقط همان patch.
++ * قبلاً sale لحظه‌ی بازشدن پنل فرستاده می‌شد؛ اگر مدیر در این فاصله نام صندوق‌دار/مهلت کد برگشت را عوض کرده بود،
++ * سرور آن را تغییر مدیری می‌دید و درخواست با رمز درست پنل هم رد می‌شد (یا با رمز مدیر تنظیم تازه بازنویسی می‌شد).
++ */
++export function withFreshSale(
++  freshSale: Partial<SaleDefaults> | null | undefined,
++  patch: Partial<SaleDefaults>
++): SaleDefaults {
++  return { ...DEFAULT_SALE_DEFAULTS, ...(freshSale ?? {}), ...patch }
++}
++
++/**
++ * نشست ۱۶۸ (S168-D1، ریسک باز S166-D7) — ادغام «دو سوییچ پنل فروش» پیش از ذخیره‌ی کلی تنظیمات.
++ *
++ * صفحه‌ی تنظیمات `printEnabled` و `autoCentralWithdraw` را نمایش/ویرایش نمی‌کند (این دو فقط در پنل فروش و
++ * با رمز پنل خودشان عوض می‌شوند) ولی کل `sale` را می‌فرستد. اگر بعد از بازشدن صفحه این دو از پنل فروش عوض
++ * شده باشند، مقدار کهنه‌ی صفحه یا بی‌صدا برمی‌گشت (همراه رمز مدیر) یا ذخیره‌ی بی‌ربط را به رمز پنل گیر می‌داد.
++ * این تابع خالص است: بقیه‌ی فیلدهای صفحه دست‌نخورده، فقط این دو از مقدار تازه‌ی سرور. سرور تغییری نکرده.
++ */
++export function mergeFreshPosToggles(pageSale: SaleDefaults, freshSale: SaleDefaults): SaleDefaults {
++  return {
++    ...pageSale,
++    printEnabled: freshSale.printEnabled,
++    autoCentralWithdraw: freshSale.autoCentralWithdraw
++  }
++}
++
++/**
+  * ===========================================================================
+  * تنظیمات «چاپ لیبل» (مورد ۵ و ۸) — مستقل از تنظیمات چاپ فاکتور.
+  *

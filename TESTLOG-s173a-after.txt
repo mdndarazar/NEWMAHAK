@@ -1,0 +1,53 @@
+(node:5591) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:5591) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/s/mahak/src/main/services/SalesService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/s/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓ پرداخت نقدی پایه ساخته شد = 1000
+
+۱) صفحه‌ی بزرگ (take ۲۰۰۰) با ۶۰۰ پرداخت نقدی
+  ✓ گزارش بی‌خطا ساخته شد = null
+  ✓ ردیف وجه واقعی = ۶۰۰٬۰۰۰ = 600000
+  ✓ totalCount صفحه = ۶۰۰ = 600
+  ✓ همه‌ی ۶۰۰ سند در یک صفحه = 600
+  ✓ جمع drill = مبلغ ردیف = 600000
+  ✓ ترتیب id نزولی = true
+  ✓ برچسب هر سند شماره‌ی فاکتور دارد = true
+  ✓ بدون هشدار (همه‌ی اسناد در صفحه) = null
+  ✓ هیچ IN بالای ۵۰۰ نبود = true
+
+۲) صفحه‌بندی ۲۵۰تایی (برای مقایسه؛ باید از قبل هم سبز باشد)
+  ✓ totalCount صفحه‌ی skip=0 = 600
+  ✓ اندازه‌ی صفحه‌ی skip=0 = 250
+  ✓ totalCount صفحه‌ی skip=250 = 600
+  ✓ اندازه‌ی صفحه‌ی skip=250 = 250
+  ✓ totalCount صفحه‌ی skip=500 = 600
+  ✓ اندازه‌ی صفحه‌ی skip=500 = 100
+  ✓ مجموعه‌ی صفحه‌ها یکتا و کامل = [600,600]
+
+۳) صفحه‌ی ۶۰۰تایی از skip ۰ (یک صفحه‌ی بالای ۵۰۰)
+  ✓ اندازه‌ی صفحه = ۶۰۰ = 600
+  ✓ هیچ IN بالای ۵۰۰ نبود = true
+
+۴) S173-D2 — خطای خواندن drill بی‌صدا «۰ سند» نشود
+[accounting] bridge sources failed realCash Error: SQLITE_BUSY: database is locked
+    at prisma.payment.<computed> [as findMany] (file:///home/user/work/s/mahak/tests/audit-fixes/fix-s173-payment-drill-in-chunk.mjs:56:63)
+    at paymentDrill (file:///home/user/work/s/mahak/src/main/services/accountingReport.ts:1143:34)
+    at async bridgeSources (file:///home/user/work/s/mahak/src/main/services/accountingReport.ts:1269:14)
+    at async buildStatements (file:///home/user/work/s/mahak/src/main/services/accountingReport.ts:1538:9)
+    at async report (file:///home/user/work/s/mahak/tests/audit-fixes/fix-s173-payment-drill-in-chunk.mjs:81:28)
+    at async file:///home/user/work/s/mahak/tests/audit-fixes/fix-s173-payment-drill-in-chunk.mjs:122:12
+  ✓ گزارش خودش از کار نیفتاد = null
+  ✓ عدد ردیف از جمع اصلی دست‌نخورده = 600000
+  ✓ هشدار فارسی روی ردیف هست = true
+  ✓ هشدار می‌گوید عدد ردیف معتبر است = true
+  ✓ هشدار مبلغ ردیف را با ریال دارد = true
+  ✓ بدون متن فنی/انگلیسی در هشدار = false
+  ✓ page.failed = true = true
+
+۵) بعد از رفع خطا دوباره عادی
+  ✓ بدون هشدار خطا = false
+  ✓ failed ندارد = null
+
+نتیجه: 28 موفق · 0 ناموفق

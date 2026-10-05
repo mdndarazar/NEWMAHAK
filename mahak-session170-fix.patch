@@ -1,0 +1,500 @@
+diff -ruN pristine/src/main/services/accountingReport.ts mahak/src/main/services/accountingReport.ts
+--- pristine/src/main/services/accountingReport.ts	2026-09-27 12:18:59.308518668 +0000
++++ mahak/src/main/services/accountingReport.ts	2026-09-27 12:25:05.454642935 +0000
+@@ -647,6 +647,51 @@
+   return { range, invoiceIds, scoped, notVoided, issuedScoped, issuedWhere, redemptionWhere }
+ }
+ 
++/**
++ * نشست ۱۷۰ · خوشه D · S169-D4 (یادداشت باز S61) — تفکیک اعتبارهای صادرشده‌ی بازه برای پل تطبیق.
++ *
++ * فقط اعتباری که از یک سند برگشت/تعویض واقعی صادر شده (returnId ≠ null) پشتش کاهشی در فروش
++ * خالص (netAccrualSales) هست و باید در ردیف «اعتبار خرید صادرشده»ی پل کم شود. سه نوع دیگر
++ * هیچ اثری در فروش یا وجه ندارند و قبلاً پل را به اندازه‌ی مبلغشان باز می‌گذاشتند:
++ *   ۱) اعتبار دستی مدیر (issueManual — بی‌سند؛ سرور returnId را از payload حذف می‌کند)
++ *   ۲) صدور گروهی (bulkIssue — MANUAL یا EXCHANGE بی‌سند)
++ *   ۳) «باقی‌مانده»ی مصرف جزئی اعتبار یک‌بارمصرف: اعتبار جدیدی که returnId اعتبار اصلی را
++ *      کپی می‌کند؛ ادامه‌ی همان بدهی است و اعتبار اصلی قبلاً (در بازه‌ی صدور خودش) کم شده.
++ * OVERPAY جدا در ردیف «دریافت پول اضافه» است (S61-2) و اینجا نمی‌آید.
++ * گزارش اعتبار (بند ۴-۴۸، issued) دست نمی‌خورد؛ این تفکیک فقط برای پل و نمایش است.
++ */
++async function storeCreditBridgeSplit(issuedWhere: any): Promise<{
++  backedIds: number[]
++  backed: number
++  unbacked: number
++  unbackedCount: number
++  remainder: number
++  remainderCount: number
++}> {
++  const rows: Array<{ id: number; amount: any; returnId: number | null }> = await prisma.storeCredit.findMany({
++    where: { ...issuedWhere, source: { not: CreditSource.OVERPAY } },
++    select: { id: true, amount: true, returnId: true },
++    orderBy: { id: 'desc' }
++  })
++  const remainderIds = new Set<number>()
++  const ids = rows.map((r) => r.id)
++  for (let i = 0; i < ids.length; i += 500) {
++    const parents: Array<{ remainderCreditId: number | null }> = await prisma.storeCredit.findMany({
++      where: { remainderCreditId: { in: ids.slice(i, i + 500) } },
++      select: { remainderCreditId: true }
++    })
++    for (const p of parents) if (p.remainderCreditId != null) remainderIds.add(Number(p.remainderCreditId))
++  }
++  const out = { backedIds: [] as number[], backed: 0, unbacked: 0, unbackedCount: 0, remainder: 0, remainderCount: 0 }
++  for (const r of rows) {
++    const amount = n(r.amount)
++    if (remainderIds.has(r.id)) { out.remainder += amount; out.remainderCount++ }
++    else if (r.returnId != null) { out.backed += amount; out.backedIds.push(r.id) }
++    else { out.unbacked += amount; out.unbackedCount++ }
++  }
++  return out
++}
++
+ async function storeCreditStatement(
+   scope: StatementScope,
+   notes: string[]
+@@ -715,9 +760,17 @@
+       )._sum.amount
+     )
+ 
++  /** نشست ۱۷۰ · S169-D4 — سهم سند‌دار (پل) / بی‌سند / باقی‌مانده از صادرشده‌ی همین بازه */
++  const split = await storeCreditBridgeSplit(issuedWhere)
++
+   return {
+     issued: n(issued._sum.amount),
+     issuedFromOverpay: n(issuedOverpay._sum.amount),
++    issuedBacked: split.backed,
++    issuedUnbacked: split.unbacked,
++    issuedUnbackedCount: split.unbackedCount,
++    issuedRemainder: split.remainder,
++    issuedRemainderCount: split.remainderCount,
+     issuedCount: n(issued._count?._all),
+     used: n(used._sum.amount),
+     usageCount: n(used._count?._all),
+@@ -1091,7 +1144,12 @@
+       // نشست ۶۱ — اعتبار اضافه‌دریافت در ردیف overpayReceived است.
+       // ممیزی A108-02 — همان where ردیف (مالک رویداد/هویت A97-01)، نه کل بازه.
+       const { issuedWhere } = await storeCreditScopes(scope, [])
+-      const where: any = { ...issuedWhere, source: { not: CreditSource.OVERPAY } }
++      /**
++       * نشست ۱۷۰ · S169-D4 — همان predicate ردیف: فقط اعتبار سند‌دار (returnId ≠ null) و غیر
++       * «باقی‌مانده»؛ اعتبار دستی/گروهی بی‌سند و باقی‌مانده در ردیف پل نیستند، پس اینجا هم نه.
++       */
++      const { backedIds } = await storeCreditBridgeSplit(issuedWhere)
++      const where: any = { id: { in: backedIds } }
+       const totalCount = await prisma.storeCredit.count({ where })
+       const rows = await prisma.storeCredit.findMany({
+         where, orderBy: { id: 'desc' }, skip, take
+@@ -1334,7 +1392,12 @@
+     /** نشست ۱۶۱ · Y18 · بند ۴-۲۴ — سبد «نامشخص» ردیف مستقل؛ بدون آن پل به همین اندازه باز می‌ماند */
+     destinationUnknownReceived: cash.destinationUnknownReceived,
+     /** نشست ۶۱ (S61-2) — اعتبار اضافه‌دریافت در ردیف «دریافت پول اضافه» توضیح داده شده است */
+-    storeCreditIssued: Math.max(0, sc.issued - sc.issuedFromOverpay),
++    /**
++     * نشست ۱۷۰ · S169-D4 — فقط اعتبار سند‌دار (برگشت/تعویض واقعی) که فروش خالص را کم کرده.
++     * اعتبار دستی/گروهی بی‌سند و «باقی‌مانده»ی مصرف جزئی نه فروش را تغییر داده‌اند نه وجه را؛
++     * کسرشان پل را به اندازه‌ی مبلغشان باز می‌گذاشت. مبلغشان در توضیح همین ردیف و یادداشت گزارش می‌آید.
++     */
++    storeCreditIssued: Math.max(0, n(sc.issuedBacked)),
+     priorCreditSettlements: pay.totals.priorPeriod,
+     priorClearedCheques: pay.totals.priorClearedCheques,
+     /** نشست ۱۶۱ · Y19 (S161-D2) */
+@@ -1365,7 +1428,17 @@
+       'چکِ پاس‌شده‌ی قدیمی که مقصد پولش ثبت نشده (بند ۴-۲۴): بدهی مشتری کم شد ولی معلوم نیست ' +
+       'پول به کشو، کارتخوان یا حساب مدیر رفته؛ پس نه در وجه واقعی و نه در نقد مورد انتظار صندوق ' +
+       'حساب شده است. مدیر باید مقصد واقعی را بررسی کند.',
+-    storeCreditIssued: 'بدهی ما به مشتری؛ پول نرسید ولی کالا رفت — لینک به سند تعویض/برگشت',
++    storeCreditIssued:
++      'بدهی ما به مشتری؛ پول نرسید ولی کالا رفت — لینک به سند تعویض/برگشت' +
++      /** نشست ۱۷۰ · S169-D4 — سهم بیرون از پل پنهان نمی‌شود */
++      (n(sc.issuedUnbacked) > 0
++        ? ` · ${n(sc.issuedUnbacked)} ریال اعتبار بی‌سند (دستی/گروهی مدیر، ${n(sc.issuedUnbackedCount)} بارکد) در این بازه صادر شد: ` +
++          'فروش و وجه را تغییر نداده، پس در این ردیف کم نمی‌شود؛ مصرفش در ردیف «مصرف اعتبار خرید» می‌آید'
++        : '') +
++      (n(sc.issuedRemainder) > 0
++        ? ` · ${n(sc.issuedRemainder)} ریال «باقی‌مانده»ی مصرف جزئی اعتبار یک‌بارمصرف (${n(sc.issuedRemainderCount)} بارکد): ` +
++          'ادامه‌ی همان بدهی قبلی است، نه اعتبار تازه؛ در این ردیف دوباره کم نمی‌شود'
++        : ''),
+     priorCreditSettlements:
+       'پولِ این بازه بابت فروشِ بازه‌های قبل — فروش امروز نیست' +
+       /** نشست ۱۶۷ · S162-D3 (S167-D1) — برچسب جدای اضافه‌دریافت؛ عدد ردیف دست نمی‌خورد */
+@@ -1427,6 +1500,18 @@
+       `پل تطبیق بسته نشد: ${Math.abs(bridgeRaw.unexplained)} ریال بدون توضیح مانده است. ` +
+         'روی ردیف‌های پل کلیک کنید تا اسناد سازنده‌ی هر عدد باز شود.'
+     )
++  /** نشست ۱۷۰ · S169-D4 — یادداشت ارجاعی: سهم اعتبار صادرشده‌ی بازه که عمداً در پل نیست */
++  if (n(sc.issuedUnbacked) > 0)
++    notes.push(
++      `${n(sc.issuedUnbacked)} ریال اعتبار خرید بی‌سند (صدور دستی/گروهی مدیر، ${n(sc.issuedUnbackedCount)} بارکد) در این بازه صادر شد. ` +
++        'این مبلغ جزو «اعتبار صادرشده»ی گزارش اعتبار است، ولی چون فروش یا پولی پشتش نیست در پل تطبیق کم نمی‌شود؛ ' +
++        'برای ضدسرقت، فهرست اعتبارهای دستی را در تب اعتبار خرید بررسی کنید.'
++    )
++  if (n(sc.issuedRemainder) > 0)
++    notes.push(
++      `${n(sc.issuedRemainder)} ریال از اعتبار صادرشده‌ی این بازه «باقی‌مانده»ی مصرف جزئی اعتبار یک‌بارمصرف است ` +
++        `(${n(sc.issuedRemainderCount)} بارکد)؛ ادامه‌ی بدهی قبلی است و در پل تطبیق دوباره کم نمی‌شود.`
++    )
+   if (ret.legacyAssumedCount > 0)
+     notes.push(
+       `${ret.legacyAssumedCount} برگشت قدیمی روش بازپرداخت ثبت‌شده ندارد و با فرض «فقط بدهی مشتری کم شد» ` +
+@@ -1500,6 +1585,8 @@
+       issued: sc.issued, used: sc.used, active: sc.active,
+       /** نشست ۶۱ — سهم اعتبارهای صادرشده از اضافه‌دریافت (داخل issued) */
+       issuedFromOverpay: sc.issuedFromOverpay,
++      /** نشست ۱۷۰ · S169-D4 — تفکیک صادرشده (همه داخل issued) */
++      issuedBacked: sc.issuedBacked, issuedUnbacked: sc.issuedUnbacked, issuedRemainder: sc.issuedRemainder,
+       expired: sc.expired, canceled: sc.canceled,
+       issuedCount: sc.issuedCount, usageCount: sc.usageCount
+     },
+diff -ruN pristine/src/shared/accounting.ts mahak/src/shared/accounting.ts
+--- pristine/src/shared/accounting.ts	2026-09-27 12:18:59.316518715 +0000
++++ mahak/src/shared/accounting.ts	2026-09-27 12:24:02.498277674 +0000
+@@ -228,6 +228,16 @@
+   canceled: Rial
+   usageCount: number
+   issuedCount: number
++  /** نشست ۶۱ — سهم اضافه‌دریافت (داخل issued) */
++  issuedFromOverpay?: Rial
++  /** نشست ۱۷۰ · S169-D4 — سهم سند‌دار (برگشت/تعویض واقعی، غیر باقی‌مانده) — فقط همین در پل کم می‌شود */
++  issuedBacked?: Rial
++  /** نشست ۱۷۰ · S169-D4 — اعتبار دستی/گروهی بی‌سند (returnId = null، غیر OVERPAY) */
++  issuedUnbacked?: Rial
++  issuedUnbackedCount?: number
++  /** نشست ۱۷۰ · S169-D4 — «باقی‌مانده»ی مصرف جزئی اعتبار یک‌بارمصرف */
++  issuedRemainder?: Rial
++  issuedRemainderCount?: number
+ }
+ 
+ export interface AccrualInput {
+diff -ruN pristine/src/shared/types.ts mahak/src/shared/types.ts
+--- pristine/src/shared/types.ts	2026-09-27 12:18:59.316518715 +0000
++++ mahak/src/shared/types.ts	2026-09-27 12:24:02.498277674 +0000
+@@ -1064,6 +1064,10 @@
+   issued: number
+   /** نشست ۶۱ — سهم اعتبارهای صادرشده از اضافه‌دریافت (داخل issued؛ در پل زیر «دریافت پول اضافه») */
+   issuedFromOverpay?: number
++  /** نشست ۱۷۰ · S169-D4 — سهم سند‌دار (فقط همین در پل)، بی‌سند (دستی/گروهی) و باقی‌مانده؛ همه داخل issued */
++  issuedBacked?: number
++  issuedUnbacked?: number
++  issuedRemainder?: number
+   used: number
+   active: number
+   expired: number
+diff -ruN pristine/tests/audit/audit-a108-01-bridge-drill-sources.mjs mahak/tests/audit/audit-a108-01-bridge-drill-sources.mjs
+--- pristine/tests/audit/audit-a108-01-bridge-drill-sources.mjs	2026-09-27 12:18:59.340518854 +0000
++++ mahak/tests/audit/audit-a108-01-bridge-drill-sources.mjs	2026-09-27 12:25:47.086884476 +0000
+@@ -62,9 +62,15 @@
+ const C1 = seed.insert('StoreCredit', { code: 'SC-1', amount: 1_000_000, source: 'MANUAL', usedAmount: 400_000, usedCount: 2, maxUses: 5, multiUse: 1, status: 'PARTIALLY_USED', issuedAt: Y + 1_000, issuedAtJalali: yday, usedAt: T0 + 110_000, usedAtJalali: today, usedInvoiceId: i2, userId: A, createdAt: Y + 1_000 })
+ seed.insert('StoreCreditRedemption', { creditId: C1, code: 'SC-1', amount: 100_000, remainderAfter: 900_000, seq: 1, at: Y + 2_000, atJalali: yday })
+ seed.insert('StoreCreditRedemption', { creditId: C1, code: 'SC-1', amount: 300_000, remainderAfter: 600_000, seq: 2, invoiceId: i2, receiptNo: 2, paymentId: pSc, at: T0 + 110_000, atJalali: today })
+-// اعتبار دستی امروز: یکی از الف (۲۵۰٬۰۰۰) و یکی از ب (۹۰۰٬۰۰۰)
+-seed.insert('StoreCredit', { code: 'SC-A', amount: 250_000, source: 'MANUAL', status: 'ACTIVE', issuedAt: T0 + 300_000, issuedAtJalali: today, userId: A, createdAt: T0 + 300_000 })
+-seed.insert('StoreCredit', { code: 'SC-B', amount: 900_000, source: 'MANUAL', status: 'ACTIVE', issuedAt: T0 + 310_000, issuedAtJalali: today, userId: B, createdAt: T0 + 310_000 })
++// اعتبار صادرشده‌ی امروز: یکی از الف (۲۵۰٬۰۰۰) و یکی از ب (۹۰۰٬۰۰۰)
++// نشست ۱۷۰ · S169-D4 (DECISIONS S170-D1) — ردیف «اعتبار صادرشده»ی پل فقط اعتبار سند‌دار (returnId ≠ null)
++// را می‌شمارد؛ اعتبار دستی بی‌سند دیگر در پل نیست. هدف این تست (مالکیت/drill همان where ردیف) است، پس
++// fixture از MANUAL به اعتبارِ برگشتیِ سند‌دار تغییر کرد؛ اعداد و انتظارها دست نخوردند.
++// سند برگشتِ مالک (بدون قلم/مبلغ، فقط برای نسبت‌دادن صدور به کارمند — مالک رویداد A97-01)
++const rA = seed.insert('SaleReturn', { invoiceId: i1, total: 0, kind: 'RETURN', returnedAt: T0 + 300_000, returnedAtJalali: today, userId: A, shiftId: S })
++const rB = seed.insert('SaleReturn', { invoiceId: i1, total: 0, kind: 'RETURN', returnedAt: T0 + 310_000, returnedAtJalali: today, userId: B, shiftId: S })
++seed.insert('StoreCredit', { code: 'SC-A', amount: 250_000, source: 'EXCHANGE', returnId: rA, status: 'ACTIVE', issuedAt: T0 + 300_000, issuedAtJalali: today, userId: A, createdAt: T0 + 300_000 })
++seed.insert('StoreCredit', { code: 'SC-B', amount: 900_000, source: 'EXCHANGE', returnId: rB, status: 'ACTIVE', issuedAt: T0 + 310_000, issuedAtJalali: today, userId: B, createdAt: T0 + 310_000 })
+ 
+ const KEYS = ['realCash', 'priorCreditSettlements', 'priorClearedCheques', 'storeCreditUsed', 'storeCreditIssued', 'overpayReceived', 'managerAccountReceived',
+   // نشست ۱۶۲ · S162-D1 — ردیف‌های Y18/Y19
+diff -ruN pristine/tests/audit-fixes/fix-s170-bridge-unbacked-credit.mjs mahak/tests/audit-fixes/fix-s170-bridge-unbacked-credit.mjs
+--- pristine/tests/audit-fixes/fix-s170-bridge-unbacked-credit.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/audit-fixes/fix-s170-bridge-unbacked-credit.mjs	2026-09-27 12:23:18.674023436 +0000
+@@ -0,0 +1,175 @@
++/**
++ * ===========================================================================
++ * نشست ۱۷۰ · خوشه D · یادداشت باز S61 / S169-D4 — اعتبار بی‌سند و «باقی‌مانده» در پل تطبیق
++ *
++ * ردیف «اعتبار خرید صادرشده»ی پل = issued − issuedFromOverpay بود. ولی فقط اعتباری که
++ * از یک برگشت/تعویض واقعی (returnId ≠ null) صادر شده، پشتش کاهشی در فروش خالص
++ * (netAccrualSales) هست. سه نوع اعتبار دیگر هیچ اثری در فروش/وجه ندارند و پل را به
++ * اندازه‌ی مبلغشان باز می‌گذاشتند:
++ *   (۱) اعتبار دستی مدیر (issueManual، MANUAL، بی‌سند)
++ *   (۲) صدور گروهی (bulkIssue) — MANUAL یا حتی EXCHANGE بی‌سند
++ *   (۳) «باقی‌مانده»ی مصرف جزئی اعتبار یک‌بارمصرف (اعتبار جدید با returnId کپی‌شده)
++ * انتظار: پل در همه‌ی سناریوها بسته؛ ردیف پل برای اعتبار برگشتی واقعی همچنان کم می‌شود؛
++ * گزارش اعتبار بند ۴-۴۸ (issued) دست‌نخورده؛ مبلغ بی‌سند/باقی‌مانده پنهان نمی‌شود
++ * (توضیح ردیف + یادداشت گزارش)؛ drill-down ردیف با همان predicate.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s170-bridge-unbacked-credit.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s170-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { salesService, saleWhere } = await import('../../src/main/services/SalesService.ts')
++const { storeCreditService } = await import('../../src/main/services/StoreCreditService.ts')
++const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
++const { RefundMethod } = await import('@shared/enums')
++const { DEFAULT_MANAGER_PASSWORD } = await import('@shared/receipt')
++const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++const PW = DEFAULT_MANAGER_PASSWORD
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (got === want) { ok++; console.log(`  ✓ ${label} = ${want}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${want}، دریافت ${got}`) }
++}
++const truthy = (label, cond, extra = '') => {
++  if (cond) { ok++; console.log(`  ✓ ${label}`) } else { bad++; console.log(`  ✗ ${label} ${extra}`) }
++}
++const safe = async (label, fn) => {
++  try { return await fn() } catch (e) { bad++; console.log(`  ✗ ${label} — خطای نامنتظره: ${String(e?.message ?? e).split('\n')[0]}`); return null }
++}
++
++const userId = seed.user('مدیر تست نشست ۱۷۰')
++const cat = seed.category('پوشاک')
++const product = seed.product('شلوار جین', cat)
++const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
++const today = toJalaliDate(new Date())
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - 3600_000, userId })
++let vseq = 0
++const variant = (price) => {
++  const id = seed.variant(product, `سایز ${++vseq}`)
++  sql.prepare('UPDATE "ProductVariant" SET stock = 100, salePrice = ? WHERE id = ?').run(price, id)
++  return id
++}
++const itemsOf = (invoiceId) => seed.rows('SELECT id, qty, lineTotal FROM "SaleInvoiceItem" WHERE invoiceId = ? ORDER BY id', invoiceId)
++const sale = (price, paid, extra = {}) => salesService.create({
++  userId, shiftId,
++  lines: [{ variantId: variant(price), qty: 1, unitPrice: price, discount: 0, tax: 0 }],
++  payments: paid > 0 ? [{ methodId: cash, amount: paid, destination: 'CASH' }] : [],
++  ...extra
++})
++const report = async () => {
++  const filter = { fromJalali: today, toJalali: today }
++  const { statements } = await buildStatements({
++    where: saleWhere(filter), from: jalaliStartOfDay(today), to: jalaliEndOfDay(today),
++    period: { fromJalali: today, toJalali: today, source: 'explicit' }, filter
++  }, { withDrillDown: true, bridgeSourceKey: 'storeCreditIssued' })
++  return statements
++}
++const rowsOf = (s) => Object.fromEntries((s?.bridge?.rows ?? []).map((r) => [r.key, r.sign * r.amount]))
++const closed = (s, label = 'پل تطبیق بسته است (مانده‌ی بی‌توضیح)') => eq(label, s?.bridge?.unexplained, 0)
++const issuedRow = (s) => (s?.bridge?.rows ?? []).find((r) => r.key === 'storeCreditIssued')
++const drillSum = (s) => (issuedRow(s)?.sources ?? []).reduce((a, r) => a + Number(r.amount ?? 0), 0)
++const creditByCode = (code) => seed.rows('SELECT * FROM "StoreCredit" WHERE code = ?', code)[0]
++
++// ---------------------------------------------------------------------------
++console.log('\n۰) پایه: گزارش خالی امروز')
++const s0 = await report()
++closed(s0, 'پل خالی بسته است')
++
++// ---------------------------------------------------------------------------
++console.log('\n(الف) فقط یک اعتبار دستی مدیر ۵۰۰٬۰۰۰ امروز (issueManual با رمز مدیر)')
++const m1 = await safe('صدور دستی', () => storeCreditService.issueManual({ amount: 500000, userId, managerPassword: PW }))
++truthy('اعتبار دستی صادر شد', !!m1?.code)
++const sA = await report()
++closed(sA, 'پل بعد از اعتبار دستی بسته است')
++eq('ردیف «اعتبار صادرشده»ی پل برای اعتبار بی‌سند تغییر نکرد', (rowsOf(sA).storeCreditIssued ?? 0) - (rowsOf(s0).storeCreditIssued ?? 0), 0)
++eq('گزارش اعتبار (بند ۴-۴۸): صادرشده‌ی بازه همچنان شامل اعتبار دستی است', sA?.storeCredits?.issued - s0?.storeCredits?.issued, 500000)
++truthy('مبلغ اعتبار بی‌سند پنهان نشد (در توضیح ردیف یا یادداشت گزارش آمده)',
++  String(issuedRow(sA)?.hint ?? '').includes('500000') || (sA?.notes ?? []).some((x) => String(x).includes('500000')),
++  `hint=${issuedRow(sA)?.hint} notes=${JSON.stringify(sA?.notes)}`)
++eq('drill-down ردیف شامل اعتبار دستی نیست (همان predicate ردیف)', drillSum(sA), issuedRow(sA)?.amount ?? -1)
++
++// ---------------------------------------------------------------------------
++console.log('\n(ب) همان اعتبار دستی روی فاکتور امروز مصرف شود')
++const invB = await safe('فروش ۱٬۰۰۰٬۰۰۰ = ۵۰۰٬۰۰۰ نقد + ۵۰۰٬۰۰۰ اعتبار', () => sale(1000000, 500000, { storeCreditCode: m1?.code }))
++eq('اعتبار کامل مصرف شد', Number(creditByCode(m1?.code)?.usedAmount ?? 0), 500000)
++const sB = await report()
++closed(sB, 'پل بعد از مصرف اعتبار دستی بسته است')
++eq('ردیف مصرف اعتبار +۵۰۰٬۰۰۰', (rowsOf(sB).storeCreditUsed ?? 0) - (rowsOf(sA).storeCreditUsed ?? 0), 500000)
++
++// ---------------------------------------------------------------------------
++console.log('\n(ب۲) صدور گروهی: دو اعتبار MANUAL و دو اعتبار EXCHANGE بی‌سند')
++await safe('bulk MANUAL', () => storeCreditService.bulkIssue({ count: 2, amountEach: 100000, userId, managerPassword: PW }))
++await safe('bulk EXCHANGE بی‌سند', () => storeCreditService.bulkIssue({ count: 2, amountEach: 70000, source: 'EXCHANGE', userId, managerPassword: PW }))
++const sB2 = await report()
++closed(sB2, 'پل بعد از صدور گروهی بسته است')
++eq('گزارش اعتبار: صادرشده +۳۴۰٬۰۰۰', sB2?.storeCredits?.issued - sB?.storeCredits?.issued, 340000)
++eq('ردیف پل تغییر نکرد', (rowsOf(sB2).storeCreditIssued ?? 0) - (rowsOf(sB).storeCreditIssued ?? 0), 0)
++
++// ---------------------------------------------------------------------------
++console.log('\n(ج) برگشت با اعتبار خرید + مصرف جزئی اعتبار یک‌بارمصرف در همان روز')
++const invC = await safe('فروش نقدی ۱٬۰۰۰٬۰۰۰', () => sale(1000000, 1000000))
++const sC0 = await report()
++closed(sC0, 'پل پیش از برگشت بسته است')
++await safe('برگشت کامل قلم با اعتبار خرید', () => salesService.createReturn({
++  invoiceId: invC?.id, full: false, lines: [{ saleItemId: itemsOf(invC?.id)[0]?.id, qty: 1 }],
++  refundMethod: RefundMethod.STORE_CREDIT, refundAmount: 1000000, userId, shiftId
++}))
++const rc = seed.rows('SELECT * FROM "StoreCredit" WHERE returnId IS NOT NULL ORDER BY id DESC')[0]
++eq('اعتبار برگشتی ۱٬۰۰۰٬۰۰۰ صادر شد', Number(rc?.amount ?? 0), 1000000)
++const sC1 = await report()
++closed(sC1, 'پل بعد از برگشت با اعتبار بسته است')
++eq('ردیف پل برای اعتبار برگشتی واقعی −۱٬۰۰۰٬۰۰۰ (سند‌دار همچنان کم می‌شود)',
++  (rowsOf(sC1).storeCreditIssued ?? 0) - (rowsOf(sC0).storeCreditIssued ?? 0), -1000000)
++eq('drill-down ردیف = مبلغ ردیف (فقط سند‌دار)', drillSum(sC1), issuedRow(sC1)?.amount ?? -1)
++truthy('drill-down اعتبار برگشتی را دارد', (issuedRow(sC1)?.sources ?? []).some((r) => r.id === rc?.id))
++await safe('مصرف جزئی ۴۰۰٬۰۰۰ از اعتبار یک‌بارمصرف', () => sale(400000, 0, { storeCreditCode: rc?.code }))
++const parent = creditByCode(rc?.code)
++truthy('باقی‌مانده‌ی ۶۰۰٬۰۰۰ به‌صورت اعتبار جدید صادر شد (رفتار فعلی سرویس)', !!parent?.remainderCreditId)
++const rem = seed.rows('SELECT * FROM "StoreCredit" WHERE id = ?', parent?.remainderCreditId ?? -1)[0]
++eq('مبلغ باقی‌مانده', Number(rem?.amount ?? 0), 600000)
++const sC2 = await report()
++closed(sC2, 'پل بعد از مصرف جزئی (باقی‌مانده) بسته است')
++eq('ردیف پل برای باقی‌مانده تغییر نکرد', (rowsOf(sC2).storeCreditIssued ?? 0) - (rowsOf(sC1).storeCreditIssued ?? 0), 0)
++truthy('drill-down باقی‌مانده را ندارد', !(issuedRow(sC2)?.sources ?? []).some((r) => r.id === rem?.id))
++truthy('مبلغ باقی‌مانده پنهان نشد',
++  String(issuedRow(sC2)?.hint ?? '').includes('600000') || (sC2?.notes ?? []).some((x) => String(x).includes('600000')))
++
++// ---------------------------------------------------------------------------
++console.log('\n(ج۲) اعتبار برگشتی دو روز پیش، مصرف جزئی امروز')
++const invD = await safe('فروش نقدی ۸۰۰٬۰۰۰', () => sale(800000, 800000))
++await safe('برگشت با اعتبار ۸۰۰٬۰۰۰', () => salesService.createReturn({
++  invoiceId: invD?.id, full: false, lines: [{ saleItemId: itemsOf(invD?.id)[0]?.id, qty: 1 }],
++  refundMethod: RefundMethod.STORE_CREDIT, refundAmount: 800000, userId, shiftId
++}))
++const rd = seed.rows('SELECT * FROM "StoreCredit" WHERE returnId IS NOT NULL AND id <> ? ORDER BY id DESC', rc?.id ?? -1)[0]
++const t2 = Date.now() - 86400000 * 2
++const j2 = toJalaliDate(new Date(t2))
++sql.prepare('UPDATE "SaleInvoice" SET issuedAt=?, issuedAtJalali=? WHERE id=?').run(t2, j2, invD?.id)
++sql.prepare('UPDATE "Payment" SET paidAt=?, paidAtJalali=?, createdAt=? WHERE invoiceId=?').run(t2, j2, t2, invD?.id)
++sql.prepare('UPDATE "SaleReturn" SET returnedAt=?, returnedAtJalali=? WHERE invoiceId=?').run(t2, j2, invD?.id)
++sql.prepare('UPDATE "StoreCredit" SET issuedAt=?, issuedAtJalali=? WHERE id=?').run(t2, j2, rd?.id ?? -1)
++const sD0 = await report()
++closed(sD0, 'پل پس از انتقال سند به دو روز پیش بسته است')
++await safe('مصرف جزئی ۳۰۰٬۰۰۰ امروز', () => sale(300000, 0, { storeCreditCode: rd?.code }))
++const sD1 = await report()
++closed(sD1, 'پل بعد از مصرف جزئی اعتبار قدیمی بسته است')
++eq('ردیف مصرف +۳۰۰٬۰۰۰', (rowsOf(sD1).storeCreditUsed ?? 0) - (rowsOf(sD0).storeCreditUsed ?? 0), 300000)
++eq('ردیف صادرشده‌ی پل تغییر نکرد', (rowsOf(sD1).storeCreditIssued ?? 0) - (rowsOf(sD0).storeCreditIssued ?? 0), 0)
++eq('گزارش اعتبار (بند ۴-۴۸) همچنان باقی‌مانده را جزو صادرشده‌ی بازه می‌شمارد', sD1?.storeCredits?.issued - sD0?.storeCredits?.issued, 500000)
++
++console.log(`\nنتیجه: ${ok} موفق، ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)
+diff -ruN pristine/tests/pending/fix-s170b-overpay-remainder-hint.mjs mahak/tests/pending/fix-s170b-overpay-remainder-hint.mjs
+--- pristine/tests/pending/fix-s170b-overpay-remainder-hint.mjs	1970-01-01 00:00:00.000000000 +0000
++++ mahak/tests/pending/fix-s170b-overpay-remainder-hint.mjs	2026-09-27 12:28:29.351825798 +0000
+@@ -0,0 +1,113 @@
++/**
++ * ===========================================================================
++ * نشست ۱۷۰ · خوشه D · S170-D3 — «باقی‌مانده»ی اعتبار اضافه‌دریافت (OVERPAY) در توضیح پل
++ *
++ * اعتبار OVERPAY یک‌بارمصرف که در روز قبل صادر شده، امروز جزئی مصرف می‌شود ⇒ سرویس یک
++ * اعتبار «باقی‌مانده» با همان source=OVERPAY و issuedAt=امروز می‌سازد. عدد پل درست است (OVERPAY
++ * از ردیف اعتبار صادرشده بیرون است) ولی توضیح ردیف «دریافت پول اضافه» امروز می‌گفت
++ * «X ریال از آن به کد اعتبار خرید تبدیل شد» در حالی که امروز هیچ اضافه‌دریافتی نبوده ⇒ متن
++ * گمراه‌کننده (عدد با عدد نمی‌خواند). انتظار: توضیح فقط اعتبار OVERPAY *تازه* را بگوید و
++ * باقی‌مانده را جدا («باقی‌مانده‌ی ...») نام ببرد؛ پل بسته؛ گزارش اعتبار ۴-۴۸ دست‌نخورده.
++ *
++ *     node --import ./test/harness/register.mjs tests/audit-fixes/fix-s170b-overpay-remainder-hint.mjs
++ * ===========================================================================
++ */
++import { mkdtempSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++
++const DIR = mkdtempSync(join(tmpdir(), 'mahak-fix-s170b-'))
++process.env.HARNESS_DIR = DIR
++process.env.HARNESS_DB = join(DIR, 'shop.db')
++
++const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
++const { makeSeeder } = await import('../../test/harness/seed.mjs')
++const { salesService, saleWhere } = await import('../../src/main/services/SalesService.ts')
++const { storeCreditService } = await import('../../src/main/services/StoreCreditService.ts')
++const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
++const { RefundMethod } = await import('@shared/enums')
++const { DEFAULT_MANAGER_PASSWORD } = await import('@shared/receipt')
++const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
++
++const db = harnessClient()
++const seed = makeSeeder(db)
++const sql = db.$harness.db
++const PW = DEFAULT_MANAGER_PASSWORD
++
++let ok = 0
++let bad = 0
++const eq = (label, got, want) => {
++  if (got === want) { ok++; console.log(`  ✓ ${label} = ${want}`) }
++  else { bad++; console.log(`  ✗ ${label} — انتظار ${want}، دریافت ${got}`) }
++}
++const truthy = (label, cond, extra = '') => {
++  if (cond) { ok++; console.log(`  ✓ ${label}`) } else { bad++; console.log(`  ✗ ${label} ${extra}`) }
++}
++const safe = async (label, fn) => {
++  try { return await fn() } catch (e) { bad++; console.log(`  ✗ ${label} — خطای نامنتظره: ${String(e?.message ?? e).split('\n')[0]}`); return null }
++}
++
++const userId = seed.user('مدیر تست نشست ۱۷۰')
++const cat = seed.category('پوشاک')
++const product = seed.product('شلوار جین', cat)
++const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
++const today = toJalaliDate(new Date())
++const shiftId = seed.insert('Shift', { name: 'صبح', number: 1, dayJalali: today, openedAt: Date.now() - 3600_000, userId })
++let vseq = 0
++const variant = (price) => {
++  const id = seed.variant(product, `سایز ${++vseq}`)
++  sql.prepare('UPDATE "ProductVariant" SET stock = 100, salePrice = ? WHERE id = ?').run(price, id)
++  return id
++}
++const itemsOf = (invoiceId) => seed.rows('SELECT id, qty, lineTotal FROM "SaleInvoiceItem" WHERE invoiceId = ? ORDER BY id', invoiceId)
++const sale = (price, paid, extra = {}) => salesService.create({
++  userId, shiftId,
++  lines: [{ variantId: variant(price), qty: 1, unitPrice: price, discount: 0, tax: 0 }],
++  payments: paid > 0 ? [{ methodId: cash, amount: paid, destination: 'CASH' }] : [],
++  ...extra
++})
++const report = async () => {
++  const filter = { fromJalali: today, toJalali: today }
++  const { statements } = await buildStatements({
++    where: saleWhere(filter), from: jalaliStartOfDay(today), to: jalaliEndOfDay(today),
++    period: { fromJalali: today, toJalali: today, source: 'explicit' }, filter
++  }, { withDrillDown: true, bridgeSourceKey: 'storeCreditIssued' })
++  return statements
++}
++const overRow = (s) => (s?.bridge?.rows ?? []).find((r) => r.key === 'overpayReceived')
++
++console.log('\n۱) دو روز پیش: نسیه‌ی ۱٬۰۰۰٬۰۰۰ با دریافت ۱٬۳۰۰٬۰۰۰ و اعتبار ۳۰۰٬۰۰۰ از اضافه‌دریافت')
++const inv = await safe('فروش نسیه', () => sale(1000000, 0))
++await safe('دریافت ۱٬۳۰۰٬۰۰۰ با اعتبار', () => salesService.addPayment({ invoiceId: inv?.id, amount: 1300000, methodId: cash, destination: 'CASH', userId, confirmOverpay: true, overpayAsCredit: true }))
++const oc = seed.rows(`SELECT * FROM "StoreCredit" WHERE source = 'OVERPAY' ORDER BY id`)[0]
++eq('اعتبار اضافه‌دریافت ۳۰۰٬۰۰۰', Number(oc?.amount ?? 0), 300000)
++const t2 = Date.now() - 86400000 * 2
++const j2 = toJalaliDate(new Date(t2))
++sql.prepare('UPDATE "SaleInvoice" SET issuedAt=?, issuedAtJalali=? WHERE id=?').run(t2, j2, inv?.id)
++sql.prepare('UPDATE "Payment" SET paidAt=?, paidAtJalali=?, createdAt=? WHERE invoiceId=?').run(t2, j2, t2, inv?.id)
++sql.prepare('UPDATE "StoreCredit" SET issuedAt=?, issuedAtJalali=? WHERE id=?').run(t2, j2, oc?.id ?? -1)
++const s0 = await report()
++closed(s0, 'پل امروز پیش از مصرف بسته است')
++eq('امروز اضافه‌دریافتی نیست', rowsOf(s0).overpayReceived ?? 0, 0)
++
++console.log('\n۲) امروز: مصرف جزئی ۱۰۰٬۰۰۰ از اعتبار اضافه‌دریافت ⇒ باقی‌مانده‌ی ۲۰۰٬۰۰۰ (OVERPAY)')
++await safe('فروش ۱۰۰٬۰۰۰ با اعتبار', () => sale(100000, 0, { storeCreditCode: oc?.code }))
++const parent = creditByCode(oc?.code)
++const rem = seed.rows('SELECT * FROM "StoreCredit" WHERE id = ?', parent?.remainderCreditId ?? -1)[0]
++eq('باقی‌مانده ۲۰۰٬۰۰۰ صادر شد', Number(rem?.amount ?? 0), 200000)
++eq('منبع باقی‌مانده همان OVERPAY است (رفتار فعلی سرویس)', rem?.source, 'OVERPAY')
++const s1 = await report()
++closed(s1, 'پل بعد از مصرف جزئی بسته است')
++eq('ردیف «دریافت پول اضافه»ی امروز همچنان صفر', rowsOf(s1).overpayReceived ?? 0, 0)
++eq('ردیف اعتبار صادرشده‌ی پل تغییر نکرد', (rowsOf(s1).storeCreditIssued ?? 0) - (rowsOf(s0).storeCreditIssued ?? 0), 0)
++const hint = String(overRow(s1)?.hint ?? '')
++truthy('توضیح «دریافت پول اضافه» ادعا نمی‌کند امروز ۲۰۰٬۰۰۰ از اضافه‌دریافت به اعتبار تبدیل شد',
++  !hint.includes('200000 ریال از آن به کد اعتبار'), `hint=${hint}`)
++truthy('باقی‌مانده‌ی اعتبار اضافه‌دریافت پنهان نشد (در توضیح/یادداشت با واژه‌ی «باقی‌مانده»)',
++  (hint.includes('200000') && hint.includes('باقی‌مانده')) ||
++  (s1?.notes ?? []).some((x) => String(x).includes('200000') && String(x).includes('باقی‌مانده')),
++  `hint=${hint} notes=${JSON.stringify(s1?.notes)}`)
++eq('گزارش اعتبار (بند ۴-۴۸): صادرشده‌ی امروز شامل باقی‌مانده است', s1?.storeCredits?.issued - s0?.storeCredits?.issued, 200000)
++
++console.log(`\nنتیجه: ${ok} موفق، ${bad} ناموفق`)
++process.exit(bad ? 1 : 0)

@@ -1,0 +1,447 @@
+diff -ruN src-orig-157/main/services/SalesService.ts mahak/src/main/services/SalesService.ts
+--- src-orig-157/main/services/SalesService.ts	2026-09-27 08:20:49.290832656 +0000
++++ mahak/src/main/services/SalesService.ts	2026-09-27 08:32:05.470755527 +0000
+@@ -98,7 +98,7 @@
+ } from '@shared/jalali'
+ import { SETTING_KEYS, parseSaleDefaults } from '@shared/receipt'
+ import { discountCeilingFor, fixedDiscountFor } from '@shared/priceAdjust'
+-import { computeCharges } from '@shared/charges'
++import { computeCharges, type ChargeBreakdown } from '@shared/charges'
+ import type {
+   CreateSaleInput,
+   ReturnSaleInput,
+@@ -1621,27 +1621,17 @@
+  * بیرون از تراکنش (رمز مدیر روی AuthLockout می‌نویسد).
+  * ===========================================================================
+  */
+-interface SaleChargeCheck {
+-  managerApproved: boolean
+-  override: null | { autoTax: number; autoService: number; tax: number; service: number; scope: 'pos' | 'wholesale' }
+-}
+-
+-async function preverifySaleCharges(
+-  input: CreateSaleInput,
+-  ctx: {
+-    orderType: string
+-    existing?: { taxTotal: number; serviceCharge: number } | null
+-    alreadyVerified?: boolean
+-  }
+-): Promise<SaleChargeCheck> {
+-  const scope: 'pos' | 'wholesale' = ctx.orderType === OrderType.WHOLESALE ? 'wholesale' : 'pos'
+-  const lines = input.lines ?? []
+-  const lineTaxes = lines.map((l) => Math.round(Number(l.tax ?? 0)))
+-  const invoiceTax = Math.round(Number(input.invoiceTax ?? 0))
+-  const service = Math.round(Number(input.serviceCharge ?? 0))
+-  const tax = lineTaxes.reduce((s, n) => s + n, 0) + invoiceTax
+-
+-  // ---------- مبلغ خودکار از تنظیمات و دسته‌ی واقعی کالا ----------
++/**
++ * نشست ۱۵۸ (Y16) — بدنه‌ی محاسبه‌ی خودکار عوارض/حق سرویس، جداشده از preverifySaleCharges
++ * بدون تغییر رفتار فروش تا تعویض (preverifyExchangeCharges) هم دقیقاً همان عدد را بسازد.
++ * تنظیمات همین اسکوپ + دسته‌ی واقعی کالا در دیتابیس؛ مبنای درصد = مبلغ ردیف بعد از تخفیف
++ * ردیف و سهم نسبی تخفیف کل فاکتور (همان فرمول Pos.tsx / SalesInvoice.tsx / SalesReturn.tsx).
++ */
++async function autoSaleCharges(
++  lines: { variantId: number; unitPrice: number; qty: number; discount: number }[],
++  invoiceDiscount: number | null | undefined,
++  scope: 'pos' | 'wholesale'
++): Promise<ChargeBreakdown> {
+   const [taxCfg, serviceCfg] = await Promise.all([
+     settingsService.charge('tax', scope),
+     settingsService.charge('service', scope)
+@@ -1664,9 +1654,9 @@
+ 
+   const afterLine = lines.map((l) => l.unitPrice * l.qty - l.discount)
+   const base = afterLine.reduce((s, n) => s + Math.max(0, n), 0)
+-  const invDisc = Math.max(0, Math.round(Number(input.invoiceDiscount ?? 0)))
++  const invDisc = Math.max(0, Math.round(Number(invoiceDiscount ?? 0)))
+   const share = base > 0 ? Math.min(1, invDisc / base) : 0
+-  const auto = computeCharges(
++  return computeCharges(
+     taxCfg,
+     serviceCfg,
+     categories,
+@@ -1676,6 +1666,116 @@
+       qty: l.qty
+     }))
+   )
++}
++
++/**
++ * ===========================================================================
++ * نشست ۱۵۸ (Y16، S158-D2) — عوارض/حق سرویس کالای جایگزین تعویض از تنظیمات، نه از IPC.
++ * تعویض = برگشت + فروش تازه (بند ۴-۱۰)؛ کانال = کانال فاکتور اصلی (بند ۴-۲۱).
++ *   - خرده: tax هر ردیف اگر فرستاده شده باید ±۱ ریال با خودکار بخواند، وگرنه خودکار؛
++ *     invoiceTax غیرصفر ⇒ رد.
++ *   - عمده: tax ردیف غیرصفر ⇒ رد؛ invoiceTax فرستاده‌شده ±تعداد ردیف، وگرنه خودکار.
++ *   - serviceCharge فرستاده‌شده ±تعداد ردیف، وگرنه خودکار.
++ * هر اختلاف ⇒ رد فارسی با مبلغ و واحد؛ با رمز مدیر هم باز نمی‌شود (صفحه‌ی تعویض راه دستی ندارد).
++ * خروجی همان عددهایی است که داخل تراکنش ثبت می‌شود (نه ورودی خام).
++ * ===========================================================================
++ */
++async function preverifyExchangeCharges(
++  lines: { variantId: number; name: string; unitPrice: number; qty: number; discount: number; tax: number | null }[],
++  sent: { invoiceDiscount?: number | null; invoiceTax?: number | null; serviceCharge?: number | null },
++  scope: 'pos' | 'wholesale'
++): Promise<{ taxPerLine: number[]; invoiceTax: number; serviceCharge: number }> {
++  const auto = await autoSaleCharges(lines, sent.invoiceDiscount, scope)
++  const tol = Math.max(1, lines.length)
++  const near = (a: number, b: number, t: number) => Math.abs(a - b) <= t
++  const who = scope === 'pos' ? 'تعویض فاکتور خرده (پنل فروش)' : 'تعویض فاکتور عمده'
++  const tail =
++    ' مبلغ عوارض و حق سرویس کالای جایگزین را برنامه از «تنظیمات عوارض/حق سرویس» همان کانال فاکتور اصلی و دسته‌ی کالا' +
++    ' حساب می‌کند؛ در تعویض عوارض دستی ممکن نیست و با رمز مدیر هم باز نمی‌شود. صفحه را تازه کنید و دوباره ثبت کنید.'
++  const sentInvoiceTax = sent.invoiceTax == null ? null : Math.round(Number(sent.invoiceTax))
++  const sentService = sent.serviceCharge == null ? null : Math.round(Number(sent.serviceCharge))
++
++  let taxPerLine: number[]
++  let invoiceTax: number
++  if (scope === 'pos') {
++    if (sentInvoiceTax != null && sentInvoiceTax !== 0)
++      throw new BusinessError(
++        `در ${who} عوارض فقط روی ردیف کالا ثبت می‌شود؛ عوارض سطح فاکتور ${money(sentInvoiceTax)} ریال پذیرفته نیست.` + tail
++      )
++    taxPerLine = lines.map((l, i) => {
++      if (l.tax == null) return auto.taxPerLine[i]
++      const t = Math.round(Number(l.tax))
++      if (!near(t, auto.taxPerLine[i], 1))
++        throw new BusinessError(
++          `عوارض و مالیات کالای جایگزین «${l.name || faDigits(l.variantId)}» باید ${money(auto.taxPerLine[i])} ریال باشد، ` +
++            `نه ${money(t)} ریال (${who}).` + tail
++        )
++      return t
++    })
++    invoiceTax = 0
++  } else {
++    const lineTaxSum = lines.reduce((s, l) => s + Math.round(Number(l.tax ?? 0)), 0)
++    if (lineTaxSum !== 0)
++      throw new BusinessError(
++        `در ${who} عوارض فقط در سطح فاکتور ثبت می‌شود؛ عوارض روی ردیف کالای جایگزین (${money(lineTaxSum)} ریال) پذیرفته نیست.` + tail
++      )
++    taxPerLine = lines.map(() => 0)
++    if (sentInvoiceTax != null && !near(sentInvoiceTax, auto.taxTotal, tol))
++      throw new BusinessError(
++        `عوارض و مالیات سند تعویض باید ${money(auto.taxTotal)} ریال باشد، نه ${money(sentInvoiceTax)} ریال (${who}).` + tail
++      )
++    invoiceTax = sentInvoiceTax ?? auto.taxTotal
++  }
++  if (sentService != null && !near(sentService, auto.serviceTotal, tol))
++    throw new BusinessError(
++      `حق سرویس سند تعویض باید ${money(auto.serviceTotal)} ریال باشد، نه ${money(sentService)} ریال (${who}).` + tail
++    )
++  const serviceCharge = sentService ?? auto.serviceTotal
++  return { taxPerLine, invoiceTax, serviceCharge }
++}
++
++/**
++ * نشست ۱۵۸ (Y14/Y16، بند ۴-۲۱) — کانال واقعی یک فاکتور برای قیمت‌گذاری کالای جایگزین:
++ * اگر خودش سند تعویض است، زنجیره‌ی sourceInvoiceId تا اولین فاکتور غیرتعویضی دنبال می‌شود.
++ * WHOLESALE ⇒ عمده؛ بقیه ⇒ خرده.
++ */
++async function exchangeChannelOf(client: Client, invoiceId: number): Promise<'pos' | 'wholesale'> {
++  let id: number | null = invoiceId
++  const seen = new Set<number>()
++  while (id != null && !seen.has(id) && seen.size < 50) {
++    seen.add(id)
++    const inv: any = await client.saleInvoice.findUnique({
++      where: { id },
++      select: { orderType: true, sourceInvoiceId: true }
++    } as any)
++    if (!inv) return 'pos'
++    if (inv.orderType !== OrderType.EXCHANGE) return inv.orderType === OrderType.WHOLESALE ? 'wholesale' : 'pos'
++    id = inv.sourceInvoiceId == null ? null : Number(inv.sourceInvoiceId)
++  }
++  return 'pos'
++}
++
++interface SaleChargeCheck {
++  managerApproved: boolean
++  override: null | { autoTax: number; autoService: number; tax: number; service: number; scope: 'pos' | 'wholesale' }
++}
++
++async function preverifySaleCharges(
++  input: CreateSaleInput,
++  ctx: {
++    orderType: string
++    existing?: { taxTotal: number; serviceCharge: number } | null
++    alreadyVerified?: boolean
++  }
++): Promise<SaleChargeCheck> {
++  const scope: 'pos' | 'wholesale' = ctx.orderType === OrderType.WHOLESALE ? 'wholesale' : 'pos'
++  const lines = input.lines ?? []
++  const lineTaxes = lines.map((l) => Math.round(Number(l.tax ?? 0)))
++  const invoiceTax = Math.round(Number(input.invoiceTax ?? 0))
++  const service = Math.round(Number(input.serviceCharge ?? 0))
++  const tax = lineTaxes.reduce((s, n) => s + n, 0) + invoiceTax
++
++  const auto = await autoSaleCharges(lines, input.invoiceDiscount, scope)
+   const tol = Math.max(1, lines.length)
+   const near = (a: number, b: number, t: number) => Math.abs(a - b) <= t
+ 
+@@ -4269,6 +4369,9 @@
+       status: invoice.status,
+       statusLabel: saleStatusLabel(invoice.status, invoice.consolidationId != null),
+       orderTypeLabel: ORDER_TYPE_LABELS[invoice.orderType] ?? invoice.orderType,
++      // نشست ۱۵۸ (Y16) — کانال فاکتور برای عوارض کالای جایگزین در صفحه‌ی تعویض
++      orderType: invoice.orderType,
++      chargeScope: await exchangeChannelOf(prisma, Number(invoice.id)),
+       goodsTotal: invoice.goodsTotal,
+       discountTotal: invoice.discountTotal,
+       taxTotal: invoice.taxTotal,
+@@ -4479,11 +4582,58 @@
+      * می‌شود تا یک تراکنش نیمه‌کاره‌ی رول‌بک‌شده جا نماند.
+      */
+     const policy = await settingsService.accountingPolicy()
+-    const wantsManualPrice = replacements.some((r) => r.unitPrice != null)
++    /**
++     * نشست ۱۵۸ (Y14 + Y16 + Y17، S158-D1..D4) — کالای جایگزین همان گیت‌های فروش را می‌گیرد،
++     * پیش از تراکنش (رمز مدیر روی AuthLockout می‌نویسد):
++     *   Y17: قبلاً «حضور unitPrice» رمز می‌خواست (UI همیشه قیمت می‌فرستد ⇒ هر تعویض عادی رمز
++     *        می‌خواست، خلاف بند ۴-۳۱؛ افزایش هم رمز می‌خواست، خلاف S151-D3). حالا فقط کاهش زیر
++     *        قیمت واقعی کالا رمز مدیر می‌خواهد (preverifySalePolicy، گیت requireManagerForPriceOverride).
++     *   Y14: بازه‌ی سیاست تخفیف (بند ۴-۲۶) روی تخفیف قلم، تخفیف کل سند و کاهش قیمت، برای کانال
++     *        غیرعمده؛ عبور = رد، با رمز مدیر هم باز نمی‌شود.
++     *   Y16: عوارض/حق سرویس از تنظیمات کانال فاکتور اصلی (preverifyExchangeCharges).
++     * کانال = orderType فاکتور اصلی (زنجیره‌ی تعویض دنبال می‌شود، بند ۴-۲۱). اگر یکی از
++     * کالاهای جایگزین پیدا نشود، پیش‌سنجی انجام نمی‌شود تا همان پیام قدیمی داخل تراکنش بیاید.
++     */
++    const exchangeScope = await exchangeChannelOf(prisma, Number(input.invoiceId))
++    const preVariantIds = [...new Set(replacements.map((r) => Number(r.variantId)))]
++    const preVariants = new Map<number, { code: string; salePrice: number }>()
++    for (const v of await loadProductVariantsByIds(prisma, preVariantIds, { id: true, code: true, salePrice: true }))
++      preVariants.set(Number(v.id), { code: String(v.code ?? ''), salePrice: Math.round(Number(v.salePrice ?? 0)) })
+     let exchangeManagerVerified = false
+-    if (wantsManualPrice && policy.requireManagerForPriceOverride) {
+-      await assertManagerPassword(input.managerPassword, 'قیمت دستی کالای جایگزین در تعویض')
+-      exchangeManagerVerified = true
++    let exchangePricing: SalePricingCheck | null = null
++    let exchangeCharges: { taxPerLine: number[]; invoiceTax: number; serviceCharge: number } | null = null
++    if (preVariantIds.every((id) => preVariants.has(id))) {
++      const preLines = replacements.map((r) => {
++        const v = preVariants.get(Number(r.variantId))!
++        return {
++          variantId: Number(r.variantId),
++          code: v.code,
++          barcode: '',
++          name: v.code,
++          qty: r.qty,
++          unitPrice: r.unitPrice == null ? v.salePrice : Math.round(Number(r.unitPrice)),
++          discount: Math.round(Number(r.discount ?? 0)),
++          tax: r.tax == null ? null : Math.round(Number(r.tax))
++        }
++      })
++      exchangeCharges = await preverifyExchangeCharges(
++        preLines,
++        { invoiceDiscount: input.invoiceDiscount, invoiceTax: input.invoiceTax, serviceCharge: input.serviceCharge },
++        exchangeScope
++      )
++      // نشست ۱۵۸ (S158-D6) — تخفیف بیش از مبلغ قلم/سند همان پیام اختصاصی S141 داخل تراکنش را بگیرد
++      const overDiscount =
++        preLines.some((l) => l.discount > l.unitPrice * l.qty) ||
++        Math.round(Number(input.invoiceDiscount ?? 0)) > preLines.reduce((s, l) => s + l.unitPrice * l.qty - l.discount, 0)
++      if (!overDiscount) exchangePricing = await preverifySalePolicy(
++        {
++          lines: preLines.map((l) => ({ ...l, tax: 0 })),
++          invoiceDiscount: input.invoiceDiscount ?? 0,
++          managerPassword: input.managerPassword ?? null
++        } as any,
++        { orderType: exchangeScope === 'wholesale' ? OrderType.WHOLESALE : OrderType.INTERNAL }
++      )
++      if (exchangePricing?.managerApproved) exchangeManagerVerified = true
+     }
+     /**
+      * نشست ۶۳ (S63-2/S63-3) — هر رمز مدیری که این تعویض لازم دارد (دوره‌ی بسته،
+@@ -4577,7 +4727,14 @@
+       /** بند ۱۸ — ردیف‌هایی که قیمتشان دستی عوض شده، برای AuditLog */
+       const priceOverrides: { variantId: number; name: string; realPrice: number; enteredPrice: number }[] = []
+ 
+-      const repLines: CartLine[] = replacements.map((r) => {
++      // نشست ۱۵۸ (Y16) — پیش‌سنجی بیرون از تراکنش باید انجام شده باشد (همه‌ی کالاها پیدا شده بودند)
++      if (!exchangeCharges)
++        throw new BusinessError(
++          'یکی از «کالاهای جایگزین» در انبار پیدا نشد (ممکن است حذف شده باشد). آن ردیف را حذف و کالا را دوباره انتخاب کنید.'
++        )
++      const repCharges = exchangeCharges
++
++      const repLines: CartLine[] = replacements.map((r, idx) => {
+         const v = vmap.get(Number(r.variantId))!
+         const name = `${v.product?.name ?? 'کالا'}${v.size ? ' سایز ' + v.size : ''}${v.color ? ' - ' + v.color : ''}`
+         /**
+@@ -4598,7 +4755,8 @@
+           qty: r.qty,
+           unitPrice,
+           discount: r.discount ?? 0,
+-          tax: r.tax ?? 0
++          // نشست ۱۵۸ (Y16) — عوارض ردیف از خروجی preverifyExchangeCharges، نه ورودی IPC
++          tax: repCharges.taxPerLine[idx] ?? 0
+         } as CartLine
+       })
+ 
+@@ -4633,8 +4791,9 @@
+       const exTotals = saleTotals({
+         lines: repLines,
+         invoiceDiscount: input.invoiceDiscount ?? 0,
+-        invoiceTax: input.invoiceTax ?? 0,
+-        serviceCharge: input.serviceCharge ?? 0,
++        // نشست ۱۵۸ (Y16) — عوارض سطح فاکتور و حق سرویس از تنظیمات کانال فاکتور اصلی
++        invoiceTax: repCharges.invoiceTax,
++        serviceCharge: repCharges.serviceCharge,
+         payments: []
+       } as CreateSaleInput)
+       /**
+@@ -4938,10 +5097,20 @@
+           userId: input.userId ?? null,
+           before: JSON.stringify(priceOverrides.map((o) => ({ variantId: o.variantId, name: o.name, price: o.realPrice }))),
+           after: JSON.stringify(priceOverrides.map((o) => ({ variantId: o.variantId, name: o.name, price: o.enteredPrice }))),
++          // نشست ۱۵۸ (Y17) — حالت هر ردیف، نه «با تایید مدیر» ثابت
+           note:
+-            'قیمت دستی کالای جایگزین با تایید مدیر: ' +
++            'قیمت دستی کالای جایگزین: ' +
+             priceOverrides
+-              .map((o) => `${o.name}: قیمت واقعی ${money(o.realPrice)} ← واردشده ${money(o.enteredPrice)}`)
++              .map(
++                (o) =>
++                  `${o.name}: قیمت واقعی ${money(o.realPrice)} ← واردشده ${money(o.enteredPrice)} ریال (` +
++                  (o.enteredPrice > o.realPrice
++                    ? 'افزایش، بدون رمز'
++                    : exchangePricing?.managerApproved
++                      ? 'کاهش با تایید رمز مدیر'
++                      : 'کاهش، گیت خاموش') +
++                  ')'
++              )
+               .join(' · ')
+         })
+       }
+diff -ruN src-orig-157/renderer/src/pages/SalesReturn.tsx mahak/src/renderer/src/pages/SalesReturn.tsx
+--- src-orig-157/renderer/src/pages/SalesReturn.tsx	2026-09-27 08:20:49.298832702 +0000
++++ mahak/src/renderer/src/pages/SalesReturn.tsx	2026-09-27 08:26:53.168943618 +0000
+@@ -6,6 +6,7 @@
+ import ReturnEditModal from '../components/ReturnEditModal'
+ import JalaliDateInput from '../components/JalaliDateInput'
+ import VariantSearchBox, { type VariantSearchBoxHandle } from '../components/VariantSearchBox'
++import { useCharges } from '../hooks/useCharges'
+ import { faDigits, money, jalaliToday, isValidJalaliDate } from '@shared/jalali'
+ import { returnValueOf, isReturnableStatus } from '@shared/returnValue'
+ import type { ExchangeSaleResult, ReturnLookup, ReturnLookupItem } from '@shared/types'
+@@ -91,6 +92,8 @@
+   discount: number
+   /** موجودی لحظه‌ی انتخاب — فقط برای هشدار زودهنگام کمبود موجودی */
+   stock: number
++  /** نشست ۱۵۸ (Y16) — دسته‌ی کالا برای عوارض/حق سرویس (سرور از دیتابیس دوباره می‌سنجد) */
++  categoryId: number | null
+ }
+ 
+ /** بند ۱۱ — چهار روش بازپرداخت برگشت ساده. هیچ‌کدام پیش‌فرض نیست. */
+@@ -292,7 +295,8 @@
+           unitPrice: Math.max(0, Math.round(v.salePrice ?? 0)),
+           realPrice: Math.max(0, Math.round(v.salePrice ?? 0)),
+           discount: 0,
+-          stock: v.stock ?? 0
++          stock: v.stock ?? 0,
++          categoryId: v.product?.categoryId ?? null
+         }
+       ]
+     })
+@@ -364,12 +368,34 @@
+    * (`saleTotals` + `createExchange`): جمع اقلام جایگزین منهای تخفیف ردیف‌ها،
+    * منهای ارزش کالای برگشتی. هیچ عدد جداگانه‌ای اینجا ساخته نمی‌شود.
+    */
++  /**
++   * نشست ۱۵۸ (Y16) — عوارض/حق سرویس کالای جایگزین با همان تابع مشترک computeCharges و
++   * تنظیمات کانال فاکتور اصلی (lookup.chargeScope)؛ سرور همین عدد را دوباره می‌سنجد و
++   * اختلاف را رد می‌کند. خرده ⇒ عوارض روی ردیف؛ عمده ⇒ عوارض سطح فاکتور.
++   */
++  const posCharges = useCharges('pos')
++  const wholesaleCharges = useCharges('wholesale')
++  const exScope: 'pos' | 'wholesale' = lookup?.chargeScope === 'wholesale' ? 'wholesale' : 'pos'
++  const exChargeHook = exScope === 'wholesale' ? wholesaleCharges : posCharges
++  const exCharges = useMemo(
++    () =>
++      exChargeHook.compute(
++        reps.map((l) => ({
++          categoryId: l.categoryId ?? null,
++          lineNet: Math.max(0, l.unitPrice * l.qty - Math.min(l.discount, l.unitPrice * l.qty)),
++          qty: l.qty
++        }))
++      ),
++    [exChargeHook, reps]
++  )
+   const exTotals = useMemo(() => {
+     const goods = reps.reduce((s, l) => s + l.unitPrice * l.qty, 0)
+     const discount = reps.reduce((s, l) => s + Math.min(l.discount, l.unitPrice * l.qty), 0)
+-    const exchangeTotal = Math.max(0, goods - discount)
+-    return { goods, discount, exchangeTotal, diff: exchangeTotal - totals.amount, qty: reps.reduce((s, l) => s + l.qty, 0) }
+-  }, [reps, totals.amount])
++    const tax = exCharges.taxTotal
++    const service = exCharges.serviceTotal
++    const exchangeTotal = Math.max(0, goods - discount + tax + service)
++    return { goods, discount, tax, service, exchangeTotal, diff: exchangeTotal - totals.amount, qty: reps.reduce((s, l) => s + l.qty, 0) }
++  }, [reps, totals.amount, exCharges])
+ 
+   const repShort = useMemo(() => reps.filter((l) => l.qty > l.stock), [reps])
+   /** بند ۱۸ — قلم‌هایی که قیمتشان دستی از قیمت واقعی کالا جدا شده است. */
+@@ -531,12 +557,16 @@
+           {
+             invoiceId: lookup.invoiceId,
+             lines: selected.map((i) => ({ saleItemId: i.saleItemId, qty: qty[i.saleItemId] ?? 0 })),
+-            replacements: reps.map((l) => ({
++            replacements: reps.map((l, i) => ({
+               variantId: l.variantId,
+               qty: l.qty,
+               unitPrice: l.unitPrice,
+-              discount: Math.max(0, Math.round(l.discount))
++              discount: Math.max(0, Math.round(l.discount)),
++              // نشست ۱۵۸ (Y16) — خرده: عوارض روی ردیف؛ عمده: ردیف صفر
++              tax: exCharges.taxPerLine[i] != null && exScope === 'pos' ? exCharges.taxPerLine[i] : 0
+             })),
++            invoiceTax: exScope === 'wholesale' ? exCharges.taxTotal : 0,
++            serviceCharge: exCharges.serviceTotal,
+             note: note.trim() || undefined,
+             allowRemoved: allowRemoved || undefined,
+             force: force || undefined,
+@@ -591,7 +621,7 @@
+     },
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+     [
+-      lookup, selected, qty, reps, note, allowRemoved, exTotals.diff, methodId, repAutoCentral,
++      lookup, selected, qty, reps, note, allowRemoved, exTotals.diff, methodId, repAutoCentral, exCharges, exScope,
+       removedSelected.length, exRefundMode, priceOverrideOn, managerPw, lockPw, lockReason, loadHistory, lookupCode
+     ]
+   )
+@@ -1206,6 +1236,22 @@
+                         <td className="text-center">{faDigits(exTotals.qty)}</td>
+                         <td>{money(exTotals.goods)}</td>
+                         <td>{money(exTotals.discount)}</td>
++                        <td>{money(exTotals.goods - exTotals.discount)}</td>
++                        <td colSpan={2}></td>
++                      </tr>
++                      {/* نشست ۱۵۸ (Y16) — عوارض/حق سرویس کالای جایگزین از تنظیمات کانال فاکتور اصلی */}
++                      {(exTotals.tax > 0 || exTotals.service > 0) && (
++                        <tr className="bg-slate-50">
++                          <td colSpan={6}>
++                            عوارض و مالیات {money(exTotals.tax)} ریال · حق سرویس {money(exTotals.service)} ریال
++                            {exScope === 'wholesale' ? ' (تنظیمات فروش عمده)' : ' (تنظیمات پنل فروش)'}
++                          </td>
++                          <td>{money(exTotals.tax + exTotals.service)}</td>
++                          <td colSpan={2}></td>
++                        </tr>
++                      )}
++                      <tr className="bg-slate-100 font-bold">
++                        <td colSpan={6}>جمع سند تعویض</td>
+                         <td>{money(exTotals.exchangeTotal)}</td>
+                         <td colSpan={2}></td>
+                       </tr>
+diff -ruN src-orig-157/shared/types.ts mahak/src/shared/types.ts
+--- src-orig-157/shared/types.ts	2026-09-27 08:20:49.302832726 +0000
++++ mahak/src/shared/types.ts	2026-09-27 08:26:53.168943618 +0000
+@@ -582,6 +582,10 @@
+   status: string
+   statusLabel: string
+   orderTypeLabel: string
++  /** نشست ۱۵۸ (Y16) — orderType خام فاکتور */
++  orderType: string
++  /** نشست ۱۵۸ (Y16) — اسکوپ عوارض کالای جایگزین = کانال فاکتور اصلی (زنجیره‌ی تعویض دنبال می‌شود) */
++  chargeScope: 'pos' | 'wholesale'
+   goodsTotal: number
+   discountTotal: number
+   taxTotal: number

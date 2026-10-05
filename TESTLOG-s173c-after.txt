@@ -1,0 +1,22 @@
+(node:6291) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:6291) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/user/work/s/mahak/src/main/services/PrintService.ts is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/user/work/s/mahak/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+۱) چاپ دسته‌ای (مسیر واقعی سرویس) با یک اعتبار معتبر و یک باطل
+  ✓ رندر بی‌خطا = null
+  ✓ هر دو سند چاپ شدند (باطل حذف نمی‌شود) = 2
+  ✓ شناسه‌های چاپ‌شده هر دو = [1,2]
+  ✓ سند باطل نوار «باطل شده — غیرقابل استفاده» دارد = true
+  ✓ نوار سند باطل قبل از مبلغ آمده (بالای برگه) = true
+  ✓ سند معتبر نوار باطل ندارد = false
+  ✓ عبارت «غیرقابل نقد شدن» روی هر دو می‌ماند = [true,true]
+
+۲) تابع خالص قالب (تکی و دسته‌ای) با voided صریح
+  ✓ تکی باطل ⇒ نوار = true
+  ✓ تکی معتبر ⇒ بدون نوار = false
+  ✓ دسته‌ای باطل ⇒ نوار = true
+
+نتیجه: 10 موفق · 0 ناموفق
