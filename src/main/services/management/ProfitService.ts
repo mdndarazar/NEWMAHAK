@@ -654,7 +654,7 @@ export const profitService = {
           delta: { lt: 0 },
           state: 'FINAL',
           createdAt: { gte: jalaliStartOfDay(from), lte: jalaliEndOfDay(to) },
-          reason: { notIn: ['SALE', 'SALE_EDIT', 'SALE_RETURN', 'PURCHASE', 'PURCHASE_EDIT'] }
+          reason: { notIn: ['SALE', 'SALE_EDIT', 'SALE_RETURN', 'PURCHASE', 'PURCHASE_EDIT', 'WOO_SYNC_OUT', 'WOO_SYNC_IN', 'WOO_SYNC_ADJUST'] }
         },
         select: { id: true, reason: true, delta: true },
         take: 5001

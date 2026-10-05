@@ -1451,6 +1451,11 @@ async function applyOne(m: {
   if (!delta) return
 
   if (delta > 0) {
+    /** WooCommerce فقط موجودی را هم‌تراز می‌کند؛ ورود مثبت سایت از قیمت/مبلغ سایت فی نمی‌گیرد. */
+    if (reason === 'WOO_SYNC_IN' || reason === 'WOO_SYNC_ADJUST') {
+      await applyPurchase({ ...m, refId: null })
+      return
+    }
     if (reason === 'PURCHASE' || reason === 'PURCHASE_EDIT' || reason === 'INITIAL') {
       await applyPurchase(m)
       return
@@ -1467,6 +1472,18 @@ async function applyOne(m: {
     // به قلم/سهم STORE فعلی وصل می‌کند تا «حرکتِ پایه + ویرایش» دوباره شمرده نشود.
     if (reason === 'SALE_EDIT') return
     await applyPurchase({ ...m, refId: null })
+    return
+  }
+
+  if (reason === 'WOO_SYNC_OUT' || reason === 'WOO_SYNC_ADJUST') {
+    await consumeFifo({
+      variantId: m.variantId,
+      qty: -delta,
+      movementId: m.id,
+      kind: 'EXTERNAL_SYNC',
+      saleItemId: null,
+      at: m.createdAt
+    })
     return
   }
 

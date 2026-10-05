@@ -9,6 +9,7 @@ import { debtReminderService } from '../services/DebtReminderService'
 import { IPC } from '@shared/ipc'
 import { prisma } from '../db/client'
 import { productService } from '../services/ProductService'
+import { wooSyncService } from '../services/WooSyncService'
 import { salesService } from '../services/SalesService'
 import { salesLedger } from '../services/SalesLedger'
 import { reportLimitsService } from '../services/reportLimits'
@@ -337,6 +338,56 @@ export function registerIpcHandlers(): void {
   handle(IPC.categoryUpsert, (p) => productService.categoryUpsert(p))
   handle(IPC.stockAdjust, async (p) => productService.adjustStock(await withOptionalSessionActor(p ?? {})))
   handle(IPC.stockMovements, (p) => productService.movements(p))
+
+  // ---- همگام‌سازی موجودی سایت WooCommerce (فقط stock_quantity) ----
+  handle(IPC.wooStatus, async () => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'دیدن وضعیت همگام‌سازی موجودی سایت')
+    return wooSyncService.status()
+  })
+  handle(IPC.wooSettingsSave, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'تغییر تنظیمات همگام‌سازی موجودی سایت')
+    return wooSyncService.saveSettings(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooTest, async () => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'تست اتصال سایت')
+    return wooSyncService.testConnection()
+  })
+  handle(IPC.wooCatalog, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'خواندن کاتالوگ موجودی سایت')
+    return wooSyncService.catalog(p ?? {})
+  })
+  handle(IPC.wooLinks, async () => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'دیدن اتصال‌های موجودی سایت')
+    return wooSyncService.links()
+  })
+  handle(IPC.wooLinkCreate, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'اتصال کالا به موجودی سایت')
+    return wooSyncService.linkCreate(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooLinksPause, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'قطع موقت اتصال موجودی سایت')
+    return wooSyncService.pause(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooLinksResumePreview, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'پیش‌نمایش وصل دوباره موجودی سایت')
+    return wooSyncService.resumePreview(p ?? {})
+  })
+  handle(IPC.wooLinksResumeApply, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'وصل دوباره موجودی سایت')
+    return wooSyncService.resumeApply(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooLinksUnlink, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'قطع دائم اتصال موجودی سایت')
+    return wooSyncService.unlink(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooSyncNow, async () => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'اجرای همگام‌سازی موجودی سایت')
+    return wooSyncService.syncNow()
+  })
+  handle(IPC.wooLogs, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'دیدن لاگ همگام‌سازی موجودی سایت')
+    return wooSyncService.logs(p ?? {})
+  })
 
   // ---- فروش ----
   // نشست ۱۵۴ (S151-b) — actor فاکتور و Audit قیمت دستی از نشست باز، نه userId ارسالی رندرر

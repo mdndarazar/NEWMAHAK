@@ -27,6 +27,7 @@ const NAV = [
   { title: 'انبارگردانی', to: '/stocktake', key: '' },
   { title: 'تغییر قیمت گروهی', to: '/price-adjust', key: '' },
   { title: 'مدیریت اعتبار', to: '/credit-management', key: '' },
+  { title: 'موجودی سایت', to: '/woo-sync', key: '' },
   /** ماژول مستقل «پنل پیامکی» — جدا از گزارش‌ها و صندوق */
   { title: 'پنل پیامکی', to: '/sms-panel', key: '' },
   { title: 'عوارض و مالیات', to: '/charges/tax/pos', key: '' },

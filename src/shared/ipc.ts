@@ -10,6 +10,19 @@ export const IPC = {
   categoryUpsert: 'category:upsert',
   stockAdjust: 'stock:adjust',
   stockMovements: 'stock:movements',
+  /** WooCommerce stock sync — فقط موجودی انبار، نه قیمت/سفارش/مشتری. */
+  wooStatus: 'woo:status',
+  wooSettingsSave: 'woo:settings:save',
+  wooTest: 'woo:test',
+  wooCatalog: 'woo:catalog',
+  wooLinks: 'woo:links',
+  wooLinkCreate: 'woo:links:create',
+  wooLinksPause: 'woo:links:pause',
+  wooLinksResumePreview: 'woo:links:resumePreview',
+  wooLinksResumeApply: 'woo:links:resumeApply',
+  wooLinksUnlink: 'woo:links:unlink',
+  wooSyncNow: 'woo:sync:now',
+  wooLogs: 'woo:logs',
 
   // فروش
   saleCreate: 'sale:create',

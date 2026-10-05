@@ -323,7 +323,7 @@ class LocalInventoryService implements IInventoryService {
     const run = async (client: Prisma.TransactionClient) => {
       for (const c of changes) {
         if (c.qty === 0) continue
-        await client.stockMovement.create({
+        const movement = await client.stockMovement.create({
           data: {
             variantId: c.variantId,
             warehouseId: ctx.warehouseId ?? null,
@@ -335,10 +335,24 @@ class LocalInventoryService implements IInventoryService {
             note: ctx.note
           }
         })
-        await client.productVariant.update({
+        const updated = await client.productVariant.update({
           where: { id: c.variantId },
-          data: { stock: { increment: c.qty } }
+          data: { stock: { increment: c.qty } },
+          select: { stock: true }
         })
+        /**
+         * همگام‌سازی WooCommerce فقط بعد از ثبت قطعی حرکت در همان تراکنش outbox می‌سازد.
+         * reasonهای خودِ سایت (`WOO_SYNC_*`) دوباره به سایت push نمی‌شوند تا loop و دوباره‌شماری نسازد.
+         */
+        try {
+          const { enqueueWooForMovement } = await import('./WooSyncService')
+          await enqueueWooForMovement(
+            { movementId: movement.id, variantId: c.variantId, reason: ctx.reason, targetQty: updated.stock },
+            client
+          )
+        } catch (e) {
+          console.error('[wooSync] enqueue movement failed', e)
+        }
       }
       /**
        * نشست ۱۶۹ (S169-D3، بند ۳ و ۵ «mutation اتمیک» و «هر audit شامل actor») — قبلاً Audit *بعد* از

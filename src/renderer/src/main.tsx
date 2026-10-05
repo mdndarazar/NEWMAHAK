@@ -11,6 +11,7 @@ import SalesInvoice from './pages/SalesInvoice'
 import SalesReports from './pages/SalesReports'
 import ManagementReports from './pages/ManagementReports'
 import SmsPanel from './pages/SmsPanel'
+import WooSync from './pages/WooSync'
 import CashClose from './pages/CashClose'
 import Consolidation from './pages/Consolidation'
 import SalesReturn from './pages/SalesReturn'
@@ -139,6 +140,18 @@ const router = createHashRouter([
             reason="پنل پیامکی صف ارسال، سابقه‌ی پیام مشتریان و قالب‌های متن را نشان می‌دهد و کلید سرویس‌دهنده را نگه می‌دارد، پس با رمز باز می‌شود."
           >
             <SmsPanel />
+          </ManagerGate>
+        )
+      },
+      {
+        path: 'woo-sync',
+        element: (
+          <ManagerGate
+            panel={PANEL_KEYS.wooSync}
+            title="همگام‌سازی موجودی سایت"
+            reason="این بخش موجودی فروشگاه را به stock_quantity سایت WooCommerce وصل می‌کند و می‌تواند موجودی هر دو طرف را تغییر دهد؛ پس با رمز اختصاصی خودش باز می‌شود."
+          >
+            <WooSync />
           </ManagerGate>
         )
       },
