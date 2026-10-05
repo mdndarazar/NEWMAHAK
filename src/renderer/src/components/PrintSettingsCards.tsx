@@ -661,6 +661,34 @@ export function PrintAdvanced({
               ذخیره‌کردنش اول یک «چاپ آزمایشی» با همین روش بگیرید تا روی این دستگاه تأیید شود.
             </div>
           </label>
+          <label className="block">
+            <div className="mb-1">دقت فاکتور RAW (dpi)</div>
+            <select className="inp" value={receipt.rawDpi} onChange={(e) => setR({ rawDpi: Number(e.target.value) as 203 | 300 })}>
+              <option value={203}>۲۰۳</option>
+              <option value={300}>۳۰۰</option>
+            </select>
+          </label>
+          <label className="block">
+            <div className="mb-1">برش فاکتور RAW</div>
+            <select
+              className="inp"
+              value={receipt.cutMode}
+              onChange={(e) => setR({ cutMode: e.target.value as ReceiptTemplate['cutMode'] })}
+            >
+              <option value="FULL">کامل</option>
+              <option value="PARTIAL">نیم‌برش</option>
+              <option value="NONE">بدون برش</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-2 mt-5">
+            <input
+              type="checkbox"
+              className="w-4 h-4"
+              checked={receipt.rawInvert}
+              onChange={(e) => setR({ rawInvert: e.target.checked })}
+            />
+            معکوس‌کردن سفید/مشکی در RAW
+          </label>
         </div>
         <div className="font-bold pt-2 border-t">فاکتور عمده</div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -773,8 +801,8 @@ export function PrintAdvanced({
               <option value="RAW">دقیق (RAW)</option>
             </select>
             <div className="kbd leading-6">
-              «دقیق (RAW)» روی لیبل‌زن با دستور TSPL چاپ می‌شود (هر ردیف یک کار) و مستقل از درایور
-              است؛ برای ذخیره‌کردنش اول یک «چاپ آزمایشی» با همین روش بگیرید.
+              «دقیق (RAW)» روی لیبل‌زن با دستور TSPL چاپ می‌شود و مستقل از درایور است؛ برای
+              ذخیره‌کردنش اول یک «چاپ آزمایشی» با همین روش بگیرید.
             </div>
           </label>
           <label className="block">
@@ -813,6 +841,15 @@ export function PrintAdvanced({
             <input
               type="checkbox"
               className="w-4 h-4"
+              checked={label.rawInvert}
+              onChange={(e) => setL({ rawInvert: e.target.checked })}
+            />
+            معکوس‌کردن سفید/مشکی در RAW
+          </label>
+          <label className="flex items-center gap-2 mt-5">
+            <input
+              type="checkbox"
+              className="w-4 h-4"
               checked={label.useSystemDialog}
               onChange={(e) => setL({ useSystemDialog: e.target.checked })}
             />
@@ -820,8 +857,8 @@ export function PrintAdvanced({
           </label>
         </div>
         <div className="kbd">
-          روش RAW فعلاً کار نمی‌کند (فاز ۵) و انتخاب آن فقط تنظیمات را نگه می‌دارد؛ تا آن زمان چاپ از مسیر
-          Chromium انجام می‌شود. مقادیر سنسور/چگالی/سرعت/جهت هم فقط در همان مسیر RAW استفاده می‌شوند.
+          روش RAW فقط بعد از چاپ آزمایشی موفق در همین اجرای برنامه قابل ذخیره است. مقادیر سنسور، چگالی، سرعت، جهت،
+          offset مثبت (TSPL REFERENCE) و معکوس‌کردن سفید/مشکی فقط در همان مسیر RAW استفاده می‌شوند.
         </div>
       </div>
     </details>

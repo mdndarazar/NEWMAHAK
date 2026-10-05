@@ -672,7 +672,9 @@ export default function SalesReturn() {
   const printReturn = useCallback(async (returnId: number) => {
     try {
       /** فاز ۳ — مسیر مشترک چاپ؛ انصراف = لغو قطعی و بی‌صدا. */
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printReturn, { returnId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printReturn, { returnId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('رسید برگشت از فروش برای چاپ فرستاده شد')
     } catch (e: any) {
@@ -684,7 +686,9 @@ export default function SalesReturn() {
   /** چاپ «سند تعویض» (قالب exchangeReceiptHtml سمت main). */
   const printExchange = useCallback(async (returnId: number) => {
     try {
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printExchange, { returnId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printExchange, { returnId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('سند تعویض برای چاپ فرستاده شد')
     } catch (e: any) {
@@ -1546,8 +1550,8 @@ export default function SalesReturn() {
             <button
               className="btn"
               onClick={() =>
-                void printWith('INVOICE', (deviceName) =>
-                  call(CH.printInvoice, { invoiceId: lookup.invoiceId, deviceName })
+                void printWith('INVOICE', (deviceName, opts) =>
+                  call(CH.printInvoice, { invoiceId: lookup.invoiceId, deviceName, silent: opts?.silent })
                 ).catch((e: any) => setErr(e.message))
               }
               disabled={busy}

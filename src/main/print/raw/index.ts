@@ -39,11 +39,7 @@ export interface RawJobResult {
   summary: string
 }
 
-/**
- * چاپ خام یک ردیف لیبل با TSPL.
- * `html` باید دقیقاً HTML همان ردیف باشد (عرض = عرض ردیف، ارتفاع = ارتفاع لیبل).
- */
-export async function printTsplRow(input: {
+export interface TsplPrintInput {
   html: string
   printerName: string
   widthMm: number
@@ -55,15 +51,22 @@ export async function printTsplRow(input: {
   density: number
   speed: number
   copies?: number
+  /** مبدأ TSPL برحسب نقطه (dot). مقدار مثبت offset در این مسیر اینجا اعمال می‌شود. */
+  referenceX?: number
+  referenceY?: number
   invertBits?: boolean
-}): Promise<RawJobResult> {
-  const bitmap = await renderHtmlToMono(input.html, {
-    widthMm: input.widthMm,
-    heightMm: input.heightMm,
-    dpi: input.dpi,
-    invert: false
-  })
-  const opts: TsplOptions = {
+}
+
+/** تبدیل offset میلی‌متری به نقطه‌ی چاپگر. مقدار منفی در TSPL REFERENCE مجاز نیست، پس صفر می‌شود. */
+export function mmToPrinterDots(mm: unknown, dpi: unknown): number {
+  const value = Number(mm)
+  const dotsPerInch = Number(dpi) === 300 ? 300 : 203
+  if (!Number.isFinite(value) || value <= 0) return 0
+  return Math.max(0, Math.round((value * dotsPerInch) / 25.4))
+}
+
+function tsplOptionsFrom(input: Omit<TsplPrintInput, 'html' | 'printerName'>): TsplOptions {
+  return {
     widthMm: input.widthMm,
     heightMm: input.heightMm,
     gapMm: input.gapMm,
@@ -72,15 +75,57 @@ export async function printTsplRow(input: {
     density: input.density,
     speed: input.speed,
     copies: input.copies ?? 1,
+    referenceX: input.referenceX,
+    referenceY: input.referenceY,
     invertBits: input.invertBits
   }
-  const bytes = buildTspl(bitmap, opts)
+}
+
+/**
+ * چاپ خام یک ردیف لیبل با TSPL.
+ * `html` باید دقیقاً HTML همان ردیف باشد (عرض = عرض ردیف، ارتفاع = ارتفاع لیبل).
+ */
+export async function printTsplRow(input: TsplPrintInput): Promise<RawJobResult> {
+  return printTsplRows({ ...input, htmlRows: [input.html] })
+}
+
+/**
+ * چاپ خام چند ردیف لیبل در یک کار RAW.
+ *
+ * بازبینی مستقل فاز ۵ نشان داد ارسال جداگانه‌ی هر ردیف هم کند است و هم اگر
+ * PowerShell/Spooler بین ردیف‌ها خطا بدهد خروجی نیمه‌کاره با خطای قطعی می‌ماند.
+ * این تابع همه‌ی ردیف‌ها را اول به TSPL تبدیل می‌کند و سپس **یک‌بار** به spooler
+ * می‌فرستد. اگر همان یک ارسال timeout شود، طبق قرارداد پروژه نتیجه نامعلوم است
+ * (ممکن است بخشی از برگه‌ها چاپ شده باشد) و retry خودکار نداریم.
+ */
+export async function printTsplRows(input: Omit<TsplPrintInput, 'html'> & { htmlRows: readonly string[] }): Promise<RawJobResult> {
+  const htmlRows = [...(input.htmlRows ?? [])].filter((h) => String(h ?? '').trim())
+  if (!htmlRows.length) throw new Error('ردیفی برای چاپ RAW لیبل ساخته نشد.')
+
+  const parts: Buffer[] = []
+  let widthBytes = 0
+  let heightPx = 0
+  for (const html of htmlRows) {
+    const bitmap = await renderHtmlToMono(html, {
+      widthMm: input.widthMm,
+      heightMm: input.heightMm,
+      dpi: input.dpi,
+      invert: false
+    })
+    widthBytes = Math.max(widthBytes, bitmap.widthBytes)
+    heightPx = Math.max(heightPx, bitmap.heightPx)
+    parts.push(buildTspl(bitmap, tsplOptionsFrom(input)))
+  }
+
+  const bytes = Buffer.concat(parts)
   const sent = await sendRaw(input.printerName, bytes)
   return {
     bytes: sent,
-    widthBytes: bitmap.widthBytes,
-    heightPx: bitmap.heightPx,
-    summary: tsplSummary({ widthMm: input.widthMm, heightMm: input.heightMm, widthBytes: bitmap.widthBytes, heightPx: bitmap.heightPx })
+    widthBytes,
+    heightPx,
+    summary:
+      `${faDigits(htmlRows.length)} ردیف · ` +
+      tsplSummary({ widthMm: input.widthMm, heightMm: input.heightMm, widthBytes, heightPx })
   }
 }
 

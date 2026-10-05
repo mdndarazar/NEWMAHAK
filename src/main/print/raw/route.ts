@@ -19,15 +19,6 @@
 import { printHtml, type PrintPageSizeOption } from '../printer'
 import { printEscPosDoc } from './index'
 
-/**
- * DPI چاپگر رسید برای مسیر RAW.
- *
- * ⚠️ مجهول سخت‌افزاری: مدل دقیق Axiom در دسترس نیست. ۲۰۳ نقطه/اینچ پیش‌فرض
- * خانواده‌ی چاپگرهای حرارتی ۸۰ میلی‌متری است (۷۲mm ≈ ۵۷۶ نقطه). اگر برگه‌ی
- * آزمایشی RAW کوچک/بزرگ درآمد، همین عدد باید اصلاح شود — بخش ۱۲.۳ طرح.
- */
-export const RECEIPT_RAW_DPI = 203
-
 export interface PrintDocRouteInput {
   /** `printMethod` قالب رسید/لیبل (تنها منبع تصمیم). */
   method: unknown
@@ -35,6 +26,10 @@ export interface PrintDocRouteInput {
   deviceName: string
   silent?: boolean
   pageSize: PrintPageSizeOption
+  /** فقط برای RAW؛ DPI واقعی دستگاه (پیش‌فرض ۲۰۳). */
+  rawDpi?: number
+  /** فقط برای RAW؛ اگر دستگاه سفید/مشکی را برعکس گرفت، true می‌شود. */
+  rawInvert?: boolean
   /** فقط برای RAW؛ پیش‌فرض `FULL`. */
   cutMode?: 'FULL' | 'PARTIAL' | 'NONE'
 }
@@ -62,8 +57,9 @@ export async function printMaybeRaw(input: PrintDocRouteInput): Promise<PrintDoc
     printerName: input.deviceName,
     widthMm: input.pageSize.widthMm,
     heightMm: input.pageSize.heightMm,
-    dpi: RECEIPT_RAW_DPI,
-    cutMode: input.cutMode
+    dpi: Number(input.rawDpi) === 300 ? 300 : 203,
+    cutMode: input.cutMode,
+    invertBits: input.rawInvert === true
   })
   return { engine: 'RAW', bytes: result.bytes, summary: result.summary }
 }

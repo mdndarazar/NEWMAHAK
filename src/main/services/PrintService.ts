@@ -295,7 +295,16 @@ export const printService = {
     const deviceName = await receiptTargetDevice({ requestedDeviceName: input.deviceName, tpl, profile })
     const copies = Math.min(Math.max(Math.round(input.copies ?? tpl.copies ?? 1), 1), 5)
     for (let i = 0; i < copies; i++) {
-      await printMaybeRaw({ method: tpl.printMethod, html, deviceName, silent: input.silent ?? true, pageSize })
+      await printMaybeRaw({
+        method: tpl.printMethod,
+        html,
+        deviceName,
+        silent: input.silent ?? true,
+        pageSize,
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
+      })
     }
     return { copies }
   },
@@ -407,7 +416,10 @@ export const printService = {
         html,
         deviceName,
         silent: input.silent ?? true,
-        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
       })
     }
     return { copies, returnId }
@@ -517,7 +529,10 @@ export const printService = {
         html,
         deviceName,
         silent: input.silent ?? true,
-        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
       })
     }
     return { copies, returnId }
@@ -599,7 +614,7 @@ export const printService = {
     return debtPaymentReceiptHtml({ ...data, reprint: opts?.reprint === true }, tpl)
   },
 
-  async printDebtPayment(input: { paymentId?: number; reprint?: boolean; deviceName?: string }) {
+  async printDebtPayment(input: { paymentId?: number; reprint?: boolean; silent?: boolean; deviceName?: string }) {
     const paymentId = Number(input?.paymentId ?? 0)
     if (!paymentId) throw new BusinessError('پرداختی برای چاپ فیش مشخص نشده است.')
     const tpl = await settingsService.receiptTemplate()
@@ -612,8 +627,11 @@ export const printService = {
       method: tpl.printMethod,
       html,
       deviceName,
-      silent: true,
-      pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+      silent: input.silent ?? true,
+      pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+      rawDpi: tpl.rawDpi,
+      rawInvert: tpl.rawInvert,
+      cutMode: tpl.cutMode
     })
     return { paymentId }
   },

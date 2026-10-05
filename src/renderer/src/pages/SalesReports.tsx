@@ -1827,7 +1827,9 @@ export default function SalesReports() {
   const printExchangeDoc = async (returnId: number) => {
     try {
       /** فاز ۳ — چاپ سند تعویض از مسیر مشترک (پروفایل رسید/فاکتور). */
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printExchange, { returnId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printExchange, { returnId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('سند تعویض برای چاپ فرستاده شد')
     } catch (e: any) {
@@ -1838,7 +1840,9 @@ export default function SalesReports() {
   const reprint = async (invoiceId: number) => {
     try {
       /** فاز ۳ — از مسیر مشترک چاپ؛ انصراف ⇒ لغو قطعی و بی‌صدا. */
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printInvoice, { invoiceId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printInvoice, { invoiceId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('رسید فاکتور دوباره چاپ شد')
     } catch (e: any) {

@@ -725,7 +725,9 @@ export default function Pos() {
         /**
          * فاز ۳ — از مسیر مشترک `printWith` (انصراف = لغو قطعی و بی‌صدا).
          */
-        const res = await printWith('INVOICE', (deviceName) => call(CH.printInvoice, { invoiceId, deviceName }))
+        const res = await printWith('INVOICE', (deviceName, opts) =>
+          call(CH.printInvoice, { invoiceId, deviceName, silent: opts?.silent })
+        )
         if (res === 'CANCELLED') return
         setLast((p) => (p && p.id === invoiceId ? { ...p, printed: true } : p))
         notify('رسید فاکتور چاپ شد')
@@ -974,8 +976,8 @@ export default function Pos() {
              * روشن باشد پنجره‌ی انتخاب چاپگر می‌آید (خواست مالک) و انصراف یعنی
              * هیچ چاپی انجام نمی‌شود — بدون خطا و بدون خراب‌کردن فاکتور.
              */
-            const res = await printWith('INVOICE', (deviceName) =>
-              call(CH.printInvoice, { invoiceId: inv.id, deviceName })
+            const res = await printWith('INVOICE', (deviceName, opts) =>
+              call(CH.printInvoice, { invoiceId: inv.id, deviceName, silent: opts?.silent })
             )
             if (res === 'DONE') printed = true
             else printNote = ' (چاپ انجام نشد؛ فاکتور ثبت شد و در گزارشات فروش هست)'
