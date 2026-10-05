@@ -94,6 +94,28 @@ export interface WooLinkRow {
   pausedEvents: number
 }
 
+
+export interface WooResumePreviewEvent {
+  id: number
+  seq: number | null
+  delta: number
+  source?: string | null
+  orderId?: string | null
+}
+
+export interface WooResumePreview {
+  linkId: number
+  holderKey: string
+  mahakStock: number
+  wooQty: number
+  lastSeq: number | null
+  pausedEvents: WooResumePreviewEvent[]
+  orderEvents: number
+  orderDelta: number
+  nonOrderEvents: number
+  nonOrderDelta: number
+}
+
 export interface WooStatusView {
   config: WooSyncSafeConfig
   counts: {

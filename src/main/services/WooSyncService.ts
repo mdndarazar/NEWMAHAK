@@ -26,6 +26,7 @@ import {
   wooStockReason,
   type WooCatalogItem,
   type WooLinkRow,
+  type WooResumePreviewEvent,
   type WooStatusView,
   type WooSyncSafeConfig
 } from '@shared/wooSync'
@@ -75,6 +76,12 @@ function asDateString(d: unknown): string | null {
   } catch {
     return null
   }
+}
+
+function isWooOrderPausedEvent(e: { source?: unknown; orderId?: unknown }): boolean {
+  // در زمان وصل دوباره، فقط اثر واقعی سفارش سایت دوباره اعمال می‌شود.
+  // ویرایش دستی/ادمین سایت حتی اگر در ژورنال مانده باشد PARK می‌شود تا overwrite کورکورانه رخ ندهد.
+  return String(e.source ?? '').toLowerCase() === 'order' && String(e.orderId ?? '').trim() !== ''
 }
 
 async function readSetting(key: string): Promise<string | null> {
@@ -493,13 +500,26 @@ export const wooSyncService = {
       orderBy: [{ seq: 'asc' }, { id: 'asc' }],
       take: 500
     })
+    const pausedEvents: WooResumePreviewEvent[] = paused.map((e: any) => ({
+      id: e.id,
+      seq: e.seq == null ? null : Number(e.seq),
+      delta: Number(e.delta || 0),
+      source: e.source,
+      orderId: e.orderId
+    }))
+    const orderEvents = pausedEvents.filter(isWooOrderPausedEvent)
+    const nonOrderEvents = pausedEvents.filter((e) => !isWooOrderPausedEvent(e))
     return {
       linkId: link.id,
       holderKey: link.holderKey,
       mahakStock,
       wooQty: remote?.stockQuantity ?? link.lastWooQty,
       lastSeq: remote?.lastSeq ?? null,
-      pausedEvents: paused.map((e: any) => ({ id: e.id, seq: e.seq == null ? null : Number(e.seq), delta: e.delta, source: e.source, orderId: e.orderId }))
+      pausedEvents,
+      orderEvents: orderEvents.length,
+      orderDelta: orderEvents.reduce((sum, e) => sum + Number(e.delta || 0), 0),
+      nonOrderEvents: nonOrderEvents.length,
+      nonOrderDelta: nonOrderEvents.reduce((sum, e) => sum + Number(e.delta || 0), 0)
     }
   },
 
@@ -507,7 +527,17 @@ export const wooSyncService = {
     const link = await linkById(int(input.linkId, 'شناسه اتصال', { positive: true }))
     const decision = String(input.decision || WooResumeDecision.VERIFY_ONLY)
     const preview = await this.resumePreview({ linkId: link.id })
+    if (decision === WooResumeDecision.VERIFY_ONLY || decision === WooResumeDecision.NOOP) {
+      await log('LINK_RESUME_PREVIEW_ONLY', 'وصل دوباره فقط بررسی شد؛ هیچ موجودی و هیچ وضعیت لینکی تغییر نکرد', {
+        linkId: link.id,
+        variantId: link.variantId,
+        payload: preview
+      })
+      return this.links()
+    }
     let finalStock = Number(preview.mahakStock)
+    let parkedPausedEvents = 0
+    let appliedPausedOrderEvents = 0
     const relinkId = randomUUID()
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const fresh = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
@@ -521,17 +551,24 @@ export const wooSyncService = {
         const events = await (tx as any).wooInboundEvent.findMany({ where: { linkId: link.id, status: WooInboundStatus.SKIPPED_PAUSED }, orderBy: [{ seq: 'asc' }, { id: 'asc' }], take: 500 })
         for (const e of events) {
           const delta = Number(e.delta || 0)
+          if (!isWooOrderPausedEvent(e)) {
+            // ویرایش‌های دستی/ادمین سایت در زمان قطع نباید به MAHAK اعمال شوند؛ فقط برای بررسی مدیر park می‌شوند.
+            await (tx as any).wooInboundEvent.update({ where: { id: e.id }, data: { status: WooInboundStatus.PARKED, relinkId, processedAt: new Date() } })
+            parkedPausedEvents++
+            continue
+          }
           if (!delta) {
             await (tx as any).wooInboundEvent.update({ where: { id: e.id }, data: { status: WooInboundStatus.SUPERSEDED, relinkId, processedAt: new Date() } })
             continue
           }
           const r = await applyWooDelta({ eventId: e.id, variantId: link.variantId, delta, note: `اعمال سفارش سایت هنگام وصل دوباره (${e.orderId ?? 'بدون سفارش'})`, tx })
           finalStock = r.stock
+          appliedPausedOrderEvents++
           await (tx as any).wooInboundEvent.update({ where: { id: e.id }, data: { status: WooInboundStatus.APPLIED_ON_RELINK, movementId: r.movementId, relinkId, processedAt: new Date() } })
         }
       } else if (decision === WooResumeDecision.MAHAK_WINS) {
         await (tx as any).wooInboundEvent.updateMany({ where: { linkId: link.id, status: WooInboundStatus.SKIPPED_PAUSED }, data: { status: WooInboundStatus.SUPERSEDED, relinkId, processedAt: new Date() } })
-      } else if (decision !== WooResumeDecision.VERIFY_ONLY && decision !== WooResumeDecision.NOOP) {
+      } else {
         throw new BusinessError('روش وصل دوباره نامعتبر است.')
       }
       await (tx as any).wooProductLink.update({
@@ -555,11 +592,11 @@ export const wooSyncService = {
         entity: 'WooProductLink',
         entityId: link.id,
         userId: input.userId ?? null,
-        after: json({ decision, relinkId, wooQty: preview.wooQty, mahakQty: finalStock }),
+        after: json({ decision, relinkId, wooQty: preview.wooQty, mahakQty: finalStock, appliedPausedOrderEvents, parkedPausedEvents }),
         note: 'وصل دوباره همگام‌سازی موجودی سایت'
       })
     })
-    await log('LINK_RESUME', 'اتصال موجودی سایت دوباره فعال شد', { linkId: link.id, variantId: link.variantId, payload: { decision, relinkId } })
+    await log('LINK_RESUME', 'اتصال موجودی سایت دوباره فعال شد', { linkId: link.id, variantId: link.variantId, payload: { decision, relinkId, appliedPausedOrderEvents, parkedPausedEvents } })
     return this.links()
   },
 

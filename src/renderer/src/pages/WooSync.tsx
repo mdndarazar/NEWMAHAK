@@ -6,6 +6,7 @@ import {
   wooStatusLabel,
   type WooCatalogItem,
   type WooLinkRow,
+  type WooResumePreview,
   type WooStatusView
 } from '@shared/wooSync'
 
@@ -36,6 +37,7 @@ export default function WooSync() {
   const [selectedVariantId, setSelectedVariantId] = useState<number | ''>('')
   const [selectedHolderKey, setSelectedHolderKey] = useState('')
   const [decision, setDecision] = useState<string>(WooResumeDecision.MAHAK_WINS)
+  const [resumePreview, setResumePreview] = useState<WooResumePreview | null>(null)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -159,12 +161,32 @@ export default function WooSync() {
     }
   }
 
-  const resumeMahakWins = async (id: number) => {
+  const previewResume = async (id: number) => {
     setBusy(true)
     try {
-      await call(CH.wooLinksResumeApply, { linkId: id, decision: WooResumeDecision.MAHAK_WINS })
+      const p = await call<WooResumePreview>(CH.wooLinksResumePreview, { linkId: id })
+      setResumePreview(p)
+      flash('پیش‌نمایش وصل دوباره آماده است؛ قبل از اعمال، اختلاف‌ها را بررسی کنید.')
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const applyResumeDecision = async (decision: string) => {
+    if (!resumePreview) return
+    if (decision === WooResumeDecision.VERIFY_ONLY || decision === WooResumeDecision.NOOP) {
+      setResumePreview(null)
+      flash('فقط بررسی انجام شد؛ اتصال همچنان قطع موقت ماند و هیچ موجودی تغییر نکرد.')
+      return
+    }
+    setBusy(true)
+    try {
+      await call(CH.wooLinksResumeApply, { linkId: resumePreview.linkId, decision })
+      setResumePreview(null)
       await load()
-      flash('اتصال دوباره فعال شد و موجودی فروشگاه مرجع قرار گرفت.')
+      flash('اتصال دوباره با تصمیم انتخاب‌شده فعال شد؛ هیچ overwrite کورکورانه‌ای انجام نشد.')
     } catch (e) {
       fail(e)
     } finally {
@@ -262,7 +284,7 @@ export default function WooSync() {
                   <td>{faDigits(l.pendingOutbox)} / {faDigits(l.failedOutbox)}</td>
                   <td className="space-x-1 space-x-reverse whitespace-nowrap">
                     {l.status === 'ACTIVE' ? <button className="btn btn-xs" disabled={busy} onClick={() => pause(l.id)}>قطع موقت</button> : null}
-                    {l.status === 'PAUSED' ? <button className="btn btn-xs" disabled={busy} onClick={() => resumeMahakWins(l.id)}>وصل؛ فروشگاه مرجع</button> : null}
+                    {l.status === 'PAUSED' ? <button className="btn btn-xs" disabled={busy} onClick={() => previewResume(l.id)}>پیش‌نمایش وصل</button> : null}
                     <button className="btn btn-xs" disabled={busy} onClick={() => unlink(l.id)}>قطع دائم</button>
                   </td>
                 </tr>
@@ -272,6 +294,31 @@ export default function WooSync() {
           </table>
         </div>
       </div>
+
+      {resumePreview && (
+        <div className="card p-4 space-y-3 border-amber-300 bg-amber-50">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="font-bold">پیش‌نمایش وصل دوباره</h2>
+              <p className="text-sm text-slate-700 mt-1">لینک {resumePreview.holderKey}: موجودی MAHAK {faDigits(resumePreview.mahakStock)}، موجودی سایت {faDigits(resumePreview.wooQty)}</p>
+            </div>
+            <button className="btn btn-xs" onClick={() => setResumePreview(null)}>بستن</button>
+          </div>
+          <div className="grid md:grid-cols-4 gap-2 text-sm">
+            <div className="kbd">رویدادهای زمان قطع: {faDigits(resumePreview.pausedEvents.length)}</div>
+            <div className="kbd">سفارش‌های قابل اعمال: {faDigits(resumePreview.orderEvents)} / تغییر {faDigits(resumePreview.orderDelta)}</div>
+            <div className="kbd">ویرایش‌های سایت که اعمال نمی‌شوند: {faDigits(resumePreview.nonOrderEvents)} / تغییر {faDigits(resumePreview.nonOrderDelta)}</div>
+            <div className="kbd">آخرین seq سایت: {faDigits(resumePreview.lastSeq ?? 0)}</div>
+          </div>
+          <p className="text-xs text-amber-900">گزینه «فروشگاه + سفارش‌های سایت» فقط رویدادهایی را اعمال می‌کند که افزونه با source=order ثبت کرده باشد؛ ویرایش دستی ادمین سایت park می‌شود و هیچ‌وقت خودکار روی MAHAK نمی‌نشیند.</p>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn btn-primary" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.MAHAK_WINS)}>فروشگاه مرجع؛ سایت به MAHAK برسد</button>
+            <button className="btn" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.WOO_WINS)}>سایت مرجع؛ MAHAK به سایت برسد</button>
+            <button className="btn" disabled={busy || resumePreview.orderEvents === 0} onClick={() => applyResumeDecision(WooResumeDecision.MAHAK_PLUS_ORDERS)}>MAHAK + سفارش‌های سایت زمان قطع</button>
+            <button className="btn" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.VERIFY_ONLY)}>فقط بررسی، فعلاً وصل نکن</button>
+          </div>
+        </div>
+      )}
 
       <div className="card p-4 space-y-2 text-sm text-slate-700 leading-7">
         <h2 className="font-bold text-slate-900">نصب افزونه وردپرس</h2>
