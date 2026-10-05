@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
+import { isUnknownPrintMessage } from '../lib/printErrors'
 import { useHotkeys } from '../hooks/useHotkeys'
 import { useBarcodeScanner } from '../hooks/useBarcodeScanner'
 import { useCharges } from '../hooks/useCharges'
@@ -15,7 +16,7 @@ import ManagerGate from '../components/ManagerGate'
 import PasswordField from '../components/PasswordField'
 import InvoicePaymentsModal from '../components/InvoicePaymentsModal'
 // نشست ۶۳ · بند ۴-۳۵ — همان فلوی چهارمرحله‌ای اضافه‌دریافت پنجره‌ی پرداخت‌ها (جزء مشترک)
-import OverpayFlowDialogs, { printOverpayCredit } from '../components/OverpayFlowDialogs'
+import OverpayFlowDialogs, { printOverpayCredit, type OverpayCreditPrintProblem } from '../components/OverpayFlowDialogs'
 import {
   isOverpayWarning,
   needsManagerPassword,
@@ -224,6 +225,7 @@ export default function SalesInvoice() {
   const [overpayFlow, setOverpayFlow] = useState<OverpayFlowState | null>(null)
   const [issuedCredit, setIssuedCredit] = useState<(OverpayCreditLike & { id?: number }) | null>(null)
   const [overpayCreditPrinting, setOverpayCreditPrinting] = useState(false)
+  const [overpayCreditPrintProblem, setOverpayCreditPrintProblem] = useState<OverpayCreditPrintProblem>(null)
   /**
    * برنامه‌ی «مبدأ کسر» که کاربر همین الان تأیید کرده بود: ارسال دوباره‌ی همان
    * فاکتور بعد از «بله ثبت کن» نباید پنجره‌ی مبدأ کسر را دوباره بپرسد. اگر
@@ -260,9 +262,10 @@ export default function SalesInvoice() {
   const printIssuedOverpayCredit = async (credit: (OverpayCreditLike & { id?: number }) | null) => {
     if (overpayCreditPrinting) return
     setOverpayCreditPrinting(true)
+    setOverpayCreditPrintProblem(null)
     try {
       const problem = await printOverpayCredit(credit)
-      if (problem) setErr(problem)
+      if (problem) setOverpayCreditPrintProblem({ kind: isUnknownPrintMessage(problem) ? 'unknown' : 'failed', msg: problem })
     } finally {
       setOverpayCreditPrinting(false)
     }
@@ -1887,9 +1890,13 @@ export default function SalesInvoice() {
         onFlow={setOverpayFlow}
         onSubmit={(req) => void save(req)}
         issuedCredit={issuedCredit}
-        onCloseIssued={() => setIssuedCredit(null)}
+        onCloseIssued={() => {
+          setIssuedCredit(null)
+          setOverpayCreditPrintProblem(null)
+        }}
         onReprint={() => void printIssuedOverpayCredit(issuedCredit)}
         creditPrinting={overpayCreditPrinting}
+        creditPrintProblem={overpayCreditPrintProblem}
       />
 
       <StockSourceModal

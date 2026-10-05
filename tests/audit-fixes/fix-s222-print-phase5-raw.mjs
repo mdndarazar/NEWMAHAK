@@ -588,6 +588,23 @@ console.log('\n— ۷) مسیر واقعی با ماک Electron')
     mock.state.captureCalls.length,
     mock.state.zoomCalls.length
   ], [0, 0, 0])
+
+  // ۷.۵ — RAW با دیالوگ ویندوز معنی ندارد: نه dialog می‌آورد، نه باید بی‌صدا روی پیش‌فرض چاپ کند.
+  mock.reset()
+  const rawDialog = await safe(() =>
+    route.printMaybeRaw({
+      method: 'RAW',
+      html: '<html><body>سند خام</body></html>',
+      deviceName: 'Axiom Thermal 80',
+      silent: false,
+      pageSize: { widthMm: 80, heightMm: 'AUTO', heightSafetyMm: 3 }
+    })
+  )
+  check('RAW + دیالوگ ویندوز رد می‌شود و هیچ کار چاپی ساخته نمی‌شود', [
+    /چاپ خام.*دیالوگ ویندوز/.test(rawDialog.error ?? ''),
+    mock.state.printCalls.length,
+    mock.state.captureCalls.length
+  ], [true, 0, 0])
 }
 
 console.log(`\n${bad ? '✗' : '✓'} ${ok} بررسی موفق · ${bad} ناموفق\n`)

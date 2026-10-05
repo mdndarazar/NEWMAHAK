@@ -236,6 +236,15 @@ console.log('\n— ۴) printWith: جریان پرسش/بی‌پرس (بخش ۶.�
     [{ deviceName: undefined, opts: { silent: false } }]
   ])
 
+  reset()
+  printed.length = 0
+  const r5c = await flow.printWith('INVOICE', async () => {
+    const e = new Error('چاپ لغو شد و هیچ برگه‌ای چاپ نشد.')
+    e.printCancelled = true
+    throw e
+  })
+  check('لغو دیالوگ ویندوز ⇒ CANCELLED و بدون خطای UI', r5c, 'CANCELLED')
+
   // ۶) پروفایل لیبل و عمده (نام ذخیره‌شده‌ی درست)
   const flagsLabel = await flow.printProfileFlags('LABEL')
   check('پرچم‌های لیبل از تنظیمات لیبل می‌آید', flagsLabel.savedName, 'TSC TE200')
@@ -248,6 +257,13 @@ console.log('\n— ۴) printWith: جریان پرسش/بی‌پرس (بخش ۶.�
   settings = { ...settings, receipt: { ...settings.receipt, wholesaleSeparate: false } }
   const flagsW2 = await flow.printProfileFlags('WHOLESALE')
   check('عمده بدون کاغذ جدا ⇒ همان چاپگر فروش تکی و ذخیره در پروفایل INVOICE', [flagsW2.savedName, flagsW2.defaultProfile], ['Axiom', 'INVOICE'])
+
+  const printErrors = await import(new URL('../../src/renderer/src/lib/printErrors.ts', import.meta.url).href)
+  check('unknown/cancel کد صریح را می‌شناسند و timeout PDF را unknown چاپ حساب نمی‌کنند', [
+    printErrors.isUnknownPrintMessage({ code: 'PRINT_OUTCOME_UNKNOWN', message: 'x' }),
+    printErrors.isPrintCancelledError({ code: 'PRINT_CANCELLED', message: 'x' }),
+    printErrors.isUnknownPrintMessage('ساخت PDF طی 30 ثانیه نتیجه نداد؛ هیچ فایلی ذخیره نشد. ممکن است برنامه گیر کرده باشد؛ دوباره تلاش کنید.')
+  ], [true, true, false])
 
   flow.setPrinterPickerOpener(null)
   delete globalThis.window
@@ -302,6 +318,14 @@ console.log('\n— ۵) ساختاری: سیم‌کشی main و renderer')
 
   const flow = readSrc('src/renderer/src/lib/printFlow.ts')
   check('ذخیره‌ی پیش‌فرض داخل printWith بعد از چاپ موفق است', /const printed = await runPrint\(choice\.deviceName\)[\s\S]{0,500}?printSetDefault/.test(flow), true)
+  const modal = readSrc('src/renderer/src/components/Modal.tsx')
+  const confirmDialog = readSrc('src/renderer/src/components/ConfirmDialog.tsx')
+  check('ConfirmDialog هم از stack مشترک استفاده می‌کند و Enter روی انصراف را به بله تبدیل نمی‌کند', [
+    /export function useTopmostModalKey/.test(modal),
+    /useTopmostModalKey\(open/.test(confirmDialog),
+    /active instanceof HTMLButtonElement && active !== confirmButtonRef\.current/.test(confirmDialog),
+    /autoFocus/.test(confirmDialog)
+  ], [true, true, true, true])
   check('انصراف پیش از هر چاپی برمی‌گردد (نام خالی هم انصراف است)', /if \(!choice \|\| !choice\.deviceName\) return 'CANCELLED'/.test(flow), true)
 
   const callSites = {

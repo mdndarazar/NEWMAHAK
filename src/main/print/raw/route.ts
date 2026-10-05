@@ -16,6 +16,7 @@
  *      چون دو بار چاپ‌شدن یک برگه بدتر از یک خطای روشن است.
  * ===========================================================================
  */
+import { BusinessError } from '../../errors'
 import { printHtml, type PrintPageSizeOption } from '../printer'
 import { printEscPosDoc } from './index'
 
@@ -55,6 +56,10 @@ export async function printMaybeRaw(input: PrintDocRouteInput): Promise<PrintDoc
     })
     return { engine: 'CHROMIUM' }
   }
+  if (input.silent === false)
+    throw new BusinessError(
+      'چاپ خام (RAW) با دیالوگ ویندوز سازگار نیست؛ هیچ برگه‌ای چاپ نشد. برای انتخاب چاپگر، دیالوگ داخلی برنامه را استفاده کنید یا روش چاپ را روی Chromium بگذارید.'
+    )
   const result = await printEscPosDoc({
     html: input.html,
     printerName: input.deviceName,

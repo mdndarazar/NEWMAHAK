@@ -164,6 +164,12 @@ export default function CreditManagement() {
   /** نشست ۱۴۳ · بند ۴-۲۹ — رمز مدیر صدور دستی/گروهی؛ main خودش می‌سنجد. */
   const [issueManagerPw, setIssueManagerPw] = useState('')
   const [opDraft, setOpDraft] = useState<OpDraft | null>(null)
+  const opDraftRef = useRef<OpDraft | null>(null)
+  opDraftRef.current = opDraft
+  const detailRef = useRef<CreditDetail | null>(null)
+  detailRef.current = detail
+  const [opBusy, setOpBusy] = useState(false)
+  const opBusyRef = useRef(false)
   const [issue, setIssue] = useState<IssueDraft>(EMPTY_ISSUE_DRAFT)
   const [bulk, setBulk] = useState<BulkDraft>(EMPTY_BULK_DRAFT)
   const [party, setParty] = useState<Party | null>(null)
@@ -310,18 +316,27 @@ export default function CreditManagement() {
   }
 
   const submitOp = async () => {
-    if (!opDraft || !detail) return
-    const result = buildOpPayload(opDraft, detail.credit)
+    if (opBusyRef.current) return
+    const draft = opDraftRef.current
+    const currentDetail = detailRef.current
+    if (!draft || !currentDetail) return
+    const result = buildOpPayload(draft, currentDetail.credit)
     if (!result.ok || !result.payload) return setErr(result.error ?? 'فرم کامل نیست.')
+    opBusyRef.current = true
+    setOpBusy(true)
     try {
-      const res = await call<any>(CH[CREDIT_OP_CHANNEL[opDraft.op] as keyof typeof CH], result.payload)
+      const res = await call<any>(CH[CREDIT_OP_CHANNEL[draft.op] as keyof typeof CH], result.payload)
       setOpDraft(null)
       setOpParty(null)
+      setConfirm(null)
       /* هشدارهای سرویس تا جلسه ۲۷ دیده نمی‌شدند. */
       flash('عملیات انجام شد و در تاریخچه ثبت شد.' + (res?.warnings?.length ? `\n${res.warnings.join('\n')}` : ''))
-      await openDetail(detail.credit.id)
+      await openDetail(currentDetail.credit.id)
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      opBusyRef.current = false
+      setOpBusy(false)
     }
   }
 
@@ -958,15 +973,17 @@ export default function CreditManagement() {
         {/* §۲۰ — عملیات مدیریتی (ابطال/تعلیق/حذف/تغییرها) گیت رمز اختصاصی خودش را دارد. */}
         <Modal
           open={!!opDraft}
-          onClose={() => setOpDraft(null)}
+          onClose={() => {
+            if (!opBusy) setOpDraft(null)
+          }}
           title={opDraft ? CREDIT_OP_TITLES[opDraft.op] : 'عملیات'}
           footer={
             <>
-              <button className="btn" onClick={() => setOpDraft(null)}>
+              <button className="btn" onClick={() => setOpDraft(null)} disabled={opBusy}>
                 انصراف
               </button>
-              <button className="btn btn-primary" onClick={() => setConfirm(() => () => void submitOp())}>
-                ثبت عملیات
+              <button className="btn btn-primary" onClick={() => setConfirm(() => () => void submitOp())} disabled={opBusy}>
+                {opBusy ? 'در حال ثبت…' : 'ثبت عملیات'}
               </button>
             </>
           }
@@ -1007,10 +1024,14 @@ export default function CreditManagement() {
         <ConfirmDialog
           open={!!confirm}
           message="این تغییر در سوابق اعتبار و Audit Log ثبت می‌شود. ادامه می‌دهید؟"
-          onCancel={() => setConfirm(null)}
+          busy={opBusy}
+          onCancel={() => {
+            if (!opBusy) setConfirm(null)
+          }}
           onConfirm={() => {
-            confirm?.()
+            const fn = confirm
             setConfirm(null)
+            fn?.()
           }}
         />
       </div>

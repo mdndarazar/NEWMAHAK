@@ -91,7 +91,7 @@ function handle<T>(channel: string, fn: (payload: any) => Promise<T> | T) {
        */
       return { ok: true, data: stripBigInts(await fn(payload), channel) }
     } catch (err: any) {
-      const code = err?.printCancelled === true ? 'PRINT_CANCELLED' : undefined
+      const code = err?.printCancelled === true ? 'PRINT_CANCELLED' : err?.printOutcomeUnknown === true ? 'PRINT_OUTCOME_UNKNOWN' : undefined
       if (!code) console.error(`[ipc:${channel}]`, err)
       return { ok: false, error: toUserMessage(err), ...(code ? { code } : {}) }
     }

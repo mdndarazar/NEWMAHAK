@@ -32,6 +32,8 @@ import {
  * ===========================================================================
  */
 
+export type OverpayCreditPrintProblem = { kind: 'unknown' | 'failed'; msg: string } | null
+
 let overpayCreditPrintInFlight = false
 
 /** چاپ کد اعتبار از همان کانال چاپ اسناد اعتبار؛ خطا ⇒ متن فارسی (سند صادرشده دست نمی‌خورد). */
@@ -62,7 +64,8 @@ export default function OverpayFlowDialogs({
   issuedCredit,
   onCloseIssued,
   onReprint,
-  creditPrinting = false
+  creditPrinting = false,
+  creditPrintProblem = null
 }: {
   flow: OverpayFlowState | null
   busy: boolean
@@ -76,6 +79,8 @@ export default function OverpayFlowDialogs({
   onReprint: () => void
   /** چاپ خودکار/دوباره‌ی همین کد در جریان است؛ برای جلوگیری از چند دیالوگ پشت‌سرهم. */
   creditPrinting?: boolean
+  /** پیام چاپ همین کد داخل همین modal، تا پشت overlay پنهان نشود. */
+  creditPrintProblem?: OverpayCreditPrintProblem
 }) {
   const [pw, setPw] = useState('')
   useEffect(() => {
@@ -187,7 +192,11 @@ export default function OverpayFlowDialogs({
         footer={
           <>
             <button className="btn" onClick={onReprint} disabled={busy || creditPrinting}>
-              {creditPrinting ? 'در حال چاپ…' : 'چاپ دوباره‌ی کد'}
+              {creditPrinting
+                ? 'در حال چاپ…'
+                : creditPrintProblem?.kind === 'unknown'
+                  ? 'فقط اگر برگه‌ای بیرون نیامده: چاپ دوباره'
+                  : 'چاپ دوباره‌ی کد'}
             </button>
             <button className="btn btn-primary" onClick={onCloseIssued}>
               بستن
@@ -204,6 +213,17 @@ export default function OverpayFlowDialogs({
             {issuedCredit?.expiresAtJalali ? `مهلت تا ${faDigits(issuedCredit.expiresAtJalali)}` : 'بدون انقضا'}
           </div>
           <div className="font-bold text-rose-700">{OVERPAY_NOT_CASHABLE}</div>
+          {creditPrintProblem && (
+            <div
+              className={`mt-3 rounded border px-3 py-2 text-sm leading-7 ${
+                creditPrintProblem.kind === 'unknown'
+                  ? 'border-amber-300 bg-amber-50 text-amber-900'
+                  : 'border-rose-300 bg-rose-50 text-rose-800'
+              }`}
+            >
+              {creditPrintProblem.msg}
+            </div>
+          )}
         </div>
       </Modal>
     </>

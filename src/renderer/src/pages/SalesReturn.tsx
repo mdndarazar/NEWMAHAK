@@ -6,7 +6,7 @@ import { printWith } from '../lib/printFlow'
 import { isUnknownPrintMessage } from '../lib/printErrors'
 import { useBarcodeScanner, useFieldScanDetector } from '../hooks/useBarcodeScanner'
 import ConfirmDialog from '../components/ConfirmDialog'
-import OverpayFlowDialogs, { printOverpayCredit } from '../components/OverpayFlowDialogs'
+import OverpayFlowDialogs, { printOverpayCredit, type OverpayCreditPrintProblem } from '../components/OverpayFlowDialogs'
 import {
   isOverpayWarning,
   needsManagerPassword,
@@ -197,6 +197,7 @@ export default function SalesReturn() {
   const [overpayReq, setOverpayReq] = useState<OverpayRequest>({})
   const [issuedOverpayCredit, setIssuedOverpayCredit] = useState<any | null>(null)
   const [overpayCreditPrinting, setOverpayCreditPrinting] = useState(false)
+  const [overpayCreditPrintProblem, setOverpayCreditPrintProblem] = useState<OverpayCreditPrintProblem>(null)
   /**
    * بند ۱۲ — تسویه‌ی مابه‌التفاوت *منفی* تعویض؛ بدون پیش‌فرض ضمنی.
    * جلسه ۱۷ · بند ۱ — گزینه‌ی چهارم «کارت‌به‌کارت توسط مدیر» هم اضافه شد و
@@ -270,9 +271,10 @@ export default function SalesReturn() {
   const printIssuedOverpayCredit = async (credit: any | null) => {
     if (overpayCreditPrinting) return
     setOverpayCreditPrinting(true)
+    setOverpayCreditPrintProblem(null)
     try {
       const problem = await printOverpayCredit(credit)
-      if (problem) setErr(problem)
+      if (problem) setOverpayCreditPrintProblem({ kind: isUnknownPrintMessage(problem) ? 'unknown' : 'failed', msg: problem })
     } finally {
       setOverpayCreditPrinting(false)
     }
@@ -1763,9 +1765,13 @@ export default function SalesReturn() {
         onFlow={setOverpayFlow}
         onSubmit={(req) => void doSubmit(false, req)}
         issuedCredit={issuedOverpayCredit}
-        onCloseIssued={() => setIssuedOverpayCredit(null)}
+        onCloseIssued={() => {
+          setIssuedOverpayCredit(null)
+          setOverpayCreditPrintProblem(null)
+        }}
         onReprint={() => void printIssuedOverpayCredit(issuedOverpayCredit)}
         creditPrinting={overpayCreditPrinting}
+        creditPrintProblem={overpayCreditPrintProblem}
       />
 
       {/* ---------------- ویرایش یک برگشت ثبت‌شده ---------------- */}

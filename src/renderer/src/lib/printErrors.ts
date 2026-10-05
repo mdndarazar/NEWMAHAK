@@ -1,16 +1,24 @@
 /**
  * Helperهای مشترک پیام/کد خطای چاپ در renderer.
  *
- * main کم‌کم کدهای صریح (مثل PRINT_CANCELLED) را از IPC عبور می‌دهد، اما بعضی
- * مسیرهای قدیمی هنوز فقط متن فارسی دارند. این توابع هر دو شکل را می‌پذیرند تا
- * صفحه‌ها برای timeout/unknown/cancel پیام متناقض یا retry خطرناک نسازند.
+ * main برای cancel و unknown کد صریح IPC می‌فرستد. regex فقط fallback سازگاری با
+ * پیام‌های قدیمی است و عمداً print-specific نوشته شده تا timeout ساخت PDF
+ * («هیچ فایلی ذخیره نشد») با نتیجه‌ی نامعلوم چاپ اشتباه نشود.
  */
 export function printErrorMessage(e: unknown): string {
   return String((e as any)?.message ?? e ?? '')
 }
 
 export function isUnknownPrintMessage(e: unknown): boolean {
-  return /معلوم نیست|نامعلوم|ممکن است|پاسخی نداد|نتیجه نداد/.test(printErrorMessage(e))
+  const err = e as any
+  if (err?.printOutcomeUnknown === true || err?.code === 'PRINT_OUTCOME_UNKNOWN') return true
+  const msg = printErrorMessage(e)
+  return (
+    /نتیجه(?:‌| )?ی? چاپ نامعلوم/.test(msg) ||
+    /معلوم نیست[^\n]*(برگه|فیش|رسید|سند|کد اعتبار)?[^\n]*چاپ شده باشد/.test(msg) ||
+    /چاپگر[^\n]*نتیجه نداد[^\n]*برگه چاپ شده باشد/.test(msg) ||
+    /ممکن است برگه چاپ شده باشد/.test(msg)
+  )
 }
 
 export function isPrintCancelledError(e: unknown): boolean {

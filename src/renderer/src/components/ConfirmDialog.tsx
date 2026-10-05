@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useRef, type ReactNode } from 'react'
 import { useTopmostModalKey } from './Modal'
 
 /**
@@ -32,8 +32,17 @@ export default function ConfirmDialog({
   onConfirm: () => void
   onCancel: () => void
 }) {
+  const confirmButtonRef = useRef<HTMLButtonElement | null>(null)
+
   useTopmostModalKey(open, (e) => {
     if (e.key !== 'Escape' && e.key !== 'Enter') return
+    if (e.key === 'Enter') {
+      const active = document.activeElement
+      // اگر کاربر با Tab روی «انصراف» یا هر دکمه‌ی دیگری است، Enter باید همان
+      // دکمه را بزند؛ handler سراسری نباید آن را به «بله» تبدیل کند.
+      if (active instanceof HTMLButtonElement && active !== confirmButtonRef.current) return
+      if (active instanceof HTMLTextAreaElement) return
+    }
     e.preventDefault()
     e.stopPropagation()
     e.stopImmediatePropagation()
@@ -67,7 +76,7 @@ export default function ConfirmDialog({
           <button className="btn" onClick={onCancel} disabled={busy}>
             {cancelLabel} <span className="keycap">Esc</span>
           </button>
-          <button className="btn btn-primary" onClick={onConfirm} disabled={busy}>
+          <button ref={confirmButtonRef} autoFocus className="btn btn-primary" onClick={onConfirm} disabled={busy}>
             {busy ? 'در حال انجام…' : confirmLabel}
           </button>
         </div>

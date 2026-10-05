@@ -16,7 +16,7 @@ import {
   MANAGER_ACCOUNT_ROW_NOTE
 } from '@shared/enums'
 import type { InvoicePaymentsView } from '@shared/types'
-import OverpayFlowDialogs, { printOverpayCredit } from './OverpayFlowDialogs'
+import OverpayFlowDialogs, { printOverpayCredit, type OverpayCreditPrintProblem } from './OverpayFlowDialogs'
 import {
   isOverpayWarning,
   needsManagerPassword,
@@ -129,6 +129,7 @@ export default function InvoicePaymentsModal({
   /** آخرین کد اعتبار صادرشده از مبلغ اضافه (برای نمایش و چاپ دوباره) */
   const [issuedCredit, setIssuedCredit] = useState<(OverpayCreditLike & { id?: number }) | null>(null)
   const [creditPrinting, setCreditPrinting] = useState(false)
+  const [creditPrintProblem, setCreditPrintProblem] = useState<OverpayCreditPrintProblem>(null)
   /**
    * ---------------- کار الف — «مقصد پول» (بدون پیش‌فرض) ----------------
    * دو حالت جدا دارد و عمداً دو state جدا:
@@ -202,6 +203,7 @@ export default function InvoicePaymentsModal({
     setFlow(null)
     setIssuedCredit(null)
     setCreditPrinting(false)
+    setCreditPrintProblem(null)
     setMethodId((cur) => cur ?? methods[0]?.id ?? null)
     void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -252,9 +254,10 @@ export default function InvoicePaymentsModal({
   const printIssuedCredit = async (credit: { id?: number } | null) => {
     if (creditPrinting) return
     setCreditPrinting(true)
+    setCreditPrintProblem(null)
     try {
       const problem = await printOverpayCredit(credit)
-      if (problem) setErr(problem)
+      if (problem) setCreditPrintProblem({ kind: isUnknownPrintMessage(problem) ? 'unknown' : 'failed', msg: problem })
     } finally {
       setCreditPrinting(false)
     }
@@ -992,9 +995,13 @@ export default function InvoicePaymentsModal({
             onSubmit={(req) => void addPayment(req)}
             onPassword={pwTarget === 'issue' ? (p) => void issueFromOverpay(p) : undefined}
             issuedCredit={issuedCredit}
-            onCloseIssued={() => setIssuedCredit(null)}
+            onCloseIssued={() => {
+              setIssuedCredit(null)
+              setCreditPrintProblem(null)
+            }}
             onReprint={() => void printIssuedCredit(issuedCredit)}
             creditPrinting={creditPrinting}
+            creditPrintProblem={creditPrintProblem}
           />
         </>
       )}
