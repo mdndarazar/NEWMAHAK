@@ -133,6 +133,13 @@ check('Patch بازبینی دهم: finalize محافظه‌کار، cursor mono
 check('Patch بازبینی یازدهم: guard اسنپ‌شات reconcile/preview، cursorهای monotonic، saveSettings تراکنشی و HTTPS اجباری', [
   /updateLinkIfSnapshotUnchanged\(link, \{ status: WooLinkStatus\.BROKEN_REMOTE \}\)/.test(svc) && /function updateLinkIfSnapshotUnchanged/.test(svc), /setSettingMonotonic\(WOO_RECONCILE_LAST_ID_KEY/.test(svc) && /async function setSettingMonotonic/.test(svc), /const prevRaw = await rawConfig\(tx\)/.test(svc) && /input\.enabled === undefined/.test(svc), /wooUrlRequiresTls/.test(svc) && /export function wooUrlRequiresTls/.test(read('src/shared/wooSync.ts')), /pauseSeqFloor: link\.pauseSeqFloor \?\? BigInt\(await lastCursor\(client\)\)/.test(svc)
 ], [true, true, true, true, true])
+check('Patch بازبینی سیزدهم: گپ لحظه‌ی وصل بازیابی می‌شود و resume/resolve گارد اسنپ‌شات دارند', [
+  (() => { const i = svc.indexOf('async linkCreate'); const j = i >= 0 ? svc.indexOf('const freshRemote', i) : -1; return i >= 0 && j > i && svc.slice(i, j).includes('pullJournalDrain(5, 200)') })(),
+  /INBOUND_DURING_LINK_CREATE/.test(svc) && /status: WooInboundStatus\.SKIPPED_UNMAPPED, seq: \{ gt: initialSeqFloor \}/.test(svc) && /LINK_CREATE_GAP_EVENTS_HELD/.test(svc),
+  /if \(!sameDbTime\(fresh\.updatedAt, link\.updatedAt\)\) throw new BusinessError\('این اتصال بعد از پذیرش این درخواست دوباره تغییر وضعیت داده است/.test(svc),
+  (() => { const i = svc.indexOf('async resumeProductGroup'); const seg = i >= 0 ? svc.slice(i, i + 12000) : ''; return seg.includes('if (!sameDbTime(fresh.updatedAt, link.updatedAt)) return') })(),
+  (() => svc.split('وضعیت اتصال هم‌زمان تغییر کرده است').length - 1)() >= 2
+], [true, true, true, true, true])
 check('Patch بازبینی دوازدهم (نهایی): اعمال تأیید APPLY_INBOUND فقط روی اسنپ‌شات ثابت لینک انجام می‌شود', [
   /if \(!freshLink \|\| freshLink\.status !== link\.status \|\| !sameDbTime\(freshLink\.updatedAt, link\.updatedAt\)\) throw new BusinessError\('وضعیت اتصال هم‌زمان تغییر کرده است/.test(svc), /if \(freshLink\.status === WooLinkStatus\.ACTIVE\) \{\s*\n\s*await \(tx as any\)\.wooSyncOutbox\.updateMany\(\{ where: \{ linkId: link\.id, status: \{ in: openOutboxStatuses\(\) \} \}, data: \{ status: WooOutboxStatus\.SUPERSEDED, lastError: 'REBASING_AFTER_APPROVED_INBOUND'/.test(svc), /const wooBase = await wooBaseAfterInboundEvent\(tx as any, freshLink, event\)/.test(svc), /APPROVAL_APPLY_INBOUND/.test(svc)
 ], [true, true, true, true])

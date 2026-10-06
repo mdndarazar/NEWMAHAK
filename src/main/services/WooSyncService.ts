@@ -828,6 +828,10 @@ export const wooSyncService = {
     if (input.manageStock !== true) throw new BusinessError('این محصول در سایت manage_stock ندارد؛ تا وقتی موجودی سایت مستقل نباشد، اتصال امن نیست.')
     if (input.wooQty === null || input.wooQty === undefined) throw new BusinessError('موجودی سایت برای این holder عدد مستقل ندارد؛ اتصال امن نیست.')
     const catalogWooQty = wooSafeInt(input.wooQty)
+    // ژورنال سایت را تا حد ممکن خالی می‌کنیم تا snapshot بعدی (stockQuantity + lastSeq که با هم خوانده می‌شوند)
+    // تازه‌ترین نقطه‌ی ژورنال را پوشش دهد؛ آنچه قبل از snapshot ثبت شده در خط مبنا (floor) قرار می‌گیرد،
+    // و آنچه بعد از آن برسد یا هم‌اکنون قابل خواندن است یا در گپ گم‌شده بازیابی می‌شود (پایین‌تر).
+    await this.pullJournalDrain(5, 200)
     const freshRemote = (await this.remoteStock([{ holderKey, wooProductId: productId, wooVariationId: variationId }]))[0]
     if (!remoteStockUsable(freshRemote)) throw new BusinessError('این محصول/Variation در سایت موجودی مستقل عددی ندارد (manage_stock والد/خاموش/اعشاری است)؛ اتصال امن نیست.')
     const wooQty = wooSafeInt(freshRemote.stockQuantity ?? catalogWooQty)
@@ -835,7 +839,8 @@ export const wooSyncService = {
     const decision = String(input.decision || WooResumeDecision.MAHAK_WINS)
     const variant = await prisma.productVariant.findUnique({ where: { id: variantId }, select: { id: true, code: true } })
     if (!variant) throw new BusinessError('کالای فروشگاه پیدا نشد.')
-    return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    let gapHeldCount = 0
+    const created = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const exists = await activeLinkForVariant(tx as any, variantId)
       if (exists) throw new BusinessError('این واریانت فروشگاه از قبل به سایت وصل است؛ اول همان اتصال را قطع کنید.')
       const holderExists = await (tx as any).wooProductLink.findFirst({ where: { holderKey, status: { not: WooLinkStatus.UNLINKED } }, select: { id: true, variantId: true } })
@@ -881,8 +886,36 @@ export const wooSyncService = {
         after: json({ variantId, holderKey, decision, wooQty, mahakQty: localStock, relinkSeqFloor: freshRemote.lastSeq ?? null }),
         note: 'اتصال موجودی کالا به WooCommerce (فقط موجودی)'
       })
+      // گپ لحظه‌ی وصل: رویدادی که بعد از snapshot (seq > floor) رخ داده ولی scheduler قبل از ساخت لینک آن را
+      // به‌عنوان SKIPPED_UNMAPPED کنار گذاشته، نباید گم شود؛ به رویدادِ نگهداشته‌شده‌ی نیازمند تأیید مدیر تبدیل می‌شود.
+      if (initialSeqFloor != null) {
+        const gapEvents = await (tx as any).wooInboundEvent.findMany({
+          where: { holderKey, status: WooInboundStatus.SKIPPED_UNMAPPED, seq: { gt: initialSeqFloor } },
+          orderBy: [{ seq: 'asc' }, { id: 'asc' }],
+          take: 50
+        })
+        for (const ev of gapEvents) {
+          await (tx as any).wooInboundEvent.update({ where: { id: ev.id }, data: { status: WooInboundStatus.SKIPPED_PAUSED, linkId: link.id, variantId, processedAt: new Date() } })
+          await ensureApproval({
+            client: tx as any,
+            action: WooApprovalAction.APPLY_INBOUND,
+            linkId: link.id,
+            variantId,
+            holderKey,
+            sourceType: 'WooInboundEvent',
+            sourceId: ev.id,
+            reason: 'INBOUND_DURING_LINK_CREATE',
+            title: 'رویداد سایت دقیقاً هنگام وصل اولیه',
+            message: 'در همان لحظه‌ی ساخت اتصال، روی سایت تغییر موجودی رخ داده بود و چون لینک هنوز ساخته نشده بود، خواننده آن را کنار گذاشته بود؛ برای جلوگیری از اختلاف پنهان، اعمال آن نیازمند تأیید مدیر است.',
+            payload: { seq: ev.seq == null ? null : Number(ev.seq), delta: ev.delta == null ? null : Number(ev.delta), newQty: ev.newQty == null ? null : Number(ev.newQty), source: ev.source ?? null, orderId: ev.orderId ?? null }
+          })
+        }
+        gapHeldCount = gapEvents.length
+      }
       return { id: link.id }
     }, TX_OPTIONS)
+    if (gapHeldCount > 0) await log('LINK_CREATE_GAP_EVENTS_HELD', 'رویدادهای سایتِ لحظه‌ی وصل اولیه برای تصمیم مدیر نگه داشته شدند', { level: 'WARN', variantId, payload: { count: gapHeldCount } })
+    return created
   },
 
   async pause(input: { linkIds?: number[]; note?: string | null; userId?: number | null }) {
@@ -1017,6 +1050,9 @@ export const wooSyncService = {
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const fresh = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
       if (!fresh || ![WooLinkStatus.PAUSED, WooLinkStatus.CONFLICT, WooLinkStatus.BROKEN_REMOTE, WooLinkStatus.FROZEN].includes(fresh.status)) throw new BusinessError('این اتصال دیگر در وضعیت قطع موقت/اختلاف/توقف/خرابی سایت نیست؛ فهرست را تازه کنید.')
+      // فقط بودن در یکی از وضعیت‌های قطع کافی نیست؛ اگر بعد از خواندن این درخواست اتصال دوباره تغییر کرده باشد
+      // (مثلاً مدیر همان لینک را دوباره قطع کرده)، اجرای تصمیم این پنجره‌ی کهنه تصمیم تازه‌ی مدیر را باطل می‌کند.
+      if (!sameDbTime(fresh.updatedAt, link.updatedAt)) throw new BusinessError('این اتصال بعد از پذیرش این درخواست دوباره تغییر وضعیت داده است؛ فهرست را تازه کنید و دوباره تصمیم بگیرید.')
       await assertNoFreshInFlight(tx as any, link.id)
       const txStock = await productStock(link.variantId, tx as any)
       if (txStock !== Number(preview.mahakStock)) throw new BusinessError('موجودی MAHAK بعد از پیش‌نمایش تغییر کرده است؛ دوباره پیش‌نمایش بگیرید.')
@@ -1770,6 +1806,10 @@ export const wooSyncService = {
           await (tx as any).wooApproval.update({ where: { id }, data: { status: WooApprovalStatus.EXPIRED, resolvedAt: new Date(), resolvedBy: input.userId ?? null, resolution: 'STALE_ACTIVE_LINK', resolutionNote: 'لینک هنگام تعیین تکلیف این درخواست سالم و فعال بود؛ درخواست قدیمی منقضی شد.' } })
           throw new BusinessError('این درخواست تأیید قدیمی است و لینک اکنون فعال و سالم است؛ فهرست را تازه کنید.')
         }
+        // بین خوان لینک و شروع این تراکنش چند درخواست شبکه (drain/snapshot) انجام می‌شود؛ اگر مدیر در همین فاصله
+        // اتصال را قطع/تغییر داده باشد، اعمال تصمیم روی اسنپ‌شات کهنه ممنوع است. چون claim داخل همین تراکنش است،
+        // rollback باعث می‌شود تأیید PENDING بماند و مدیر با وضعیت تازه دوباره تصمیم بگیرد.
+        if (freshLink.status !== link.status || !sameDbTime(freshLink.updatedAt, link.updatedAt)) throw new BusinessError('وضعیت اتصال هم‌زمان تغییر کرده است؛ این تأیید روی اسنپ‌شات قدیمی اعمال نشد. فهرست را تازه کنید و دوباره تصمیم بگیرید.')
         const claimed = await (tx as any).wooApproval.updateMany({ where: { id, status: WooApprovalStatus.PENDING }, data: { status: WooApprovalStatus.APPROVED, resolvedAt: new Date(), resolvedBy: input.userId ?? null, resolution: decision, resolutionNote: input.note ?? null } })
         if (!claimed.count) throw new BusinessError('درخواست تأیید قبلاً تعیین تکلیف شده است؛ فهرست را تازه کنید.')
         await assertNoFreshInFlight(tx as any, link.id)
@@ -1859,6 +1899,8 @@ export const wooSyncService = {
         await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
           const fresh = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
           if (!fresh || ![WooLinkStatus.PAUSED, WooLinkStatus.CONFLICT].includes(String(fresh.status) as any)) return
+          // اگر بعد از خواندن فهرست، مدیر این لینک را دوباره تغییر داده باشد، وصل گروهی با اسنپ‌شات کهنه اجرا نمی‌شود.
+          if (!sameDbTime(fresh.updatedAt, link.updatedAt)) return
           await assertNoFreshInFlight(tx as any, link.id)
           const held = await (tx as any).wooInboundEvent.findMany({ where: heldInboundWhere(fresh, null), select: { id: true, seq: true, source: true, orderId: true, delta: true, status: true } })
           if (held.length > 0) return
