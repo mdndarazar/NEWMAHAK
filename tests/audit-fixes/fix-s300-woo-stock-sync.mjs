@@ -85,6 +85,9 @@ check('Backorder منفی سایت به lastWooQty واقعی می‌رود، ا
 check('Remote stock نامعتبر یا اعشاری به صفر تبدیل و WOO_WINS نمی‌شود', [
   /function wooNullableInt/.test(svc), /function remoteStockUsable/.test(svc), /stockQuantity: wooNullableInt/.test(svc), /!remoteStockUsable\(r\)/.test(svc) && /BROKEN_REMOTE/.test(svc), /!remoteStockUsable\(remote\)/.test(svc) && /resumePreview/.test(svc), /freshRemoteForDecision/.test(svc) && /سایت.*مرجع/.test(svc), /stockQuantity: number \| null/.test(read('src/shared/wooSync.ts')), /stockQuantity == null/.test(page)
 ], [true, true, true, true, true, true, true, true])
+check('حل اختلاف و اتصال اولیه دوباره‌شماری ژورنال سایت نمی‌سازد', [
+  /initialSeqFloor/.test(svc) && /relinkSeqFloor: initialSeqFloor/.test(svc), /pullJournalDrain\(5, 200\)/.test(svc), /SUPERSEDED_BY_/.test(svc) && /WooApprovalAction\.APPLY_INBOUND/.test(svc), /remoteLastSeq/.test(svc) && /relinkSeqFloor: relinkFloor/.test(svc), /afterSeq = Math.max\(0, cursor - 50\)/.test(svc), /ژورنال سایت هنوز کامل نشده/.test(svc)
+], [true, true, true, true, true, true])
 check('Retry بعد timeout/idempotent از new_qty سایت استفاده می‌کند و در mismatch outbox تازه می‌سازد', [
   /appliedWooQty = res\?\.new_qty == null \? target : wooSafeInt\(res\.new_qty\)/.test(svc), /res\?\.idempotent === true && appliedWooQty !== target/.test(svc), /STOCK_PUSH_RETRY_AFTER_IDEMPOTENT/.test(svc)
 ], [true, true, true])
@@ -110,19 +113,22 @@ check('Plugin idempotent است، meta قدیمی را بعد از apply به‌
 check('Plugin journal failure-safe و idempotency داخل lock دارد', [
   /UNIQUE KEY request_holder/.test(plugin), /OPTION_DB_VERSION/.test(plugin) && /maybe_upgrade/.test(plugin), /previous = self::previous_record_for_request\(\$request_id, \$key\);[\s\S]{0,120}if \(\$previous\) return \$previous;[\s\S]{0,120}\$wpdb->query\('START TRANSACTION'\)/.test(plugin), /strict = false/.test(plugin), /throw new RuntimeException\('MAHAK journal insert failed/.test(plugin), /self::record\([\s\S]*true\);[\s\S]{0,500}wc_update_product_stock/.test(plugin)
 ], [true, true, true, true, true, true])
+check('Plugin upgrade schema را با lock و تأیید unique index انجام می‌دهد', [
+  /mahak_stock_sync_upgrade/.test(plugin) && /GET_LOCK/.test(plugin), /UPDATE \{\$qt\} SET request_id = NULL WHERE request_id = ''/.test(plugin), /request_holder_unique_exists/.test(plugin), /DROP INDEX request_holder/.test(plugin), /UNIQUE KEY request_holder \(request_id\(96\), holder_key\(40\)\)/.test(plugin), /update_option\(self::OPTION_DB_VERSION, self::DB_VERSION, true\)/.test(plugin)
+], [true, true, true, true, true, true])
 
 check('Plugin apply موجودی/status را با Woo save می‌کند، target/expected اجباری و قفل DB/CAS خام دارد', [
-  /wc_update_product_stock\(\$product, \$target, 'set'\)/.test(plugin), !/wc_update_product_stock\(\$product, \$target, 'set', true\)/.test(plugin), /expected and target integer fields are required/.test(plugin), /GET_LOCK/.test(plugin) && /RELEASE_LOCK/.test(plugin), /FOR UPDATE/.test(plugin) && /START TRANSACTION/.test(plugin), /\$expected_raw = \$stock_row \? \(string\)\$stock_row\['meta_value'\]/.test(plugin), /meta_value = %s LIMIT 1", \(string\)\$target, \$product->get_id\(\), \$expected_raw/.test(plugin), /mahak_stock_lock_timeout[\s\S]{0,120}status' => 503/.test(plugin), /COMMIT'\) === false/.test(plugin) && /MAHAK stock apply verification failed/.test(plugin)
-], [true, true, true, true, true, true, true, true, true])
+  /wc_update_product_stock\(\$product, \$target, 'set'\)/.test(plugin), !/wc_update_product_stock\(\$product, \$target, 'set', true\)/.test(plugin), /expected and target integer fields are required/.test(plugin), /GET_LOCK/.test(plugin) && /RELEASE_LOCK/.test(plugin), /FOR UPDATE/.test(plugin) && /START TRANSACTION/.test(plugin), /\$expected_raw = \$stock_row \? \(string\)\$stock_row\['meta_value'\]/.test(plugin), /WHERE meta_id = %d AND meta_value = %s LIMIT 1/.test(plugin) && /MAHAK CAS update failed/.test(plugin), /mahak_stock_lock_timeout[\s\S]{0,120}status' => 503/.test(plugin), /COMMIT'\) === false/.test(plugin) && /MAHAK stock apply verification failed/.test(plugin), /CONNECTION_ID/.test(plugin) && /MAHAK journal row missing before commit/.test(plugin)
+], [true, true, true, true, true, true, true, true, true, true])
 check('Variation با manage_stock والد قابل اتصال/نوشتن نیست و catalog صفحه‌بندی holder-level دارد', [
   /manage_stock_mode/.test(plugin), /mahak_manage_stock_parent/.test(plugin), /get_stock_managed_by_id/.test(plugin), /holder_offset/.test(plugin) && /product_items/.test(plugin), /manageStockMode/.test(svc), /موجودی مشترک والد/.test(page)
 ], [true, true, true, true, true, true])
 check('Refund/order item context و delta اتمیک Woo روی آخرین journal row patch می‌شود', [
-  /woocommerce_reduce_order_item_stock/.test(plugin), /woocommerce_restore_order_item_stock/.test(plugin), /stock_change_from_args/.test(plugin), /order_item_id/.test(plugin), /order_item_qty/.test(plugin), /refund_restock/.test(plugin), /created_at >= \(UTC_TIMESTAMP\(\) - INTERVAL 10 MINUTE\)/.test(plugin), /allowed_sources/.test(plugin), /'delta_qty'/.test(plugin), /rest_other/.test(plugin), /created_at <= \(UTC_TIMESTAMP\(\) - INTERVAL 2 SECOND\)/.test(plugin)
-], [true, true, true, true, true, true, true, true, true, true, true])
+  /woocommerce_reduce_order_item_stock/.test(plugin), /woocommerce_restore_order_item_stock/.test(plugin), /stock_change_from_args/.test(plugin), /order_item_id/.test(plugin), /order_item_qty/.test(plugin), /refund_restock/.test(plugin), /created_at >= \(UTC_TIMESTAMP\(\) - INTERVAL 10 MINUTE\)/.test(plugin), /allowed_sources/.test(plugin), /'delta_qty'/.test(plugin), /rest_other/.test(plugin), /isset\(\$args\[1\], \$args\[2\]\)/.test(plugin) && /order_restore/.test(plugin), /mahak_settled/.test(plugin)
+], [true, true, true, true, true, true, true, true, true, true, true, true])
 check('Plugin مسیرهای metadata مستقیم، dedupe و suppress محدود به holder را پوشش می‌دهد', [
-  /updated_post_meta/.test(plugin) && /added_post_meta/.test(plugin), /after_stock_meta/.test(plugin), /meta_recorded/.test(plugin) && /unset\(self::\$meta_recorded\[\$id\], self::\$before\[\$id\]\)/.test(plugin), /suppress_ids/.test(plugin) && /is_suppressed/.test(plugin), /stock_holder_parts/.test(plugin), /mahak_fractional_stock/.test(plugin), /clean_product_caches/.test(plugin)
-], [true, true, true, true, true, true, true])
+  /updated_post_meta/.test(plugin) && /added_post_meta/.test(plugin), /after_stock_meta/.test(plugin), /meta_recorded/.test(plugin) && /same_meta_event/.test(plugin), /delete_post_meta\(\$id, '_mahak_stock_last_qty'\)/.test(plugin) && /delete_post_meta\(\$object_id, '_mahak_stock_last_qty'\)/.test(plugin), /suppress_ids/.test(plugin) && /is_suppressed/.test(plugin), /stock_holder_parts/.test(plugin), /mahak_fractional_stock/.test(plugin), /clean_product_caches/.test(plugin)
+], [true, true, true, true, true, true, true, true])
 check('Plugin قیمت/مشتری را در خروجی نمی‌دهد و فقط stock_quantity را expose می‌کند', [
   /stock_quantity/.test(plugin), !/_price|regular_price|sale_price|billing|shipping|customer_email/i.test(plugin), /old.*new/.test(plugin) && /return;/.test(plugin)
 ], [true, true, true])

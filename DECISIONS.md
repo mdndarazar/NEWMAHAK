@@ -1409,3 +1409,15 @@ S142-6 — سؤال: گیت نبودن رمز مدیر روی issueManual/bulkIs
   - در order item hook، `from/to` اتمیک Woo اگر موجود باشد old/new/delta ردیف journal را اصلاح می‌کند.
   - موجودی remote نامعتبر/اعشاری/غیر managed به صفر تبدیل نمی‌شود؛ لینک BROKEN_REMOTE می‌شود و WOO_WINS مجاز نیست.
 - مرز معماری: همچنان فقط stock_quantity sync می‌شود؛ قیمت، مشتری، سفارش مالی و گزارش فروش Woo وارد MAHAK نمی‌شود.
+
+### WOO-H7 — بازبینی سوم افزونه و سرویس: جلوگیری از دوباره‌شماری و stock نامعلوم
+- سؤال: پس از CAS خام و hardening قبلی، گزارش‌های مستقل درباره دوباره‌شماری approval، اتصال اولیه بدون floor، stock خالی Woo، journal prefix و upgrade schema چه تصمیمی می‌خواهند؟
+- انتخاب من: رفع حداقلی و محافظه‌کارانه بدون ورود سفارش/مشتری/قیمت Woo به MAHAK.
+- تصمیم‌ها:
+  - مقدار خالی/NULL `_stock` دیگر صفر حساب نمی‌شود و event موجودی نمی‌سازد؛ baseline داخلی افزونه پاک می‌شود تا روشن‌شدن دوباره manage_stock delta کهنه نسازد.
+  - لینک تازه با `relinkSeqFloor` بر اساس `last_seq` سایت ساخته می‌شود تا رویدادهای قبل از اتصال اولیه بعداً دوباره اعمال نشوند.
+  - حل approvalهای conflict/reconcile قبل از تصمیم، ژورنال سایت را drain می‌کند؛ رویدادهای pauseشده‌ای که تا snapshot سایت پوشش داده شده‌اند SUPERSEDED و approvalهای APPLY_INBOUND مربوطه EXPIRED می‌شوند.
+  - `/journal` فقط یک prefix settle‌شده از seqها را برمی‌گرداند و سمت برنامه با overlap کوچک cursor می‌خواند تا late commit باعث skip دائمی نشود.
+  - upgrade جدول با lock، پاک‌سازی request_id خالی، کوتاه‌سازی index ترکیبی و تأیید وجود unique index انجام می‌شود؛ نسخه DB فقط بعد از تأیید ثبت می‌شود.
+  - CAS افزونه روی `meta_id` قفل‌شده و مقدار خام انجام می‌شود و false از wpdb به خطای واقعی تبدیل می‌شود، نه conflict کاذب.
+- مرز معماری: همچنان فقط عدد موجودی sync می‌شود؛ order_id فقط شناسه attribution است و هیچ فاکتور/پرداخت/مشتری/قیمت Woo ساخته یا وارد نمی‌شود.

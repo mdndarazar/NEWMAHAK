@@ -62,7 +62,7 @@ resources/woocommerce/mahak-stock-sync.php
 
 ## ۶) نکته‌های افزونه بعد از بازبینی امنیت موجودی
 
-- apply افزونه علاوه بر lock، نوشتن CAS مستقیم روی `_stock` انجام می‌دهد (`WHERE meta_value = expected`) و سپس WooCommerce را برای cache/stock_status همگام می‌کند.
+- apply افزونه علاوه بر lock، نوشتن CAS مستقیم روی ردیف `_stock` قفل‌شده انجام می‌دهد و مقدار خام همان ردیف را شرط می‌کند؛ سپس WooCommerce را برای cache/stock_status همگام می‌کند.
 - اگر journal افزونه هنگام apply MAHAK ثبت نشود، عملیات با خطا rollback می‌شود و API موفق برنمی‌گردد.
 - idempotency با `request_id + holder_key` بعد از گرفتن lock هم دوباره بررسی می‌شود تا retry هم‌زمان conflict کاذب نسازد.
 - موجودی اعشاری Woo در این نسخه پشتیبانی نمی‌شود و اتصال/نوشتن برای آن رد می‌شود؛ MAHAK فعلاً موجودی integer دارد.
@@ -76,3 +76,12 @@ resources/woocommerce/mahak-stock-sync.php
 - eventهای مستقیم `_stock` و hook عمومی stock در یک درخواست dedupe می‌شوند تا ویرایش ادمین دوبار روی MAHAK اعمال نشود.
 - برای سفارش/refund، اگر Woo در hookهای order item مقدار `from/to` بدهد، همان مقدار اتمیک روی ردیف journal patch می‌شود و journal ردیف‌های خیلی تازه را با تأخیر کوتاه برمی‌گرداند تا patch attribution/delta فرصت کامل‌شدن داشته باشد.
 - اگر remote stock دیگر managed عددی نباشد، MAHAK آن را صفر فرض نمی‌کند؛ لینک خراب سایت می‌شود و تصمیم «سایت مرجع باشد» رد می‌شود.
+
+### نکته تکمیلی پس از بازبینی سوم
+
+- خاموش‌شدن `manage_stock` یا خالی‌شدن `_stock` در Woo به‌عنوان «صفر» وارد MAHAK نمی‌شود؛ افزونه آن را stock نامعلوم/غیرقابل‌sync می‌داند و baseline قبلی را پاک می‌کند.
+- اتصال اولیه از `last_seq` سایت به‌عنوان `relinkSeqFloor` استفاده می‌کند تا journalهای قبل از اتصال بعداً دوباره روی MAHAK اعمال نشوند.
+- حل اختلاف از مسیر Approval، قبل از اعمال تصمیم مدیر، ژورنال سایت را drain می‌کند و رویدادهای pauseشده‌ای را که تا snapshot سایت پوشش داده شده‌اند supersede/expire می‌کند.
+- `/journal` به‌جای فیلتر پراکنده، در اولین ردیف تازه متوقف می‌شود؛ سمت برنامه نیز با overlap کوچک می‌خواند تا late commit احتمالی event را برای همیشه جا نیندازد.
+- upgrade افزونه با lock و تأیید unique index انجام می‌شود. اگر unique index ساخته نشود، نسخه DB ثبت نمی‌شود و در لاگ وردپرس هشدار ثبت می‌گردد.
+- نسخه افزونه برای این اصلاحات به `1.0.2` و نسخه DB به `3` افزایش یافته تا سایت‌هایی که `1.0.1` را نصب کرده‌اند upgrade جدید را هم اجرا کنند.

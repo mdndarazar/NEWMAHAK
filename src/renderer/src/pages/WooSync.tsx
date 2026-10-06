@@ -435,7 +435,7 @@ export default function WooSync() {
             <button className="btn btn-primary" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.MAHAK_WINS)}>فروشگاه مرجع؛ سایت به MAHAK برسد</button>
             <button className="btn" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.WOO_WINS)}>سایت مرجع؛ MAHAK به سایت برسد</button>
             <button className="btn" disabled={busy || resumePreview.orderEvents === 0} onClick={() => applyResumeDecision(WooResumeDecision.MAHAK_PLUS_ORDERS)}>MAHAK + سفارش‌های سایت زمان قطع</button>
-            <button className="btn" disabled={busy || resumePreview.pausedEvents.length > 0 || resumePreview.mahakStock !== resumePreview.wooQty} onClick={() => applyResumeDecision(WooResumeDecision.VERIFY_ONLY)}>فقط بررسی؛ فعال کن بدون تغییر موجودی</button>
+            <button className="btn" disabled={busy || resumePreview.pausedEvents.length > 0 || Math.max(0, Math.round(Number(resumePreview.mahakStock) || 0)) !== Math.max(0, Math.round(Number(resumePreview.wooQty) || 0))} onClick={() => applyResumeDecision(WooResumeDecision.VERIFY_ONLY)}>فقط بررسی؛ فعال کن بدون تغییر موجودی</button>
           </div>
         </div>
       )}

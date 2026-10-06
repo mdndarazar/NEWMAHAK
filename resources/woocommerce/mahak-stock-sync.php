@@ -2,15 +2,15 @@
 /**
  * Plugin Name: MAHAK Stock Sync
  * Description: Stock-only bridge for MAHAK desktop app and WooCommerce. It reads/writes only stock_quantity and never exposes prices, customers, orders totals or addresses.
- * Version: 1.0.1
+ * Version: 1.0.2
  * Author: MAHAK Local
  */
 
 if (!defined('ABSPATH')) exit;
 
 final class Mahak_Stock_Sync_Plugin {
-  const VERSION = '1.0.1';
-  const DB_VERSION = '2';
+  const VERSION = '1.0.2';
+  const DB_VERSION = '3';
   const OPTION_TOKEN = 'mahak_stock_sync_token';
   const OPTION_LAST_SECRET_HINT = 'mahak_stock_sync_secret_hint';
   const OPTION_DB_VERSION = 'mahak_stock_sync_db_version';
@@ -54,20 +54,40 @@ final class Mahak_Stock_Sync_Plugin {
     return $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)) === $table;
   }
 
+  private static function quoted_table($table) {
+    return '`' . str_replace('`', '``', $table) . '`';
+  }
+
+  private static function request_holder_unique_exists($table) {
+    global $wpdb;
+    return (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = %s AND index_name = 'request_holder' AND non_unique = 0", $table)) > 0;
+  }
+
+  private static function request_holder_non_unique_exists($table) {
+    global $wpdb;
+    return (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = %s AND index_name = 'request_holder' AND non_unique = 1", $table)) > 0;
+  }
+
   private static function prepare_request_holder_index($table) {
     global $wpdb;
     if (!self::table_exists($table)) return;
+    $qt = self::quoted_table($table);
+    // نسخه‌های قبلی ممکن بود request_id خالی بسازند؛ UNIQUE روی رشته خالی مثل NULL نیست.
+    $wpdb->query("UPDATE {$qt} SET request_id = NULL WHERE request_id = ''");
     // اگر نسخه قبلی در race ردیف تکراری برای یک request/holder ساخته باشد، قبل از UNIQUE کردن
     // فقط request_id ردیف‌های تکراری را یکتا می‌کنیم تا خود eventهای journal حذف نشوند.
-    $wpdb->query("UPDATE {$table} j JOIN (
+    $wpdb->query("UPDATE {$qt} j JOIN (
       SELECT request_id, holder_key, MIN(seq) AS keep_seq
-      FROM {$table}
+      FROM {$qt}
       WHERE request_id IS NOT NULL AND request_id <> ''
       GROUP BY request_id, holder_key
       HAVING COUNT(*) > 1
     ) d ON j.request_id = d.request_id AND j.holder_key = d.holder_key
-    SET j.request_id = CONCAT(j.request_id, '#dup-', j.seq)
+    SET j.request_id = CONCAT(SUBSTRING(j.request_id, 1, 80), '#dup-', j.seq)
     WHERE j.seq <> d.keep_seq");
+    if (self::request_holder_non_unique_exists($table) && !self::request_holder_unique_exists($table)) {
+      $wpdb->query("ALTER TABLE {$qt} DROP INDEX request_holder");
+    }
   }
 
   private static function install_schema() {
@@ -93,15 +113,27 @@ final class Mahak_Stock_Sync_Plugin {
       payload_json LONGTEXT NULL,
       PRIMARY KEY (seq),
       UNIQUE KEY event_uuid (event_uuid),
-      UNIQUE KEY request_holder (request_id, holder_key),
+      UNIQUE KEY request_holder (request_id(96), holder_key(40)),
       KEY holder_seq (holder_key, seq),
       KEY request_id (request_id)
     ) {$charset};");
-    update_option(self::OPTION_DB_VERSION, self::DB_VERSION, false);
+    if (self::request_holder_unique_exists($table)) {
+      update_option(self::OPTION_DB_VERSION, self::DB_VERSION, true);
+    } else {
+      error_log('[mahak-stock-sync] request_holder unique index is missing after dbDelta');
+    }
   }
 
   public static function maybe_upgrade() {
-    if ((string)get_option(self::OPTION_DB_VERSION, '') !== self::DB_VERSION) self::install_schema();
+    if ((string)get_option(self::OPTION_DB_VERSION, '') === self::DB_VERSION) return;
+    global $wpdb;
+    $locked = (int)$wpdb->get_var("SELECT GET_LOCK('mahak_stock_sync_upgrade', 0)");
+    if ($locked !== 1) return;
+    try {
+      self::install_schema();
+    } finally {
+      $wpdb->query("SELECT RELEASE_LOCK('mahak_stock_sync_upgrade')");
+    }
   }
 
   public static function activate() {
@@ -237,6 +269,13 @@ final class Mahak_Stock_Sync_Plugin {
 
   public static function tag_restore_order_item_event(...$args) {
     list($old, $new, $qty, $product) = self::stock_change_from_args($args);
+    // Woo restore در بعضی نسخه‌ها scalar می‌فرستد: ($item, $new_stock, $old_stock, $order, $product).
+    if ($old === null && $new === null && isset($args[1], $args[2]) && is_numeric($args[1]) && is_numeric($args[2])) {
+      $new = self::int_stock_value($args[1]);
+      $old = self::int_stock_value($args[2]);
+      if (isset($args[4]) && is_object($args[4]) && method_exists($args[4], 'get_stock_quantity')) $product = $args[4];
+      $qty = ($old !== null && $new !== null) ? abs($new - $old) : $qty;
+    }
     self::patch_last_order_event('order_restore', self::order_id_from_args($args), self::item_from_args($args), $product, $qty, $old, $new);
   }
 
@@ -261,11 +300,19 @@ final class Mahak_Stock_Sync_Plugin {
   }
 
   private static function int_stock_value($qty) {
-    if ($qty === null || $qty === '') return 0;
+    if ($qty === null || $qty === '') return null;
     if (!is_numeric($qty)) return null;
     $f = (float)$qty;
     if (abs($f - round($f)) > 0.000001) return null;
     return intval(round($f));
+  }
+
+  private static function normalize_request_id($request_id, $empty_to_null = true) {
+    if ($request_id === null) return $empty_to_null ? null : '';
+    $s = sanitize_text_field((string)$request_id);
+    if ($s === '') return $empty_to_null ? null : '';
+    if (strlen($s) > 96) $s = substr($s, 0, 64) . '-' . md5($s);
+    return $s;
   }
 
   private static function is_suppressed($product) {
@@ -347,6 +394,7 @@ final class Mahak_Stock_Sync_Plugin {
   }
 
   private static function previous_record_for_request($request_id, $holder_key) {
+    $request_id = self::normalize_request_id($request_id, true);
     if (!$request_id) return null;
     global $wpdb;
     $row = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . self::table() . ' WHERE request_id = %s AND holder_key = %s ORDER BY seq DESC LIMIT 1', $request_id, $holder_key), ARRAY_A);
@@ -404,18 +452,24 @@ final class Mahak_Stock_Sync_Plugin {
     );
   }
 
-  private static function product_items($p) {
+  private static function product_stock_holders($p) {
     $out = array();
     if (!$p) return $out;
     if ($p->is_type('variable')) {
-      if (self::manage_stock_mode($p) === 'yes') $out[] = self::item($p);
+      if (self::manage_stock_mode($p) === 'yes') $out[] = $p;
       foreach ($p->get_children() as $vid) {
         $v = wc_get_product($vid);
-        if ($v) $out[] = self::item($v);
+        if ($v) $out[] = $v;
       }
     } else {
-      $out[] = self::item($p);
+      $out[] = $p;
     }
+    return $out;
+  }
+
+  private static function product_items($p) {
+    $out = array();
+    foreach (self::product_stock_holders($p) as $holder_product) $out[] = self::item($holder_product);
     return array_values(array_filter($out));
   }
 
@@ -430,13 +484,13 @@ final class Mahak_Stock_Sync_Plugin {
     $product_page = 1;
     $batch = max(20, min(100, $limit));
     do {
-      $args = array('limit' => $batch, 'page' => $product_page, 'status' => array('publish', 'private', 'draft'), 'return' => 'objects');
+      $args = array('limit' => $batch, 'page' => $product_page, 'status' => array('publish', 'private', 'draft'), 'return' => 'objects', 'orderby' => 'ID', 'order' => 'ASC');
       if ($search !== '') $args['search'] = $search;
       $products = wc_get_products($args);
       foreach ($products as $p) {
-        foreach (self::product_items($p) as $item) {
+        foreach (self::product_stock_holders($p) as $holder_product) {
           if ($seen++ < $holder_offset) continue;
-          $items[] = $item;
+          $items[] = self::item($holder_product);
           if (count($items) >= $limit + 1) break 3;
         }
       }
@@ -476,7 +530,7 @@ final class Mahak_Stock_Sync_Plugin {
     }
     $expected = intval($body['expected']);
     $target = max(0, intval($body['target']));
-    $request_id = sanitize_text_field((string)($body['request_id'] ?? ''));
+    $request_id = self::normalize_request_id($body['request_id'] ?? '', false);
     if ($request_id === '') $request_id = wp_generate_uuid4();
     $previous = self::previous_record_for_request($request_id, $key);
     if ($previous) return $previous;
@@ -484,6 +538,7 @@ final class Mahak_Stock_Sync_Plugin {
     $lock_name = 'mahak_stock_' . $product->get_id();
     $locked = (int)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 10)', $lock_name));
     if ($locked !== 1) return new WP_Error('mahak_stock_lock_timeout', 'Could not lock stock row for safe apply.', array('status' => 503));
+    $connection_id = (string)$wpdb->get_var('SELECT CONNECTION_ID()');
     $in_tx = false;
     try {
       // idempotency باید بعد از گرفتن lock دوباره چک شود تا retry هم‌زمان conflict کاذب نسازد.
@@ -492,7 +547,7 @@ final class Mahak_Stock_Sync_Plugin {
 
       if ($wpdb->query('START TRANSACTION') === false) throw new RuntimeException('Could not start MAHAK stock transaction: ' . $wpdb->last_error);
       $in_tx = true;
-      $stock_row = $wpdb->get_row($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = '_stock' LIMIT 1 FOR UPDATE", $product->get_id()), ARRAY_A);
+      $stock_row = $wpdb->get_row($wpdb->prepare("SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = '_stock' ORDER BY meta_id ASC LIMIT 1 FOR UPDATE", $product->get_id()), ARRAY_A);
       if (!$stock_row) {
         $initial_stock = self::int_stock_value($product->get_stock_quantity());
         if ($initial_stock === null) {
@@ -506,7 +561,7 @@ final class Mahak_Stock_Sync_Plugin {
         } finally {
           self::clear_suppressed_id($product->get_id());
         }
-        $stock_row = $wpdb->get_row($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = '_stock' LIMIT 1 FOR UPDATE", $product->get_id()), ARRAY_A);
+        $stock_row = $wpdb->get_row($wpdb->prepare("SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = '_stock' ORDER BY meta_id ASC LIMIT 1 FOR UPDATE", $product->get_id()), ARRAY_A);
       }
       $expected_raw = $stock_row ? (string)$stock_row['meta_value'] : (string)$product->get_stock_quantity();
       $current = self::int_stock_value($expected_raw);
@@ -522,13 +577,17 @@ final class Mahak_Stock_Sync_Plugin {
       }
       if ($current === $target) {
         self::remember_qty($product, $target);
+        if ((string)$wpdb->get_var('SELECT CONNECTION_ID()') !== $connection_id) throw new RuntimeException('MAHAK stock DB connection changed before noop commit.');
         if ($wpdb->query('COMMIT') === false) throw new RuntimeException('Could not commit MAHAK noop stock transaction: ' . $wpdb->last_error);
         $in_tx = false;
         return array('ok' => true, 'old_qty' => $current, 'new_qty' => $target, 'holder_key' => $key, 'noop' => true);
       }
 
       // CAS واقعی: مقدار خامِ قفل‌شده را مقایسه می‌کنیم، چون Woo ممکن است 50 را به صورت 50.000000 ذخیره کند.
-      $affected = $wpdb->query($wpdb->prepare("UPDATE {$wpdb->postmeta} SET meta_value = %s WHERE post_id = %d AND meta_key = '_stock' AND meta_value = %s LIMIT 1", (string)$target, $product->get_id(), $expected_raw));
+      $meta_id = $stock_row && isset($stock_row['meta_id']) ? absint($stock_row['meta_id']) : 0;
+      if (!$meta_id) throw new RuntimeException('MAHAK stock meta row is missing before CAS update.');
+      $affected = $wpdb->query($wpdb->prepare("UPDATE {$wpdb->postmeta} SET meta_value = %s WHERE meta_id = %d AND meta_value = %s LIMIT 1", (string)$target, $meta_id, $expected_raw));
+      if ($affected === false) throw new RuntimeException('MAHAK CAS update failed: ' . $wpdb->last_error);
       if ($affected !== 1) {
         $fresh = self::int_stock_value(get_post_meta($product->get_id(), '_stock', true));
         $wpdb->query('ROLLBACK');
@@ -549,9 +608,12 @@ final class Mahak_Stock_Sync_Plugin {
         self::clear_suppressed_id($product->get_id());
         self::$request_id = null;
       }
-      $verify_row = $wpdb->get_row($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = '_stock' LIMIT 1 FOR UPDATE", $product->get_id()), ARRAY_A);
+      $verify_row = $wpdb->get_row($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE meta_id = %d LIMIT 1 FOR UPDATE", $meta_id), ARRAY_A);
       $verified = $verify_row ? self::int_stock_value($verify_row['meta_value']) : null;
       if ($verified !== $target) throw new RuntimeException('MAHAK stock apply verification failed after Woo update.');
+      if ((string)$wpdb->get_var('SELECT CONNECTION_ID()') !== $connection_id) throw new RuntimeException('MAHAK stock DB connection changed before commit.');
+      $journal_seq = (int)$wpdb->get_var($wpdb->prepare('SELECT seq FROM ' . self::table() . ' WHERE request_id = %s AND holder_key = %s LIMIT 1', $request_id, $key));
+      if (!$journal_seq) throw new RuntimeException('MAHAK journal row missing before commit.');
       if ($wpdb->query('COMMIT') === false) throw new RuntimeException('Could not commit MAHAK stock transaction: ' . $wpdb->last_error);
       $in_tx = false;
       return array('ok' => true, 'old_qty' => $current, 'new_qty' => $target, 'holder_key' => $key);
@@ -573,9 +635,10 @@ final class Mahak_Stock_Sync_Plugin {
     global $wpdb;
     $after = max(0, absint($req->get_param('after_seq')));
     $limit = max(1, min(200, absint($req->get_param('limit') ?: 100)));
-    $rows = $wpdb->get_results($wpdb->prepare('SELECT * FROM ' . self::table() . ' WHERE seq > %d AND created_at <= (UTC_TIMESTAMP() - INTERVAL 2 SECOND) ORDER BY seq ASC LIMIT %d', $after, $limit), ARRAY_A);
+    $rows = $wpdb->get_results($wpdb->prepare('SELECT *, (created_at <= (UTC_TIMESTAMP() - INTERVAL 2 SECOND)) AS mahak_settled FROM ' . self::table() . ' WHERE seq > %d ORDER BY seq ASC LIMIT %d', $after, $limit), ARRAY_A);
     $events = array();
     foreach ($rows as $r) {
+      if (empty($r['mahak_settled'])) break;
       $events[] = array(
         'seq' => (int)$r['seq'], 'event_uuid' => $r['event_uuid'], 'holder_key' => $r['holder_key'],
         'product_id' => (int)$r['product_id'], 'variation_id' => $r['variation_id'] === null ? null : (int)$r['variation_id'],
@@ -592,15 +655,19 @@ final class Mahak_Stock_Sync_Plugin {
     if ($type !== 'product' && $type !== 'product_variation') return;
     $product = function_exists('wc_get_product') ? wc_get_product($post_id) : false;
     if (!$product || self::is_suppressed($product)) return;
+    $id = $product->get_id();
+    unset(self::$meta_recorded[$id]);
     $q = self::int_stock_value($product->get_stock_quantity());
-    if ($q !== null) self::$before[$product->get_id()] = $q;
+    if ($q !== null) self::$before[$id] = $q;
   }
 
   public static function before_stock($product) {
     if (!$product || self::is_suppressed($product)) return;
+    $id = $product->get_id();
+    unset(self::$meta_recorded[$id]);
     $q = self::current_db_stock_int($product);
     if ($q === null) $q = self::int_stock_value($product->get_stock_quantity());
-    if ($q !== null) self::$before[$product->get_id()] = $q;
+    if ($q !== null) self::$before[$id] = $q;
   }
 
   public static function after_stock($product) {
@@ -609,13 +676,18 @@ final class Mahak_Stock_Sync_Plugin {
     $old = array_key_exists($id, self::$before) ? self::$before[$id] : null;
     $new = self::int_stock_value($product->get_stock_quantity());
     if ($new === null) {
-      unset(self::$before[$id]);
-      error_log('[mahak-stock-sync] fractional stock is not supported for product ' . $id);
+      delete_post_meta($id, '_mahak_stock_last_qty');
+      unset(self::$meta_recorded[$id], self::$before[$id]);
+      error_log('[mahak-stock-sync] non-integer or unmanaged stock is not journaled for product ' . $id);
       return;
     }
-    if (isset(self::$meta_recorded[$id]) && self::$meta_recorded[$id] === $new) {
-      unset(self::$meta_recorded[$id], self::$before[$id]);
-      return;
+    if (isset(self::$meta_recorded[$id])) {
+      $same_meta_event = self::$meta_recorded[$id] === $new;
+      unset(self::$meta_recorded[$id]);
+      if ($same_meta_event) {
+        unset(self::$before[$id]);
+        return;
+      }
     }
     if ($old === null) {
       $meta = get_post_meta($id, '_mahak_stock_last_qty', true);
@@ -623,13 +695,13 @@ final class Mahak_Stock_Sync_Plugin {
     }
     update_post_meta($id, '_mahak_stock_last_qty', $new);
     if ($old === null || $old === $new) {
-      unset(self::$before[$id]);
+      unset(self::$meta_recorded[$id], self::$before[$id]);
       return;
     }
     list($pid, $vid) = self::stock_holder_parts($product);
     $source = self::$order_id ? self::$order_source : (is_admin() ? 'admin_edit' : ((defined('REST_REQUEST') && REST_REQUEST) ? 'rest_other' : 'woocommerce'));
     self::record($pid, $vid, $old, $new, $source, self::$order_id, null, self::$request_id, null);
-    unset(self::$before[$id]);
+    unset(self::$meta_recorded[$id], self::$before[$id]);
     if ($source === 'refund_restock') self::clear_order_context();
   }
 
@@ -639,14 +711,18 @@ final class Mahak_Stock_Sync_Plugin {
     if (!$product || self::is_suppressed($product)) return;
     $new = self::int_stock_value($meta_value);
     if ($new === null) {
-      unset(self::$before[$object_id]);
-      error_log('[mahak-stock-sync] fractional stock meta is not supported for product ' . absint($object_id));
+      delete_post_meta($object_id, '_mahak_stock_last_qty');
+      unset(self::$meta_recorded[$object_id], self::$before[$object_id]);
+      error_log('[mahak-stock-sync] non-integer or unmanaged stock meta is not journaled for product ' . absint($object_id));
       return;
     }
     $old_meta = get_post_meta($object_id, '_mahak_stock_last_qty', true);
     $old = ($old_meta === '') ? null : self::int_stock_value($old_meta);
     update_post_meta($object_id, '_mahak_stock_last_qty', $new);
-    if ($old === null || $old === $new) return;
+    if ($old === null || $old === $new) {
+      unset(self::$meta_recorded[$object_id], self::$before[$object_id]);
+      return;
+    }
     list($pid, $vid) = self::stock_holder_parts($product);
     $source = self::$order_id ? self::$order_source : (is_admin() ? 'admin_edit' : ((defined('REST_REQUEST') && REST_REQUEST) ? 'rest_other' : 'woocommerce_meta'));
     if (self::record($pid, $vid, $old, $new, $source, self::$order_id, null, self::$request_id, array('meta_hook' => true))) {
@@ -672,7 +748,7 @@ final class Mahak_Stock_Sync_Plugin {
       'source' => sanitize_key($source ?: 'woocommerce'),
       'order_id' => $order_id === null ? null : (string)$order_id,
       'order_item_id' => $order_item_id === null ? null : (string)$order_item_id,
-      'request_id' => $request_id === null ? null : (string)$request_id,
+      'request_id' => self::normalize_request_id($request_id, true),
       'created_at' => current_time('mysql', true),
       'payload_json' => $payload === null ? null : wp_json_encode($payload),
     ), array('%s','%s','%d','%d','%d','%d','%d','%s','%s','%s','%s','%s','%s'));
