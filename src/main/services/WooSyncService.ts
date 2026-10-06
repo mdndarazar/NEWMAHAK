@@ -1696,6 +1696,12 @@ export const wooSyncService = {
       await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
         const fresh = await (tx as any).wooInboundEvent.findUnique({ where: { id: event.id } })
         if (!fresh || ![WooInboundStatus.PARKED, WooInboundStatus.SKIPPED_PAUSED].includes(String(fresh.status) as any)) throw new BusinessError('رویداد ورودی قابل اعمال نیست یا قبلاً پردازش شده است.')
+        // مثل retryParked و مسیر تصمیم مرجع موجودی: لینک را داخل همان تراکنش با اسنپ‌شات مقایسه می‌کنیم.
+        // اگر هم‌زمان (مثلاً پاسخ 409 یک ارسال IN_FLIGHT یا یک اقدام IPC دیگر) وضعیت لینک را عوض کرده باشد،
+        // اعمال روی اسنپ‌شات کهنه abort می‌شود؛ چون claim تأیید داخل همین تراکنش است، پس از rollback تأیید
+        // همچنان PENDING می‌ماند و مدیر با وضعیت تازه‌ی صف دوباره تصمیم می‌گیرد.
+        const freshLink = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
+        if (!freshLink || freshLink.status !== link.status || !sameDbTime(freshLink.updatedAt, link.updatedAt)) throw new BusinessError('وضعیت اتصال هم‌زمان تغییر کرده است؛ این تأیید روی اسنپ‌شات قدیمی اعمال نشد. فهرست را تازه کنید و دوباره تصمیم بگیرید.')
         await assertNoFreshInFlight(tx as any, link.id)
         const claimed = await (tx as any).wooApproval.updateMany({ where: { id, status: WooApprovalStatus.PENDING }, data: { status: WooApprovalStatus.APPROVED, resolvedAt: new Date(), resolvedBy: input.userId ?? null, resolution: decision, resolutionNote: input.note ?? null } })
         if (!claimed.count) throw new BusinessError('درخواست تأیید قبلاً تعیین تکلیف شده است؛ فهرست را تازه کنید.')
@@ -1714,11 +1720,11 @@ export const wooSyncService = {
           stock = r.stock
         }
         await (tx as any).wooInboundEvent.update({ where: { id: event.id }, data: { status: WooInboundStatus.APPLIED, movementId, processedAt: new Date() } })
-        const wooBase = await wooBaseAfterInboundEvent(tx as any, link, event)
-        if (link.status === WooLinkStatus.ACTIVE) {
+        const wooBase = await wooBaseAfterInboundEvent(tx as any, freshLink, event)
+        if (freshLink.status === WooLinkStatus.ACTIVE) {
           await (tx as any).wooSyncOutbox.updateMany({ where: { linkId: link.id, status: { in: openOutboxStatuses() } }, data: { status: WooOutboxStatus.SUPERSEDED, lastError: 'REBASING_AFTER_APPROVED_INBOUND', updatedAt: new Date() } })
           const targetAfterInbound = publishedQty(stock)
-          if (targetAfterInbound !== publishedQty(wooBase)) await createOutbox({ client: tx as any, link: { ...link, lastWooQty: wooBase }, variantId: link.variantId, kind: 'STOCK_PUSH_REBASED', targetQty: targetAfterInbound, expectedWooQty: wooBase, skipLoopFuse: true })
+          if (targetAfterInbound !== publishedQty(wooBase)) await createOutbox({ client: tx as any, link: { ...freshLink, lastWooQty: wooBase }, variantId: link.variantId, kind: 'STOCK_PUSH_REBASED', targetQty: targetAfterInbound, expectedWooQty: wooBase, skipLoopFuse: true })
         }
         await (tx as any).wooProductLink.update({ where: { id: link.id }, data: { lastWooQty: wooBase, lastMahakQty: stock } })
       }, TX_OPTIONS)
