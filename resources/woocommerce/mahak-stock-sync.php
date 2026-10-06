@@ -2,14 +2,14 @@
 /**
  * Plugin Name: MAHAK Stock Sync
  * Description: Stock-only bridge for MAHAK desktop app and WooCommerce. It reads/writes only stock_quantity and never exposes prices, customers, orders totals or addresses.
- * Version: 1.0.6
+ * Version: 1.0.7
  * Author: MAHAK Local
  */
 
 if (!defined('ABSPATH')) exit;
 
 final class Mahak_Stock_Sync_Plugin {
-  const VERSION = '1.0.6';
+  const VERSION = '1.0.7';
   const DB_VERSION = '4';
   const OPTION_TOKEN = 'mahak_stock_sync_token';
   const OPTION_LAST_SECRET_HINT = 'mahak_stock_sync_secret_hint';
@@ -387,6 +387,25 @@ final class Mahak_Stock_Sync_Plugin {
     return $raw === null ? null : self::int_stock_value($raw);
   }
 
+  private static function posted_stock_value_for_product($product_id) {
+    $id = absint($product_id);
+    if (!$id || empty($_POST)) return null;
+    foreach (array('_stock', 'stock_quantity') as $key) {
+      if (array_key_exists($key, $_POST)) return wp_unslash($_POST[$key]);
+    }
+    $variation_ids = array_key_exists('variable_post_id', $_POST) ? wp_unslash($_POST['variable_post_id']) : null;
+    $variation_stock = array_key_exists('variable_stock', $_POST) ? wp_unslash($_POST['variable_stock']) : null;
+    if (is_array($variation_stock)) {
+      if (is_array($variation_ids)) {
+        foreach ($variation_ids as $idx => $pid) {
+          if (absint($pid) === $id && array_key_exists($idx, $variation_stock)) return $variation_stock[$idx];
+        }
+      }
+      if (array_key_exists($id, $variation_stock)) return $variation_stock[$id];
+    }
+    return null;
+  }
+
   private static function clean_product_caches($product) {
     if (!$product) return;
     $id = $product->get_id();
@@ -721,9 +740,20 @@ final class Mahak_Stock_Sync_Plugin {
       unset(self::$before[$id], self::$lock_missed[$id]);
       return;
     }
+    $posted_stock = self::posted_stock_value_for_product($id);
+    if ($posted_stock === null) {
+      unset(self::$before[$id], self::$lock_missed[$id]);
+      return;
+    }
     self::acquire_hook_lock($id);
     $q = self::current_db_stock_int($product);
     if ($q === null) $q = self::int_stock_value($product->get_stock_quantity());
+    $posted = self::int_stock_value($posted_stock);
+    if ($posted === null || ($q !== null && $posted === $q)) {
+      unset(self::$before[$id], self::$lock_missed[$id]);
+      self::release_hook_lock($id);
+      return;
+    }
     if ($q !== null) self::$before[$id] = $q;
   }
 

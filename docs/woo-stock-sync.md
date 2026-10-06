@@ -126,3 +126,10 @@ resources/woocommerce/mahak-stock-sync.php
 - تصمیم‌های Approval قبل از side-effect با شرط `PENDING` claim می‌شوند تا کلیک/درخواست هم‌زمان دوباره موجودی را اعمال نکند.
 - baseline بعد از اعمال event قدیمی، فقط eventهای معتبر و پردازش‌شده‌ی تازه‌تر را لحاظ می‌کند؛ eventهای پارک‌شده یا pauseشده مبنای push بعدی نمی‌شوند.
 - افزونه baseline داخلی `_mahak_stock_last_qty` را فقط بعد از ثبت موفق journal جلو می‌برد. مسیر مستقیم meta هم با همان named lock سریال می‌شود و اگر lock به‌موقع گرفته نشود، event با payload `lock_timeout` برای تصمیم مدیر قابل‌مشاهده می‌ماند.
+
+### نکته تکمیلی پس از بازبینی هشتم
+
+- افزونه به نسخه `1.0.7` رفت؛ نسخه DB همان `4` ماند چون schema عوض نشد.
+- claim ردیف خروجی Woo برای ارسال به سایت اتمیک شد: اگر برای همان link ارسال دیگری `IN_FLIGHT` باشد، worker دوم دیگر نمی‌تواند هم‌زمان ردیف دیگری را claim کند. این کار با یک `UPDATE ... NOT EXISTS` انجام می‌شود و HTTP request داخل transaction نگه داشته نمی‌شود.
+- `pre_post_update` افزونه دیگر برای هر ویرایش غیرموجودی محصول lock موجودی را نگه نمی‌دارد. فقط وقتی مقدار stock در request قابل تشخیص باشد وارد مسیر lock/baseline می‌شود و اگر مقدار با DB برابر یا نامعتبر باشد lock فوراً آزاد می‌شود.
+- مواردی مثل object cache، duplicate `_stock` و دقت attribution سفارش/Refund در چند تغییر نزدیک به هم، همچنان نیازمند تست staging واقعی WooCommerce هستند.

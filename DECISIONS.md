@@ -1478,3 +1478,14 @@ S142-6 — سؤال: گیت نبودن رمز مدیر روی issueManual/bulkIs
   - افزونه به نسخه `1.0.6` رفت: baseline `_mahak_stock_last_qty` فقط بعد از `record()` موفق جلو می‌رود، مسیر مستقیم meta همان named lock را می‌گیرد، `lock_timeout` را در payload می‌فرستد و cleanup وضعیت‌های موقت انجام می‌شود؛ `before_post_update` نیز مقدار قبلی را از DB می‌خواند.
 - Deferred/Needs staging: صحت کامل مسیرهای سفارشی third-party که مستقیم meta را بدون hook استاندارد Woo تغییر می‌دهند، رفتار object cache وردپرس، و serialization واقعی `GET_LOCK`/transaction در MySQL/MariaDB باید در staging واقعی Woo سنجیده شود.
 - مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود؛ هیچ قیمت، مشتری، پرداخت، آدرس، مالیات، سفارش مالی یا گزارش فروش Woo وارد MAHAK نمی‌شود.
+
+### WOO-H12 — بازبینی هشتم Woo: atomic outbox claim و قفل pre_post_update
+- سؤال: گزارش Claude بعد از `4f90cf2` درباره non-atomic بودن skip/claim خروجی و نگه‌داشتن lock در `pre_post_update` چه تصمیمی می‌خواهد؟
+- انتخاب من: Finding مربوط به claim خروجی قطعی و کم‌ریسک بود و با یک `UPDATE ... NOT EXISTS` اتمیک روی SQLite رفع شد. Finding قفل `pre_post_update` هم به‌صورت محافظه‌کارانه کاهش ریسک شد؛ موارد وابسته به lifecycle واقعی Woo/کش همچنان staging لازم دارند.
+- تصمیم‌ها:
+  - `processOutbox` دیگر `count(IN_FLIGHT)` و سپس `update` جداگانه انجام نمی‌دهد؛ claim هر outbox با یک statement اتمیک انجام می‌شود که فقط وقتی برای همان `linkId` ردیف `IN_FLIGHT` دیگری نباشد، همان ردیف را به `IN_FLIGHT` می‌برد و attempt را زیاد می‌کند.
+  - این lock منطقی فقط تا claim DB است و HTTP request را داخل transaction نگه نمی‌دارد؛ بنابراین throughput بی‌دلیل قربانی نمی‌شود.
+  - افزونه به نسخه `1.0.7` رفت: `before_post_update` فقط وقتی از request مقدار stock قابل‌تشخیص برسد وارد مسیر lock/baseline می‌شود و اگر مقدار ارسال‌شده با مقدار فعلی برابر یا نامعتبر باشد، lock را فوراً آزاد می‌کند.
+  - audit regex قبلی که صرفاً وجود `competingInFlight` را نشانه‌ی ایمنی می‌دانست اصلاح شد و اکنون دنبال claim اتمیک با `NOT EXISTS` می‌گردد.
+- Deferred/Needs staging: رفتار object cache/duplicate `_stock` و attribution دقیق order/refund در lifecycle واقعی Woo هنوز باید با staging Woo/MySQL/PHP و چند نسخه WooCommerce تست شود.
+- مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود و هیچ داده مالی/مشتری/قیمت/گزارش فروش Woo وارد MAHAK نمی‌شود.

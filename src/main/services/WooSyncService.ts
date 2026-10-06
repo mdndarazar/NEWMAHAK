@@ -212,6 +212,36 @@ async function assertNoFreshInFlight(client: any, linkId: number): Promise<void>
   if (fresh > 0) throw new BusinessError('برای این کالا هنوز ارسال موجودی به سایت در حال انجام است؛ چند ثانیه بعد دوباره تصمیم مدیر را اعمال کنید.')
 }
 
+async function claimOutboxForSend(row: any): Promise<boolean> {
+  // این claim باید تک‌عبارتی باشد: check جداگانه‌ی IN_FLIGHT و سپس update زیر اجرای هم‌زمان
+  // دو worker می‌تواند دو ارسال موازی برای یک link بسازد. SQLite هر UPDATE را اتمیک و writer-serialized اجرا می‌کند.
+  const changed = await (prisma as any).$executeRawUnsafe(
+    `UPDATE "WooSyncOutbox"
+       SET "status" = ?, "attemptCount" = "attemptCount" + 1, "updatedAt" = ?
+     WHERE "id" = ?
+       AND "linkId" = ?
+       AND "status" IN (?, ?)
+       AND "attemptCount" < ?
+       AND NOT EXISTS (
+         SELECT 1 FROM "WooSyncOutbox" AS inflight
+          WHERE inflight."linkId" = ?
+            AND inflight."status" = ?
+            AND inflight."id" <> ?
+       )`,
+    WooOutboxStatus.IN_FLIGHT,
+    new Date(),
+    Number(row.id),
+    Number(row.linkId),
+    WooOutboxStatus.PENDING,
+    WooOutboxStatus.FAILED,
+    MAX_OUTBOX_ATTEMPTS,
+    Number(row.linkId),
+    WooOutboxStatus.IN_FLIGHT,
+    Number(row.id)
+  )
+  return Number(changed || 0) > 0
+}
+
 async function wooBaseAfterInboundEvent(client: any, link: any, event: any): Promise<number> {
   const freshLink = await client.wooProductLink.findUnique({ where: { id: link.id } }).catch(() => null)
   const currentBase = wooSafeInt(freshLink?.lastWooQty ?? link.lastWooQty ?? event.newQty)
@@ -1007,13 +1037,11 @@ export const wooSyncService = {
     let failed = 0
     let skipped = 0
     for (const row of rows) {
-      const competingInFlight = await db().wooSyncOutbox.count({ where: { linkId: row.linkId, status: WooOutboxStatus.IN_FLIGHT } }).catch(() => 0)
-      if (competingInFlight > 0) {
+      const locked = await claimOutboxForSend(row).catch(() => false)
+      if (!locked) {
         skipped++
         continue
       }
-      const locked = await db().wooSyncOutbox.updateMany({ where: { id: row.id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED] } }, data: { status: WooOutboxStatus.IN_FLIGHT, attemptCount: { increment: 1 }, updatedAt: new Date() } })
-      if (!locked.count) continue
       const link = await db().wooProductLink.findUnique({ where: { id: row.linkId } })
       const reconcileKind = isReconcileOutboxKind(row.kind)
       if (!canSendOutboxForLink(row.kind, link)) {
