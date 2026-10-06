@@ -1421,3 +1421,16 @@ S142-6 — سؤال: گیت نبودن رمز مدیر روی issueManual/bulkIs
   - upgrade جدول با lock، پاک‌سازی request_id خالی، کوتاه‌سازی index ترکیبی و تأیید وجود unique index انجام می‌شود؛ نسخه DB فقط بعد از تأیید ثبت می‌شود.
   - CAS افزونه روی `meta_id` قفل‌شده و مقدار خام انجام می‌شود و false از wpdb به خطای واقعی تبدیل می‌شود، نه conflict کاذب.
 - مرز معماری: همچنان فقط عدد موجودی sync می‌شود؛ order_id فقط شناسه attribution است و هیچ فاکتور/پرداخت/مشتری/قیمت Woo ساخته یا وارد نمی‌شود.
+
+### WOO-H8 — بازبینی چهارم Woo: Approval، فیوز حلقه و لبه‌های افزونه
+- سؤال: گزارش‌های جدید درباره حذف خاموش سفارش‌های pause‌شده، loop fuse روی فروش عادی، stale approval، request_id leak و parent-managed variation چه تصمیمی می‌خواهند؟
+- انتخاب من: patch حداقلی و محافظه‌کارانه روی همان مسیر «فقط موجودی»، بدون ورود سفارش مالی/مشتری/قیمت Woo به MAHAK.
+- تصمیم‌ها:
+  - resolve approval روی لینک ACTIVE سالم اجرا نمی‌شود و approval قدیمی EXPIRED می‌شود.
+  - اگر SKIPPED_PAUSED از سفارش/Refund واقعی با delta غیرصفر وجود داشته باشد، تصمیم‌های MAHAK_WINS/VERIFY_ONLY/UNFREEZE آن را silent supersede نمی‌کنند؛ مدیر باید از preview وصل دوباره با «MAHAK + سفارش‌های سایت» یا تأیید همان inbound event استفاده کند. WOO_WINS همچنان snapshot عدد موجودی سایت را به‌صورت stock adjustment اعمال می‌کند.
+  - loop fuse فقط outboxهای بدون `movementId` را می‌شمارد تا فروش عادی/حرکت واقعی MAHAK باعث FROZEN کاذب نشود.
+  - `retryParked` و `APPLY_INBOUND` قبل از اعمال، `relinkSeqFloor` را چک می‌کنند و رویدادهای پوشش‌داده‌شده در snapshot قبلی را SUPERSEDED/EXPIRED می‌کنند.
+  - echo detection سمت برنامه به همان `linkId` محدود شد و افزونه request_id عملیات MAHAK را به journal eventهای hook عمومی/متا منتقل نمی‌کند.
+  - تراکنش‌های Woo از `TX_OPTIONS` مشترک استفاده می‌کنند؛ resolve/resume approvalهای stale و outboxهای باز را پاک‌سازی می‌کند.
+  - افزونه به نسخه `1.0.3` و DB `4` رفت: normalize request_id طولانی idempotent شد، upgrade backoff و table_exists case-insensitive شد، lock name namespace گرفت، settle journal با ساعت PHP UTC یکسان شد، و hookهای stock برای parent-managed/unmanaged guard شدند.
+- مرز معماری: order_id فقط برای attribution و محافظت موجودی است؛ هیچ سفارش مالی، گزارش فروش سایت، مشتری، قیمت، مالیات، آدرس یا پرداخت Woo وارد MAHAK نمی‌شود.
