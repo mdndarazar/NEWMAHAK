@@ -153,7 +153,8 @@ final class Mahak_Stock_Sync_Plugin {
     global $wpdb;
     $payload = array('order_item_qty' => $qty === null ? null : intval($qty));
     $where_order = $order_id === null ? 'order_id IS NULL' : $wpdb->prepare('(order_id = %s OR order_id IS NULL)', (string)$order_id);
-    $row = $wpdb->get_row($wpdb->prepare('SELECT seq FROM ' . self::table() . " WHERE holder_key = %s AND order_item_id IS NULL AND {$where_order} ORDER BY seq DESC LIMIT 1", $key), ARRAY_A);
+    $allowed_sources = $source === 'refund_restock' ? "('admin_edit','woocommerce','order_restore','refund_restock')" : "('order','order_reduce','order_restore','woocommerce')";
+    $row = $wpdb->get_row($wpdb->prepare('SELECT seq FROM ' . self::table() . " WHERE holder_key = %s AND order_item_id IS NULL AND source IN {$allowed_sources} AND created_at >= (UTC_TIMESTAMP() - INTERVAL 10 MINUTE) AND {$where_order} ORDER BY seq DESC LIMIT 1", $key), ARRAY_A);
     if (!$row) return;
     $wpdb->update(self::table(), array(
       'source' => sanitize_key($source),
@@ -232,13 +233,27 @@ final class Mahak_Stock_Sync_Plugin {
     );
   }
 
+  private static function manage_stock_mode($product) {
+    if (!$product) return 'no';
+    if ($product->is_type('variation')) {
+      // در ووکامرس Variation می‌تواند مقدار خام `_manage_stock=parent` داشته باشد.
+      // متد `managing_stock()` در بعضی نسخه‌ها این حالت را true نشان می‌دهد، اما نوشتن مستقل روی Variation خطرناک است.
+      $meta = method_exists($product, 'get_meta') ? $product->get_meta('_manage_stock', true, 'edit') : get_post_meta($product->get_id(), '_manage_stock', true);
+      if ($meta === 'parent') return 'parent';
+      if ($meta === 'yes') return 'yes';
+      if ($meta === 'no') return 'no';
+      $raw = method_exists($product, 'get_manage_stock') ? $product->get_manage_stock('edit') : null;
+      if ($raw === 'parent') return 'parent';
+    }
+    return $product->managing_stock() ? 'yes' : 'no';
+  }
+
   private static function item($product) {
     if (!$product) return null;
     $is_variation = $product->is_type('variation');
     $product_id = $is_variation ? $product->get_parent_id() : $product->get_id();
     $variation_id = $is_variation ? $product->get_id() : null;
-    $manage_raw = method_exists($product, 'get_manage_stock') ? $product->get_manage_stock('edit') : ($product->managing_stock() ? 'yes' : 'no');
-    $manage_mode = ($product->is_type('variation') && $manage_raw === 'parent') ? 'parent' : ($product->managing_stock() ? 'yes' : 'no');
+    $manage_mode = self::manage_stock_mode($product);
     self::remember_qty($product);
     return array(
       'holder_key' => self::holder_key($product_id, $variation_id),
@@ -301,9 +316,9 @@ final class Mahak_Stock_Sync_Plugin {
     $found = self::product_from_holder($body);
     if (!$found) return new WP_Error('mahak_not_found', 'Product/variation not found.', array('status' => 404));
     list($product, $pid, $vid, $key) = $found;
-    $manage_raw = method_exists($product, 'get_manage_stock') ? $product->get_manage_stock('edit') : ($product->managing_stock() ? 'yes' : 'no');
-    if ($product->is_type('variation') && $manage_raw === 'parent') return new WP_Error('mahak_manage_stock_parent', 'Variation stock is managed by parent product.', array('status' => 409));
-    if (!$product->managing_stock()) return new WP_Error('mahak_manage_stock_off', 'manage_stock is disabled for this holder.', array('status' => 409));
+    $manage_mode = self::manage_stock_mode($product);
+    if ($manage_mode === 'parent') return new WP_Error('mahak_manage_stock_parent', 'Variation stock is managed by parent product.', array('status' => 409));
+    if ($manage_mode !== 'yes') return new WP_Error('mahak_manage_stock_off', 'manage_stock is disabled for this holder.', array('status' => 409));
     if (!array_key_exists('expected', $body) || !preg_match('/^-?\d+$/', (string)$body['expected']) || !array_key_exists('target', $body) || !preg_match('/^\d+$/', (string)$body['target'])) {
       return new WP_Error('mahak_bad_request', 'expected and target integer fields are required.', array('status' => 400));
     }
@@ -316,13 +331,26 @@ final class Mahak_Stock_Sync_Plugin {
     $lock_name = 'mahak_stock_' . $product->get_id();
     $locked = (int)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 10)', $lock_name));
     if ($locked !== 1) return new WP_Error('mahak_stock_lock_timeout', 'Could not lock stock row for safe apply.', array('status' => 409));
+    $in_tx = false;
     try {
-      $current = (int)$product->get_stock_quantity();
+      // قفل اتمیک روی خود ردیف `_stock`؛ GET_LOCK فقط درخواست‌های افزونه را صف می‌کند، اما سفارش Woo روی همین ردیف postmeta می‌نویسد.
+      $wpdb->query('START TRANSACTION');
+      $in_tx = true;
+      $stock_row = $wpdb->get_row($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = '_stock' LIMIT 1 FOR UPDATE", $product->get_id()), ARRAY_A);
+      if (!$stock_row) {
+        add_post_meta($product->get_id(), '_stock', (int)$product->get_stock_quantity(), true);
+        $stock_row = $wpdb->get_row($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = '_stock' LIMIT 1 FOR UPDATE", $product->get_id()), ARRAY_A);
+      }
+      $current = $stock_row ? intval($stock_row['meta_value']) : (int)$product->get_stock_quantity();
       if ($current !== $expected) {
+        $wpdb->query('ROLLBACK');
+        $in_tx = false;
         return new WP_REST_Response(array('ok' => false, 'code' => 'mahak_stock_conflict', 'conflict' => true, 'current' => $current, 'expected' => $expected, 'message' => 'Stock changed on WooCommerce before MAHAK apply.'), 409);
       }
       if ($current === $target) {
         self::remember_qty($product, $target);
+        $wpdb->query('COMMIT');
+        $in_tx = false;
         return array('ok' => true, 'old_qty' => $current, 'new_qty' => $target, 'holder_key' => $key, 'noop' => true);
       }
       self::$suppress = true;
@@ -336,12 +364,20 @@ final class Mahak_Stock_Sync_Plugin {
         self::$request_id = null;
       }
       self::record($pid, $vid, $current, $target, 'mahak_apply', null, null, $request_id, array('target' => $target));
+      $wpdb->query('COMMIT');
+      $in_tx = false;
       return array('ok' => true, 'old_qty' => $current, 'new_qty' => $target, 'holder_key' => $key);
+    } catch (Throwable $e) {
+      if ($in_tx) {
+        $wpdb->query('ROLLBACK');
+        $in_tx = false;
+      }
+      throw $e;
     } finally {
+      if ($in_tx) $wpdb->query('ROLLBACK');
       $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock_name));
     }
   }
-
   public static function journal(WP_REST_Request $req) {
     global $wpdb;
     $after = max(0, absint($req->get_param('after_seq')));

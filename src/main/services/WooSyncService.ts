@@ -35,6 +35,7 @@ const db = () => prisma as any
 const REQUEST_TIMEOUT_MS = 20_000
 const IN_FLIGHT_STALE_MS = 5 * 60_000
 const MAX_OUTBOX_ATTEMPTS = 8
+const WOO_RECONCILE_LAST_ID_KEY = 'wooSync.reconcileLastLinkId'
 
 function publishedQty(raw: unknown): number {
   // WooCommerce نباید عدد منفی بگیرد؛ موجودی داخلی MAHAK می‌تواند منفی باشد، اما عدد منتشرشده روی سایت حداقل صفر است.
@@ -103,6 +104,13 @@ function asDateString(d: unknown): string | null {
   } catch {
     return null
   }
+}
+
+function sameDbTime(a: unknown, b: unknown): boolean {
+  if (!a || !b) return false
+  const at = new Date(a as any).getTime()
+  const bt = new Date(b as any).getTime()
+  return Number.isFinite(at) && Number.isFinite(bt) && at === bt
 }
 
 function isWooOrderPausedEvent(e: { source?: unknown; orderId?: unknown }): boolean {
@@ -812,7 +820,7 @@ export const wooSyncService = {
           })
           const freshLink = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
           if (freshLink) {
-            const statusUnchanged = freshLink.status === link.status
+            const statusUnchanged = freshLink.status === link.status && sameDbTime(freshLink.updatedAt, link.updatedAt)
             const nextStatus = reconcileKind && statusUnchanged && freshLink.status !== WooLinkStatus.BROKEN_LOCAL ? WooLinkStatus.ACTIVE : freshLink.status
             await (tx as any).wooProductLink.update({
               where: { id: link.id },
@@ -844,10 +852,11 @@ export const wooSyncService = {
         await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
           await (tx as any).wooSyncOutbox.updateMany({ where: { id: row.id, status: WooOutboxStatus.IN_FLIGHT }, data: { status, lastError: msg, updatedAt: new Date() } })
           const freshLink = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
-          if (freshLink && freshLink.status === link.status) {
+          if (freshLink && freshLink.status === link.status && sameDbTime(freshLink.updatedAt, link.updatedAt)) {
             if (remoteBroken) await (tx as any).wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_REMOTE } })
             else if (status === WooOutboxStatus.CONFLICT) {
-              await (tx as any).wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.CONFLICT, pauseReason: 'CONFLICT', pausedAt: new Date(), pauseSeqFloor: BigInt(conflictCursor ?? 0) } })
+              const preservedFloor = freshLink.pauseSeqFloor != null ? BigInt(freshLink.pauseSeqFloor) : BigInt(conflictCursor ?? 0)
+              await (tx as any).wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.CONFLICT, pauseReason: 'CONFLICT', pausedAt: new Date(), pauseSeqFloor: preservedFloor } })
             }
           }
         })
@@ -956,15 +965,41 @@ export const wooSyncService = {
     return { received, applied, skipped }
   },
 
+  async pullJournalDrain(maxBatches = 20, limit = 200) {
+    const safeLimit = Math.min(200, Math.max(1, Math.round(Number(limit) || 200)))
+    const safeBatches = Math.min(50, Math.max(1, Math.round(Number(maxBatches) || 20)))
+    let total = { received: 0, applied: 0, skipped: 0 }
+    let cursor = await lastCursor()
+    for (let i = 0; i < safeBatches; i++) {
+      const r = await this.pullJournal(safeLimit)
+      total.received += Number(r.received || 0)
+      total.applied += Number(r.applied || 0)
+      total.skipped += Number(r.skipped || 0)
+      const next = await lastCursor()
+      if (Number(r.received || 0) < safeLimit || next <= cursor) break
+      cursor = next
+    }
+    return total
+  },
+
   async reconcileActiveLinks(limit = 50) {
     const cfg = await safeConfig()
     if (!cfg.enabled) return { checked: 0, queued: 0, skipped: 0 }
-    const links = await db().wooProductLink.findMany({
-      where: { status: WooLinkStatus.ACTIVE },
+    const take = Math.min(100, Math.max(1, Math.round(Number(limit) || 50)))
+    const lastId = Math.max(0, Math.round(Number((await readSetting(WOO_RECONCILE_LAST_ID_KEY)) ?? 0) || 0))
+    const firstBatch = await db().wooProductLink.findMany({
+      where: { status: WooLinkStatus.ACTIVE, id: { gt: lastId } },
       orderBy: { id: 'asc' },
-      take: Math.min(100, Math.max(1, Math.round(Number(limit) || 50)))
+      take
     })
+    const links = firstBatch.length >= take ? firstBatch : firstBatch.concat(await db().wooProductLink.findMany({
+      where: { status: WooLinkStatus.ACTIVE, id: { lte: lastId } },
+      orderBy: { id: 'asc' },
+      take: take - firstBatch.length
+    }))
     if (!links.length) return { checked: 0, queued: 0, skipped: 0 }
+    await writeSetting(WOO_RECONCILE_LAST_ID_KEY, String(Number(links[links.length - 1].id || 0))).catch(() => undefined)
+    const cursor = await lastCursor()
     const remote = await this.remoteStock(links)
     const byKey = new Map(remote.map((r: any) => [String(r.holderKey), r]))
     let checked = 0
@@ -978,6 +1013,11 @@ export const wooSyncService = {
         continue
       }
       checked++
+      if (r.lastSeq != null && Number(r.lastSeq) > cursor) {
+        skipped++
+        await log('RECONCILE_WAIT_JOURNAL', 'بررسی دوره‌ای تا خواندن کامل ژورنال سایت عقب افتاد', { level: 'INFO', linkId: link.id, variantId: link.variantId, payload: { siteLastSeq: r.lastSeq, cursor } })
+        continue
+      }
       const localStock = await productStock(link.variantId).catch(() => null)
       if (localStock == null) {
         await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_LOCAL } }).catch(() => null)
@@ -1017,10 +1057,11 @@ export const wooSyncService = {
         const link = row.linkId
           ? await db().wooProductLink.findUnique({ where: { id: row.linkId } })
           : await db().wooProductLink.findFirst({ where: { holderKey: row.holderKey, status: { not: WooLinkStatus.UNLINKED } } })
-        if (!link || link.status !== WooLinkStatus.ACTIVE) {
+        if (!link || link.status !== WooLinkStatus.ACTIVE || row.relinkId) {
           skipped++
           continue
         }
+        let didApply = false
         await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
           const fresh = await (tx as any).wooInboundEvent.findUnique({ where: { id: row.id } })
           if (!fresh || fresh.status !== WooInboundStatus.PARKED) return
@@ -1028,7 +1069,12 @@ export const wooSyncService = {
           let movementId = existingMove?.id == null ? null : Number(existingMove.id)
           let stock = await productStock(link.variantId, tx as any)
           if (!movementId) {
-            const r = await applyWooDelta({ eventId: row.id, variantId: link.variantId, delta: Number(row.delta || 0), note: `پردازش دوباره رویداد سایت${row.orderId ? ` · سفارش ${row.orderId}` : ''}`, tx })
+            const delta = Number(row.delta || 0)
+            if (delta > 0 && isWooRestoreSource(row.source)) {
+              const allowed = await remainingRestoreAllowance({ client: tx as any, variantId: link.variantId, orderId: row.orderId })
+              if (delta > allowed) return
+            }
+            const r = await applyWooDelta({ eventId: row.id, variantId: link.variantId, delta, note: `پردازش دوباره رویداد سایت${row.orderId ? ` · سفارش ${row.orderId}` : ''}`, tx })
             movementId = r.movementId
             stock = r.stock
           }
@@ -1042,8 +1088,10 @@ export const wooSyncService = {
             await createOutbox({ client: tx as any, link: { ...link, lastWooQty: row.newQty }, variantId: link.variantId, kind: 'STOCK_PUSH_REBASED', targetQty: targetAfterInbound, expectedWooQty: row.newQty })
           }
           await (tx as any).wooProductLink.update({ where: { id: link.id }, data: { lastWooQty: row.newQty, lastMahakQty: stock } })
+          didApply = true
         })
-        applied++
+        if (didApply) applied++
+        else skipped++
       } catch (e) {
         failed++
         await log('PARKED_RETRY_FAILED', String((e as any)?.message ?? e), { level: 'ERROR', payload: { inboundEventId: row.id } })
@@ -1059,12 +1107,11 @@ export const wooSyncService = {
     }
     busy = true
     try {
-      const parked = await this.retryParked(50)
-      const pulled = await this.pullJournal(100)
+      const pulled = await this.pullJournalDrain(20, 200)
       const reconciled = await this.reconcileActiveLinks(50)
       const pushed = await this.processOutbox(100)
-      await log('SYNC_NOW', 'همگام‌سازی دستی انجام شد', { payload: { parked, pulled, reconciled, pushed } })
-      return { parked, pulled, reconciled, pushed, status: await this.status() }
+      await log('SYNC_NOW', 'همگام‌سازی دستی انجام شد', { payload: { pulled, reconciled, pushed } })
+      return { parked: { applied: 0, skipped: 0, failed: 0, total: 0 }, pulled, reconciled, pushed, status: await this.status() }
     } finally {
       busy = false
     }
@@ -1095,8 +1142,7 @@ export function startWooSyncScheduler(): void {
       const cfg = await safeConfig()
       nextSeconds = cfg.intervalSeconds
       if (cfg.enabled && cfg.autoSync) {
-        await wooSyncService.retryParked(50).catch((e) => log('AUTO_PARKED_RETRY_FAILED', String(e?.message ?? e), { level: 'ERROR' }))
-        await wooSyncService.pullJournal(100).catch((e) => log('AUTO_PULL_FAILED', String(e?.message ?? e), { level: 'ERROR' }))
+        await wooSyncService.pullJournalDrain(20, 200).catch((e) => log('AUTO_PULL_FAILED', String(e?.message ?? e), { level: 'ERROR' }))
         await wooSyncService.reconcileActiveLinks(50).catch((e) => log('AUTO_RECONCILE_FAILED', String(e?.message ?? e), { level: 'ERROR' }))
         await wooSyncService.processOutbox(100).catch((e) => log('AUTO_PUSH_FAILED', String(e?.message ?? e), { level: 'ERROR' }))
       }

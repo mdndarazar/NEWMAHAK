@@ -155,7 +155,7 @@ export default function WooSync() {
       const r = await call<any>(CH.wooSyncNow)
       setStatus(r.status)
       await load()
-      flash(`همگام‌سازی انجام شد. پارک‌شده: ${faDigits(r.parked?.applied ?? 0)} اعمال دوباره، ورودی: ${faDigits(r.pulled.applied)} اعمال، خروجی: ${faDigits(r.pushed.sent)} ارسال`)
+      flash(`همگام‌سازی انجام شد. ورودی: ${faDigits(r.pulled.applied)} اعمال، خروجی: ${faDigits(r.pushed.sent)} ارسال. رویدادهای پارک‌شده فقط با دکمه جداگانه و بررسی مدیر پردازش می‌شوند.`)
     } catch (e) {
       fail(e)
     } finally {
@@ -164,11 +164,13 @@ export default function WooSync() {
   }
 
   const retryParked = async () => {
+    const managerPassword = askManagerPassword('پردازش دستی رویدادهای پارک‌شده سایت')
+    if (managerPassword == null) return
     setBusy(true)
     try {
-      const r = await call<any>(CH.wooParkedRetry)
+      const r = await call<any>(CH.wooParkedRetry, { managerPassword })
       await load()
-      flash(`رویدادهای پارک‌شده بررسی شد: ${faDigits(r.applied ?? 0)} اعمال، ${faDigits(r.failed ?? 0)} خطا`)
+      flash(`رویدادهای پارک‌شده بررسی شد: ${faDigits(r.applied ?? 0)} اعمال، ${faDigits(r.skipped ?? 0)} رد/نیازمند بررسی، ${faDigits(r.failed ?? 0)} خطا`)
     } catch (e) {
       fail(e)
     } finally {
@@ -254,7 +256,7 @@ export default function WooSync() {
           <div className="flex gap-2"><button className="btn" disabled={busy || !(status?.counts.parkedEvents)} onClick={retryParked}>پردازش پارک‌شده‌ها</button><button className="btn btn-primary" disabled={busy} onClick={syncNow}>همگام‌سازی الآن</button></div>
         </div>
         <div className="rounded border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-sm leading-7">
-          نسخه فعلی فقط همگام‌سازی عدد موجودی است. رویدادهای خطادار به‌جای گم‌شدن «پارک» می‌شوند و با دکمه بالا دوباره پردازش می‌شوند، اما workflow کامل تأیید مدیر WooApproval/HOLD/FROZEN هنوز به‌عنوان محدودیت نسخه ۱ ثبت شده است.
+          نسخه فعلی فقط همگام‌سازی عدد موجودی است. رویدادهای خطادار به‌جای گم‌شدن «پارک» می‌شوند؛ این رویدادها دیگر خودکار اعمال نمی‌شوند و پردازش دستی آن‌ها رمز مدیر می‌خواهد. workflow کامل تأیید مدیر WooApproval/HOLD/FROZEN هنوز به‌عنوان محدودیت نسخه ۱ ثبت شده است.
         </div>
         {msg && <div className="rounded border border-emerald-300 bg-emerald-50 text-emerald-900 px-3 py-2 text-sm">{msg}</div>}
         {err && <div className="rounded border border-rose-300 bg-rose-50 text-rose-800 px-3 py-2 text-sm whitespace-pre-wrap">{err}</div>}
