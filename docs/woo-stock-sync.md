@@ -92,5 +92,16 @@ resources/woocommerce/mahak-stock-sync.php
 - اگر در زمان توقف، رویداد واقعی سفارش/Refund سایت با delta غیرصفر باقی مانده باشد، تصمیم‌های «MAHAK مرجع»، «فقط بررسی» و «UNFREEZE» آن را بی‌صدا SUPERSEDED نمی‌کنند؛ مدیر باید از پیش‌نمایش وصل دوباره و گزینه «MAHAK + سفارش‌های سایت» یا از تأیید همان رویداد ورودی استفاده کند.
 - فیوز حلقه فقط outboxهای reconcile/manual بدون `movementId` را می‌شمارد؛ فروش عادی و حرکت‌های واقعی MAHAK با `movementId` دیگر به‌تنهایی لینک پرفروش را `FROZEN` نمی‌کنند.
 - retry رویدادهای PARKED و Approval از نوع APPLY_INBOUND به `relinkSeqFloor` احترام می‌گذارند تا eventهای قبل از آخرین snapshot وصل دوباره، دوباره روی MAHAK اعمال نشوند.
-- افزونه نسخه `1.0.3` و DB نسخه `4` دارد: request_id طولانی حداکثر ۹۶ کاراکتر و idempotent می‌ماند، upgrade شکست‌خورده backoff کوتاه دارد، نام lock با پایگاه‌داده/prefix namespace می‌شود، و محاسبه settle ژورنال با ساعت PHP UTC انجام می‌شود.
+- افزونه نسخه `1.0.3` و DB نسخه `4` داشت: request_id طولانی حداکثر ۹۶ کاراکتر و idempotent می‌ماند، upgrade شکست‌خورده backoff کوتاه دارد، نام lock اعمال موجودی با پایگاه‌داده/prefix namespace می‌شود، و محاسبه settle ژورنال با ساعت PHP UTC انجام می‌شود.
 - hookهای افزونه برای parent-managed/unmanaged stock baseline واریانت را آلوده نمی‌کنند، در مسیر مستقیم meta مقدار `$before` بر baseline قبلی مقدم است، و request_id عملیات MAHAK به eventهای hook ثالث روی holderهای دیگر نشت نمی‌کند.
+
+### نکته تکمیلی پس از بازبینی پنجم
+
+- افزونه به نسخه `1.0.4` رفت؛ نسخه DB همان `4` ماند چون schema عوض نشد.
+- رویدادهای `PARKED` سفارش/Refund بدون relink یا مربوط به آخرین relink هم مثل `SKIPPED_PAUSED` در پیش‌نمایش و guardهای resolve دیده می‌شوند؛ بنابراین سفارش پارک‌شده دیگر با تصمیم `MAHAK_WINS` یا `UNFREEZE/VERIFY` زیر `relinkSeqFloor` بی‌صدا حذف نمی‌شود.
+- Approvalهای `APPLY_INBOUND` که eventشان در وصل دوباره واقعاً اعمال یا supersede شده است منقضی می‌شوند؛ eventهای برگشت/Refundی که به‌خاطر سقف فروش نیازمند بررسی‌اند `PARKED` و قابل‌مشاهده می‌مانند.
+- وقتی event قدیمی بعد از event جدیدتر اعمال می‌شود، baseline سایت از `lastWooQty` تازه گرفته می‌شود تا conflict کاذب با `expectedWooQty` قدیمی ساخته نشود.
+- اگر push قبلی در سایت اعمال شده اما پاسخ آن در MAHAK timeout شده باشد، echo بعدی `lastWooQty` و outbox مربوط را اصلاح می‌کند.
+- تصمیم‌های مدیریتی در صورت وجود outbox تازه‌ی `IN_FLIGHT` متوقف می‌شوند؛ `IN_FLIGHT`های واقعاً stale قبل از ساخت هدف جدید supersede می‌شوند تا بعداً push قدیمی زنده نشود.
+- وصل گروهی با MAHAK لینک‌هایی را که event سفارش/Refund حل‌نشده دارند skip و در لاگ هشدار ثبت می‌کند.
+- lock ارتقای افزونه هم مثل lock اعمال موجودی namespace شد و hookهای `before_stock/after_stock` با همان named lock سریال می‌شوند؛ context سفارش هم در `shutdown` پاک می‌شود.

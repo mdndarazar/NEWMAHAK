@@ -1432,5 +1432,19 @@ S142-6 — سؤال: گیت نبودن رمز مدیر روی issueManual/bulkIs
   - `retryParked` و `APPLY_INBOUND` قبل از اعمال، `relinkSeqFloor` را چک می‌کنند و رویدادهای پوشش‌داده‌شده در snapshot قبلی را SUPERSEDED/EXPIRED می‌کنند.
   - echo detection سمت برنامه به همان `linkId` محدود شد و افزونه request_id عملیات MAHAK را به journal eventهای hook عمومی/متا منتقل نمی‌کند.
   - تراکنش‌های Woo از `TX_OPTIONS` مشترک استفاده می‌کنند؛ resolve/resume approvalهای stale و outboxهای باز را پاک‌سازی می‌کند.
-  - افزونه به نسخه `1.0.3` و DB `4` رفت: normalize request_id طولانی idempotent شد، upgrade backoff و table_exists case-insensitive شد، lock name namespace گرفت، settle journal با ساعت PHP UTC یکسان شد، و hookهای stock برای parent-managed/unmanaged guard شدند.
+  - افزونه به نسخه `1.0.3` و DB `4` رفت: normalize request_id طولانی idempotent شد، upgrade backoff و table_exists case-insensitive شد، lock اعمال موجودی namespace گرفت، settle journal با ساعت PHP UTC یکسان شد، و hookهای stock برای parent-managed/unmanaged guard شدند.
 - مرز معماری: order_id فقط برای attribution و محافظت موجودی است؛ هیچ سفارش مالی، گزارش فروش سایت، مشتری، قیمت، مالیات، آدرس یا پرداخت Woo وارد MAHAK نمی‌شود.
+
+### WOO-H9 — بازبینی پنجم Woo: PARKEDهای خطرناک، baseline قدیمی و race hook
+- سؤال: بعد از hardening قبلی، با رویدادهای سفارش/Refund که به جای `SKIPPED_PAUSED` در وضعیت `PARKED` مانده‌اند، approvalهای یتیم، refundهای بیش از سقف، push در حال پرواز و race افزونه چه کنیم؟
+- انتخاب من: patch محافظه‌کارانه روی همان sync فقط موجودی؛ هر موردی که نیازمند staging واقعی Woo/WordPress بود بدون تغییر پرریسک deferred شد.
+- تصمیم‌ها:
+  - `PARKED`های بدون `relinkId` یا مربوط به آخرین `lastRelinkId` کنار `SKIPPED_PAUSED` به‌عنوان held inbound دیده می‌شوند. `MAHAK_WINS`، `VERIFY_ONLY/NOOP` و `UNFREEZE` در حضور سفارش/Refund حل‌نشده رد می‌شوند؛ فقط `WOO_WINS` snapshot سایت را پوشش می‌دهد یا `MAHAK_PLUS_ORDERS` order deltaها را از مسیر امن اعمال می‌کند.
+  - `resumeApply` پس از اعمال/رد/supersede کردن held eventها، approvalهای `APPLY_INBOUND` مربوط را expire می‌کند؛ unlink هم approvalهای pending لینک را orphan نمی‌گذارد.
+  - refund/restock بیش از سقف فروش ثبت‌شده در مسیر relink با همان `relinkId` دوباره `PARKED` می‌ماند و log هشدار می‌گیرد؛ `retryParked` دیگر این دسته را صرفاً به‌خاطر `relinkSeqFloor` حذف نمی‌کند.
+  - در `retryParked` و `APPLY_INBOUND` اگر بعد از event قدیمی‌تر event جدیدتری اعمال شده باشد، baseline سایت از `lastWooQty` فعلی حفظ می‌شود تا push بعدی با `expectedWooQty` قدیمی conflict کاذب نسازد.
+  - تصمیم‌های مدیر در صورت outbox تازه‌ی `IN_FLIGHT` متوقف می‌شوند؛ outboxهای `IN_FLIGHT` واقعاً stale قبل از ساخت هدف جدید supersede می‌شوند. echo journalِ apply timeout‌شده، outbox را `SENT` و `lastWooQty` را همگام می‌کند.
+  - `resumeProductGroupMahak` لینک‌هایی را که held order/refund یا push تازه‌ی درحال‌پرواز دارند skip می‌کند و تعداد skip را برمی‌گرداند.
+  - افزونه به نسخه `1.0.4` رفت: upgrade lock با DB/prefix namespace شد و hookهای `before_stock/after_stock` از همان نام‌گذاری lock apply استفاده می‌کنند؛ context سفارش در shutdown پاک می‌شود.
+- Deferred: hook lock کامل برای تمام مسیرهای سفارشی/third-party، timeout ناشناخته‌ی push روی staging واقعی، performance کاتالوگ بسیار بزرگ و سیاست کامل order_id retention باید در محیط Woo واقعی و با داده حجیم اعتبارسنجی شوند.
+- مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود؛ قیمت، مشتری، پرداخت، آدرس، مالیات، سفارش مالی یا گزارش فروش Woo وارد MAHAK نمی‌شود.

@@ -77,7 +77,7 @@ check('Reconcile قبل از drain شدن ژورنال سایت push نمی‌ک
   /async pullJournalDrain/.test(svc), /Number\(r\.lastSeq\) > cursor/.test(svc), /RECONCILE_WAIT_JOURNAL/.test(svc), /WOO_RECONCILE_LAST_ID_KEY/.test(svc), /id: \{ gt: lastId \}/.test(svc) && /id: \{ lte: lastId \}/.test(svc)
 ], [true, true, true, true, true])
 check('VERIFY_ONLY/NOOP بدون برابری عدد و بدون رویداد زمان قطع پذیرفته نمی‌شود', [
-  /pendingPaused > 0/.test(svc), /publishedQty\(txStock\) !== publishedQty\(preview\.wooQty\)/.test(svc), /برای «فقط بررسی»، موجودی MAHAK و سایت باید برابر باشد/.test(svc), /resumePreview\.pausedEvents\.length > 0/.test(page)
+  /heldEvents\.length > 0/.test(svc), /publishedQty\(txStock\) !== publishedQty\(preview\.wooQty\)/.test(svc), /برای «فقط بررسی»، موجودی MAHAK و سایت باید برابر باشد/.test(svc), /resumePreview\.pausedEvents\.length > 0/.test(page)
 ], [true, true, true, true])
 check('Backorder منفی سایت به lastWooQty واقعی می‌رود، اما target ارسالی published/non-negative می‌ماند', [
   /const newQty = wooSafeInt\(raw\.new_qty/.test(svc), /const expected = wooSafeInt\(row\.expectedWooQty/.test(svc), /target = publishedQty/.test(svc), /lastWooQty: appliedWooQty/.test(svc)
@@ -106,6 +106,15 @@ check('Loop fuse فقط reconcile/manual بدون movementId را می‌شما�
 check('Echo و retry/apply inbound به لینک و relink floor محدود شده‌اند', [
   /requestId && link\?\.id \? await db\(\)\.wooSyncOutbox\.findFirst\(\{ where: \{ idempotencyKey: requestId, linkId: link\.id \}/.test(svc), /async retryParked/.test(svc) && /row\.seq[\s\S]*relinkFloor/.test(svc), /event\.seq[\s\S]*SUPERSEDED_BY_RELINK_FLOOR/.test(svc), /existing && existing\.status !== WooInboundStatus\.PARKED/.test(svc)
 ], [true, true, true, true])
+check('PARKED سفارش‌ها در guardهای resume/resolve دیده می‌شوند و floor آن‌ها را حذف کور نمی‌کند', [
+  /function heldInboundWhere/.test(svc) && /WooInboundStatus\.PARKED/.test(svc), /heldInboundWhere\(fresh, preview\.lastSeq\)/.test(svc), /heldInboundWhere\(freshLink, remoteLastSeq\)/.test(svc), /canSupersedeByRelinkFloor/.test(svc) && /WooResumeDecision\.WOO_WINS/.test(svc), /sameRelinkParked/.test(svc)
+], [true, true, true, true, true])
+check('APPLY_INBOUNDهای stale و baseline رویداد قدیمی پاک/اصلاح می‌شوند', [
+  /expireApplyInboundApprovals/.test(svc), /EVENT_ALREADY_HANDLED/.test(svc), /wooBaseAfterInboundEvent/.test(svc), /lastWooQty: wooBase/.test(svc), /GROUP_RESUME_SKIPPED_HELD_ORDER/.test(svc)
+], [true, true, true, true, true])
+check('ارسال IN_FLIGHT تازه هنگام تصمیم مدیر block و echo تایم‌اوت lastWooQty را به‌روز می‌کند', [
+  /function assertNoFreshInFlight/.test(svc), /STALE_IN_FLIGHT_SUPERSEDED_BY_DECISION/.test(svc), /برای این کالا هنوز ارسال موجودی به سایت در حال انجام است/.test(svc), /status: WooOutboxStatus\.SENT[\s\S]*targetQty: newQty/.test(svc), /lastWooQty: newQty/.test(svc)
+], [true, true, true, true, true])
 check('گزارش سود/زیان سایت را فروش یا کسری حساب نمی‌کند؛ CostEngine kind جدا و restore دقیق دارد', [
   /WOO_SYNC_OUT', 'WOO_SYNC_IN', 'WOO_SYNC_ADJUST/.test(profit), /kind: 'EXTERNAL_SYNC'/.test(cost), /restoreExternalSync/.test(cost), /همگام‌سازی سایت: خروج موجودی/.test(movements)
 ], [true, true, true, true])
@@ -123,8 +132,8 @@ check('Plugin journal failure-safe و idempotency داخل lock دارد', [
   /UNIQUE KEY request_holder/.test(plugin), /OPTION_DB_VERSION/.test(plugin) && /maybe_upgrade/.test(plugin), /previous = self::previous_record_for_request\(\$request_id, \$key\);[\s\S]{0,120}if \(\$previous\) return \$previous;[\s\S]{0,120}\$wpdb->query\('START TRANSACTION'\)/.test(plugin), /strict = false/.test(plugin), /throw new RuntimeException\('MAHAK journal insert failed/.test(plugin), /self::record\([\s\S]*true\);[\s\S]{0,500}wc_update_product_stock/.test(plugin)
 ], [true, true, true, true, true, true])
 check('Plugin upgrade schema را با lock/backoff و تأیید unique index انجام می‌دهد', [
-  /mahak_stock_sync_upgrade/.test(plugin) && /GET_LOCK/.test(plugin), /UPDATE \{\$qt\} SET request_id = NULL WHERE request_id = ''/.test(plugin), /request_holder_unique_exists/.test(plugin), /DROP INDEX request_holder/.test(plugin), /UNIQUE KEY request_holder \(request_id\(96\), holder_key\(40\)\)/.test(plugin), /update_option\(self::OPTION_DB_VERSION, self::DB_VERSION, true\)/.test(plugin), /strcasecmp\(\$found, \$table\) === 0/.test(plugin) && /esc_like\(\$table\)/.test(plugin), /mahak_stock_sync_upgrade_backoff/.test(plugin) && /catch \(Throwable \$e\)/.test(plugin)
-], [true, true, true, true, true, true, true, true])
+  /_upgrade/.test(plugin) && /GET_LOCK/.test(plugin), /UPDATE \{\$qt\} SET request_id = NULL WHERE request_id = ''/.test(plugin), /request_holder_unique_exists/.test(plugin), /DROP INDEX request_holder/.test(plugin), /UNIQUE KEY request_holder \(request_id\(96\), holder_key\(40\)\)/.test(plugin), /update_option\(self::OPTION_DB_VERSION, self::DB_VERSION, true\)/.test(plugin), /strcasecmp\(\$found, \$table\) === 0/.test(plugin) && /esc_like\(\$table\)/.test(plugin), /mahak_stock_sync_upgrade_backoff/.test(plugin) && /catch \(Throwable \$e\)/.test(plugin), /\$lock_name = 'mahak_' \. substr\(md5\(DB_NAME \. ':' \. \$wpdb->prefix\), 0, 12\) \. '_upgrade'/.test(plugin)
+], [true, true, true, true, true, true, true, true, true])
 
 check('Plugin apply موجودی/status را با Woo save می‌کند، target/expected اجباری و قفل DB/CAS خام دارد', [
   /wc_update_product_stock\(\$product, \$target, 'set'\)/.test(plugin), !/wc_update_product_stock\(\$product, \$target, 'set', true\)/.test(plugin), /expected and target integer fields are required/.test(plugin), /GET_LOCK/.test(plugin) && /RELEASE_LOCK/.test(plugin), /FOR UPDATE/.test(plugin) && /START TRANSACTION/.test(plugin), /\$expected_raw = \$stock_row \? \(string\)\$stock_row\['meta_value'\]/.test(plugin), /WHERE meta_id = %d AND meta_value = %s LIMIT 1/.test(plugin) && /MAHAK CAS update failed/.test(plugin), /mahak_stock_lock_timeout[\s\S]{0,120}status' => 503/.test(plugin), /\$commit_ok === false/.test(plugin) && /MAHAK stock apply verification failed/.test(plugin), /CONNECTION_ID/.test(plugin) && /MAHAK journal row missing before commit/.test(plugin)
@@ -135,6 +144,9 @@ check('Variation با manage_stock والد قابل اتصال/نوشتن نی�
 check('Refund/order item context و delta اتمیک Woo روی آخرین journal row patch می‌شود', [
   /woocommerce_reduce_order_item_stock/.test(plugin), /woocommerce_restore_order_item_stock/.test(plugin), /stock_change_from_args/.test(plugin), /order_item_id/.test(plugin), /order_item_qty/.test(plugin), /refund_restock/.test(plugin), /created_at >= %s/.test(plugin) && /\$since = gmdate\('Y-m-d H:i:s', time\(\) - 10 \* MINUTE_IN_SECONDS\)/.test(plugin), /allowed_sources/.test(plugin), /'delta_qty'/.test(plugin), /rest_other/.test(plugin), /isset\(\$args\[1\], \$args\[2\]\)/.test(plugin) && /order_restore/.test(plugin), /mahak_settled/.test(plugin)
 ], [true, true, true, true, true, true, true, true, true, true, true, true])
+check('Plugin hookهای stock را با همان lock افزونه سریال می‌کند و context سفارش در shutdown پاک می‌شود', [
+  /private static \$hook_locks = array\(\)/.test(plugin), /function stock_lock_name/.test(plugin), /acquire_hook_lock/.test(plugin) && /before_stock[\s\S]*acquire_hook_lock/.test(plugin), /finally \{\s*self::release_hook_lock\(\$id\);\s*\}/.test(plugin), /shutdown_cleanup/.test(plugin) && /clear_order_context/.test(plugin), /\$lock_name = self::stock_lock_name\(\$product->get_id\(\)\)/.test(plugin)
+], [true, true, true, true, true, true])
 check('Plugin مسیرهای metadata مستقیم، dedupe و suppress محدود به holder را پوشش می‌دهد', [
   /updated_post_meta/.test(plugin) && /added_post_meta/.test(plugin), /after_stock_meta/.test(plugin), /meta_recorded/.test(plugin) && /same_meta_event/.test(plugin), /delete_post_meta\(\$id, '_mahak_stock_last_qty'\)/.test(plugin) && /delete_post_meta\(\$object_id, '_mahak_stock_last_qty'\)/.test(plugin), /suppress_ids/.test(plugin) && /is_suppressed/.test(plugin), /stock_holder_parts/.test(plugin), /mahak_fractional_stock/.test(plugin), /clean_product_caches/.test(plugin)
 ], [true, true, true, true, true, true, true, true])

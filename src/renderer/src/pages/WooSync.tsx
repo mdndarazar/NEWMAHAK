@@ -285,9 +285,11 @@ export default function WooSync() {
     if (managerPassword == null) return
     setBusy(true)
     try {
-      await call<any>(CH.wooLinksResumeProductMahak, { linkId: id, managerPassword })
+      const res = await call<any>(CH.wooLinksResumeProductMahak, { linkId: id, managerPassword })
       await load()
-      flash('برای گروه محصول، ارسال موجودی MAHAK به سایت صف شد؛ بعد از ارسال موفق لینک‌ها فعال می‌شوند.')
+      const queued = Number(res?.queued ?? 0)
+      const skipped = Number(res?.skipped ?? 0)
+      flash(skipped > 0 ? `برای گروه محصول، ${queued} اتصال صف شد و ${skipped} اتصال به‌خاطر رویداد حل‌نشده/ارسال درحال‌انجام رد شد.` : 'برای گروه محصول، ارسال موجودی MAHAK به سایت صف شد؛ بعد از ارسال موفق لینک‌ها فعال می‌شوند.')
     } catch (e) {
       fail(e)
     } finally {
