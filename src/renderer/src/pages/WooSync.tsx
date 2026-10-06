@@ -6,6 +6,7 @@ import {
   wooStatusLabel,
   type WooApprovalRow,
   type WooCatalogItem,
+  type WooCatalogResult,
   type WooLinkRow,
   type WooResumePreview,
   type WooStatusView
@@ -29,6 +30,7 @@ export default function WooSync() {
   const [links, setLinks] = useState<WooLinkRow[]>([])
   const [approvals, setApprovals] = useState<WooApprovalRow[]>([])
   const [catalog, setCatalog] = useState<WooCatalogItem[]>([])
+  const [catalogNotice, setCatalogNotice] = useState<string | null>(null)
   const [variants, setVariants] = useState<VariantRow[]>([])
   const [search, setSearch] = useState('')
   const [siteUrl, setSiteUrl] = useState('')
@@ -86,12 +88,15 @@ export default function WooSync() {
     setBusy(true)
     try {
       const [c, v] = await Promise.all([
-        call<WooCatalogItem[]>(CH.wooCatalog, { search, limit: 100 }),
+        call<WooCatalogResult>(CH.wooCatalog, { search, limit: 100 }),
         call<VariantRow[]>(CH.productList, { search, take: 100 })
       ])
-      setCatalog(c)
+      const legacyArray = Array.isArray(c as any)
+      const items = legacyArray ? (c as any as WooCatalogItem[]) : (Array.isArray(c.items) ? c.items : [])
+      setCatalog(items)
+      setCatalogNotice(legacyArray ? null : (c.message ?? null))
       setVariants(v)
-      flash(`کاتالوگ سایت خوانده شد: ${faDigits(c.length)} مورد`)
+      flash(`کاتالوگ سایت خوانده شد: ${faDigits(items.length)} مورد${!legacyArray && c.capped ? ' (فهرست کامل نیست)' : ''}`)
     } catch (e) {
       fail(e)
     } finally {
@@ -352,6 +357,7 @@ export default function WooSync() {
           <label className="space-y-1 flex-1"><span className="text-sm">جست‌وجو در سایت و کالاهای فروشگاه</span><input className="input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="نام، SKU، کد یا بارکد" /></label>
           <button className="btn" disabled={busy} onClick={loadCatalog}>خواندن کاتالوگ</button>
         </div>
+        {catalogNotice && <div className="rounded border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-sm">{catalogNotice}</div>}
         <div className="grid md:grid-cols-2 gap-3">
           <label className="space-y-1"><span className="text-sm">کالای فروشگاه</span><select className="input" value={selectedVariantId} onChange={(e) => setSelectedVariantId(e.target.value ? Number(e.target.value) : '')}><option value="">انتخاب کنید…</option>{variants.map((v) => <option key={v.id} value={v.id}>{titleOf(v)} · موجودی {faDigits(v.stock)}</option>)}</select></label>
           <label className="space-y-1"><span className="text-sm">محصول/Variation سایت</span><select className="input" value={selectedHolderKey} onChange={(e) => setSelectedHolderKey(e.target.value)}><option value="">انتخاب کنید…</option>{catalog.map((c) => <option key={c.holderKey} value={c.holderKey}>{c.name} · SKU {c.sku || '—'} · موجودی {c.stockQuantity == null ? '—' : faDigits(c.stockQuantity)} {c.manageStock ? '' : c.manageStockMode === 'parent' ? '· موجودی مشترک والد (قابل اتصال نیست)' : c.manageStockMode === 'fractional_unsupported' ? '· موجودی اعشاری پشتیبانی نمی‌شود' : '· manage_stock خاموش'}</option>)}</select></label>

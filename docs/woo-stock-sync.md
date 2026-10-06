@@ -143,3 +143,17 @@ resources/woocommerce/mahak-stock-sync.php
 - sync دستی مرحله‌ای‌تر شد: خطای pull یا reconcile در log می‌آید ولی مانع تلاش برای push outboxهای آماده نمی‌شود.
 - خواندن catalog/stock افزونه baseline داخلی را تغییر نمی‌دهد؛ baseline فقط در مسیر mutation/record موفق جلو می‌رود. خطای داخلی apply نیز با پیام عمومی به API برمی‌گردد و جزئیات در log وردپرس می‌ماند.
 - UI کلید افزونه را به‌صورت password نشان می‌دهد و catalog بیش از صفحه اول سایت را جمع‌آوری می‌کند.
+
+### نکته تکمیلی پس از بازبینی دهم
+
+- افزونه به نسخه `1.0.9` رفت؛ نسخه DB همان `4` ماند چون schema عوض نشد.
+- شناسه‌ها و موجودی‌های ورودی سخت‌گیرانه‌تر شدند: عدد اعشاری برای شناسه/expected/target دیگر round نمی‌شود و درخواست نامعتبر رد می‌شود.
+- مسیر apply افزونه holder را canonical می‌سنجد؛ ترکیب product/variation ناسازگار یا `holder_key` نامنطبق دیگر روی محصول دیگری اعمال نمی‌شود.
+- idempotency افزونه علاوه بر `request_id + holder_key` به payload موجودی (`expected` و `target`) bind شد؛ reuse همان request_id با مقدار متفاوت خطای 409 می‌دهد.
+- no-op apply هم قبل از پاسخ موفق یک receipt/journal سخت‌گیرانه ثبت می‌کند تا retry بعدی قابل تشخیص و durable باشد.
+- `/journal` اگر query خطا بدهد 500 برمی‌گرداند و feed خالی سالم جا زده نمی‌شود.
+- برنامه هنگام نهایی‌کردن outbox اگر لینک در فاصله HTTP تغییر کرده باشد baseline لینک را overwrite نمی‌کند؛ cursor ژورنال سایت به‌صورت monotonic ذخیره می‌شود و عقب‌گرد هم‌زمانی ندارد.
+- payload خام inbound و log خطای inbound allowlist شد تا داده‌های خارج از stock-only ذخیره یا لاگ نشود.
+- خواندن catalog اگر به سقف امن نمایش برسد دیگر بی‌صدا truncate نمی‌شود؛ نتیجه‌ی IPC متادیتای `capped/hasMore` می‌دهد و UI هشدار می‌دهد که جست‌وجو باید دقیق‌تر شود.
+- eventهای `mahak_apply` که بدون outbox متناظر PARK شده‌اند در retry گروهی خودکار دوباره روی MAHAK اعمال نمی‌شوند؛ نیازمند تصمیم/بررسی دقیق‌تر می‌مانند.
+- موارد وابسته به runtime واقعی Woo/MySQL مثل fail-open کردن lock hook یا strict کردن کامل journal hook عادی، آگاهانه staging-only باقی ماندند و در این patch به‌عنوان باگ قطعی بسته نشدند.

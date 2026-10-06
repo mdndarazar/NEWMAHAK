@@ -2,14 +2,14 @@
 /**
  * Plugin Name: MAHAK Stock Sync
  * Description: Stock-only bridge for MAHAK desktop app and WooCommerce. It reads/writes only stock_quantity and never exposes prices, customers, orders totals or addresses.
- * Version: 1.0.8
+ * Version: 1.0.9
  * Author: MAHAK Local
  */
 
 if (!defined('ABSPATH')) exit;
 
 final class Mahak_Stock_Sync_Plugin {
-  const VERSION = '1.0.8';
+  const VERSION = '1.0.9';
   const DB_VERSION = '4';
   const OPTION_TOKEN = 'mahak_stock_sync_token';
   const OPTION_LAST_SECRET_HINT = 'mahak_stock_sync_secret_hint';
@@ -323,6 +323,16 @@ final class Mahak_Stock_Sync_Plugin {
     return intval(round($f));
   }
 
+  private static function request_int_value($value, $allow_negative = true) {
+    if (is_bool($value) || is_array($value) || is_object($value) || $value === null) return null;
+    if (is_int($value)) return (!$allow_negative && $value < 0) ? null : $value;
+    if (is_float($value)) return null;
+    $s = trim((string)$value);
+    $re = $allow_negative ? '/^-?\d+$/' : '/^\d+$/';
+    if (!preg_match($re, $s)) return null;
+    return intval($s);
+  }
+
   private static function normalize_request_id($request_id, $empty_to_null = true) {
     if ($request_id === null) return $empty_to_null ? null : '';
     $s = sanitize_text_field((string)$request_id);
@@ -433,12 +443,13 @@ final class Mahak_Stock_Sync_Plugin {
   }
 
   private static function product_from_holder($holder) {
-    $product_id = isset($holder['product_id']) ? absint($holder['product_id']) : 0;
+    $input_product_id = isset($holder['product_id']) ? absint($holder['product_id']) : 0;
+    $product_id = $input_product_id;
     $variation_id = isset($holder['variation_id']) ? absint($holder['variation_id']) : 0;
-    if (!$product_id && isset($holder['holder_key'])) {
-      $key = (string)$holder['holder_key'];
-      if (strpos($key, 'v:') === 0) $variation_id = absint(substr($key, 2));
-      if (strpos($key, 'p:') === 0) $product_id = absint(substr($key, 2));
+    $input_key = isset($holder['holder_key']) ? sanitize_text_field((string)$holder['holder_key']) : '';
+    if (!$product_id && $input_key !== '') {
+      if (strpos($input_key, 'v:') === 0) $variation_id = absint(substr($input_key, 2));
+      if (strpos($input_key, 'p:') === 0) $product_id = absint(substr($input_key, 2));
     }
     $id = $variation_id ?: $product_id;
     $product = $id ? wc_get_product($id) : false;
@@ -446,11 +457,14 @@ final class Mahak_Stock_Sync_Plugin {
     if ($product->is_type('variation')) {
       $variation_id = $product->get_id();
       $product_id = $product->get_parent_id();
+      if ($input_product_id && $input_product_id !== absint($product_id)) return null;
     } else {
       $product_id = $product->get_id();
       $variation_id = 0;
     }
-    return array($product, $product_id, $variation_id ?: null, self::holder_key($product_id, $variation_id));
+    $canonical = self::holder_key($product_id, $variation_id);
+    if ($input_key !== '' && $input_key !== $canonical) return null;
+    return array($product, $product_id, $variation_id ?: null, $canonical);
   }
 
   private static function remember_qty($product, $qty = null) {
@@ -461,12 +475,17 @@ final class Mahak_Stock_Sync_Plugin {
     update_post_meta($id, '_mahak_stock_last_qty', $q);
   }
 
-  private static function previous_record_for_request($request_id, $holder_key) {
+  private static function previous_record_for_request($request_id, $holder_key, $expected = null, $target = null) {
     $request_id = self::normalize_request_id($request_id, true);
     if (!$request_id) return null;
     global $wpdb;
     $row = $wpdb->get_row($wpdb->prepare('SELECT * FROM ' . self::table() . ' WHERE request_id = %s AND holder_key = %s ORDER BY seq DESC LIMIT 1', $request_id, $holder_key), ARRAY_A);
     if (!$row) return null;
+    $payload = $row['payload_json'] ? json_decode($row['payload_json'], true) : null;
+    if (is_array($payload)) {
+      if ($expected !== null && array_key_exists('expected', $payload) && intval($payload['expected']) !== intval($expected)) return new WP_Error('mahak_idempotency_payload_mismatch', 'request_id was reused with different expected stock.', array('status' => 409));
+      if ($target !== null && array_key_exists('target', $payload) && intval($payload['target']) !== intval($target)) return new WP_Error('mahak_idempotency_payload_mismatch', 'request_id was reused with different target stock.', array('status' => 409));
+    }
     return array(
       'ok' => true,
       'idempotent' => true,
@@ -526,7 +545,7 @@ final class Mahak_Stock_Sync_Plugin {
       if (self::manage_stock_mode($p) === 'yes') $out[] = $p;
       foreach ($p->get_children() as $vid) {
         $v = wc_get_product($vid);
-        if ($v) $out[] = $v;
+        if ($v && self::manage_stock_mode($v) !== 'parent') $out[] = $v;
       }
     } else {
       $out[] = $p;
@@ -594,14 +613,14 @@ final class Mahak_Stock_Sync_Plugin {
     $manage_mode = self::manage_stock_mode($product);
     if ($manage_mode === 'parent') return new WP_Error('mahak_manage_stock_parent', 'Variation stock is managed by parent product.', array('status' => 409));
     if ($manage_mode !== 'yes') return new WP_Error('mahak_manage_stock_off', 'manage_stock is disabled for this holder.', array('status' => 409));
-    if (!array_key_exists('expected', $body) || !preg_match('/^-?\d+$/', (string)$body['expected']) || !array_key_exists('target', $body) || !preg_match('/^\d+$/', (string)$body['target'])) {
+    $expected = array_key_exists('expected', $body) ? self::request_int_value($body['expected'], true) : null;
+    $target = array_key_exists('target', $body) ? self::request_int_value($body['target'], false) : null;
+    if ($expected === null || $target === null) {
       return new WP_Error('mahak_bad_request', 'expected and target integer fields are required.', array('status' => 400));
     }
-    $expected = intval($body['expected']);
-    $target = max(0, intval($body['target']));
     $request_id = self::normalize_request_id($body['request_id'] ?? '', false);
     if ($request_id === '') $request_id = wp_generate_uuid4();
-    $previous = self::previous_record_for_request($request_id, $key);
+    $previous = self::previous_record_for_request($request_id, $key, $expected, $target);
     if ($previous) return $previous;
     global $wpdb;
     $lock_name = self::stock_lock_name($product->get_id());
@@ -611,7 +630,7 @@ final class Mahak_Stock_Sync_Plugin {
     $in_tx = false;
     try {
       // idempotency باید بعد از گرفتن lock دوباره چک شود تا retry هم‌زمان conflict کاذب نسازد.
-      $previous = self::previous_record_for_request($request_id, $key);
+      $previous = self::previous_record_for_request($request_id, $key, $expected, $target);
       if ($previous) return $previous;
 
       if ($wpdb->query('START TRANSACTION') === false) throw new RuntimeException('Could not start MAHAK stock transaction: ' . $wpdb->last_error);
@@ -645,6 +664,7 @@ final class Mahak_Stock_Sync_Plugin {
         return new WP_REST_Response(array('ok' => false, 'code' => 'mahak_stock_conflict', 'conflict' => true, 'current' => $current, 'expected' => $expected, 'message' => 'Stock changed on WooCommerce before MAHAK apply.'), 409);
       }
       if ($current === $target) {
+        self::record($pid, $vid, $current, $target, 'mahak_apply', null, null, $request_id, array('expected' => $expected, 'target' => $target), true);
         self::remember_qty($product, $target);
         if ((string)$wpdb->get_var('SELECT CONNECTION_ID()') !== $connection_id) throw new RuntimeException('MAHAK stock DB connection changed before noop commit.');
         $commit_ok = $wpdb->query('COMMIT');
@@ -668,7 +688,7 @@ final class Mahak_Stock_Sync_Plugin {
       }
 
       // اول journal سخت‌گیرانه ثبت می‌شود تا اگر fail شد، قبل از side-effectهای Woo rollback کنیم.
-      self::record($pid, $vid, $current, $target, 'mahak_apply', null, null, $request_id, array('target' => $target), true);
+      self::record($pid, $vid, $current, $target, 'mahak_apply', null, null, $request_id, array('expected' => $expected, 'target' => $target), true);
 
       self::set_suppressed_id($product->get_id(), $request_id);
       self::$request_id = $request_id;
@@ -700,7 +720,7 @@ final class Mahak_Stock_Sync_Plugin {
       self::clear_suppressed_id($product->get_id());
       self::$request_id = null;
       self::clean_product_caches($product);
-      error_log('[mahak-stock-sync] apply failed: ' . $e->getMessage());
+      error_log('[mahak-stock-sync] apply failed request_id=' . $request_id . ' holder=' . $key . ': ' . $e->getMessage());
       return new WP_Error('mahak_apply_failed', 'MAHAK stock apply failed. Check the WordPress error log with the request id.', array('status' => 500));
     } finally {
       if ($in_tx) $wpdb->query('ROLLBACK');
@@ -713,6 +733,7 @@ final class Mahak_Stock_Sync_Plugin {
     $limit = max(1, min(200, absint($req->get_param('limit') ?: 100)));
     $settle_cutoff = gmdate('Y-m-d H:i:s', time() - 2);
     $rows = $wpdb->get_results($wpdb->prepare('SELECT *, (created_at <= %s) AS mahak_settled FROM ' . self::table() . ' WHERE seq > %d ORDER BY seq ASC LIMIT %d', $settle_cutoff, $after, $limit), ARRAY_A);
+    if ($rows === null && !empty($wpdb->last_error)) return new WP_Error('mahak_journal_query_failed', 'MAHAK journal query failed.', array('status' => 500));
     $events = array();
     foreach ($rows as $r) {
       if (empty($r['mahak_settled'])) break;

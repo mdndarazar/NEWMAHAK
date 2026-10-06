@@ -89,6 +89,15 @@ export interface WooCatalogItem {
   status?: string | null
 }
 
+export interface WooCatalogResult {
+  items: WooCatalogItem[]
+  fetched: number
+  hasMore: boolean
+  capped: boolean
+  nextPage?: number | null
+  message?: string | null
+}
+
 export interface WooLinkRow {
   id: number
   variantId: number

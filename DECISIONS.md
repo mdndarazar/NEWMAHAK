@@ -1504,3 +1504,30 @@ S142-6 — سؤال: گیت نبودن رمز مدیر روی issueManual/bulkIs
 - Rejected/No patch: reuse متفاوت `request_id` در افزونه برای client رسمی MAHAK conflict قطعی نیست، چون پاسخ idempotent شامل `new_qty` قبلی است و service در mismatch outbox تازه می‌سازد. no-op بدون journal هم double-apply عددی نمی‌سازد و تغییر آن contract/جدول جدید می‌خواهد.
 - Deferred/Needs staging: lock-timeout fail-open در plugin چون service آن را PARK می‌کند، attribution سفارش/Refund با heuristic، object cache/duplicate `_stock`، signature واقعی hookهای refund، و رفتار MySQL/MariaDB/connection باید در staging واقعی Woo سنجیده شوند.
 - مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود؛ هیچ قیمت، مشتری، پرداخت، آدرس، مالیات، سفارش مالی یا گزارش فروش Woo وارد MAHAK نمی‌شود.
+
+## نشست Woo-S300-10
+
+### WOO-S300-10-1 — Bind idempotency به payload افزونه
+- سؤال: اگر `request_id` تکراری با `expected/target` متفاوت رسید، مثل قبل پاسخ idempotent بدهیم یا درخواست را conflict کنیم؟
+- انتخاب من: conflict با `mahak_idempotency_payload_mismatch` و status 409.
+- دلیل: `request_id + holder_key` بدون payload می‌تواند پاسخ موفق قدیمی را برای قصد جدید replay کند. از این نسخه receiptها `expected` و `target` را نگه می‌دارند؛ برای ردیف‌های خیلی قدیمی اگر فقط target وجود داشته باشد همان مقدار قابل کنترل است و از سازگاری نصب‌های قبلی محافظت می‌شود.
+
+### WOO-S300-10-2 — Outbox finalize وقتی لینک حین HTTP تغییر کرده است
+- سؤال: بعد از پاسخ موفق سایت، اگر status/updatedAt لینک نسبت به snapshot قبل از HTTP عوض شده بود، baseline را به‌روزرسانی کنیم یا عقب بکشیم؟
+- انتخاب من: outbox را sent می‌کنیم، ولی link baseline/status را overwrite نمی‌کنیم.
+- دلیل: HTTP side-effect قبلاً بیرون از transaction رخ داده است؛ برگرداندن outbox به pending می‌تواند دوباره‌ارسال کور بسازد، اما overwrite کردن لینکِ تازه‌تغییرکرده تصمیم مدیر/رویداد inbound جدید را خراب می‌کند.
+
+### WOO-S300-10-3 — رویدادهای `mahak_apply` پارک‌شده بدون outbox
+- سؤال: retry گروهی PARKEDها این echoها را دوباره روی MAHAK اعمال کند؟
+- انتخاب من: خیر؛ در bulk retry skip و log می‌شوند.
+- دلیل: `mahak_apply` echo عملیات MAHAK است، نه تغییر مستقل سایت. اگر outbox متناظر پیدا نشده، اعمال دوباره‌اش روی MAHAK ریسک double-apply دارد و باید از مسیر تصمیم/بررسی دقیق‌تر حل شود.
+
+### WOO-S300-10-4 — یافته‌های staging-only افزونه
+- سؤال: lock hook fail-open و strict شدن journal hook عادی را همین‌جا قطعی تغییر دهیم؟
+- انتخاب من: نه؛ فقط guardهای low-risk قطعی را اعمال کردم و این موارد را staging-only نگه داشتم.
+- دلیل: رفتار `GET_LOCK`، connection persistence، object cache، duplicate `_stock` و hook ordering Woo/MySQL باید روی staging واقعی سنجیده شود؛ تغییر کور می‌تواند سایت عملیاتی را بیشتر مختل کند.
+
+### WOO-S300-10-5 — کاتالوگ بزرگ‌تر از سقف امن UI
+- سؤال: سقف catalog را حذف کنیم یا truncate را آشکار کنیم؟
+- انتخاب من: سقف امن حفظ شد، اما نتیجه‌ی IPC متادیتای `hasMore/capped` می‌دهد و UI هشدار فارسی نشان می‌دهد.
+- دلیل: حذف سقف بدون virtualized select می‌تواند renderer را کند یا ناپایدار کند؛ اما truncate بی‌خبر هم خطر اتصال اشتباه دارد. هشدار صریح و الزام به جست‌وجوی دقیق‌تر کم‌ریسک‌تر است.

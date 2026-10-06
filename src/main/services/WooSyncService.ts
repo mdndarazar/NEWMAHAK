@@ -28,7 +28,7 @@ import {
   wooSafeInt,
   wooStockReason,
   type WooApprovalRow,
-  type WooCatalogItem,
+  type WooCatalogResult,
   type WooLinkRow,
   type WooResumePreviewEvent,
   type WooStatusView,
@@ -133,9 +133,45 @@ function parseJsonValue(raw: unknown): any {
   }
 }
 
+function sanitizeWooPluginPayload(payload: any): any {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  const out: any = {}
+  for (const k of ['lock_timeout', 'meta_hook', 'order_item_qty']) {
+    if (Object.prototype.hasOwnProperty.call(payload, k)) out[k] = payload[k]
+  }
+  return Object.keys(out).length ? out : null
+}
+
+function sanitizeWooInboundRaw(raw: any, payload: any): any {
+  return {
+    seq: raw?.seq ?? null,
+    event_uuid: raw?.event_uuid ?? raw?.uuid ?? null,
+    holder_key: raw?.holder_key ?? raw?.holderKey ?? null,
+    product_id: raw?.product_id ?? raw?.productId ?? null,
+    variation_id: raw?.variation_id ?? raw?.variationId ?? null,
+    old_qty: raw?.old_qty ?? null,
+    new_qty: raw?.new_qty ?? raw?.stock_quantity ?? null,
+    delta: raw?.delta ?? null,
+    source: raw?.source ?? null,
+    order_id: raw?.order_id ?? null,
+    order_item_id: raw?.order_item_id ?? null,
+    request_id: raw?.request_id ?? null,
+    created_at: raw?.created_at ?? raw?.createdAt ?? null,
+    payload: sanitizeWooPluginPayload(payload)
+  }
+}
+
 function int(raw: unknown, label: string, opts: { positive?: boolean; allowZero?: boolean } = {}): number {
-  const n = Math.round(Number(raw))
-  const ok = Number.isSafeInteger(n) && (opts.positive ? n > 0 : opts.allowZero ? n >= 0 : true)
+  let n: number | null = null
+  if (typeof raw === 'number') n = Number.isSafeInteger(raw) ? raw : null
+  else {
+    const s = String(raw ?? '').trim()
+    if (/^-?\d+$/.test(s)) {
+      const parsed = Number(s)
+      n = Number.isSafeInteger(parsed) ? parsed : null
+    }
+  }
+  const ok = n !== null && (opts.positive ? n > 0 : opts.allowZero ? n >= 0 : true)
   if (!ok) throw new BusinessError(`${label} نامعتبر است؛ عدد صحیح لازم است.`)
   return n
 }
@@ -279,8 +315,8 @@ async function remainingRestoreAllowance(input: { client: any; variantId: number
   return Math.max(0, sold - restored)
 }
 
-async function readSetting(key: string): Promise<string | null> {
-  const row = await prisma.setting.findUnique({ where: { key } })
+async function readSetting(key: string, client: Prisma.TransactionClient | typeof prisma = prisma): Promise<string | null> {
+  const row = await (client as any).setting.findUnique({ where: { key } })
   return row?.value ?? null
 }
 
@@ -288,32 +324,38 @@ async function writeSetting(key: string, value: string, client: Prisma.Transacti
   await client.setting.upsert({ where: { key }, create: { key, value }, update: { value } })
 }
 
-async function rawConfig(): Promise<StoredConfig> {
-  return safeJson(await readSetting(WOO_SYNC_SETTING_KEY)) ?? {}
+async function rawConfig(client: Prisma.TransactionClient | typeof prisma = prisma): Promise<StoredConfig> {
+  return safeJson(await readSetting(WOO_SYNC_SETTING_KEY, client)) ?? {}
 }
 
-async function readSecret(): Promise<string | null> {
-  const blob = await readSetting(WOO_SYNC_SECRET_KEY)
+async function readSecret(client: Prisma.TransactionClient | typeof prisma = prisma): Promise<string | null> {
+  const blob = await readSetting(WOO_SYNC_SECRET_KEY, client)
   return openSecret(blob)
 }
 
-async function lastCursor(): Promise<number> {
-  return Math.max(0, Math.round(Number((await readSetting(WOO_SYNC_CURSOR_KEY)) ?? 0) || 0))
+async function lastCursor(client: Prisma.TransactionClient | typeof prisma = prisma): Promise<number> {
+  return Math.max(0, Math.round(Number((await readSetting(WOO_SYNC_CURSOR_KEY, client)) ?? 0) || 0))
 }
 
 async function setCursor(seq: number): Promise<void> {
-  await writeSetting(WOO_SYNC_CURSOR_KEY, String(Math.max(0, Math.round(Number(seq) || 0))))
+  const next = String(Math.max(0, Math.round(Number(seq) || 0)))
+  await (prisma as any).$executeRawUnsafe(
+    `INSERT INTO "Setting" ("key", "value") VALUES (?, ?)
+     ON CONFLICT("key") DO UPDATE SET "value" = CAST(MAX(CAST("value" AS INTEGER), CAST(excluded."value" AS INTEGER)) AS TEXT)`,
+    WOO_SYNC_CURSOR_KEY,
+    next
+  )
 }
 
-async function safeConfig(): Promise<WooSyncSafeConfig> {
-  const c = await rawConfig()
+async function safeConfig(client: Prisma.TransactionClient | typeof prisma = prisma): Promise<WooSyncSafeConfig> {
+  const c = await rawConfig(client)
   return {
     enabled: c.enabled === true,
     siteUrl: normalizeWooBaseUrl(c.siteUrl),
     autoSync: c.autoSync !== false,
     intervalSeconds: Math.min(3600, Math.max(30, Math.round(Number(c.intervalSeconds) || 120))),
-    hasSecret: !!(await readSetting(WOO_SYNC_SECRET_KEY)),
-    lastCursor: await lastCursor()
+    hasSecret: !!(await readSecret(client)),
+    lastCursor: await lastCursor(client)
   }
 }
 
@@ -520,9 +562,9 @@ export async function enqueueWooForMovement(
   tx: Prisma.TransactionClient
 ): Promise<void> {
   if (String(input.reason).startsWith('WOO_SYNC_')) return
-  const cfg = await safeConfig()
-  if (!cfg.enabled) return
   const client = tx as any
+  const cfg = await safeConfig(client)
+  if (!cfg.enabled || !cfg.siteUrl || !cfg.hasSecret) return
   const links = await client.wooProductLink.findMany({
     where: { variantId: input.variantId, status: WooLinkStatus.ACTIVE }
   })
@@ -637,7 +679,7 @@ export const wooSyncService = {
     return { ok: true, site: r?.site ?? null, plugin: r?.plugin ?? null, time: r?.time ?? null }
   },
 
-  async catalog(params: { search?: string; limit?: number; page?: number; offset?: number } = {}): Promise<WooCatalogItem[]> {
+  async catalog(params: { search?: string; limit?: number; page?: number; offset?: number } = {}): Promise<WooCatalogResult> {
     const limit = Math.min(200, Math.max(1, Math.round(Number(params.limit) || 100)))
     const requestedPage = params.page != null
       ? Math.max(1, Math.round(Number(params.page) || 1))
@@ -667,19 +709,24 @@ export const wooSyncService = {
     }
     if (requestedPage != null) {
       const r = await fetchPage(requestedPage)
-      return mapRows(Array.isArray(r?.items) ? r.items : [])
+      const rows = Array.isArray(r?.items) ? r.items : []
+      const more = r?.has_more === true || r?.hasMore === true
+      return { items: mapRows(rows), fetched: rows.length, hasMore: more, capped: false, nextPage: more ? requestedPage + 1 : null, message: more ? 'کاتالوگ سایت صفحه‌های بیشتری دارد؛ برای دیدن همه موارد جست‌وجو را دقیق‌تر کنید یا صفحه بعد را بخوانید.' : null }
     }
     const all: any[] = []
     let page = 1
     let hasMore = false
+    let capped = false
     do {
       const r = await fetchPage(page)
       const rows = Array.isArray(r?.items) ? r.items : []
       all.push(...rows)
       hasMore = r?.has_more === true || r?.hasMore === true
       page++
-    } while (hasMore && all.length < 1000 && page <= 20)
-    return mapRows(all.slice(0, 1000))
+      capped = hasMore && (all.length >= 1000 || page > 20)
+    } while (hasMore && !capped)
+    const items = mapRows(all.slice(0, 1000))
+    return { items, fetched: items.length, hasMore, capped, nextPage: hasMore ? page : null, message: capped ? 'کاتالوگ سایت بیش از سقف امن نمایش است و فهرست کامل نیست؛ برای اتصال، جست‌وجو را دقیق‌تر کنید.' : null }
   },
 
   async links(): Promise<WooLinkRow[]> {
@@ -745,14 +792,14 @@ export const wooSyncService = {
     const wooQty = wooSafeInt(freshRemote.stockQuantity ?? catalogWooQty)
     const initialSeqFloor = freshRemote.lastSeq == null ? null : BigInt(freshRemote.lastSeq)
     const decision = String(input.decision || WooResumeDecision.MAHAK_WINS)
-    const variant = await prisma.productVariant.findUnique({ where: { id: variantId }, select: { id: true, stock: true, code: true } })
+    const variant = await prisma.productVariant.findUnique({ where: { id: variantId }, select: { id: true, code: true } })
     if (!variant) throw new BusinessError('کالای فروشگاه پیدا نشد.')
     return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const exists = await activeLinkForVariant(tx as any, variantId)
       if (exists) throw new BusinessError('این واریانت فروشگاه از قبل به سایت وصل است؛ اول همان اتصال را قطع کنید.')
       const holderExists = await (tx as any).wooProductLink.findFirst({ where: { holderKey, status: { not: WooLinkStatus.UNLINKED } }, select: { id: true, variantId: true } })
       if (holderExists) throw new BusinessError('این محصول/Variation سایت از قبل به یک کالای فروشگاه وصل است؛ اول همان اتصال را قطع کنید.')
-      let localStock = Number(variant.stock ?? 0)
+      let localStock = await productStock(variantId, tx as any)
       const link = await (tx as any).wooProductLink.create({
         data: {
           variantId,
@@ -1134,8 +1181,9 @@ export const wooSyncService = {
           const freshLink = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
           if (freshLink) {
             const statusUnchanged = freshLink.status === link.status && sameDbTime(freshLink.updatedAt, link.updatedAt)
+            if (!statusUnchanged) return
             let nextStatus = freshLink.status
-            if (statusUnchanged && canActivateAfterOutbox(row.kind, freshLink)) {
+            if (canActivateAfterOutbox(row.kind, freshLink)) {
               const held = await (tx as any).wooInboundEvent.count({ where: heldInboundWhere(freshLink, null) })
               nextStatus = held > 0 ? freshLink.status : WooLinkStatus.ACTIVE
             }
@@ -1148,10 +1196,11 @@ export const wooSyncService = {
                 lastPushedMovementId: row.movementId ?? freshLink.lastPushedMovementId
               }
             })
-            const canQueueAfterIdempotent = nextStatus === WooLinkStatus.ACTIVE || nextStatus === WooLinkStatus.CONFLICT || (nextStatus === WooLinkStatus.PAUSED && statusUnchanged && reconcileKind)
+            const canQueueAfterIdempotent = nextStatus === WooLinkStatus.ACTIVE || nextStatus === WooLinkStatus.CONFLICT || (nextStatus === WooLinkStatus.PAUSED && reconcileKind)
             needsFreshOutbox = res?.idempotent === true && appliedWooQty !== target && canQueueAfterIdempotent
             if (needsFreshOutbox) {
-              await createOutbox({ client: tx as any, link: { ...freshLink, lastWooQty: appliedWooQty }, variantId: row.variantId, kind: 'STOCK_PUSH_RETRY_AFTER_IDEMPOTENT', targetQty: localStock, expectedWooQty: appliedWooQty })
+              const retryKind = nextStatus === WooLinkStatus.ACTIVE ? 'STOCK_PUSH_RETRY_AFTER_IDEMPOTENT' : 'RECONCILE_PUSH'
+              await createOutbox({ client: tx as any, link: { ...freshLink, lastWooQty: appliedWooQty }, variantId: row.variantId, kind: retryKind, targetQty: localStock, expectedWooQty: appliedWooQty, skipLoopFuse: retryKind === 'RECONCILE_PUSH' })
             }
           }
         }, TX_OPTIONS)
@@ -1224,7 +1273,7 @@ export const wooSyncService = {
         delta,
         source,
         requestId,
-        payloadJson: json({ ...raw, payload })
+        payloadJson: json(sanitizeWooInboundRaw(raw, payload))
       }
       try {
         const done = await db().wooInboundEvent.findUnique({ where: { eventUuid } })
@@ -1318,7 +1367,7 @@ export const wooSyncService = {
           continue
         }
         const message = String((e as any)?.message ?? e)
-        await log('INBOUND_FAILED', message, { level: 'ERROR', payload: raw })
+        await log('INBOUND_FAILED', message, { level: 'ERROR', payload: sanitizeWooInboundRaw(raw, payload) })
         const link = await db().wooProductLink.findFirst({ where: { holderKey, status: { not: WooLinkStatus.UNLINKED } } })
         const parked = await db().wooInboundEvent.upsert({
           where: { eventUuid: baseEvent.eventUuid },
@@ -1435,6 +1484,11 @@ export const wooSyncService = {
           ? await db().wooProductLink.findUnique({ where: { id: row.linkId } })
           : await db().wooProductLink.findFirst({ where: { holderKey: row.holderKey, status: { not: WooLinkStatus.UNLINKED } } })
         if (!link || link.status !== WooLinkStatus.ACTIVE || row.relinkId) {
+          skipped++
+          continue
+        }
+        if (String(row.source ?? '') === 'mahak_apply') {
+          await log('PARKED_RETRY_ECHO_SKIPPED', 'رویداد echo اعمال MAHAK بدون outbox متناظر از پردازش گروهی پارک‌شده‌ها کنار گذاشته شد', { level: 'WARN', linkId: link.id, variantId: link.variantId, payload: { inboundEventId: row.id, requestId: row.requestId } })
           skipped++
           continue
         }
