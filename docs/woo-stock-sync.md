@@ -67,3 +67,12 @@ resources/woocommerce/mahak-stock-sync.php
 - idempotency با `request_id + holder_key` بعد از گرفتن lock هم دوباره بررسی می‌شود تا retry هم‌زمان conflict کاذب نسازد.
 - موجودی اعشاری Woo در این نسخه پشتیبانی نمی‌شود و اتصال/نوشتن برای آن رد می‌شود؛ MAHAK فعلاً موجودی integer دارد.
 - اگر یک variable product خودش stock مشترک را مدیریت کند، parent product در کاتالوگ می‌آید؛ variationهایی که `manage_stock=parent` دارند مستقل قابل اتصال نیستند.
+
+### نکته تکمیلی پس از بازبینی دوم افزونه
+
+- CAS افزونه مقدار خام `_stock` خوانده‌شده زیر `FOR UPDATE` را مقایسه می‌کند تا تفاوت قالب Woo مثل `15` در برابر `15.000000` باعث conflict کاذب نشود.
+- خطای گرفتن lock سمت سایت status `503` می‌دهد تا در برنامه به‌عنوان خطای گذرا retry شود، نه اختلاف نیازمند مدیر.
+- افزونه هنگام upgrade عادی هم schema را با `mahak_stock_sync_db_version` به‌روز می‌کند؛ بنابراین `UNIQUE KEY request_holder` فقط وابسته به activation نیست.
+- eventهای مستقیم `_stock` و hook عمومی stock در یک درخواست dedupe می‌شوند تا ویرایش ادمین دوبار روی MAHAK اعمال نشود.
+- برای سفارش/refund، اگر Woo در hookهای order item مقدار `from/to` بدهد، همان مقدار اتمیک روی ردیف journal patch می‌شود و journal ردیف‌های خیلی تازه را با تأخیر کوتاه برمی‌گرداند تا patch attribution/delta فرصت کامل‌شدن داشته باشد.
+- اگر remote stock دیگر managed عددی نباشد، MAHAK آن را صفر فرض نمی‌کند؛ لینک خراب سایت می‌شود و تصمیم «سایت مرجع باشد» رد می‌شود.

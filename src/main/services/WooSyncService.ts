@@ -47,6 +47,15 @@ function publishedQty(raw: unknown): number {
   return Math.max(0, wooSafeInt(raw))
 }
 
+function wooNullableInt(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === '') return null
+  return wooSafeInt(raw)
+}
+
+function remoteStockUsable(r: any): boolean {
+  return !!r && r.manageStock === true && r.stockQuantity !== null && r.stockQuantity !== undefined
+}
+
 function isReconcileOutboxKind(kind: unknown): boolean {
   return ['RECONCILE_PUSH', 'STOCK_PUSH_REBASED', 'STOCK_PUSH_RETRY_AFTER_IDEMPOTENT', 'DELETE_ZERO'].includes(String(kind || ''))
 }
@@ -495,7 +504,7 @@ export const wooSyncService = {
       type: String(x.type ?? ''),
       manageStock: x.manage_stock === true || x.manageStock === true,
       manageStockMode: x.manage_stock_mode == null ? null : String(x.manage_stock_mode),
-      stockQuantity: wooSafeInt(x.stock_quantity ?? x.stockQuantity),
+      stockQuantity: wooNullableInt(x.stock_quantity ?? x.stockQuantity),
       stockStatus: String(x.stock_status ?? x.stockStatus ?? ''),
       backorders: x.backorders == null ? null : String(x.backorders),
       status: x.status == null ? null : String(x.status)
@@ -549,7 +558,7 @@ export const wooSyncService = {
     sku?: string | null
     remoteName?: string | null
     manageStock?: boolean
-    wooQty?: number
+    wooQty?: number | null
     decision?: string
     userId?: number | null
   }) {
@@ -558,10 +567,11 @@ export const wooSyncService = {
     const variationId = input.variationId == null ? null : int(input.variationId, 'شناسه Variation سایت', { positive: true })
     const holderKey = input.holderKey || wooHolderKey(productId, variationId)
     if (input.manageStock !== true) throw new BusinessError('این محصول در سایت manage_stock ندارد؛ تا وقتی موجودی سایت مستقل نباشد، اتصال امن نیست.')
+    if (input.wooQty === null || input.wooQty === undefined) throw new BusinessError('موجودی سایت برای این holder عدد مستقل ندارد؛ اتصال امن نیست.')
     const catalogWooQty = wooSafeInt(input.wooQty)
     const freshRemote = (await this.remoteStock([{ holderKey, wooProductId: productId, wooVariationId: variationId }]))[0]
-    const wooQty = freshRemote?.stockQuantity == null ? catalogWooQty : wooSafeInt(freshRemote.stockQuantity)
-    if (freshRemote?.manageStock !== true) throw new BusinessError('این محصول/Variation در سایت موجودی مستقل ندارد (manage_stock والد/خاموش است)؛ اتصال امن نیست.')
+    if (!remoteStockUsable(freshRemote)) throw new BusinessError('این محصول/Variation در سایت موجودی مستقل عددی ندارد (manage_stock والد/خاموش/اعشاری است)؛ اتصال امن نیست.')
+    const wooQty = wooSafeInt(freshRemote.stockQuantity ?? catalogWooQty)
     const decision = String(input.decision || WooResumeDecision.MAHAK_WINS)
     const variant = await prisma.productVariant.findUnique({ where: { id: variantId }, select: { id: true, stock: true, code: true } })
     if (!variant) throw new BusinessError('کالای فروشگاه پیدا نشد.')
@@ -654,6 +664,10 @@ export const wooSyncService = {
     const link = await linkById(int(input.linkId, 'شناسه اتصال', { positive: true }))
     const stockRes = await this.remoteStock([link])
     const remote = stockRes[0]
+    if (!remoteStockUsable(remote)) {
+      await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_REMOTE } }).catch(() => null)
+      throw new BusinessError('این اتصال در سایت دیگر موجودی مستقل عددی ندارد (manage_stock خاموش/والد/اعشاری است). ابتدا تنظیم موجودی WooCommerce را اصلاح کنید.')
+    }
     const remoteLastSeq = remote?.lastSeq == null ? null : Number(remote.lastSeq)
     // پیش از Reconcile، ژورنال سایت را تا آخرین seq همین holder می‌خوانیم تا سفارش‌های Pull‌نشده
     // بعداً دوباره روی MAHAK ننشینند یا گم نشوند.
@@ -836,7 +850,7 @@ export const wooSyncService = {
     const items = Array.isArray(r?.items) ? r.items : []
     return items.map((x: any) => ({
       holderKey: String(x.holder_key ?? x.holderKey ?? ''),
-      stockQuantity: wooSafeInt(x.stock_quantity ?? x.stockQuantity),
+      stockQuantity: wooNullableInt(x.stock_quantity ?? x.stockQuantity),
       manageStock: x.manage_stock === true || x.manageStock === true,
       manageStockMode: x.manage_stock_mode ?? x.manageStockMode ?? x.manage_stock ?? x.manageStock ?? null,
       lastSeq: x.last_seq == null ? null : wooSafeInt(x.last_seq)
@@ -926,7 +940,8 @@ export const wooSyncService = {
         const errStatus = Number((e as any)?.status || 0)
         const errCode = String((e as any)?.code || '')
         const remoteBroken = ['mahak_not_found', 'mahak_manage_stock_off', 'mahak_manage_stock_parent', 'mahak_fractional_stock'].includes(errCode)
-        const conflict = !remoteBroken && (errCode === 'mahak_stock_conflict' || /اختلاف|conflict|409/i.test(msg) || errStatus === 409)
+        const transientRemote = ['mahak_stock_lock_timeout'].includes(errCode)
+        const conflict = !remoteBroken && !transientRemote && (errCode === 'mahak_stock_conflict' || /اختلاف|conflict|409/i.test(msg) || errStatus === 409)
         const status = attempt >= MAX_OUTBOX_ATTEMPTS ? WooOutboxStatus.DEAD : conflict ? WooOutboxStatus.CONFLICT : WooOutboxStatus.FAILED
         const conflictCursor = status === WooOutboxStatus.CONFLICT ? await lastCursor() : null
         await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -1095,6 +1110,12 @@ export const wooSyncService = {
         skipped++
         continue
       }
+      if (!remoteStockUsable(r)) {
+        await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_REMOTE } }).catch(() => null)
+        await log('RECONCILE_BROKEN_REMOTE', 'بررسی دوره‌ای متوقف شد چون holder سایت موجودی مستقل عددی ندارد', { level: 'WARN', linkId: link.id, variantId: link.variantId, payload: { manageStock: r.manageStock, manageStockMode: r.manageStockMode, stockQuantity: r.stockQuantity } })
+        skipped++
+        continue
+      }
       checked++
       if (r.lastSeq != null && Number(r.lastSeq) > cursor) {
         skipped++
@@ -1254,11 +1275,17 @@ export const wooSyncService = {
       const link = approval.linkId == null ? null : await db().wooProductLink.findUnique({ where: { id: Number(approval.linkId) } })
       if (!link || link.status === WooLinkStatus.UNLINKED) throw new BusinessError('لینک تأیید دیگر فعال نیست.')
       const payload = parseJsonValue(approval.payloadJson) ?? {}
+      const needsUsableRemote = decision === WooResumeDecision.WOO_WINS || decision === WooResumeDecision.VERIFY_ONLY || decision === WooResumeDecision.NOOP || decision === 'UNFREEZE'
+      const freshRemoteForDecision = needsUsableRemote ? (await this.remoteStock([link]))[0] : null
+      if (needsUsableRemote && !remoteStockUsable(freshRemoteForDecision)) {
+        await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_REMOTE } }).catch(() => null)
+        throw new BusinessError('سایت برای این اتصال موجودی مستقل عددی ندارد؛ انتخاب «سایت مرجع باشد» یا فعال‌سازی بدون تغییر مجاز نیست.')
+      }
       await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
         const freshLink = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
         if (!freshLink || freshLink.status === WooLinkStatus.UNLINKED) throw new BusinessError('لینک تأیید دیگر فعال نیست.')
         const localStock = await productStock(link.variantId, tx as any)
-        const wooQty = wooSafeInt(payload.wooQty ?? payload.expected ?? freshLink.lastWooQty)
+        const wooQty = wooSafeInt(freshRemoteForDecision?.stockQuantity ?? payload.wooQty ?? payload.expected ?? freshLink.lastWooQty)
         if (decision === WooResumeDecision.WOO_WINS) {
           const r = await applyWooDelta({ variantId: link.variantId, delta: wooQty - localStock, reason: StockReason.WOO_SYNC_ADJUST, note: 'تأیید مدیر Woo: سایت مرجع موجودی شد', tx })
           await (tx as any).wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.ACTIVE, lastWooQty: wooQty, lastMahakQty: r.stock, resumedAt: new Date(), resumedBy: input.userId ?? null, resumeDecision: decision } })

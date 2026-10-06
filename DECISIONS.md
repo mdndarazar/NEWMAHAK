@@ -1397,3 +1397,15 @@ S142-6 — سؤال: گیت نبودن رمز مدیر روی issueManual/bulkIs
 - گزینه‌ها: تبدیل پنهان به int؛ پشتیبانی کامل decimal در MAHAK و migrationها؛ رد صریح در افزونه.
 - انتخاب من: رد صریح با `mahak_fractional_stock`.
 - دلیل: مدل موجودی MAHAK و قرارداد outbox/inbound فعلی integer است. تبدیل پنهان اعشار به int خطر oversell دارد؛ پشتیبانی decimal تغییر دامنه بزرگ‌تری است و باید جدا طراحی شود.
+
+### WOO-H6 — بازبینی دوم افزونه: CAS خام، رویدادهای Woo و مقدار نامعتبر remote
+- سؤال: بعد از افزودن CAS و observer متا، گزارش‌های مستقل درباره conflict کاذب، double event و delta سفارش زیر هم‌زمانی چه تصمیمی می‌خواهند؟
+- گزینه‌ها: نادیده‌گرفتن چون تست regex پاس می‌شود؛ بازطراحی کامل sync؛ patch حداقلی روی نقاط race و نگه‌داشتن مرز فقط موجودی.
+- انتخاب من: patch حداقلی و محافظه‌کارانه.
+- تصمیم‌ها:
+  - CAS روی مقدار خام قفل‌شده `_stock` انجام می‌شود، نه رشته‌ی integer ساخته‌شده، چون Woo مقدار set را ممکن است به فرم `N.000000` ذخیره کند.
+  - journal strict قبل از `wc_update_product_stock` ثبت می‌شود تا خطای journal پیش از side-effectهای Woo رخ دهد.
+  - event مستقیم meta با event بعدی stock dedupe می‌شود.
+  - در order item hook، `from/to` اتمیک Woo اگر موجود باشد old/new/delta ردیف journal را اصلاح می‌کند.
+  - موجودی remote نامعتبر/اعشاری/غیر managed به صفر تبدیل نمی‌شود؛ لینک BROKEN_REMOTE می‌شود و WOO_WINS مجاز نیست.
+- مرز معماری: همچنان فقط stock_quantity sync می‌شود؛ قیمت، مشتری، سفارش مالی و گزارش فروش Woo وارد MAHAK نمی‌شود.

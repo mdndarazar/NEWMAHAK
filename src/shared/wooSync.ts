@@ -83,7 +83,7 @@ export interface WooCatalogItem {
   type: string
   manageStock: boolean
   manageStockMode?: string | null
-  stockQuantity: number
+  stockQuantity: number | null
   stockStatus: string
   backorders?: string | null
   status?: string | null

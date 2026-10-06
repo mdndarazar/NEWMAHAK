@@ -127,6 +127,7 @@ export default function WooSync() {
 
   const createLink = async () => {
     if (!selectedVariantId || !selectedCatalog) return setErr('یک کالای فروشگاه و یک محصول سایت انتخاب کنید.')
+    if (selectedCatalog.stockQuantity == null) return setErr('این محصول سایت موجودی مستقل عددی ندارد؛ اتصال امن نیست.')
     const managerPassword = decision === WooResumeDecision.WOO_WINS ? askManagerPassword('سایت قرار است مرجع موجودی MAHAK شود.') : null
     if (decision === WooResumeDecision.WOO_WINS && managerPassword == null) return
     setBusy(true)
@@ -346,7 +347,7 @@ export default function WooSync() {
         </div>
         <div className="grid md:grid-cols-2 gap-3">
           <label className="space-y-1"><span className="text-sm">کالای فروشگاه</span><select className="input" value={selectedVariantId} onChange={(e) => setSelectedVariantId(e.target.value ? Number(e.target.value) : '')}><option value="">انتخاب کنید…</option>{variants.map((v) => <option key={v.id} value={v.id}>{titleOf(v)} · موجودی {faDigits(v.stock)}</option>)}</select></label>
-          <label className="space-y-1"><span className="text-sm">محصول/Variation سایت</span><select className="input" value={selectedHolderKey} onChange={(e) => setSelectedHolderKey(e.target.value)}><option value="">انتخاب کنید…</option>{catalog.map((c) => <option key={c.holderKey} value={c.holderKey}>{c.name} · SKU {c.sku || '—'} · موجودی {faDigits(c.stockQuantity)} {c.manageStock ? '' : c.manageStockMode === 'parent' ? '· موجودی مشترک والد (قابل اتصال نیست)' : c.manageStockMode === 'fractional_unsupported' ? '· موجودی اعشاری پشتیبانی نمی‌شود' : '· manage_stock خاموش'}</option>)}</select></label>
+          <label className="space-y-1"><span className="text-sm">محصول/Variation سایت</span><select className="input" value={selectedHolderKey} onChange={(e) => setSelectedHolderKey(e.target.value)}><option value="">انتخاب کنید…</option>{catalog.map((c) => <option key={c.holderKey} value={c.holderKey}>{c.name} · SKU {c.sku || '—'} · موجودی {c.stockQuantity == null ? '—' : faDigits(c.stockQuantity)} {c.manageStock ? '' : c.manageStockMode === 'parent' ? '· موجودی مشترک والد (قابل اتصال نیست)' : c.manageStockMode === 'fractional_unsupported' ? '· موجودی اعشاری پشتیبانی نمی‌شود' : '· manage_stock خاموش'}</option>)}</select></label>
         </div>
         <div className="flex flex-wrap gap-3 items-center">
           <label className="text-sm">مبنای اتصال اولیه:</label>
