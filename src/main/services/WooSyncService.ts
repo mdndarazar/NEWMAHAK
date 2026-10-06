@@ -1369,15 +1369,27 @@ export const wooSyncService = {
         const isMahakApplyEcho = !!requestId && source === 'mahak_apply'
         const echo = isMahakApplyEcho && link?.id ? await db().wooSyncOutbox.findFirst({ where: { idempotencyKey: requestId, linkId: link.id } }) : null
         if (echo) {
+          let echoActivated = false
           await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
             await (tx as any).wooInboundEvent.create({
               data: { ...baseEvent, linkId: link?.id ?? null, variantId: link?.variantId ?? null, status: WooInboundStatus.SKIPPED_ECHO, processedAt: new Date() }
             })
             if (link?.id) {
-              await (tx as any).wooProductLink.update({ where: { id: link.id }, data: { lastWooQty: newQty } })
-              await (tx as any).wooSyncOutbox.updateMany({ where: { id: echo.id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED, WooOutboxStatus.IN_FLIGHT] } }, data: { status: WooOutboxStatus.SENT, sentAt: new Date(), updatedAt: new Date(), lastError: null, targetQty: newQty } })
+              const sentNow = await (tx as any).wooSyncOutbox.updateMany({ where: { id: echo.id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED, WooOutboxStatus.IN_FLIGHT] } }, data: { status: WooOutboxStatus.SENT, sentAt: new Date(), updatedAt: new Date(), lastError: null, targetQty: newQty } })
+              const freshLink = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
+              const linkUpdate: any = { lastWooQty: newQty }
+              // echo ژورنال یعنی apply روی سایت موفق بوده (حتی اگر پاسخ HTTP گم شده باشد). اگر لینک در انتظار
+              // نتیجه‌ی همین ارسال است (وصل با مرجع MAHAK تکی/گروهی)، مثل finalize در processOutbox فعالش می‌کنیم؛
+              // وگرنه لینک بی‌صدا برای همیشه PAUSED می‌ماند و reconcile (فقط ACTIVE) هم به آن سر نمی‌زند.
+              if (sentNow.count > 0 && freshLink && canActivateAfterOutbox(echo.kind, freshLink)) {
+                const held = await (tx as any).wooInboundEvent.count({ where: heldInboundWhere(freshLink, null) })
+                if (held === 0) linkUpdate.status = WooLinkStatus.ACTIVE
+              }
+              await (tx as any).wooProductLink.update({ where: { id: link.id }, data: linkUpdate })
+              echoActivated = linkUpdate.status === WooLinkStatus.ACTIVE
             }
           }, TX_OPTIONS)
+          if (echoActivated && link?.id) await log('ECHO_ACTIVATE_LINK', 'نتیجه‌ی گم‌شده‌ی ارسال با ژورنال سایت تأیید شد و اتصال فعال شد', { linkId: link.id, variantId: link.variantId, payload: { outboxId: echo.id, requestId } })
           skipped++
           continue
         }
