@@ -1463,3 +1463,18 @@ S142-6 — سؤال: گیت نبودن رمز مدیر روی issueManual/bulkIs
   - قطع دائم link و اتصال اولیه با انتخاب مرجع موجودی، رمز مدیر می‌خواهند. قطع دائم در حضور held event یا `IN_FLIGHT` تازه block می‌شود.
 - Deferred/Needs staging: رفتار hookهای سفارشی خارج از مسیر Woo استاندارد، patch دقیق order item با نگه‌داشتن insert_id در request، و تست هم‌زمانی واقعی روی MySQL/MariaDB و PHP نسخه‌های مختلف باید در staging واقعی انجام شود.
 - مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود؛ هیچ قیمت، مشتری، پرداخت، آدرس، مالیات، سفارش مالی یا گزارش فروش Woo وارد MAHAK نمی‌شود.
+
+### WOO-H11 — بازبینی هفتم Woo: ریز-raceهای held، approval و baseline افزونه
+- سؤال: دو گزارش مستقل پس از hardening قبلی چند race باقی‌مانده را مطرح کردند؛ کدام‌ها در کد واقعی تأیید و با کمترین ریسک رفع شوند؟
+- انتخاب من: فقط موارد قابل‌تأیید در کد واقعی و مرتبط با Woo stock sync را patch کردم؛ موارد speculative یا نیازمند staging واقعی Woo/MySQL/PHP بدون تغییر پرریسک باقی ماندند.
+- تصمیم‌ها:
+  - `resumeApply` داخل همان transaction دوباره تعداد و hash رویدادهای held را با preview مقایسه می‌کند؛ صرفاً check کردن `lastSeq` کافی نبود.
+  - `DELETE_ZERO` برای لینک `BROKEN_LOCAL` مجاز شد تا صف پاک‌سازی بعد از حذف کالای محلی بن‌بست نشود.
+  - اتصال holder سایت فقط با holder canonical ساخته می‌شود و هر holderKey غیر-UNLINKED قبلی جلوی اتصال دوباره همان محصول/Variation Woo به کالای دیگر را می‌گیرد.
+  - resolve approval با `updateMany({ id, status: PENDING })` claim می‌شود تا دو تصمیم هم‌زمان نتوانند side-effect تکراری بسازند.
+  - baseline سایت بعد از APPLY_INBOUND فقط از eventهای معتبر `APPLIED/APPLIED_ON_RELINK/SKIPPED_ECHO` تازه‌تر گرفته می‌شود؛ `PARKED` و `SKIPPED_PAUSED` دیگر مبنای expected بعدی را خراب نمی‌کنند.
+  - pull ژورنال، لینک ACTIVE خوانده‌شده بیرون transaction را داخل transaction با status و `updatedAt` دوباره چک می‌کند؛ اگر هم‌زمان pause/reconcile رخ داده باشد event به صف تأیید می‌رود.
+  - تنظیمات Woo اجازه فعال‌سازی بدون آدرس و کلید اتصال را نمی‌دهد و workerها اگر config ناقص باشد outbox/journal را attempt نمی‌کنند.
+  - افزونه به نسخه `1.0.6` رفت: baseline `_mahak_stock_last_qty` فقط بعد از `record()` موفق جلو می‌رود، مسیر مستقیم meta همان named lock را می‌گیرد، `lock_timeout` را در payload می‌فرستد و cleanup وضعیت‌های موقت انجام می‌شود؛ `before_post_update` نیز مقدار قبلی را از DB می‌خواند.
+- Deferred/Needs staging: صحت کامل مسیرهای سفارشی third-party که مستقیم meta را بدون hook استاندارد Woo تغییر می‌دهند، رفتار object cache وردپرس، و serialization واقعی `GET_LOCK`/transaction در MySQL/MariaDB باید در staging واقعی Woo سنجیده شود.
+- مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود؛ هیچ قیمت، مشتری، پرداخت، آدرس، مالیات، سفارش مالی یا گزارش فروش Woo وارد MAHAK نمی‌شود.

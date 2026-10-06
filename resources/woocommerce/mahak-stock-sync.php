@@ -2,14 +2,14 @@
 /**
  * Plugin Name: MAHAK Stock Sync
  * Description: Stock-only bridge for MAHAK desktop app and WooCommerce. It reads/writes only stock_quantity and never exposes prices, customers, orders totals or addresses.
- * Version: 1.0.5
+ * Version: 1.0.6
  * Author: MAHAK Local
  */
 
 if (!defined('ABSPATH')) exit;
 
 final class Mahak_Stock_Sync_Plugin {
-  const VERSION = '1.0.5';
+  const VERSION = '1.0.6';
   const DB_VERSION = '4';
   const OPTION_TOKEN = 'mahak_stock_sync_token';
   const OPTION_LAST_SECRET_HINT = 'mahak_stock_sync_secret_hint';
@@ -718,10 +718,12 @@ final class Mahak_Stock_Sync_Plugin {
     unset(self::$meta_recorded[$id]);
     if (self::manage_stock_mode($product) !== 'yes') {
       delete_post_meta($id, '_mahak_stock_last_qty');
-      unset(self::$before[$id]);
+      unset(self::$before[$id], self::$lock_missed[$id]);
       return;
     }
-    $q = self::int_stock_value($product->get_stock_quantity());
+    self::acquire_hook_lock($id);
+    $q = self::current_db_stock_int($product);
+    if ($q === null) $q = self::int_stock_value($product->get_stock_quantity());
     if ($q !== null) self::$before[$id] = $q;
   }
 
@@ -731,7 +733,7 @@ final class Mahak_Stock_Sync_Plugin {
     unset(self::$meta_recorded[$id]);
     if (self::manage_stock_mode($product) !== 'yes') {
       delete_post_meta($id, '_mahak_stock_last_qty');
-      unset(self::$before[$id]);
+      unset(self::$before[$id], self::$lock_missed[$id]);
       return;
     }
     self::acquire_hook_lock($id);
@@ -769,15 +771,17 @@ final class Mahak_Stock_Sync_Plugin {
         $meta = get_post_meta($id, '_mahak_stock_last_qty', true);
         $old = ($meta === '') ? $new : self::int_stock_value($meta);
       }
-      update_post_meta($id, '_mahak_stock_last_qty', $new);
       if ($old === null || $old === $new) {
+        update_post_meta($id, '_mahak_stock_last_qty', $new);
         unset(self::$meta_recorded[$id], self::$before[$id], self::$lock_missed[$id]);
         return;
       }
       list($pid, $vid) = self::stock_holder_parts($product);
       $source = self::$order_id ? self::$order_source : (is_admin() ? 'admin_edit' : ((defined('REST_REQUEST') && REST_REQUEST) ? 'rest_other' : 'woocommerce'));
       $payload = isset(self::$lock_missed[$id]) ? array('lock_timeout' => true) : null;
-      self::record($pid, $vid, $old, $new, $source, self::$order_id, null, null, $payload);
+      if (self::record($pid, $vid, $old, $new, $source, self::$order_id, null, null, $payload)) {
+        update_post_meta($id, '_mahak_stock_last_qty', $new);
+      }
       unset(self::$meta_recorded[$id], self::$before[$id], self::$lock_missed[$id]);
       if ($source === 'refund_restock') self::clear_order_context();
     } finally {
@@ -789,30 +793,39 @@ final class Mahak_Stock_Sync_Plugin {
     if ($meta_key !== '_stock') return;
     $product = function_exists('wc_get_product') ? wc_get_product($object_id) : false;
     if (!$product || self::is_suppressed($product)) return;
-    if (self::manage_stock_mode($product) !== 'yes') {
-      delete_post_meta($object_id, '_mahak_stock_last_qty');
-      unset(self::$meta_recorded[$object_id], self::$before[$object_id]);
-      return;
-    }
-    $new = self::int_stock_value($meta_value);
-    if ($new === null) {
-      delete_post_meta($object_id, '_mahak_stock_last_qty');
-      unset(self::$meta_recorded[$object_id], self::$before[$object_id]);
-      error_log('[mahak-stock-sync] non-integer or unmanaged stock meta is not journaled for product ' . absint($object_id));
-      return;
-    }
-    $old_meta = get_post_meta($object_id, '_mahak_stock_last_qty', true);
-    $old = array_key_exists($object_id, self::$before) ? self::$before[$object_id] : (($old_meta === '') ? null : self::int_stock_value($old_meta));
-    update_post_meta($object_id, '_mahak_stock_last_qty', $new);
-    if ($old === null || $old === $new) {
-      unset(self::$meta_recorded[$object_id], self::$before[$object_id]);
-      return;
-    }
-    list($pid, $vid) = self::stock_holder_parts($product);
-    $source = self::$order_id ? self::$order_source : (is_admin() ? 'admin_edit' : ((defined('REST_REQUEST') && REST_REQUEST) ? 'rest_other' : 'woocommerce_meta'));
-    if (self::record($pid, $vid, $old, $new, $source, self::$order_id, null, null, array('meta_hook' => true))) {
-      self::$meta_recorded[$object_id] = $new;
-      unset(self::$before[$object_id]);
+    $id = $product->get_id();
+    self::acquire_hook_lock($id);
+    try {
+      if (self::manage_stock_mode($product) !== 'yes') {
+        delete_post_meta($id, '_mahak_stock_last_qty');
+        unset(self::$meta_recorded[$id], self::$before[$id], self::$lock_missed[$id]);
+        return;
+      }
+      $new = self::int_stock_value($meta_value);
+      if ($new === null) {
+        delete_post_meta($id, '_mahak_stock_last_qty');
+        unset(self::$meta_recorded[$id], self::$before[$id], self::$lock_missed[$id]);
+        error_log('[mahak-stock-sync] non-integer or unmanaged stock meta is not journaled for product ' . absint($id));
+        return;
+      }
+      $old_meta = get_post_meta($id, '_mahak_stock_last_qty', true);
+      $old = array_key_exists($id, self::$before) ? self::$before[$id] : (($old_meta === '') ? null : self::int_stock_value($old_meta));
+      if ($old === null || $old === $new) {
+        update_post_meta($id, '_mahak_stock_last_qty', $new);
+        unset(self::$meta_recorded[$id], self::$before[$id], self::$lock_missed[$id]);
+        return;
+      }
+      list($pid, $vid) = self::stock_holder_parts($product);
+      $source = self::$order_id ? self::$order_source : (is_admin() ? 'admin_edit' : ((defined('REST_REQUEST') && REST_REQUEST) ? 'rest_other' : 'woocommerce_meta'));
+      $payload = array('meta_hook' => true);
+      if (isset(self::$lock_missed[$id])) $payload['lock_timeout'] = true;
+      if (self::record($pid, $vid, $old, $new, $source, self::$order_id, null, null, $payload)) {
+        update_post_meta($id, '_mahak_stock_last_qty', $new);
+        self::$meta_recorded[$id] = $new;
+      }
+      unset(self::$before[$id], self::$lock_missed[$id]);
+    } finally {
+      self::release_hook_lock($id);
     }
   }
 

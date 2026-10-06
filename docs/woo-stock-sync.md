@@ -116,3 +116,13 @@ resources/woocommerce/mahak-stock-sync.php
 - echo فقط وقتی معتبر است که source سایت `mahak_apply` باشد و outbox همان `idempotencyKey + linkId` وجود داشته باشد؛ `mahak_apply` بدون outbox متناظر PARK می‌شود.
 - اگر افزونه هنگام hook موجودی نتواند named lock را بگیرد، journal را حذف نمی‌کند؛ event با payload `lock_timeout` ثبت می‌شود و برنامه آن را برای بررسی مدیر PARK می‌کند. همچنین اگر زنجیره‌ی `old_qty` با `lastWooQty` لینک نخواند، event مستقیم اعمال نمی‌شود و PARK می‌ماند.
 - قطع دائم لینک اکنون رمز مدیر می‌خواهد و در حضور held event یا ارسال تازه‌ی درحال‌پرواز block می‌شود.
+
+### نکته تکمیلی پس از بازبینی هفتم
+
+- افزونه به نسخه `1.0.6` رفت؛ نسخه DB همان `4` ماند چون schema عوض نشد.
+- اعمال تصمیم پیش‌نمایش وصل دوباره، داخل transaction دوباره تعداد و hash رویدادهای held را می‌سنجد؛ اگر صف held حتی با تعداد مساوی عوض شده باشد، مدیر باید پیش‌نمایش تازه بگیرد.
+- پاک‌سازی Woo برای لینک `BROKEN_LOCAL` از مسیر `DELETE_ZERO` دیگر در صف خروجی گیر نمی‌کند، اما همچنان فقط `stock_quantity=0` می‌فرستد.
+- یک محصول/Variation سایت نمی‌تواند هم‌زمان به چند کالای محلی غیر-UNLINKED وصل شود؛ holderKey سمت برنامه canonical و پایدار می‌ماند.
+- تصمیم‌های Approval قبل از side-effect با شرط `PENDING` claim می‌شوند تا کلیک/درخواست هم‌زمان دوباره موجودی را اعمال نکند.
+- baseline بعد از اعمال event قدیمی، فقط eventهای معتبر و پردازش‌شده‌ی تازه‌تر را لحاظ می‌کند؛ eventهای پارک‌شده یا pauseشده مبنای push بعدی نمی‌شوند.
+- افزونه baseline داخلی `_mahak_stock_last_qty` را فقط بعد از ثبت موفق journal جلو می‌برد. مسیر مستقیم meta هم با همان named lock سریال می‌شود و اگر lock به‌موقع گرفته نشود، event با payload `lock_timeout` برای تصمیم مدیر قابل‌مشاهده می‌ماند.
