@@ -394,6 +394,7 @@ export const variantPurgeService = {
           const wooLinkIds = wooLinks.map((x: any) => Number(x.id)).filter((x: number) => Number.isFinite(x))
           if (wooLinkIds.length) {
             await (tx as any).wooSyncOutbox.deleteMany({ where: { linkId: { in: wooLinkIds } } }).catch(() => null)
+            await (tx as any).wooApproval.updateMany({ where: { linkId: { in: wooLinkIds } }, data: { linkId: null, status: 'EXPIRED', resolutionNote: 'LOCAL_VARIANT_PURGED' } }).catch(() => null)
             await (tx as any).wooInboundEvent.updateMany({ where: { linkId: { in: wooLinkIds } }, data: { linkId: null } }).catch(() => null)
             await (tx as any).wooProductLink.deleteMany({ where: { id: { in: wooLinkIds } } }).catch(() => null)
           }

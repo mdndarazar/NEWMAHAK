@@ -23,6 +23,10 @@ export const IPC = {
   wooLinksUnlink: 'woo:links:unlink',
   wooSyncNow: 'woo:sync:now',
   wooParkedRetry: 'woo:parked:retry',
+  wooApprovals: 'woo:approvals',
+  wooApprovalResolve: 'woo:approvals:resolve',
+  wooLinksPauseProduct: 'woo:links:pauseProduct',
+  wooLinksResumeProductMahak: 'woo:links:resumeProductMahak',
   wooLogs: 'woo:logs',
 
   // فروش

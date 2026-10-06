@@ -391,6 +391,24 @@ export function registerIpcHandlers(): void {
     await assertManagerPassword((p ?? {}).managerPassword ?? null, 'پردازش دستی رویدادهای پارک‌شده سایت')
     return wooSyncService.retryParked(100)
   })
+  handle(IPC.wooApprovals, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'دیدن صف تأیید موجودی سایت')
+    return wooSyncService.approvals(p ?? {})
+  })
+  handle(IPC.wooApprovalResolve, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'تأیید/رد تصمیم موجودی سایت')
+    await assertManagerPassword((p ?? {}).managerPassword ?? null, 'تأیید/رد تصمیم موجودی سایت')
+    return wooSyncService.resolveApproval(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooLinksPauseProduct, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'قطع گروهی رنگ/سایزهای محصول')
+    return wooSyncService.pauseProductGroup(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooLinksResumeProductMahak, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'وصل گروهی رنگ/سایزهای محصول')
+    await assertManagerPassword((p ?? {}).managerPassword ?? null, 'وصل گروهی رنگ/سایز با مرجع MAHAK')
+    return wooSyncService.resumeProductGroupMahak(await withOptionalSessionActor(p ?? {}))
+  })
   handle(IPC.wooLogs, async (p) => {
     await assertPanelUnlocked(PANEL_KEYS.wooSync, 'دیدن لاگ همگام‌سازی موجودی سایت')
     return wooSyncService.logs(p ?? {})

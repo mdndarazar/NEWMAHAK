@@ -30,15 +30,15 @@ const plugin = read(pluginPath)
 
 console.log('\n— DB و قرارداد فقط موجودی')
 check('مدل‌ها و migration افزایشی Woo ساخته شده‌اند', [
-  /model WooProductLink/.test(schema), /model WooSyncOutbox/.test(schema), /model WooInboundEvent/.test(schema), /model WooSyncLog/.test(schema),
-  /CREATE TABLE IF NOT EXISTS "WooProductLink"/.test(migration), /StockMovement_wooInboundEvent_unique/.test(migration)
-], [true, true, true, true, true, true])
+  /model WooProductLink/.test(schema), /model WooSyncOutbox/.test(schema), /model WooInboundEvent/.test(schema), /model WooSyncLog/.test(schema), /model WooApproval/.test(schema),
+  /CREATE TABLE IF NOT EXISTS "WooProductLink"/.test(migration), /StockMovement_wooInboundEvent_unique/.test(migration), /CREATE TABLE IF NOT EXISTS "WooApproval"/.test(read('prisma/migrations/20271016110000_woo_approval/migration.sql'))
+], [true, true, true, true, true, true, true, true])
 check('reasonهای سایت فقط موجودی‌اند و AuditAction جدا دارند', [
   /WOO_SYNC_OUT/.test(enums), /WOO_SYNC_IN/.test(enums), /WOO_SYNC_ADJUST/.test(enums), /WOO_LINK_PAUSE/.test(enums), /WOO_SYNC_RUN/.test(enums)
 ], [true, true, true, true, true])
 check('IPC کانال‌های Woo دارد و عملیات حساس رمز مدیر جدا می‌خواهد', [
-  /wooStatus: 'woo:status'/.test(ipc), /wooSyncNow: 'woo:sync:now'/.test(ipc), /wooParkedRetry: 'woo:parked:retry'/.test(ipc), /woo:links:resumeApply/.test(ipc), /wooSync: 'woo-sync'/.test(read('src/shared/panels.ts')), /assertManagerPassword\(\(p \?\? \{\}\)\.managerPassword/.test(ipcMain)
-], [true, true, true, true, true, true])
+  /wooStatus: 'woo:status'/.test(ipc), /wooSyncNow: 'woo:sync:now'/.test(ipc), /wooParkedRetry: 'woo:parked:retry'/.test(ipc), /wooApprovals: 'woo:approvals'/.test(ipc), /wooApprovalResolve: 'woo:approvals:resolve'/.test(ipc), /woo:links:resumeApply/.test(ipc), /wooSync: 'woo-sync'/.test(read('src/shared/panels.ts')), /assertManagerPassword\(\(p \?\? \{\}\)\.managerPassword/.test(ipcMain)
+], [true, true, true, true, true, true, true, true])
 
 console.log('\n— Main sync behavior')
 check('InventoryService بعد از هر حرکت داخلی outbox می‌سازد و WOO_SYNC_* loop نمی‌شود', [
@@ -67,8 +67,11 @@ check('PARKED گم نمی‌شود: شمارنده/UI/IPC و retry دارد و c
 check('PARKED در scheduler/syncNow خودکار اعمال نمی‌شود و پردازش دستی رمز مدیر می‌خواهد', [
   !/AUTO_PARKED_RETRY/.test(svc), !/const parked = await this\.retryParked/.test(svc), /wooParkedRetry[\s\S]*assertManagerPassword/.test(ipcMain), /managerPassword/.test(page) && /پارک‌شده/.test(page), /row\.relinkId/.test(svc) && /remainingRestoreAllowance/.test(svc)
 ], [true, true, true, true, true])
+check('WooApproval/HOLD/FROZEN برای event مبهم، اختلاف دوره‌ای و loop fuse فعال است', [
+  /async approvals/.test(svc), /async resolveApproval/.test(svc), /WooApprovalAction\.APPLY_INBOUND/.test(svc), /WooApprovalAction\.RECONCILE_DISCREPANCY/.test(svc), /WooApprovalAction\.LOOP_FUSE/.test(svc), /WooLinkStatus\.FROZEN/.test(svc), /صف تأیید مدیر/.test(page)
+], [true, true, true, true, true, true, true])
 check('Reconcile دوره‌ای اختلاف لینک‌های ACTIVE را کشف و صف امن می‌سازد', [
-  /async reconcileActiveLinks/.test(svc), /RECONCILE_DIFF/.test(svc), /expectedWooQty: wooSafeInt\(r\.stockQuantity\)/.test(svc), /AUTO_RECONCILE_FAILED/.test(svc), /OUTBOX_ENQUEUE_FAILED/.test(inv)
+  /async reconcileActiveLinks/.test(svc), /RECONCILE_DIFF/.test(svc), /WooApprovalAction\.RECONCILE_DISCREPANCY/.test(svc), /AUTO_RECONCILE_FAILED/.test(svc), /OUTBOX_ENQUEUE_FAILED/.test(inv)
 ], [true, true, true, true, true])
 check('Reconcile قبل از drain شدن ژورنال سایت push نمی‌کند و بیش از ۵۰ اتصال را چرخشی پوشش می‌دهد', [
   /async pullJournalDrain/.test(svc), /Number\(r\.lastSeq\) > cursor/.test(svc), /RECONCILE_WAIT_JOURNAL/.test(svc), /WOO_RECONCILE_LAST_ID_KEY/.test(svc), /id: \{ gt: lastId \}/.test(svc) && /id: \{ lte: lastId \}/.test(svc)
@@ -94,6 +97,7 @@ check('گزارش سود/زیان سایت را فروش یا کسری حساب 
 
 console.log('\n— UI و Plugin')
 check('صفحه UI صریحاً می‌گوید فقط موجودی sync می‌شود و پیش‌نمایش امضا می‌فرستد', [/فقط موجودی/.test(page), /قیمت، سفارش، مشتری/.test(page), /expectedMahakStock/.test(page), /رمز مدیر/.test(page)], [true, true, true, true])
+check('قطع/وصل گروهی رنگ‌ها و سایزهای یک محصول در UI و IPC وجود دارد', [/wooLinksPauseProduct/.test(ipc), /wooLinksResumeProductMahak/.test(ipc), /pauseProductGroup/.test(page), /resumeProductGroupMahak/.test(page)], [true, true, true, true])
 check('Plugin تحویل شده و endpointها فقط موجودی/catalog/journal هستند', [
   existsSync(resolve(root, pluginPath)), /Plugin Name: MAHAK Stock Sync/.test(plugin), /mahak-stock\/v1/.test(plugin), /stock\/apply/.test(plugin), /catalog/.test(plugin), /journal/.test(plugin)
 ], [true, true, true, true, true, true])

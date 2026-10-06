@@ -175,6 +175,7 @@ model WooProductLink {
 
   outbox        WooSyncOutbox[]
   inboundEvents WooInboundEvent[]
+  approvals     WooApproval[]
 
   @@index([variantId])
   @@index([holderKey])
@@ -232,6 +233,36 @@ model WooInboundEvent {
   @@index([status, seq])
   @@index([linkId, status])
   @@index([holderKey, seq])
+}
+
+/// صف تأیید مدیر برای تصمیم‌های مبهم همگام‌سازی موجودی Woo.
+/// این جدول فقط درباره عدد موجودی است و هیچ داده فروش/مشتری/قیمت سایت را نگه نمی‌دارد.
+model WooApproval {
+  id             Int             @id @default(autoincrement())
+  /// APPLY_INBOUND | RECONCILE_DISCREPANCY | LOOP_FUSE | CONFLICT_RESOLUTION | UNFREEZE_LINK
+  action         String
+  /// PENDING | APPROVED | REJECTED | EXPIRED
+  status         String          @default("PENDING")
+  linkId         Int?
+  link           WooProductLink? @relation(fields: [linkId], references: [id])
+  variantId      Int?
+  holderKey      String?
+  sourceType     String?
+  sourceId       Int?
+  reason         String
+  title          String
+  message        String
+  payloadJson    String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  resolvedAt     DateTime?
+  resolvedBy     Int?
+  resolution     String?
+  resolutionNote String?
+
+  @@index([status, createdAt])
+  @@index([linkId, status])
+  @@index([sourceType, sourceId, status])
 }
 
 /// لاگ خوانای همگام‌سازی سایت؛ برای ردیابی بدون ورود هیچ مبلغی از سایت.

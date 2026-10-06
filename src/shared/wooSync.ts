@@ -13,6 +13,7 @@ export const WooLinkStatus = {
   CONFLICT: 'CONFLICT',
   BROKEN_REMOTE: 'BROKEN_REMOTE',
   BROKEN_LOCAL: 'BROKEN_LOCAL',
+  FROZEN: 'FROZEN',
   UNLINKED: 'UNLINKED'
 } as const
 export type WooLinkStatus = (typeof WooLinkStatus)[keyof typeof WooLinkStatus]
@@ -47,6 +48,23 @@ export const WooInboundStatus = {
   PARKED: 'PARKED'
 } as const
 
+export const WooApprovalStatus = {
+  PENDING: 'PENDING',
+  APPROVED: 'APPROVED',
+  REJECTED: 'REJECTED',
+  EXPIRED: 'EXPIRED'
+} as const
+export type WooApprovalStatus = (typeof WooApprovalStatus)[keyof typeof WooApprovalStatus]
+
+export const WooApprovalAction = {
+  APPLY_INBOUND: 'APPLY_INBOUND',
+  RECONCILE_DISCREPANCY: 'RECONCILE_DISCREPANCY',
+  LOOP_FUSE: 'LOOP_FUSE',
+  CONFLICT_RESOLUTION: 'CONFLICT_RESOLUTION',
+  UNFREEZE_LINK: 'UNFREEZE_LINK'
+} as const
+export type WooApprovalAction = (typeof WooApprovalAction)[keyof typeof WooApprovalAction]
+
 export interface WooSyncSafeConfig {
   enabled: boolean
   siteUrl: string
@@ -74,6 +92,7 @@ export interface WooCatalogItem {
 export interface WooLinkRow {
   id: number
   variantId: number
+  productId?: number
   productName: string
   code: string
   barcode: string
@@ -117,6 +136,20 @@ export interface WooResumePreview {
   nonOrderDelta: number
 }
 
+export interface WooApprovalRow {
+  id: number
+  action: string
+  status: string
+  linkId?: number | null
+  variantId?: number | null
+  holderKey?: string | null
+  reason: string
+  title: string
+  message: string
+  payload?: any
+  createdAt: string
+}
+
 export interface WooStatusView {
   config: WooSyncSafeConfig
   counts: {
@@ -127,6 +160,7 @@ export interface WooStatusView {
     failedOutbox: number
     pausedEvents: number
     parkedEvents: number
+    pendingApprovals: number
   }
   lastLogs: Array<{ id: number; at: string; level: string; action: string; message: string }>
 }
@@ -171,6 +205,8 @@ export function wooStatusLabel(status: string): string {
       return 'حذف/خرابی در سایت'
     case WooLinkStatus.BROKEN_LOCAL:
       return 'حذف/خرابی در فروشگاه'
+    case WooLinkStatus.FROZEN:
+      return 'متوقف‌شده برای تأیید مدیر'
     case WooLinkStatus.UNLINKED:
       return 'قطع دائم'
     default:
