@@ -362,7 +362,8 @@ export function registerIpcHandlers(): void {
   })
   handle(IPC.wooLinkCreate, async (p) => {
     await assertPanelUnlocked(PANEL_KEYS.wooSync, 'اتصال کالا به موجودی سایت')
-    if (String((p ?? {}).decision ?? '') === 'WOO_WINS') await assertManagerPassword((p ?? {}).managerPassword ?? null, 'اتصال اولیه با سایت به‌عنوان مرجع موجودی')
+    const d = String((p ?? {}).decision ?? 'MAHAK_WINS')
+    if (d === 'WOO_WINS' || d === 'MAHAK_WINS') await assertManagerPassword((p ?? {}).managerPassword ?? null, 'اتصال اولیه با انتخاب مرجع موجودی')
     return wooSyncService.linkCreate(await withOptionalSessionActor(p ?? {}))
   })
   handle(IPC.wooLinksPause, async (p) => {
@@ -380,6 +381,7 @@ export function registerIpcHandlers(): void {
   })
   handle(IPC.wooLinksUnlink, async (p) => {
     await assertPanelUnlocked(PANEL_KEYS.wooSync, 'قطع دائم اتصال موجودی سایت')
+    await assertManagerPassword((p ?? {}).managerPassword ?? null, 'قطع دائم اتصال موجودی سایت')
     return wooSyncService.unlink(await withOptionalSessionActor(p ?? {}))
   })
   handle(IPC.wooSyncNow, async () => {

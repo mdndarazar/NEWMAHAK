@@ -104,14 +104,17 @@ check('Loop fuse فقط reconcile/manual بدون movementId را می‌شما�
   /createdAt: \{ gte: since \}, movementId: null/.test(svc), /import \{ TX_OPTIONS \} from '\.\.\/db\/tx'/.test(svc), /prisma\.\$transaction\(run, TX_OPTIONS\)/.test(svc), /}, TX_OPTIONS\)/.test(svc)
 ], [true, true, true, true])
 check('Echo و retry/apply inbound به لینک و relink floor محدود شده‌اند', [
-  /requestId && link\?\.id \? await db\(\)\.wooSyncOutbox\.findFirst\(\{ where: \{ idempotencyKey: requestId, linkId: link\.id \}/.test(svc), /async retryParked/.test(svc) && /row\.seq[\s\S]*relinkFloor/.test(svc), /event\.seq[\s\S]*SUPERSEDED_BY_RELINK_FLOOR/.test(svc), /existing && existing\.status !== WooInboundStatus\.PARKED/.test(svc)
+  /isMahakApplyEcho && link\?\.id \? await db\(\)\.wooSyncOutbox\.findFirst\(\{ where: \{ idempotencyKey: requestId, linkId: link\.id \}/.test(svc), /async retryParked/.test(svc) && /row\.seq[\s\S]*relinkFloor/.test(svc), /canSupersedeByRelinkFloor\(link, baseEvent\)/.test(svc), /existing && existing\.status !== WooInboundStatus\.PARKED/.test(svc)
 ], [true, true, true, true])
 check('PARKED سفارش‌ها در guardهای resume/resolve دیده می‌شوند و floor آن‌ها را حذف کور نمی‌کند', [
-  /function heldInboundWhere/.test(svc) && /WooInboundStatus\.PARKED/.test(svc), /heldInboundWhere\(fresh, preview\.lastSeq\)/.test(svc), /heldInboundWhere\(freshLink, remoteLastSeq\)/.test(svc), /canSupersedeByRelinkFloor/.test(svc) && /WooResumeDecision\.WOO_WINS/.test(svc), /sameRelinkParked/.test(svc)
+  /function heldInboundWhere/.test(svc) && /WooInboundStatus\.PARKED/.test(svc), /heldInboundWhere\(fresh, null\)/.test(svc) && /hasHeldAfter\(heldEvents, preview\.lastSeq\)/.test(svc), /heldInboundWhere\(freshLink, null\)/.test(svc) && /hasHeldAfter\(heldEvents, remoteLastSeq\)/.test(svc), /canSupersedeByRelinkFloor/.test(svc) && /WooResumeDecision\.WOO_WINS/.test(svc), /sameRelinkParked/.test(svc)
 ], [true, true, true, true, true])
 check('APPLY_INBOUNDهای stale و baseline رویداد قدیمی پاک/اصلاح می‌شوند', [
-  /expireApplyInboundApprovals/.test(svc), /EVENT_ALREADY_HANDLED/.test(svc), /wooBaseAfterInboundEvent/.test(svc), /lastWooQty: wooBase/.test(svc), /GROUP_RESUME_SKIPPED_HELD_ORDER/.test(svc)
+  /expireApplyInboundApprovals/.test(svc), /EVENT_ALREADY_HANDLED/.test(svc), /wooBaseAfterInboundEvent/.test(svc), /lastWooQty: wooBase/.test(svc), /GROUP_RESUME_SKIPPED_/.test(svc) && /skippedLinks/.test(svc)
 ], [true, true, true, true, true])
+check('Patch ششم late held، echo نامعتبر، گروه امن و unlink مدیریتی را پوشش می‌دهد', [
+  /heldEventHash/.test(svc) && /expectedPausedEventHash/.test(page), /MAHAK_ECHO_WITHOUT_OUTBOX/.test(svc), /INBOUND_LOCK_TIMEOUT/.test(svc) && /INBOUND_STOCK_GAP/.test(svc), /canActivateAfterOutbox/.test(svc) && /heldInboundWhere\(freshLink, null\)/.test(svc), /wooLinksUnlink[\s\S]*assertManagerPassword/.test(ipcMain), /d === 'WOO_WINS' \|\| d === 'MAHAK_WINS'/.test(ipcMain)
+], [true, true, true, true, true, true])
 check('ارسال IN_FLIGHT تازه هنگام تصمیم مدیر block و echo تایم‌اوت lastWooQty را به‌روز می‌کند', [
   /function assertNoFreshInFlight/.test(svc), /STALE_IN_FLIGHT_SUPERSEDED_BY_DECISION/.test(svc), /برای این کالا هنوز ارسال موجودی به سایت در حال انجام است/.test(svc), /status: WooOutboxStatus\.SENT[\s\S]*targetQty: newQty/.test(svc), /lastWooQty: newQty/.test(svc)
 ], [true, true, true, true, true])
@@ -147,11 +150,14 @@ check('Refund/order item context و delta اتمیک Woo روی آخرین journ
 check('Plugin hookهای stock را با همان lock افزونه سریال می‌کند و context سفارش در shutdown پاک می‌شود', [
   /private static \$hook_locks = array\(\)/.test(plugin), /function stock_lock_name/.test(plugin), /acquire_hook_lock/.test(plugin) && /before_stock[\s\S]*acquire_hook_lock/.test(plugin), /finally \{\s*self::release_hook_lock\(\$id\);\s*\}/.test(plugin), /shutdown_cleanup/.test(plugin) && /clear_order_context/.test(plugin), /\$lock_name = self::stock_lock_name\(\$product->get_id\(\)\)/.test(plugin)
 ], [true, true, true, true, true, true])
+check('Plugin در timeout lock ژورنال را حذف نمی‌کند و flag را به برنامه می‌دهد', [
+  /private static \$lock_missed = array\(\)/.test(plugin), /self::\$lock_missed\[\$id\] = true/.test(plugin), !/skip_after/.test(plugin), /'lock_timeout' => true/.test(plugin), /'payload' => \$r\['payload_json'\]/.test(plugin), /'journal_seq' => \$journal_seq/.test(plugin)
+], [true, true, true, true, true, true])
 check('Plugin مسیرهای metadata مستقیم، dedupe و suppress محدود به holder را پوشش می‌دهد', [
   /updated_post_meta/.test(plugin) && /added_post_meta/.test(plugin), /after_stock_meta/.test(plugin), /meta_recorded/.test(plugin) && /same_meta_event/.test(plugin), /delete_post_meta\(\$id, '_mahak_stock_last_qty'\)/.test(plugin) && /delete_post_meta\(\$object_id, '_mahak_stock_last_qty'\)/.test(plugin), /suppress_ids/.test(plugin) && /is_suppressed/.test(plugin), /stock_holder_parts/.test(plugin), /mahak_fractional_stock/.test(plugin), /clean_product_caches/.test(plugin)
 ], [true, true, true, true, true, true, true, true])
 check('Plugin parent-managed/قبل‌از‌meta/request_id leak را guard می‌کند', [
-  /before_stock[\s\S]*manage_stock_mode\(\$product\) !== 'yes'/.test(plugin), /after_stock[\s\S]*manage_stock_mode\(\$product\) !== 'yes'/.test(plugin), /after_stock_meta[\s\S]*array_key_exists\(\$object_id, self::\$before\)/.test(plugin), /self::record\(\$pid, \$vid, \$old, \$new, \$source, self::\$order_id, null, null, null\)/.test(plugin), /self::record\(\$pid, \$vid, \$old, \$new, \$source, self::\$order_id, null, null, array\('meta_hook' => true\)\)/.test(plugin), /substr\(\$s, 0, 63\) \. '-' \. md5\(\$s\)/.test(plugin), /settle_cutoff = gmdate\('Y-m-d H:i:s', time\(\) - 2\)/.test(plugin)
+  /before_stock[\s\S]*manage_stock_mode\(\$product\) !== 'yes'/.test(plugin), /after_stock[\s\S]*manage_stock_mode\(\$product\) !== 'yes'/.test(plugin), /after_stock_meta[\s\S]*array_key_exists\(\$object_id, self::\$before\)/.test(plugin), /self::record\(\$pid, \$vid, \$old, \$new, \$source, self::\$order_id, null, null, \$payload\)/.test(plugin), /self::record\(\$pid, \$vid, \$old, \$new, \$source, self::\$order_id, null, null, array\('meta_hook' => true\)\)/.test(plugin), /substr\(\$s, 0, 63\) \. '-' \. md5\(\$s\)/.test(plugin), /settle_cutoff = gmdate\('Y-m-d H:i:s', time\(\) - 2\)/.test(plugin)
 ], [true, true, true, true, true, true, true])
 check('Plugin قیمت/مشتری را در خروجی نمی‌دهد و فقط stock_quantity را expose می‌کند', [
   /stock_quantity/.test(plugin), !/_price|regular_price|sale_price|billing|shipping|customer_email/i.test(plugin), /old.*new/.test(plugin) && /return;/.test(plugin)

@@ -1448,3 +1448,18 @@ S142-6 — سؤال: گیت نبودن رمز مدیر روی issueManual/bulkIs
   - افزونه به نسخه `1.0.4` رفت: upgrade lock با DB/prefix namespace شد و hookهای `before_stock/after_stock` از همان نام‌گذاری lock apply استفاده می‌کنند؛ context سفارش در shutdown پاک می‌شود.
 - Deferred: hook lock کامل برای تمام مسیرهای سفارشی/third-party، timeout ناشناخته‌ی push روی staging واقعی، performance کاتالوگ بسیار بزرگ و سیاست کامل order_id retention باید در محیط Woo واقعی و با داده حجیم اعتبارسنجی شوند.
 - مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود؛ قیمت، مشتری، پرداخت، آدرس، مالیات، سفارش مالی یا گزارش فروش Woo وارد MAHAK نمی‌شود.
+
+### WOO-H10 — بازبینی ششم Woo: held ناقص، lock-timeout journal و وصل گروهی
+- سؤال: گزارش جدید درباره پنهان‌شدن `SKIPPED_PAUSED` پشت floor، حذف journal هنگام timeout قفل افزونه، فعال‌شدن خودکار conflict و مسیر نیمه‌امن وصل گروهی چه تصمیمی می‌خواهد؟
+- انتخاب من: رفع high/mediumهای قطعی و کم‌ریسک در همان مرز «فقط موجودی»؛ موارد نیازمند staging واقعی همچنان باید روی Woo/WordPress واقعی تست شوند.
+- تصمیم‌ها:
+  - held inbound به معنی هر event حل‌نشده با status `SKIPPED_PAUSED` یا `PARKED` برای همان link است؛ `pauseSeqFloor` و `relinkId` دیگر آن را از guardها پنهان نمی‌کنند. اگر بعد از snapshot پیش‌نمایش event تازه‌ای وارد DB شده باشد، اعمال تصمیم مدیر fail می‌شود.
+  - امضای preview از «تعداد eventها» به «تعداد + hash رویدادهای held» تقویت شد.
+  - افزونه در timeout قفل hook دیگر `after_stock` را skip نمی‌کند؛ event با payload `lock_timeout` در journal می‌ماند. برنامه event دارای `lock_timeout` یا ناپیوستگی `old_qty/lastWooQty` را PARK می‌کند تا مدیر تصمیم بگیرد.
+  - `resumeProductGroupMahak` بازنویسی شد: ژورنال را drain می‌کند، FROZEN را باز نمی‌کند، همه heldها را skip می‌کند، snapshot remote/`relinkSeqFloor` تازه می‌گیرد، داخل transaction و با guard `IN_FLIGHT` queue می‌کند و `skippedLinks` برمی‌گرداند.
+  - موفقیت outbox فقط برای `RECONCILE_PUSH` مدیریتی با pauseReason مجاز و بدون held event، لینک PAUSED را ACTIVE می‌کند؛ rebase/idempotent دیگر conflict را خودکار فعال نمی‌کند.
+  - مسیر floor در `pullJournal` برای order/refund خطرناک از `canSupersedeByRelinkFloor` استفاده می‌کند؛ اگر امن نباشد event PARK و approval ساخته می‌شود.
+  - echo فقط برای source=`mahak_apply` معتبر است؛ `mahak_apply` بدون outbox متناظر PARK می‌شود و به‌عنوان delta اعمال نمی‌شود.
+  - قطع دائم link و اتصال اولیه با انتخاب مرجع موجودی، رمز مدیر می‌خواهند. قطع دائم در حضور held event یا `IN_FLIGHT` تازه block می‌شود.
+- Deferred/Needs staging: رفتار hookهای سفارشی خارج از مسیر Woo استاندارد، patch دقیق order item با نگه‌داشتن insert_id در request، و تست هم‌زمانی واقعی روی MySQL/MariaDB و PHP نسخه‌های مختلف باید در staging واقعی انجام شود.
+- مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود؛ هیچ قیمت، مشتری، پرداخت، آدرس، مالیات، سفارش مالی یا گزارش فروش Woo وارد MAHAK نمی‌شود.

@@ -118,6 +118,7 @@ export interface WooLinkRow {
 export interface WooResumePreviewEvent {
   id: number
   seq: number | null
+  status?: string | null
   delta: number
   source?: string | null
   orderId?: string | null
@@ -130,6 +131,7 @@ export interface WooResumePreview {
   wooQty: number
   lastSeq: number | null
   pausedEvents: WooResumePreviewEvent[]
+  heldEventHash?: string
   orderEvents: number
   orderDelta: number
   nonOrderEvents: number

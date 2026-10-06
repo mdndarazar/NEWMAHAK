@@ -128,8 +128,8 @@ export default function WooSync() {
   const createLink = async () => {
     if (!selectedVariantId || !selectedCatalog) return setErr('یک کالای فروشگاه و یک محصول سایت انتخاب کنید.')
     if (selectedCatalog.stockQuantity == null) return setErr('این محصول سایت موجودی مستقل عددی ندارد؛ اتصال امن نیست.')
-    const managerPassword = decision === WooResumeDecision.WOO_WINS ? askManagerPassword('سایت قرار است مرجع موجودی MAHAK شود.') : null
-    if (decision === WooResumeDecision.WOO_WINS && managerPassword == null) return
+    const managerPassword = decision === WooResumeDecision.VERIFY_ONLY ? null : askManagerPassword('اتصال اولیه با انتخاب مرجع موجودی')
+    if (decision !== WooResumeDecision.VERIFY_ONLY && managerPassword == null) return
     setBusy(true)
     try {
       await call(CH.wooLinkCreate, {
@@ -221,7 +221,8 @@ export default function WooSync() {
         expectedMahakStock: resumePreview.mahakStock,
         expectedWooQty: resumePreview.wooQty,
         expectedLastSeq: resumePreview.lastSeq,
-        expectedPausedEventCount: resumePreview.pausedEvents.length
+        expectedPausedEventCount: resumePreview.pausedEvents.length,
+        expectedPausedEventHash: resumePreview.heldEventHash
       })
       setResumePreview(null)
       await load()
@@ -235,9 +236,11 @@ export default function WooSync() {
 
   const unlink = async (id: number) => {
     if (!confirm('اتصال این کالا به سایت قطع دائم شود؟ موجودی هیچ طرفی تغییر نمی‌کند.')) return
+    const managerPassword = askManagerPassword('قطع دائم اتصال موجودی سایت')
+    if (managerPassword == null) return
     setBusy(true)
     try {
-      const rows = await call<WooLinkRow[]>(CH.wooLinksUnlink, { linkId: id })
+      const rows = await call<WooLinkRow[]>(CH.wooLinksUnlink, { linkId: id, managerPassword })
       setLinks(rows)
       flash('اتصال دائم حذف شد؛ سابقه‌ی قبلی در لاگ‌ها باقی می‌ماند.')
     } catch (e) {
@@ -289,7 +292,9 @@ export default function WooSync() {
       await load()
       const queued = Number(res?.queued ?? 0)
       const skipped = Number(res?.skipped ?? 0)
-      flash(skipped > 0 ? `برای گروه محصول، ${queued} اتصال صف شد و ${skipped} اتصال به‌خاطر رویداد حل‌نشده/ارسال درحال‌انجام رد شد.` : 'برای گروه محصول، ارسال موجودی MAHAK به سایت صف شد؛ بعد از ارسال موفق لینک‌ها فعال می‌شوند.')
+      const skippedLinks = Array.isArray(res?.skippedLinks) ? res.skippedLinks : []
+      const detail = skippedLinks.slice(0, 3).map((x: any) => `#${x.linkId}: ${x.reason}`).join('، ')
+      flash(skipped > 0 ? `برای گروه محصول، ${queued} اتصال صف شد و ${skipped} اتصال رد شد${detail ? ` (${detail})` : ''}.` : 'برای گروه محصول، ارسال موجودی MAHAK به سایت صف شد؛ بعد از ارسال موفق لینک‌ها فعال می‌شوند.')
     } catch (e) {
       fail(e)
     } finally {
@@ -396,7 +401,7 @@ export default function WooSync() {
                 <tr key={l.id}>
                   <td>{l.productName}<div className="text-xs text-slate-500">کد {l.code} · بارکد {l.barcode}</div></td>
                   <td>{l.remoteName || l.holderKey}<div className="text-xs text-slate-500">{l.sku || 'SKU ندارد'} · {l.holderKey}</div></td>
-                  <td><span className="kbd">{wooStatusLabel(l.status)}</span>{l.pausedEvents ? <div className="text-xs text-amber-700">{faDigits(l.pausedEvents)} رویداد زمان قطع</div> : null}</td>
+                  <td><span className="kbd">{wooStatusLabel(l.status)}</span>{l.pausedEvents ? <div className="text-xs text-amber-700">{faDigits(l.pausedEvents)} رویداد حل‌نشده سایت</div> : null}</td>
                   <td>{faDigits(l.mahakStock)}</td>
                   <td>{faDigits(l.lastWooQty)}</td>
                   <td>{faDigits(l.pendingOutbox)} / {faDigits(l.failedOutbox)}</td>
@@ -406,7 +411,7 @@ export default function WooSync() {
                     {l.status === 'PAUSED' ? <button className="btn btn-xs" disabled={busy} onClick={() => previewResume(l.id)}>پیش‌نمایش وصل</button> : null}
                     {l.status === 'CONFLICT' ? <button className="btn btn-xs" disabled={busy} onClick={() => previewResume(l.id)}>حل اختلاف</button> : null}
                     {l.status === 'BROKEN_REMOTE' || l.status === 'FROZEN' ? <button className="btn btn-xs" disabled={busy} onClick={() => previewResume(l.id)}>بررسی سایت</button> : null}
-                    {['PAUSED','CONFLICT','FROZEN'].includes(String(l.status)) ? <button className="btn btn-xs" disabled={busy} onClick={() => resumeProductGroupMahak(l.id)}>وصل گروه با MAHAK</button> : null}
+                    {['PAUSED','CONFLICT'].includes(String(l.status)) ? <button className="btn btn-xs" disabled={busy} onClick={() => resumeProductGroupMahak(l.id)}>وصل گروه با MAHAK</button> : null}
                     <button className="btn btn-xs" disabled={busy} onClick={() => unlink(l.id)}>قطع دائم</button>
                   </td>
                 </tr>
@@ -427,14 +432,14 @@ export default function WooSync() {
             <button className="btn btn-xs" onClick={() => setResumePreview(null)}>بستن</button>
           </div>
           <div className="grid md:grid-cols-4 gap-2 text-sm">
-            <div className="kbd">رویدادهای زمان قطع: {faDigits(resumePreview.pausedEvents.length)}</div>
+            <div className="kbd">رویدادهای حل‌نشده سایت: {faDigits(resumePreview.pausedEvents.length)}</div>
             <div className="kbd">سفارش‌های قابل اعمال: {faDigits(resumePreview.orderEvents)} / تغییر {faDigits(resumePreview.orderDelta)}</div>
             <div className="kbd">ویرایش‌های سایت که اعمال نمی‌شوند: {faDigits(resumePreview.nonOrderEvents)} / تغییر {faDigits(resumePreview.nonOrderDelta)}</div>
             <div className="kbd">آخرین seq سایت: {faDigits(resumePreview.lastSeq ?? 0)}</div>
           </div>
           <p className="text-xs text-amber-900">گزینه «فروشگاه + سفارش‌های سایت» فقط رویدادهایی را اعمال می‌کند که افزونه با source=order ثبت کرده باشد؛ ویرایش دستی ادمین سایت در همین Reconcile کنار گذاشته می‌شود و هیچ‌وقت خودکار روی MAHAK نمی‌نشیند.</p>
           <div className="flex flex-wrap gap-2">
-            <button className="btn btn-primary" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.MAHAK_WINS)}>فروشگاه مرجع؛ سایت به MAHAK برسد</button>
+            <button className="btn btn-primary" disabled={busy || resumePreview.orderEvents > 0} onClick={() => applyResumeDecision(WooResumeDecision.MAHAK_WINS)}>فروشگاه مرجع؛ سایت به MAHAK برسد</button>
             <button className="btn" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.WOO_WINS)}>سایت مرجع؛ MAHAK به سایت برسد</button>
             <button className="btn" disabled={busy || resumePreview.orderEvents === 0} onClick={() => applyResumeDecision(WooResumeDecision.MAHAK_PLUS_ORDERS)}>MAHAK + سفارش‌های سایت زمان قطع</button>
             <button className="btn" disabled={busy || resumePreview.pausedEvents.length > 0 || Math.max(0, Math.round(Number(resumePreview.mahakStock) || 0)) !== Math.max(0, Math.round(Number(resumePreview.wooQty) || 0))} onClick={() => applyResumeDecision(WooResumeDecision.VERIFY_ONLY)}>فقط بررسی؛ فعال کن بدون تغییر موجودی</button>

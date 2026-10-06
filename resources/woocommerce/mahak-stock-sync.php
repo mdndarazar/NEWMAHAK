@@ -2,14 +2,14 @@
 /**
  * Plugin Name: MAHAK Stock Sync
  * Description: Stock-only bridge for MAHAK desktop app and WooCommerce. It reads/writes only stock_quantity and never exposes prices, customers, orders totals or addresses.
- * Version: 1.0.4
+ * Version: 1.0.5
  * Author: MAHAK Local
  */
 
 if (!defined('ABSPATH')) exit;
 
 final class Mahak_Stock_Sync_Plugin {
-  const VERSION = '1.0.4';
+  const VERSION = '1.0.5';
   const DB_VERSION = '4';
   const OPTION_TOKEN = 'mahak_stock_sync_token';
   const OPTION_LAST_SECRET_HINT = 'mahak_stock_sync_secret_hint';
@@ -22,7 +22,7 @@ final class Mahak_Stock_Sync_Plugin {
   private static $before = array();
   private static $meta_recorded = array();
   private static $hook_locks = array();
-  private static $skip_after = array();
+  private static $lock_missed = array();
   private static $order_id = null;
   private static $order_source = 'order';
 
@@ -42,10 +42,10 @@ final class Mahak_Stock_Sync_Plugin {
 
     // هنگام کم/زیاد شدن موجودی به‌خاطر سفارش، همان hook عمومی stock را با source=order ثبت می‌کنیم؛
     // event جداگانه‌ی order نمی‌سازیم تا موجودی در MAHAK دوبار اعمال نشود.
-    add_filter('woocommerce_can_reduce_order_stock', array(__CLASS__, 'mark_reduce_order_context'), 999, 2);
-    add_action('woocommerce_reduce_order_stock', array(__CLASS__, 'clear_order_context'), 999, 1);
-    add_filter('woocommerce_can_restore_order_stock', array(__CLASS__, 'mark_restore_order_context'), 999, 2);
-    add_action('woocommerce_restore_order_stock', array(__CLASS__, 'clear_order_context'), 999, 1);
+    add_filter('woocommerce_can_reduce_order_stock', array(__CLASS__, 'mark_reduce_order_context'), PHP_INT_MAX, 2);
+    add_action('woocommerce_reduce_order_stock', array(__CLASS__, 'clear_order_context'), PHP_INT_MAX, 1);
+    add_filter('woocommerce_can_restore_order_stock', array(__CLASS__, 'mark_restore_order_context'), PHP_INT_MAX, 2);
+    add_action('woocommerce_restore_order_stock', array(__CLASS__, 'clear_order_context'), PHP_INT_MAX, 1);
     add_action('woocommerce_reduce_order_item_stock', array(__CLASS__, 'tag_reduce_order_item_event'), 999, 10);
     add_action('woocommerce_restore_order_item_stock', array(__CLASS__, 'tag_restore_order_item_event'), 999, 10);
     add_action('woocommerce_restock_refunded_item', array(__CLASS__, 'mark_refund_context'), 999, 10);
@@ -363,7 +363,7 @@ final class Mahak_Stock_Sync_Plugin {
       self::$hook_locks[$id] = $lock_name;
       return true;
     }
-    self::$skip_after[$id] = true;
+    self::$lock_missed[$id] = true;
     error_log('[mahak-stock-sync] could not lock stock hook for product ' . $id);
     return false;
   }
@@ -673,7 +673,7 @@ final class Mahak_Stock_Sync_Plugin {
       $in_tx = false;
       if ($commit_ok === false) throw new RuntimeException('Could not commit MAHAK stock transaction: ' . $wpdb->last_error);
       if ($commit_connection_id !== $connection_id) throw new RuntimeException('MAHAK stock DB connection changed during commit.');
-      return array('ok' => true, 'old_qty' => $current, 'new_qty' => $target, 'holder_key' => $key);
+      return array('ok' => true, 'old_qty' => $current, 'new_qty' => $target, 'holder_key' => $key, 'journal_seq' => $journal_seq);
     } catch (Throwable $e) {
       if ($in_tx) {
         $wpdb->query('ROLLBACK');
@@ -702,6 +702,7 @@ final class Mahak_Stock_Sync_Plugin {
         'product_id' => (int)$r['product_id'], 'variation_id' => $r['variation_id'] === null ? null : (int)$r['variation_id'],
         'old_qty' => $r['old_qty'] === null ? null : (int)$r['old_qty'], 'new_qty' => (int)$r['new_qty'], 'delta' => (int)$r['delta_qty'],
         'source' => $r['source'], 'order_id' => $r['order_id'], 'order_item_id' => $r['order_item_id'], 'request_id' => $r['request_id'],
+        'payload' => $r['payload_json'] ? json_decode($r['payload_json'], true) : null,
         'created_at' => $r['created_at']
       );
     }
@@ -733,10 +734,7 @@ final class Mahak_Stock_Sync_Plugin {
       unset(self::$before[$id]);
       return;
     }
-    if (!self::acquire_hook_lock($id)) {
-      unset(self::$before[$id]);
-      return;
-    }
+    self::acquire_hook_lock($id);
     $q = self::current_db_stock_int($product);
     if ($q === null) $q = self::int_stock_value($product->get_stock_quantity());
     if ($q !== null) self::$before[$id] = $q;
@@ -746,20 +744,16 @@ final class Mahak_Stock_Sync_Plugin {
     if (!$product || self::is_suppressed($product)) return;
     $id = $product->get_id();
     try {
-      if (isset(self::$skip_after[$id])) {
-        unset(self::$skip_after[$id], self::$meta_recorded[$id], self::$before[$id]);
-        return;
-      }
       if (self::manage_stock_mode($product) !== 'yes') {
         delete_post_meta($id, '_mahak_stock_last_qty');
-        unset(self::$meta_recorded[$id], self::$before[$id]);
+        unset(self::$meta_recorded[$id], self::$before[$id], self::$lock_missed[$id]);
         return;
       }
       $old = array_key_exists($id, self::$before) ? self::$before[$id] : null;
       $new = self::int_stock_value($product->get_stock_quantity());
       if ($new === null) {
         delete_post_meta($id, '_mahak_stock_last_qty');
-        unset(self::$meta_recorded[$id], self::$before[$id]);
+        unset(self::$meta_recorded[$id], self::$before[$id], self::$lock_missed[$id]);
         error_log('[mahak-stock-sync] non-integer or unmanaged stock is not journaled for product ' . $id);
         return;
       }
@@ -767,7 +761,7 @@ final class Mahak_Stock_Sync_Plugin {
         $same_meta_event = self::$meta_recorded[$id] === $new;
         unset(self::$meta_recorded[$id]);
         if ($same_meta_event) {
-          unset(self::$before[$id]);
+          unset(self::$before[$id], self::$lock_missed[$id]);
           return;
         }
       }
@@ -777,13 +771,14 @@ final class Mahak_Stock_Sync_Plugin {
       }
       update_post_meta($id, '_mahak_stock_last_qty', $new);
       if ($old === null || $old === $new) {
-        unset(self::$meta_recorded[$id], self::$before[$id]);
+        unset(self::$meta_recorded[$id], self::$before[$id], self::$lock_missed[$id]);
         return;
       }
       list($pid, $vid) = self::stock_holder_parts($product);
       $source = self::$order_id ? self::$order_source : (is_admin() ? 'admin_edit' : ((defined('REST_REQUEST') && REST_REQUEST) ? 'rest_other' : 'woocommerce'));
-      self::record($pid, $vid, $old, $new, $source, self::$order_id, null, null, null);
-      unset(self::$meta_recorded[$id], self::$before[$id]);
+      $payload = isset(self::$lock_missed[$id]) ? array('lock_timeout' => true) : null;
+      self::record($pid, $vid, $old, $new, $source, self::$order_id, null, null, $payload);
+      unset(self::$meta_recorded[$id], self::$before[$id], self::$lock_missed[$id]);
       if ($source === 'refund_restock') self::clear_order_context();
     } finally {
       self::release_hook_lock($id);

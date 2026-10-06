@@ -6,7 +6,7 @@
  * موجودی روی سایت نوشته نمی‌شود.
  */
 import type { Prisma } from '@prisma/client'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { prisma } from '../db/client'
 import { TX_OPTIONS } from '../db/tx'
 import { BusinessError } from '../errors'
@@ -59,6 +59,18 @@ function remoteStockUsable(r: any): boolean {
 
 function isReconcileOutboxKind(kind: unknown): boolean {
   return ['RECONCILE_PUSH', 'STOCK_PUSH_REBASED', 'STOCK_PUSH_RETRY_AFTER_IDEMPOTENT', 'DELETE_ZERO'].includes(String(kind || ''))
+}
+
+function canSendOutboxForLink(kind: unknown, link: any): boolean {
+  if (!link) return false
+  if (link.status === WooLinkStatus.ACTIVE) return true
+  return String(kind || '') === 'RECONCILE_PUSH' && [WooLinkStatus.PAUSED, WooLinkStatus.CONFLICT, WooLinkStatus.BROKEN_LOCAL].includes(String(link.status) as any)
+}
+
+function canActivateAfterOutbox(kind: unknown, link: any): boolean {
+  return String(kind || '') === 'RECONCILE_PUSH' &&
+    link?.status === WooLinkStatus.PAUSED &&
+    ['APPROVED_RECONCILE_PUSH', 'GROUP_MAHAK_WINS'].includes(String(link?.pauseReason ?? ''))
 }
 
 function openOutboxStatuses(): string[] {
@@ -148,19 +160,22 @@ function isWooRestoreSource(source: unknown): boolean {
 }
 
 function heldInboundWhere(link: any, maxSeq?: number | null): any {
-  const skippedSeq: any = {}
-  if (link?.pauseSeqFloor != null) skippedSeq.gt = BigInt(link.pauseSeqFloor)
-  if (maxSeq != null) skippedSeq.lte = BigInt(maxSeq)
-  const parkedSeq: any = {}
-  if (maxSeq != null) parkedSeq.lte = BigInt(maxSeq)
-  const skipped: any = { linkId: link.id, status: WooInboundStatus.SKIPPED_PAUSED }
-  if (Object.keys(skippedSeq).length) skipped.seq = skippedSeq
-  const parked: any = { linkId: link.id, status: WooInboundStatus.PARKED }
-  const parkedRelink: any[] = [{ relinkId: null }]
-  if (link?.lastRelinkId) parkedRelink.push({ relinkId: link.lastRelinkId })
-  parked.OR = parkedRelink
-  if (Object.keys(parkedSeq).length) parked.seq = parkedSeq
-  return { OR: [skipped, parked] }
+  const where: any = { linkId: link.id, status: { in: [WooInboundStatus.SKIPPED_PAUSED, WooInboundStatus.PARKED] } }
+  if (maxSeq != null) where.seq = { lte: BigInt(maxSeq) }
+  return where
+}
+
+function inboundEventSignature(events: Array<{ id?: unknown; seq?: unknown; status?: unknown; relinkId?: unknown }>): string {
+  const body = events
+    .map((e) => `${Number(e.id || 0)}:${e.seq == null ? '' : String(e.seq)}:${String(e.status ?? '')}:${String(e.relinkId ?? '')}`)
+    .sort()
+    .join('|')
+  return createHash('sha256').update(body).digest('hex')
+}
+
+function hasHeldAfter(events: Array<{ seq?: unknown }>, maxSeq?: number | null): boolean {
+  if (maxSeq == null) return false
+  return events.some((e) => e.seq != null && Number(e.seq) > Number(maxSeq))
 }
 
 function canSupersedeByRelinkFloor(link: any, event: { source?: unknown; orderId?: unknown; delta?: unknown }): boolean {
@@ -190,23 +205,22 @@ async function assertNoFreshInFlight(client: any, linkId: number): Promise<void>
   await client.wooSyncOutbox.updateMany({
     where: { linkId, status: WooOutboxStatus.IN_FLIGHT, updatedAt: { lt: staleBefore } },
     data: { status: WooOutboxStatus.SUPERSEDED, lastError: 'STALE_IN_FLIGHT_SUPERSEDED_BY_DECISION', updatedAt: new Date() }
-  }).catch(() => null)
-  const fresh = await client.wooSyncOutbox.count({ where: { linkId, status: WooOutboxStatus.IN_FLIGHT, updatedAt: { gte: staleBefore } } }).catch(() => 0)
+  })
+  const fresh = await client.wooSyncOutbox.count({ where: { linkId, status: WooOutboxStatus.IN_FLIGHT, updatedAt: { gte: staleBefore } } })
   if (fresh > 0) throw new BusinessError('برای این کالا هنوز ارسال موجودی به سایت در حال انجام است؛ چند ثانیه بعد دوباره تصمیم مدیر را اعمال کنید.')
 }
 
 async function wooBaseAfterInboundEvent(client: any, link: any, event: any): Promise<number> {
   const freshLink = await client.wooProductLink.findUnique({ where: { id: link.id } }).catch(() => null)
   const currentBase = wooSafeInt(freshLink?.lastWooQty ?? link.lastWooQty ?? event.newQty)
-  if (event?.seq == null) return wooSafeInt(event.newQty)
-  const newer = await client.wooInboundEvent.count({
-    where: {
-      linkId: link.id,
-      seq: { gt: BigInt(event.seq) },
-      status: { in: [WooInboundStatus.APPLIED, WooInboundStatus.APPLIED_ON_RELINK, WooInboundStatus.SKIPPED_ECHO] }
-    }
-  }).catch(() => 0)
-  return newer > 0 ? currentBase : wooSafeInt(event.newQty)
+  if (event?.seq == null) return currentBase
+  const latest = await client.wooInboundEvent.findFirst({
+    where: { holderKey: link.holderKey, seq: { not: null } },
+    orderBy: [{ seq: 'desc' }, { id: 'desc' }],
+    select: { seq: true, newQty: true }
+  }).catch(() => null)
+  if (latest?.seq != null && BigInt(latest.seq) > BigInt(event.seq)) return wooSafeInt(latest.newQty)
+  return wooSafeInt(event.newQty)
 }
 
 async function remainingRestoreAllowance(input: { client: any; variantId: number; orderId: unknown }): Promise<number> {
@@ -580,7 +594,7 @@ export const wooSyncService = {
       SELECT l.*, v.code, v.barcode, v.stock AS mahakStock, v.size, v.color, v.productId AS localProductId, p.name AS productName,
         (SELECT COUNT(*) FROM WooSyncOutbox o WHERE o.linkId = l.id AND o.status = 'PENDING') AS pendingOutbox,
         (SELECT COUNT(*) FROM WooSyncOutbox o WHERE o.linkId = l.id AND o.status IN ('FAILED','CONFLICT','DEAD')) AS failedOutbox,
-        (SELECT COUNT(*) FROM WooInboundEvent e WHERE e.linkId = l.id AND e.status = 'SKIPPED_PAUSED') AS pausedEvents
+        (SELECT COUNT(*) FROM WooInboundEvent e WHERE e.linkId = l.id AND e.status IN ('SKIPPED_PAUSED','PARKED')) AS pausedEvents
       FROM WooProductLink l
       JOIN ProductVariant v ON v.id = l.variantId
       JOIN Product p ON p.id = v.productId
@@ -708,7 +722,7 @@ export const wooSyncService = {
             pausedAt: new Date(),
             pausedBy: input.userId ?? null,
             pauseNote: input.note ?? null,
-            pauseSeqFloor: BigInt(cursor)
+            pauseSeqFloor: link.pauseSeqFloor == null ? BigInt(cursor) : BigInt(link.pauseSeqFloor)
           }
         })
         await audit(tx, {
@@ -755,6 +769,7 @@ export const wooSyncService = {
     const pausedEvents: WooResumePreviewEvent[] = paused.map((e: any) => ({
       id: e.id,
       seq: e.seq == null ? null : Number(e.seq),
+      status: e.status ?? null,
       delta: Number(e.delta || 0),
       source: e.source,
       orderId: e.orderId
@@ -768,6 +783,7 @@ export const wooSyncService = {
       wooQty: remote?.stockQuantity ?? link.lastWooQty,
       lastSeq: remoteLastSeq,
       pausedEvents,
+      heldEventHash: inboundEventSignature(paused),
       orderEvents: orderEvents.length,
       orderDelta: orderEvents.reduce((sum, e) => sum + Number(e.delta || 0), 0),
       nonOrderEvents: nonOrderEvents.length,
@@ -783,6 +799,7 @@ export const wooSyncService = {
     expectedWooQty?: number
     expectedLastSeq?: number | null
     expectedPausedEventCount?: number
+    expectedPausedEventHash?: string | null
   }) {
     const link = await linkById(int(input.linkId, 'شناسه اتصال', { positive: true }))
     const decision = String(input.decision || WooResumeDecision.VERIFY_ONLY)
@@ -791,7 +808,8 @@ export const wooSyncService = {
       input.expectedMahakStock == null ||
       input.expectedWooQty == null ||
       input.expectedLastSeq === undefined ||
-      input.expectedPausedEventCount == null
+      input.expectedPausedEventCount == null ||
+      input.expectedPausedEventHash == null
     ) {
       throw new BusinessError('برای وصل دوباره/حل اختلاف، اول باید پیش‌نمایش تازه بگیرید؛ درخواست بدون امضای پیش‌نمایش اعمال نشد.')
     }
@@ -799,7 +817,8 @@ export const wooSyncService = {
       Number(input.expectedMahakStock) !== Number(preview.mahakStock) ||
       Number(input.expectedWooQty) !== Number(preview.wooQty) ||
       (input.expectedLastSeq == null ? null : Number(input.expectedLastSeq)) !== (preview.lastSeq == null ? null : Number(preview.lastSeq)) ||
-      Number(input.expectedPausedEventCount) !== Number(preview.pausedEvents.length)
+      Number(input.expectedPausedEventCount) !== Number(preview.pausedEvents.length) ||
+      String(input.expectedPausedEventHash || '') !== String(preview.heldEventHash || '')
     if (previewChanged) throw new BusinessError('از زمان پیش‌نمایش، موجودی یا رویدادهای سایت تغییر کرده است؛ دوباره پیش‌نمایش بگیرید و بعد اعمال کنید.')
     if (decision === WooResumeDecision.MAHAK_WINS && preview.pausedEvents.some((e) => isWooOrderPausedEvent(e) && Number(e.delta || 0) !== 0)) {
       throw new BusinessError('در زمان توقف، سفارش/Refund واقعی سایت ثبت شده است؛ برای جلوگیری از حذف فروش واقعی، گزینه «MAHAK + سفارش‌های سایت» را انتخاب کنید یا همان رویداد ورودی را از صف تأیید اعمال کنید.')
@@ -817,8 +836,8 @@ export const wooSyncService = {
       await assertNoFreshInFlight(tx as any, link.id)
       const txStock = await productStock(link.variantId, tx as any)
       if (txStock !== Number(preview.mahakStock)) throw new BusinessError('موجودی MAHAK بعد از پیش‌نمایش تغییر کرده است؛ دوباره پیش‌نمایش بگیرید.')
-      const heldWhere = heldInboundWhere(fresh, preview.lastSeq)
-      const heldEvents = await (tx as any).wooInboundEvent.findMany({ where: heldWhere, orderBy: [{ seq: 'asc' }, { id: 'asc' }] })
+      const heldEvents = await (tx as any).wooInboundEvent.findMany({ where: heldInboundWhere(fresh, null), orderBy: [{ seq: 'asc' }, { id: 'asc' }] })
+      if (hasHeldAfter(heldEvents, preview.lastSeq)) throw new BusinessError('از زمان پیش‌نمایش، رویداد تازه‌ای از سایت رسیده است؛ دوباره پیش‌نمایش بگیرید.')
       const heldOrderEvents = heldEvents.filter((e: any) => isWooOrderPausedEvent(e) && Number(e.delta || 0) !== 0)
       if (decision === WooResumeDecision.MAHAK_WINS && heldOrderEvents.length) {
         throw new BusinessError('در زمان توقف/پارک، سفارش یا Refund واقعی سایت ثبت شده است؛ برای جلوگیری از حذف فروش واقعی، گزینه «MAHAK + سفارش‌های سایت» را انتخاب کنید یا همان رویداد ورودی را از صف تأیید اعمال کنید.')
@@ -859,6 +878,13 @@ export const wooSyncService = {
               continue
             }
           }
+          const existingMove = await (tx as any).stockMovement.findFirst({ where: { refType: 'WooInboundEvent', refId: e.id }, select: { id: true } })
+          if (existingMove?.id != null) {
+            finalStock = await productStock(link.variantId, tx as any)
+            await (tx as any).wooInboundEvent.update({ where: { id: e.id }, data: { status: WooInboundStatus.APPLIED_ON_RELINK, movementId: Number(existingMove.id), relinkId, processedAt: new Date() } })
+            appliedPausedOrderEvents++
+            continue
+          }
           const r = await applyWooDelta({ eventId: e.id, variantId: link.variantId, delta, note: `اعمال سفارش سایت هنگام وصل دوباره (${e.orderId ?? 'بدون سفارش'})`, tx })
           finalStock = r.stock
           appliedPausedOrderEvents++
@@ -881,6 +907,7 @@ export const wooSyncService = {
         where: { id: link.id },
         data: {
           status: pendingReconcilePush ? WooLinkStatus.PAUSED : WooLinkStatus.ACTIVE,
+          pauseReason: pendingReconcilePush ? 'APPROVED_RECONCILE_PUSH' : fresh.pauseReason,
           resumedAt: new Date(),
           resumedBy: input.userId ?? null,
           resumeDecision: decision,
@@ -920,6 +947,9 @@ export const wooSyncService = {
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const link = await (tx as any).wooProductLink.findUnique({ where: { id } })
       if (!link) return
+      await assertNoFreshInFlight(tx as any, id)
+      const held = await (tx as any).wooInboundEvent.count({ where: heldInboundWhere(link, null) })
+      if (held > 0) throw new BusinessError('برای این اتصال هنوز رویداد حل‌نشده سایت وجود دارد؛ قبل از قطع دائم، صف تأیید/رویدادهای پارک‌شده را تعیین تکلیف کنید.')
       await (tx as any).wooSyncOutbox.updateMany({ where: { linkId: id, status: { in: openOutboxStatuses() } }, data: { status: WooOutboxStatus.SUPERSEDED, lastError: 'LINK_UNLINKED' } })
       await (tx as any).wooApproval.updateMany({ where: { linkId: id, status: WooApprovalStatus.PENDING }, data: { status: WooApprovalStatus.EXPIRED, resolvedAt: new Date(), resolvedBy: input.userId ?? null, resolution: 'LINK_UNLINKED', resolutionNote: 'لینک موجودی سایت قطع دائم شد.' } })
       await (tx as any).wooProductLink.update({ where: { id }, data: { status: WooLinkStatus.UNLINKED } })
@@ -967,8 +997,7 @@ export const wooSyncService = {
       if (!locked.count) continue
       const link = await db().wooProductLink.findUnique({ where: { id: row.linkId } })
       const reconcileKind = isReconcileOutboxKind(row.kind)
-      const allowedStatus = link?.status === WooLinkStatus.ACTIVE || (reconcileKind && [WooLinkStatus.PAUSED, WooLinkStatus.CONFLICT, WooLinkStatus.BROKEN_LOCAL].includes(String(link?.status) as any))
-      if (!link || !allowedStatus) {
+      if (!canSendOutboxForLink(row.kind, link)) {
         await db().wooSyncOutbox.update({ where: { id: row.id }, data: { status: WooOutboxStatus.SUPERSEDED, lastError: 'LINK_NOT_SENDABLE', updatedAt: new Date() } })
         skipped++
         continue
@@ -992,15 +1021,22 @@ export const wooSyncService = {
         if (res?.ok === false || res?.conflict === true) throw new BusinessError(String(res?.message ?? 'اختلاف موجودی سایت'))
         const appliedWooQty = res?.new_qty == null ? target : wooSafeInt(res.new_qty)
         let needsFreshOutbox = false
+        let finalized = false
         await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-          await (tx as any).wooSyncOutbox.updateMany({
+          const sentUpdate = await (tx as any).wooSyncOutbox.updateMany({
             where: { id: row.id, status: WooOutboxStatus.IN_FLIGHT },
             data: { status: WooOutboxStatus.SENT, sentAt: new Date(), updatedAt: new Date(), lastError: null, targetQty: target }
           })
+          if (!sentUpdate.count) return
+          finalized = true
           const freshLink = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
           if (freshLink) {
             const statusUnchanged = freshLink.status === link.status && sameDbTime(freshLink.updatedAt, link.updatedAt)
-            const nextStatus = reconcileKind && statusUnchanged && freshLink.status !== WooLinkStatus.BROKEN_LOCAL ? WooLinkStatus.ACTIVE : freshLink.status
+            let nextStatus = freshLink.status
+            if (statusUnchanged && canActivateAfterOutbox(row.kind, freshLink)) {
+              const held = await (tx as any).wooInboundEvent.count({ where: heldInboundWhere(freshLink, null) })
+              nextStatus = held > 0 ? freshLink.status : WooLinkStatus.ACTIVE
+            }
             await (tx as any).wooProductLink.update({
               where: { id: link.id },
               data: {
@@ -1017,6 +1053,10 @@ export const wooSyncService = {
             }
           }
         }, TX_OPTIONS)
+        if (!finalized) {
+          skipped++
+          continue
+        }
         if (needsFreshOutbox) await log('OUTBOX_IDEMPOTENT_RETRY', 'پاسخ idempotent سایت با هدف فعلی متفاوت بود؛ یک ارسال تازه ساخته شد', { level: 'WARN', linkId: link.id, variantId: row.variantId, payload: { outboxId: row.id, appliedWooQty, target } })
         sent++
       } catch (e: any) {
@@ -1069,6 +1109,8 @@ export const wooSyncService = {
       const newQty = wooSafeInt(raw.new_qty ?? raw.stock_quantity)
       const delta = raw.delta == null ? (oldQty == null ? 0 : newQty - oldQty) : wooSafeInt(raw.delta)
       const requestId = raw.request_id ? String(raw.request_id).replace(/#dup-\d+$/, '') : null
+      const source = String(raw.source ?? '')
+      const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload : parseJsonValue(raw.payload_json ?? raw.payloadJson)
       const baseEvent = {
         eventUuid,
         seq: BigInt(seq),
@@ -1078,9 +1120,9 @@ export const wooSyncService = {
         oldQty,
         newQty,
         delta,
-        source: String(raw.source ?? ''),
+        source,
         requestId,
-        payloadJson: json(raw)
+        payloadJson: json({ ...raw, payload })
       }
       try {
         const done = await db().wooInboundEvent.findUnique({ where: { eventUuid } })
@@ -1089,7 +1131,8 @@ export const wooSyncService = {
           continue
         }
         const link = await db().wooProductLink.findFirst({ where: { holderKey, status: { not: WooLinkStatus.UNLINKED } } })
-        const echo = requestId && link?.id ? await db().wooSyncOutbox.findFirst({ where: { idempotencyKey: requestId, linkId: link.id } }) : null
+        const isMahakApplyEcho = !!requestId && source === 'mahak_apply'
+        const echo = isMahakApplyEcho && link?.id ? await db().wooSyncOutbox.findFirst({ where: { idempotencyKey: requestId, linkId: link.id } }) : null
         if (echo) {
           await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
             await (tx as any).wooInboundEvent.create({
@@ -1103,6 +1146,12 @@ export const wooSyncService = {
           skipped++
           continue
         }
+        if (isMahakApplyEcho) {
+          const parked = await db().wooInboundEvent.create({ data: { ...baseEvent, linkId: link?.id ?? null, variantId: link?.variantId ?? null, status: WooInboundStatus.PARKED, processedAt: new Date() } })
+          await ensureApproval({ action: WooApprovalAction.APPLY_INBOUND, linkId: link?.id ?? null, variantId: link?.variantId ?? null, holderKey, sourceType: 'WooInboundEvent', sourceId: parked.id, reason: 'MAHAK_ECHO_WITHOUT_OUTBOX', title: 'echo نامعتبر اعمال موجودی سایت', message: 'سایت رویداد mahak_apply برگرداند اما outbox متناظر پیدا نشد؛ برای جلوگیری از اعمال delta تکراری، رویداد پارک شد.', payload: { seq, delta, newQty, requestId } })
+          skipped++
+          continue
+        }
         if (!link) {
           await db().wooInboundEvent.create({ data: { ...baseEvent, status: WooInboundStatus.SKIPPED_UNMAPPED, processedAt: new Date() } })
           skipped++
@@ -1110,7 +1159,19 @@ export const wooSyncService = {
         }
         const relinkFloor = link.relinkSeqFloor == null ? null : Number(link.relinkSeqFloor)
         if (link.status === WooLinkStatus.ACTIVE && relinkFloor != null && seq <= relinkFloor) {
-          await db().wooInboundEvent.create({ data: { ...baseEvent, linkId: link.id, variantId: link.variantId, status: WooInboundStatus.SUPERSEDED, relinkId: link.lastRelinkId ?? null, processedAt: new Date() } })
+          if (canSupersedeByRelinkFloor(link, baseEvent)) {
+            await db().wooInboundEvent.create({ data: { ...baseEvent, linkId: link.id, variantId: link.variantId, status: WooInboundStatus.SUPERSEDED, relinkId: link.lastRelinkId ?? null, processedAt: new Date() } })
+          } else {
+            const parked = await db().wooInboundEvent.create({ data: { ...baseEvent, linkId: link.id, variantId: link.variantId, status: WooInboundStatus.PARKED, processedAt: new Date() } })
+            await ensureApproval({ action: WooApprovalAction.APPLY_INBOUND, linkId: link.id, variantId: link.variantId, holderKey, sourceType: 'WooInboundEvent', sourceId: parked.id, reason: 'INBOUND_BEFORE_RELINK_FLOOR', title: 'رویداد سفارش سایت نزدیک به وصل دوباره', message: 'این رویداد سفارش/Refund قبل از floor قبلی دیده شد اما بدون تصمیم صریح مدیر حذف نشد.', payload: { seq, delta, newQty, source, orderId: baseEvent.orderId } })
+          }
+          skipped++
+          continue
+        }
+        const untrustedJournal = payload?.lock_timeout === true || (oldQty !== null && oldQty !== wooSafeInt(link.lastWooQty))
+        if (link.status === WooLinkStatus.ACTIVE && untrustedJournal) {
+          const parked = await db().wooInboundEvent.create({ data: { ...baseEvent, linkId: link.id, variantId: link.variantId, status: WooInboundStatus.PARKED, processedAt: new Date() } })
+          await ensureApproval({ action: WooApprovalAction.APPLY_INBOUND, linkId: link.id, variantId: link.variantId, holderKey, sourceType: 'WooInboundEvent', sourceId: parked.id, reason: payload?.lock_timeout === true ? 'INBOUND_LOCK_TIMEOUT' : 'INBOUND_STOCK_GAP', title: 'رویداد سایت با زنجیره موجودی نامطمئن', message: 'ژورنال سایت با lock timeout یا old_qty ناپیوسته رسید؛ برای جلوگیری از تغییر کور موجودی، اعمال آن نیازمند تأیید مدیر است.', payload: { seq, oldQty, lastWooQty: link.lastWooQty, newQty, delta, source, lockTimeout: payload?.lock_timeout === true } })
           skipped++
           continue
         }
@@ -1238,7 +1299,7 @@ export const wooSyncService = {
         skipped++
         continue
       }
-      await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.CONFLICT, pauseReason: 'RECONCILE_DISCREPANCY', pausedAt: new Date(), pauseSeqFloor: BigInt(cursor) } })
+      await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.CONFLICT, pauseReason: 'RECONCILE_DISCREPANCY', pausedAt: new Date(), pauseSeqFloor: link.pauseSeqFloor == null ? BigInt(cursor) : BigInt(link.pauseSeqFloor) } })
       await ensureApproval({ action: WooApprovalAction.RECONCILE_DISCREPANCY, linkId: link.id, variantId: link.variantId, holderKey: link.holderKey, reason: 'RECONCILE_DISCREPANCY', title: 'اختلاف دوره‌ای موجودی سایت و فروشگاه', message: 'پس از خواندن ژورنال سایت، موجودی MAHAK و Woo هنوز متفاوت است. برای جلوگیری از overwrite کور، تصمیم مدیر لازم است.', payload: { mahakStock: localStock, wooQty: r.stockQuantity, target, cursor } })
       await log('RECONCILE_DIFF', 'اختلاف دوره‌ای موجودی سایت پیدا شد و برای تأیید مدیر نگه داشته شد', { level: 'WARN', linkId: link.id, variantId: link.variantId, payload: { mahakStock: localStock, wooQty: r.stockQuantity, target } })
       queued++
@@ -1276,23 +1337,30 @@ export const wooSyncService = {
           continue
         }
         let didApply = false
+        let overAllowance = false
         await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+          const freshLink = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
+          if (!freshLink || freshLink.status !== WooLinkStatus.ACTIVE || row.relinkId) return
+          await assertNoFreshInFlight(tx as any, link.id)
           const fresh = await (tx as any).wooInboundEvent.findUnique({ where: { id: row.id } })
           if (!fresh || fresh.status !== WooInboundStatus.PARKED) return
           const existingMove = await (tx as any).stockMovement.findFirst({ where: { refType: 'WooInboundEvent', refId: row.id }, select: { id: true } })
           let movementId = existingMove?.id == null ? null : Number(existingMove.id)
           let stock = await productStock(link.variantId, tx as any)
           if (!movementId) {
-            const delta = Number(row.delta || 0)
-            if (delta > 0 && isWooRestoreSource(row.source)) {
-              const allowed = await remainingRestoreAllowance({ client: tx as any, variantId: link.variantId, orderId: row.orderId })
-              if (delta > allowed) return
+            const delta = Number(fresh.delta || 0)
+            if (delta > 0 && isWooRestoreSource(fresh.source)) {
+              const allowed = await remainingRestoreAllowance({ client: tx as any, variantId: link.variantId, orderId: fresh.orderId })
+              if (delta > allowed) {
+                overAllowance = true
+                return
+              }
             }
-            const r = await applyWooDelta({ eventId: row.id, variantId: link.variantId, delta, note: `پردازش دوباره رویداد سایت${row.orderId ? ` · سفارش ${row.orderId}` : ''}`, tx })
+            const r = await applyWooDelta({ eventId: row.id, variantId: link.variantId, delta, note: `پردازش دوباره رویداد سایت${fresh.orderId ? ` · سفارش ${fresh.orderId}` : ''}`, tx })
             movementId = r.movementId
             stock = r.stock
           }
-          await (tx as any).wooInboundEvent.update({ where: { id: row.id }, data: { status: WooInboundStatus.APPLIED, movementId, processedAt: new Date() } })
+          await (tx as any).wooInboundEvent.update({ where: { id: row.id }, data: { status: WooInboundStatus.APPLIED, linkId: link.id, variantId: link.variantId, movementId, processedAt: new Date() } })
           await (tx as any).wooApproval.updateMany({ where: { sourceType: 'WooInboundEvent', sourceId: row.id, status: WooApprovalStatus.PENDING }, data: { status: WooApprovalStatus.APPROVED, resolvedAt: new Date(), resolution: 'BULK_RETRY_APPLIED', resolutionNote: 'پردازش دستی پارک‌شده‌ها' } })
           await (tx as any).wooSyncOutbox.updateMany({
             where: { linkId: link.id, status: { in: openOutboxStatuses() } },
@@ -1307,7 +1375,10 @@ export const wooSyncService = {
           didApply = true
         }, TX_OPTIONS)
         if (didApply) applied++
-        else skipped++
+        else {
+          if (overAllowance) await log('PARKED_RETRY_OVER_ALLOWANCE', 'رویداد Refund/برگشت سایت از سقف فروش ثبت‌شده بیشتر بود و پارک ماند', { level: 'WARN', linkId: link.id, variantId: link.variantId, payload: { inboundEventId: row.id, orderId: row.orderId, delta: row.delta } })
+          skipped++
+        }
       } catch (e) {
         failed++
         await log('PARKED_RETRY_FAILED', String((e as any)?.message ?? e), { level: 'ERROR', payload: { inboundEventId: row.id } })
@@ -1437,7 +1508,8 @@ export const wooSyncService = {
         await assertNoFreshInFlight(tx as any, link.id)
         const localStock = await productStock(link.variantId, tx as any)
         const wooQty = wooSafeInt(freshRemoteForDecision.stockQuantity)
-        const heldEvents = await (tx as any).wooInboundEvent.findMany({ where: heldInboundWhere(freshLink, remoteLastSeq), select: { id: true, source: true, orderId: true, delta: true, seq: true, status: true } })
+        const heldEvents = await (tx as any).wooInboundEvent.findMany({ where: heldInboundWhere(freshLink, null), select: { id: true, source: true, orderId: true, delta: true, seq: true, status: true } })
+        if (hasHeldAfter(heldEvents, remoteLastSeq)) throw new BusinessError('از زمان گرفتن snapshot سایت، رویداد تازه‌ای رسیده است؛ دوباره تصمیم تأیید را اعمال کنید.')
         const orderPausedEvents = heldEvents.filter((e: any) => isWooOrderPausedEvent(e) && Number(e.delta || 0) !== 0)
         if (orderPausedEvents.length && decision !== WooResumeDecision.WOO_WINS) {
           throw new BusinessError('این لینک رویداد سفارش/Refund سایت در زمان توقف/پارک دارد. برای جلوگیری از حذف فروش واقعی، ابتدا از پیش‌نمایش وصل دوباره با گزینه «MAHAK + سفارش‌های سایت» استفاده کنید یا خود همان رویداد ورودی را تأیید کنید.')
@@ -1495,29 +1567,65 @@ export const wooSyncService = {
     const row = await db().wooProductLink.findUnique({ where: { id }, include: { variant: true } }).catch(() => null)
     const productId = row?.variant?.productId
     if (!productId) throw new BusinessError('گروه محصول این اتصال پیدا نشد.')
-    const rows = await db().wooProductLink.findMany({ where: { status: { in: [WooLinkStatus.PAUSED, WooLinkStatus.CONFLICT, WooLinkStatus.FROZEN] }, variant: { productId } }, orderBy: { id: 'asc' } })
+    await this.pullJournalDrain(10, 200)
+    const rows = await db().wooProductLink.findMany({ where: { status: { in: [WooLinkStatus.PAUSED, WooLinkStatus.CONFLICT] }, variant: { productId } }, orderBy: { id: 'asc' } })
+    const remoteRows = await this.remoteStock(rows).catch(() => [])
+    const remoteByKey = new Map(remoteRows.map((r: any) => [String(r.holderKey), r]))
     let queued = 0
     let skipped = 0
-    for (const link of rows) {
-      const heldOrders = await db().wooInboundEvent.findMany({ where: heldInboundWhere(link, null), select: { id: true, source: true, orderId: true, delta: true } }).catch(() => [])
-      if (heldOrders.some((e: any) => isWooOrderPausedEvent(e) && Number(e.delta || 0) !== 0)) {
-        skipped++
-        await log('GROUP_RESUME_SKIPPED_HELD_ORDER', 'وصل گروهی با MAHAK برای یک لینک رد شد چون رویداد سفارش/Refund سایت هنوز تعیین تکلیف نشده است', { level: 'WARN', linkId: link.id, variantId: link.variantId, payload: { productId } })
-        continue
-      }
-      const inFlight = await db().wooSyncOutbox.count({ where: { linkId: link.id, status: WooOutboxStatus.IN_FLIGHT, updatedAt: { gte: new Date(Date.now() - IN_FLIGHT_STALE_MS) } } }).catch(() => 0)
-      if (inFlight > 0) {
-        skipped++
-        await log('GROUP_RESUME_SKIPPED_IN_FLIGHT', 'وصل گروهی با MAHAK برای یک لینک رد شد چون ارسال موجودی هنوز در حال انجام است', { level: 'WARN', linkId: link.id, variantId: link.variantId, payload: { productId } })
-        continue
-      }
-      const stock = await productStock(link.variantId)
-      await createOutbox({ link, variantId: link.variantId, kind: 'RECONCILE_PUSH', targetQty: stock, expectedWooQty: link.lastWooQty, skipLoopFuse: true })
-      await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.PAUSED, pauseReason: 'GROUP_MAHAK_WINS', pausedAt: new Date(), resumedBy: input.userId ?? null, resumeDecision: WooResumeDecision.MAHAK_WINS } })
-      queued++
+    const skippedLinks: Array<{ linkId: number; reason: string }> = []
+    const skipLink = async (link: any, reason: string, message: string) => {
+      skipped++
+      skippedLinks.push({ linkId: Number(link.id), reason })
+      await log('GROUP_RESUME_SKIPPED_' + reason, message, { level: 'WARN', linkId: link.id, variantId: link.variantId, payload: { productId } })
     }
-    await log('GROUP_RESUME_MAHAK', 'وصل گروهی رنگ/سایز با مرجع MAHAK ثبت شد', { payload: { productId, queued, skipped } })
-    return { queued, skipped, links: await this.links(), status: await this.status() }
+    for (const link of rows) {
+      const remote = remoteByKey.get(String(link.holderKey)) as any
+      if (!remoteStockUsable(remote)) {
+        await skipLink(link, 'REMOTE_UNUSABLE', 'وصل گروهی با MAHAK برای یک لینک رد شد چون موجودی سایت مستقل/عددی نیست')
+        continue
+      }
+      const remoteLastSeq = remote.lastSeq == null ? null : Number(remote.lastSeq)
+      if (remoteLastSeq != null && (await lastCursor()) < remoteLastSeq) {
+        await skipLink(link, 'JOURNAL_NOT_DRAINED', 'وصل گروهی با MAHAK برای یک لینک رد شد چون ژورنال سایت هنوز کامل خوانده نشده است')
+        continue
+      }
+      let didQueue = false
+      try {
+        await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+          const fresh = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
+          if (!fresh || ![WooLinkStatus.PAUSED, WooLinkStatus.CONFLICT].includes(String(fresh.status) as any)) return
+          await assertNoFreshInFlight(tx as any, link.id)
+          const held = await (tx as any).wooInboundEvent.findMany({ where: heldInboundWhere(fresh, null), select: { id: true, seq: true, source: true, orderId: true, delta: true, status: true } })
+          if (held.length > 0) return
+          const stock = await productStock(link.variantId, tx as any)
+          const relinkId = randomUUID()
+          await createOutbox({ client: tx as any, link: { ...fresh, lastWooQty: wooSafeInt(remote.stockQuantity) }, variantId: link.variantId, kind: 'RECONCILE_PUSH', targetQty: stock, expectedWooQty: wooSafeInt(remote.stockQuantity), skipLoopFuse: true })
+          await (tx as any).wooProductLink.update({
+            where: { id: link.id },
+            data: {
+              status: WooLinkStatus.PAUSED,
+              pauseReason: 'GROUP_MAHAK_WINS',
+              pausedAt: new Date(),
+              resumedBy: input.userId ?? null,
+              resumeDecision: WooResumeDecision.MAHAK_WINS,
+              relinkSeqFloor: remoteLastSeq == null ? fresh.relinkSeqFloor : BigInt(remoteLastSeq),
+              lastRelinkId: relinkId,
+              lastWooQty: wooSafeInt(remote.stockQuantity),
+              lastMahakQty: stock
+            }
+          })
+          didQueue = true
+        }, TX_OPTIONS)
+      } catch (e) {
+        await skipLink(link, 'IN_FLIGHT_OR_ERROR', String((e as any)?.message ?? e))
+        continue
+      }
+      if (didQueue) queued++
+      else await skipLink(link, 'HELD_OR_STALE', 'وصل گروهی با MAHAK برای یک لینک رد شد چون رویداد حل‌نشده، ارسال درحال‌انجام یا وضعیت کهنه دارد')
+    }
+    await log('GROUP_RESUME_MAHAK', 'وصل گروهی رنگ/سایز با مرجع MAHAK ثبت شد', { payload: { productId, queued, skipped, skippedLinks } })
+    return { queued, skipped, skippedLinks, links: await this.links(), status: await this.status() }
   },
 
   async syncNow() {

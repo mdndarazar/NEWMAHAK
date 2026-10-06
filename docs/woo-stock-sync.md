@@ -105,3 +105,14 @@ resources/woocommerce/mahak-stock-sync.php
 - تصمیم‌های مدیریتی در صورت وجود outbox تازه‌ی `IN_FLIGHT` متوقف می‌شوند؛ `IN_FLIGHT`های واقعاً stale قبل از ساخت هدف جدید supersede می‌شوند تا بعداً push قدیمی زنده نشود.
 - وصل گروهی با MAHAK لینک‌هایی را که event سفارش/Refund حل‌نشده دارند skip و در لاگ هشدار ثبت می‌کند.
 - lock ارتقای افزونه هم مثل lock اعمال موجودی namespace شد و hookهای `before_stock/after_stock` با همان named lock سریال می‌شوند؛ context سفارش هم در `shutdown` پاک می‌شود.
+
+### نکته تکمیلی پس از بازبینی ششم
+
+- افزونه به نسخه `1.0.5` رفت؛ نسخه DB همان `4` ماند چون schema عوض نشد.
+- مجموعه‌ی held دیگر با `pauseSeqFloor` یا `relinkId` پنهان نمی‌شود: هر `SKIPPED_PAUSED` یا `PARKED` حل‌نشده‌ی لینک در guardها دیده می‌شود و اگر بعد از snapshot پیش‌نمایش رویداد تازه‌ای برسد، تصمیم مدیر رد می‌شود و باید پیش‌نمایش تازه گرفته شود.
+- امضای پیش‌نمایش علاوه بر تعداد eventها، hash شناسه/seq/status/relink رویدادهای held را هم می‌فرستد تا تغییر هم‌تعداد رویدادها از چشم اعمال تصمیم پنهان نماند.
+- وصل گروهی با MAHAK قبل از queue کردن ژورنال را drain می‌کند، FROZEN را از این مسیر باز نمی‌کند، همه‌ی heldهای حل‌نشده را skip می‌کند، snapshot سایت/`relinkSeqFloor` تازه می‌گیرد و فهرست لینک‌های skip‌شده را به UI برمی‌گرداند.
+- خروج موفق outbox فقط برای `RECONCILE_PUSH`های مدیریتیِ مجاز می‌تواند لینک `PAUSED` را فعال کند و آن هم وقتی held event باقی نمانده باشد؛ pushهای rebase/idempotent دیگر لینک conflict را بی‌تصمیم مدیر ACTIVE نمی‌کنند.
+- echo فقط وقتی معتبر است که source سایت `mahak_apply` باشد و outbox همان `idempotencyKey + linkId` وجود داشته باشد؛ `mahak_apply` بدون outbox متناظر PARK می‌شود.
+- اگر افزونه هنگام hook موجودی نتواند named lock را بگیرد، journal را حذف نمی‌کند؛ event با payload `lock_timeout` ثبت می‌شود و برنامه آن را برای بررسی مدیر PARK می‌کند. همچنین اگر زنجیره‌ی `old_qty` با `lastWooQty` لینک نخواند، event مستقیم اعمال نمی‌شود و PARK می‌ماند.
+- قطع دائم لینک اکنون رمز مدیر می‌خواهد و در حضور held event یا ارسال تازه‌ی درحال‌پرواز block می‌شود.
