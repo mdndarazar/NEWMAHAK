@@ -740,7 +740,6 @@ export const wooSyncService = {
       JOIN Product p ON p.id = v.productId
       WHERE l.status <> 'UNLINKED'
       ORDER BY l.updatedAt DESC, l.id DESC
-      LIMIT 1000
     `)
     return rows.map((r: any) => ({
       id: Number(r.id),

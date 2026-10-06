@@ -154,6 +154,6 @@ resources/woocommerce/mahak-stock-sync.php
 - `/journal` اگر query خطا بدهد 500 برمی‌گرداند و feed خالی سالم جا زده نمی‌شود.
 - برنامه هنگام نهایی‌کردن outbox اگر لینک در فاصله HTTP تغییر کرده باشد baseline لینک را overwrite نمی‌کند؛ cursor ژورنال سایت به‌صورت monotonic ذخیره می‌شود و عقب‌گرد هم‌زمانی ندارد.
 - payload خام inbound و log خطای inbound allowlist شد تا داده‌های خارج از stock-only ذخیره یا لاگ نشود.
-- خواندن catalog اگر به سقف امن نمایش برسد دیگر بی‌صدا truncate نمی‌شود؛ نتیجه‌ی IPC متادیتای `capped/hasMore` می‌دهد و UI هشدار می‌دهد که جست‌وجو باید دقیق‌تر شود.
+- خواندن catalog اگر به سقف امن نمایش برسد دیگر بی‌صدا truncate نمی‌شود؛ نتیجه‌ی IPC متادیتای `capped/hasMore` می‌دهد و UI هشدار می‌دهد که جست‌وجو باید دقیق‌تر شود. فهرست اتصال‌های موجود نیز دیگر با `LIMIT 1000` پنهان نمی‌شود.
 - eventهای `mahak_apply` که بدون outbox متناظر PARK شده‌اند در retry گروهی خودکار دوباره روی MAHAK اعمال نمی‌شوند؛ نیازمند تصمیم/بررسی دقیق‌تر می‌مانند.
 - موارد وابسته به runtime واقعی Woo/MySQL مثل fail-open کردن lock hook یا strict کردن کامل journal hook عادی، آگاهانه staging-only باقی ماندند و در این patch به‌عنوان باگ قطعی بسته نشدند.
