@@ -49,8 +49,13 @@ function publishedQty(raw: unknown): number {
 }
 
 function wooNullableInt(raw: unknown): number | null {
-  if (raw === null || raw === undefined || raw === '') return null
-  return wooSafeInt(raw)
+  if (raw === null || raw === undefined) return null
+  if (typeof raw === 'boolean') return null
+  if (typeof raw === 'number') return Number.isSafeInteger(raw) ? raw : null
+  const s = String(raw).trim()
+  if (!/^-?\d+$/.test(s)) return null
+  const n = Number(s)
+  return Number.isSafeInteger(n) ? n : null
 }
 
 function remoteStockUsable(r: any): boolean {
@@ -386,10 +391,39 @@ async function ensureApproval(input: {
 }): Promise<any | null> {
   const client = input.client ?? db()
   const where: any = { status: WooApprovalStatus.PENDING, action: input.action, reason: input.reason }
-  if (input.linkId != null) where.linkId = input.linkId
+  const whereSql = ['"status" = ?', '"action" = ?', '"reason" = ?']
+  const whereParams: unknown[] = [WooApprovalStatus.PENDING, input.action, input.reason]
+  if (input.linkId != null) {
+    where.linkId = input.linkId
+    whereSql.push('"linkId" = ?')
+    whereParams.push(Number(input.linkId))
+  }
   if (input.sourceType && input.sourceId != null) {
     where.sourceType = input.sourceType
     where.sourceId = input.sourceId
+    whereSql.push('"sourceType" = ?', '"sourceId" = ?')
+    whereParams.push(input.sourceType, Number(input.sourceId))
+  }
+  const payloadJson = input.payload == null ? null : json(input.payload)
+  if (typeof client.$executeRawUnsafe === 'function') {
+    await client.$executeRawUnsafe(
+      `INSERT INTO "WooApproval" ("action", "status", "linkId", "variantId", "holderKey", "sourceType", "sourceId", "reason", "title", "message", "payloadJson")
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE NOT EXISTS (SELECT 1 FROM "WooApproval" WHERE ${whereSql.join(' AND ')})`,
+      input.action,
+      WooApprovalStatus.PENDING,
+      input.linkId ?? null,
+      input.variantId ?? null,
+      input.holderKey ?? null,
+      input.sourceType ?? null,
+      input.sourceId ?? null,
+      input.reason,
+      input.title,
+      input.message,
+      payloadJson,
+      ...whereParams
+    )
+    return client.wooApproval.findFirst({ where, orderBy: { id: 'desc' } }).catch(() => null)
   }
   const existing = await client.wooApproval.findFirst({ where }).catch(() => null)
   if (existing) return existing
@@ -405,7 +439,7 @@ async function ensureApproval(input: {
       reason: input.reason,
       title: input.title,
       message: input.message,
-      payloadJson: input.payload == null ? null : json(input.payload)
+      payloadJson
     }
   })
 }
@@ -604,14 +638,13 @@ export const wooSyncService = {
   },
 
   async catalog(params: { search?: string; limit?: number; page?: number; offset?: number } = {}): Promise<WooCatalogItem[]> {
-    const q = new URLSearchParams()
-    if (params.search) q.set('search', String(params.search))
-    q.set('limit', String(Math.min(200, Math.max(1, Math.round(Number(params.limit) || 100)))))
-    if (params.page != null) q.set('page', String(Math.max(1, Math.round(Number(params.page) || 1))))
-    else if (params.offset != null) q.set('page', String(Math.max(1, Math.floor(Number(params.offset || 0) / Math.max(1, Math.round(Number(params.limit) || 100))) + 1)))
-    const r = await wooRequest<any>(`/catalog?${q.toString()}`)
-    const rows = Array.isArray(r?.items) ? r.items : []
-    return rows.map((x: any) => ({
+    const limit = Math.min(200, Math.max(1, Math.round(Number(params.limit) || 100)))
+    const requestedPage = params.page != null
+      ? Math.max(1, Math.round(Number(params.page) || 1))
+      : params.offset != null
+        ? Math.max(1, Math.floor(Number(params.offset || 0) / limit) + 1)
+        : null
+    const mapRows = (rows: any[]) => rows.map((x: any) => ({
       holderKey: String(x.holder_key ?? x.holderKey ?? wooHolderKey(x.product_id ?? x.productId, x.variation_id ?? x.variationId)),
       productId: wooSafeInt(x.product_id ?? x.productId),
       variationId: x.variation_id == null ? null : wooSafeInt(x.variation_id ?? x.variationId),
@@ -625,6 +658,28 @@ export const wooSyncService = {
       backorders: x.backorders == null ? null : String(x.backorders),
       status: x.status == null ? null : String(x.status)
     }))
+    const fetchPage = async (page: number) => {
+      const q = new URLSearchParams()
+      if (params.search) q.set('search', String(params.search))
+      q.set('limit', String(limit))
+      q.set('page', String(page))
+      return wooRequest<any>(`/catalog?${q.toString()}`)
+    }
+    if (requestedPage != null) {
+      const r = await fetchPage(requestedPage)
+      return mapRows(Array.isArray(r?.items) ? r.items : [])
+    }
+    const all: any[] = []
+    let page = 1
+    let hasMore = false
+    do {
+      const r = await fetchPage(page)
+      const rows = Array.isArray(r?.items) ? r.items : []
+      all.push(...rows)
+      hasMore = r?.has_more === true || r?.hasMore === true
+      page++
+    } while (hasMore && all.length < 1000 && page <= 20)
+    return mapRows(all.slice(0, 1000))
   },
 
   async links(): Promise<WooLinkRow[]> {
@@ -1477,8 +1532,22 @@ export const wooSyncService = {
     const approval = await db().wooApproval.findUnique({ where: { id } })
     if (!approval || approval.status !== WooApprovalStatus.PENDING) throw new BusinessError('درخواست تأیید پیدا نشد یا قبلاً تعیین تکلیف شده است.')
     if (decision === 'REJECT') {
-      const rejected = await db().wooApproval.updateMany({ where: { id, status: WooApprovalStatus.PENDING }, data: { status: WooApprovalStatus.REJECTED, resolvedAt: new Date(), resolvedBy: input.userId ?? null, resolution: decision, resolutionNote: input.note ?? null } })
-      if (!rejected.count) throw new BusinessError('درخواست تأیید قبلاً تعیین تکلیف شده است؛ فهرست را تازه کنید.')
+      await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+        const freshApproval = await (tx as any).wooApproval.findUnique({ where: { id } })
+        if (!freshApproval || freshApproval.status !== WooApprovalStatus.PENDING) throw new BusinessError('درخواست تأیید قبلاً تعیین تکلیف شده است؛ فهرست را تازه کنید.')
+        const rejected = await (tx as any).wooApproval.updateMany({ where: { id, status: WooApprovalStatus.PENDING }, data: { status: WooApprovalStatus.REJECTED, resolvedAt: new Date(), resolvedBy: input.userId ?? null, resolution: decision, resolutionNote: input.note ?? null } })
+        if (!rejected.count) throw new BusinessError('درخواست تأیید قبلاً تعیین تکلیف شده است؛ فهرست را تازه کنید.')
+        if (freshApproval.action === WooApprovalAction.APPLY_INBOUND && freshApproval.sourceType === 'WooInboundEvent' && freshApproval.sourceId != null) {
+          await (tx as any).wooInboundEvent.updateMany({
+            where: { id: Number(freshApproval.sourceId), status: { in: [WooInboundStatus.PARKED, WooInboundStatus.SKIPPED_PAUSED] } },
+            data: { status: WooInboundStatus.SUPERSEDED, processedAt: new Date() }
+          })
+          await (tx as any).wooApproval.updateMany({
+            where: { id: { not: id }, action: WooApprovalAction.APPLY_INBOUND, status: WooApprovalStatus.PENDING, sourceType: 'WooInboundEvent', sourceId: Number(freshApproval.sourceId) },
+            data: { status: WooApprovalStatus.EXPIRED, resolvedAt: new Date(), resolvedBy: input.userId ?? null, resolution: 'EVENT_REJECTED', resolutionNote: 'این رویداد ورودی با تصمیم مدیر رد شد.' }
+          })
+        }
+      }, TX_OPTIONS)
       await log('APPROVAL_REJECTED', 'درخواست تأیید Woo رد شد', { level: 'WARN', linkId: approval.linkId, variantId: approval.variantId, payload: { approvalId: id, reason: approval.reason } })
       return { approvals: await this.approvals(), links: await this.links(), status: await this.status() }
     }
@@ -1702,11 +1771,33 @@ export const wooSyncService = {
     }
     busy = true
     try {
-      const pulled = await this.pullJournalDrain(20, 200)
-      const reconciled = await this.reconcileActiveLinks(50)
-      const pushed = await this.processOutbox(100)
-      await log('SYNC_NOW', 'همگام‌سازی دستی انجام شد', { payload: { pulled, reconciled, pushed } })
-      return { parked: { applied: 0, skipped: 0, failed: 0, total: 0 }, pulled, reconciled, pushed, status: await this.status() }
+      const errors: Array<{ phase: string; message: string }> = []
+      let pulled: any = { received: 0, applied: 0, skipped: 0, lastSeq: await lastCursor() }
+      let reconciled: any = { checked: 0, queued: 0, skipped: 0 }
+      let pushed: any = { sent: 0, failed: 0, skipped: 0 }
+      try {
+        pulled = await this.pullJournalDrain(20, 200)
+      } catch (e: any) {
+        const message = String(e?.message ?? e)
+        errors.push({ phase: 'pull', message })
+        await log('SYNC_PULL_FAILED', message, { level: 'ERROR' })
+      }
+      try {
+        reconciled = await this.reconcileActiveLinks(50)
+      } catch (e: any) {
+        const message = String(e?.message ?? e)
+        errors.push({ phase: 'reconcile', message })
+        await log('SYNC_RECONCILE_FAILED', message, { level: 'ERROR' })
+      }
+      try {
+        pushed = await this.processOutbox(100)
+      } catch (e: any) {
+        const message = String(e?.message ?? e)
+        errors.push({ phase: 'push', message })
+        await log('SYNC_PUSH_FAILED', message, { level: 'ERROR' })
+      }
+      await log('SYNC_NOW', 'همگام‌سازی دستی انجام شد', { payload: { pulled, reconciled, pushed, errors } })
+      return { parked: { applied: 0, skipped: 0, failed: 0, total: 0 }, pulled, reconciled, pushed, errors, status: await this.status() }
     } finally {
       busy = false
     }

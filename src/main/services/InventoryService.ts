@@ -363,6 +363,7 @@ class LocalInventoryService implements IInventoryService {
               }
             })
           } catch {}
+          throw e
         }
       }
       /**

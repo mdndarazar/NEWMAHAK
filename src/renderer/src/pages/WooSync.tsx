@@ -335,7 +335,7 @@ export default function WooSync() {
         <h2 className="font-bold">۱) تنظیم اتصال افزونه</h2>
         <div className="grid md:grid-cols-4 gap-2 items-end">
           <label className="space-y-1 md:col-span-2"><span className="text-sm">آدرس سایت</span><input className="input" value={siteUrl} onChange={(e) => setSiteUrl(e.target.value)} placeholder="https://example.com" /></label>
-          <label className="space-y-1"><span className="text-sm">کلید افزونه</span><input className="input" value={token} onChange={(e) => setToken(e.target.value)} placeholder={status?.config.hasSecret ? 'ذخیره شده؛ برای تغییر وارد کنید' : 'از تنظیمات افزونه'} /></label>
+          <label className="space-y-1"><span className="text-sm">کلید افزونه</span><input className="input" type="password" autoComplete="new-password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={status?.config.hasSecret ? 'ذخیره شده؛ برای تغییر وارد کنید' : 'از تنظیمات افزونه'} /></label>
           <label className="space-y-1"><span className="text-sm">فاصله خودکار (ثانیه)</span><input className="input" type="number" value={intervalSeconds} onChange={(e) => setIntervalSeconds(Number(e.target.value))} /></label>
         </div>
         <div className="flex flex-wrap items-center gap-3">

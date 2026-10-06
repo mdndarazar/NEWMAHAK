@@ -2,14 +2,14 @@
 /**
  * Plugin Name: MAHAK Stock Sync
  * Description: Stock-only bridge for MAHAK desktop app and WooCommerce. It reads/writes only stock_quantity and never exposes prices, customers, orders totals or addresses.
- * Version: 1.0.7
+ * Version: 1.0.8
  * Author: MAHAK Local
  */
 
 if (!defined('ABSPATH')) exit;
 
 final class Mahak_Stock_Sync_Plugin {
-  const VERSION = '1.0.7';
+  const VERSION = '1.0.8';
   const DB_VERSION = '4';
   const OPTION_TOKEN = 'mahak_stock_sync_token';
   const OPTION_LAST_SECRET_HINT = 'mahak_stock_sync_secret_hint';
@@ -503,7 +503,6 @@ final class Mahak_Stock_Sync_Plugin {
     $raw_stock = $product->get_stock_quantity();
     $stock_int = ($raw_stock === null || $raw_stock === '') ? null : self::int_stock_value($raw_stock);
     if ($manage_mode === 'yes' && $stock_int === null) $manage_mode = 'fractional_unsupported';
-    if ($manage_mode === 'yes') self::remember_qty($product);
     return array(
       'holder_key' => self::holder_key($product_id, $variation_id),
       'product_id' => (int)$product_id,
@@ -701,7 +700,8 @@ final class Mahak_Stock_Sync_Plugin {
       self::clear_suppressed_id($product->get_id());
       self::$request_id = null;
       self::clean_product_caches($product);
-      return new WP_Error('mahak_apply_failed', $e->getMessage(), array('status' => 500));
+      error_log('[mahak-stock-sync] apply failed: ' . $e->getMessage());
+      return new WP_Error('mahak_apply_failed', 'MAHAK stock apply failed. Check the WordPress error log with the request id.', array('status' => 500));
     } finally {
       if ($in_tx) $wpdb->query('ROLLBACK');
       $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock_name));

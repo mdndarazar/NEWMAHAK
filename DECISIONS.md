@@ -1489,3 +1489,18 @@ S142-6 — سؤال: گیت نبودن رمز مدیر روی issueManual/bulkIs
   - audit regex قبلی که صرفاً وجود `competingInFlight` را نشانه‌ی ایمنی می‌دانست اصلاح شد و اکنون دنبال claim اتمیک با `NOT EXISTS` می‌گردد.
 - Deferred/Needs staging: رفتار object cache/duplicate `_stock` و attribution دقیق order/refund در lifecycle واقعی Woo هنوز باید با staging Woo/MySQL/PHP و چند نسخه WooCommerce تست شود.
 - مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود و هیچ داده مالی/مشتری/قیمت/گزارش فروش Woo وارد MAHAK نمی‌شود.
+
+### WOO-H13 — بازبینی نهم Woo: strict remote qty، rejection پایدار و readهای بی‌اثر
+- سؤال: دو گزارش جدید درباره parser موجودی remote، atomicity outbox داخلی، رد approval، pagination کاتالوگ و side-effect endpointهای read چه تصمیمی می‌خواهند؟
+- انتخاب من: موارد قطعی و کم‌ریسک روی مسیر stock-only رفع شد؛ موارد وابسته به lifecycle واقعی Woo/DB همچنان staging لازم دارند.
+- تصمیم‌ها:
+  - مقدار `stock_quantity` برگشتی از سایت دیگر با `Math.round(Number(...))` به عدد معتبر تبدیل نمی‌شود؛ فقط integer امن پذیرفته می‌شود و مقدار اعشاری/نامعتبر `null` می‌شود تا `WOO_WINS` یا اتصال اولیه کورکورانه تغذیه نشود.
+  - شکست ساخت outbox در همان تراکنش حرکت موجودی داخلی دیگر swallow نمی‌شود؛ خطا بعد از ثبت تلاش log دوباره throw می‌شود تا حرکت داخلی بدون outbox durable commit نشود.
+  - رد approval از نوع `APPLY_INBOUND` اکنون event متناظر `PARKED/SKIPPED_PAUSED` را terminal `SUPERSEDED` می‌کند و approvalهای هم‌رویداد را منقضی می‌کند؛ retry دستی پارک‌شده‌ها تصمیم رد مدیر را دور نمی‌زند.
+  - ساخت approval از check-then-create به `INSERT ... WHERE NOT EXISTS` تک‌عبارتی روی SQLite تغییر کرد تا duplicate pending approval کمتر شود، بدون migration جدید.
+  - `syncNow` فازهای pull/reconcile/push را مستقل اجرا می‌کند؛ خطای reconcile دیگر push outboxهای آماده را متوقف نمی‌کند و خطای هر فاز در log و نتیجه برمی‌گردد.
+  - خواندن catalog در service تا چند صفحه/حداکثر ۱۰۰۰ holder را جمع می‌کند تا UI فقط صفحه اول سایت را نبیند. فیلد کلید افزونه در UI password شد.
+  - افزونه به نسخه `1.0.8` رفت: endpointهای read (`catalog`/`stock`) دیگر baseline `_mahak_stock_last_qty` را mutate نمی‌کنند و خطای داخلی apply با پیام عمومی به API برمی‌گردد؛ جزئیات فقط در error log وردپرس می‌ماند.
+- Rejected/No patch: reuse متفاوت `request_id` در افزونه برای client رسمی MAHAK conflict قطعی نیست، چون پاسخ idempotent شامل `new_qty` قبلی است و service در mismatch outbox تازه می‌سازد. no-op بدون journal هم double-apply عددی نمی‌سازد و تغییر آن contract/جدول جدید می‌خواهد.
+- Deferred/Needs staging: lock-timeout fail-open در plugin چون service آن را PARK می‌کند، attribution سفارش/Refund با heuristic، object cache/duplicate `_stock`، signature واقعی hookهای refund، و رفتار MySQL/MariaDB/connection باید در staging واقعی Woo سنجیده شوند.
+- مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود؛ هیچ قیمت، مشتری، پرداخت، آدرس، مالیات، سفارش مالی یا گزارش فروش Woo وارد MAHAK نمی‌شود.

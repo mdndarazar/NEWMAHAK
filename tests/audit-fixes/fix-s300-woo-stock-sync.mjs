@@ -83,7 +83,7 @@ check('Backorder منفی سایت به lastWooQty واقعی می‌رود، ا
   /const newQty = wooSafeInt\(raw\.new_qty/.test(svc), /const expected = wooSafeInt\(row\.expectedWooQty/.test(svc), /target = publishedQty/.test(svc), /lastWooQty: appliedWooQty/.test(svc)
 ], [true, true, true, true])
 check('Remote stock نامعتبر یا اعشاری به صفر تبدیل و WOO_WINS نمی‌شود', [
-  /function wooNullableInt/.test(svc), /function remoteStockUsable/.test(svc), /stockQuantity: wooNullableInt/.test(svc), /!remoteStockUsable\(r\)/.test(svc) && /BROKEN_REMOTE/.test(svc), /!remoteStockUsable\(remote\)/.test(svc) && /resumePreview/.test(svc), /freshRemoteForDecision/.test(svc) && /سایت.*مرجع/.test(svc), /stockQuantity: number \| null/.test(read('src/shared/wooSync.ts')), /stockQuantity == null/.test(page)
+  /function wooNullableInt/.test(svc), /Number\.isSafeInteger\(raw\)/.test(svc) && /\/\^-\?\\d\+\$\//.test(svc) && !/function wooNullableInt[\s\S]{0,180}wooSafeInt\(raw\)/.test(svc), /stockQuantity: wooNullableInt/.test(svc), /!remoteStockUsable\(r\)/.test(svc) && /BROKEN_REMOTE/.test(svc), /!remoteStockUsable\(remote\)/.test(svc) && /resumePreview/.test(svc), /freshRemoteForDecision/.test(svc) && /سایت.*مرجع/.test(svc), /stockQuantity: number \| null/.test(read('src/shared/wooSync.ts')), /stockQuantity == null/.test(page)
 ], [true, true, true, true, true, true, true, true])
 check('حل اختلاف و اتصال اولیه دوباره‌شماری ژورنال سایت نمی‌سازد', [
   /initialSeqFloor/.test(svc) && /relinkSeqFloor: initialSeqFloor/.test(svc), /pullJournalDrain\(5, 200\)/.test(svc), /SUPERSEDED_BY_/.test(svc) && /WooApprovalAction\.APPLY_INBOUND/.test(svc), /remoteLastSeq/.test(svc) && /relinkSeqFloor: relinkFloor/.test(svc), /afterSeq = Math.max\(0, cursor - 50\)/.test(svc), /ژورنال سایت هنوز کامل نشده/.test(svc)
@@ -124,6 +124,9 @@ check('Patch بازبینی: DELETE_ZERO، resume hash/count، holder duplicate 
 check('Patch بازبینی: pull/push/group/settings raceهای کم‌ریسک guard شده‌اند', [
   /INBOUND_LINK_CHANGED_DURING_PULL/.test(svc) && /sameDbTime\(freshLink\.updatedAt, link\.updatedAt\)/.test(svc), /function claimOutboxForSend/.test(svc) && /UPDATE "WooSyncOutbox"/.test(svc) && /NOT EXISTS/.test(svc), /!cfg\.enabled \|\| !cfg\.siteUrl \|\| !cfg\.hasSecret/.test(svc), /برای فعال‌سازی همگام‌سازی، ابتدا کلید اتصال افزونه را ذخیره کنید/.test(svc), /const remote = \(await this\.remoteStock\(\[link\]\)\.catch\(\(\) => \[\]\)\)\[0\]/.test(svc)
 ], [true, true, true, true, true])
+check('Patch بازبینی جدید: reject event، enqueue اتمیک، syncNow مرحله‌ای و catalog کامل‌تر شده‌اند', [
+  /decision === 'REJECT'[\s\S]*WooInboundStatus\.SUPERSEDED/.test(svc), /OUTBOX_ENQUEUE_FAILED[\s\S]*throw e/.test(inv), /SYNC_PULL_FAILED/.test(svc) && /SYNC_RECONCILE_FAILED/.test(svc) && /SYNC_PUSH_FAILED/.test(svc), /has_more/.test(svc) && /all\.length < 1000/.test(svc), /type="password"/.test(page) && /autoComplete="new-password"/.test(page), /INSERT INTO "WooApproval"/.test(svc) && /WHERE NOT EXISTS \(SELECT 1 FROM "WooApproval"/.test(svc)
+], [true, true, true, true, true, true])
 check('گزارش سود/زیان سایت را فروش یا کسری حساب نمی‌کند؛ CostEngine kind جدا و restore دقیق دارد', [
   /WOO_SYNC_OUT', 'WOO_SYNC_IN', 'WOO_SYNC_ADJUST/.test(profit), /kind: 'EXTERNAL_SYNC'/.test(cost), /restoreExternalSync/.test(cost), /همگام‌سازی سایت: خروج موجودی/.test(movements)
 ], [true, true, true, true])
@@ -136,6 +139,9 @@ check('Plugin تحویل شده و endpointها فقط موجودی/catalog/jour
 ], [true, true, true, true, true, true])
 check('Plugin idempotent است، meta قدیمی را بعد از apply به‌روز می‌کند و token خام در URL نمی‌گذارد', [
   /previous_record_for_request/.test(plugin), /remember_qty\(\$product, \$target\)/.test(plugin), /mahak_token_notice/.test(plugin), !/mahak_new_token/.test(plugin)
+], [true, true, true, true])
+check('Plugin read endpointها baseline را mutate نمی‌کنند و خطای apply را sanitize می‌کنند', [
+  !/function item\([\s\S]{0,600}remember_qty/.test(plugin), /apply failed:/.test(plugin) && /MAHAK stock apply failed\. Check the WordPress error log/.test(plugin), /Version: 1\.0\.8/.test(plugin), /const VERSION = '1\.0\.8'/.test(plugin)
 ], [true, true, true, true])
 check('Plugin journal failure-safe و idempotency داخل lock دارد', [
   /UNIQUE KEY request_holder/.test(plugin), /OPTION_DB_VERSION/.test(plugin) && /maybe_upgrade/.test(plugin), /previous = self::previous_record_for_request\(\$request_id, \$key\);[\s\S]{0,120}if \(\$previous\) return \$previous;[\s\S]{0,120}\$wpdb->query\('START TRANSACTION'\)/.test(plugin), /strict = false/.test(plugin), /throw new RuntimeException\('MAHAK journal insert failed/.test(plugin), /self::record\([\s\S]*true\);[\s\S]{0,500}wc_update_product_stock/.test(plugin)
