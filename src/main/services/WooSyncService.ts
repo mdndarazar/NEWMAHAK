@@ -27,6 +27,7 @@ import {
   wooHolderKey,
   wooSafeInt,
   wooStockReason,
+  wooUrlRequiresTls,
   type WooApprovalRow,
   type WooCatalogResult,
   type WooLinkRow,
@@ -337,14 +338,19 @@ async function lastCursor(client: Prisma.TransactionClient | typeof prisma = pri
   return Math.max(0, Math.round(Number((await readSetting(WOO_SYNC_CURSOR_KEY, client)) ?? 0) || 0))
 }
 
-async function setCursor(seq: number): Promise<void> {
+// cursorهای پیشرفت (ژورنال سایت و چرخه‌ی reconcile) در اجرای هم‌زمان هرگز به عقب برنمی‌گردند.
+async function setSettingMonotonic(key: string, seq: number): Promise<void> {
   const next = String(Math.max(0, Math.round(Number(seq) || 0)))
   await (prisma as any).$executeRawUnsafe(
     `INSERT INTO "Setting" ("key", "value") VALUES (?, ?)
      ON CONFLICT("key") DO UPDATE SET "value" = CAST(MAX(CAST("value" AS INTEGER), CAST(excluded."value" AS INTEGER)) AS TEXT)`,
-    WOO_SYNC_CURSOR_KEY,
+    key,
     next
   )
+}
+
+async function setCursor(seq: number): Promise<void> {
+  await setSettingMonotonic(WOO_SYNC_CURSOR_KEY, seq)
 }
 
 async function safeConfig(client: Prisma.TransactionClient | typeof prisma = prisma): Promise<WooSyncSafeConfig> {
@@ -363,6 +369,8 @@ async function fullConfig(): Promise<WooSyncSafeConfig & { secret: string }> {
   const c = await safeConfig()
   const secret = await readSecret()
   if (!c.siteUrl) throw new BusinessError('آدرس سایت WooCommerce تنظیم نشده است.')
+  // کلید اتصال روی HTTP خام قابل شنود است؛ حتی اگر تنظیم قدیمی http باشد، هیچ درخواستی با کلید ارسال نمی‌شود.
+  if (wooUrlRequiresTls(c.siteUrl)) throw new BusinessError('آدرس سایت باید با https:// امن باشد؛ ارسال کلید اتصال روی HTTP ممنوع است. فقط برای تست روی همین کامپیوتر (127.0.0.1/localhost) می‌توان از http استفاده کرد.')
   if (!secret) throw new BusinessError('کلید اتصال افزونه تنظیم نشده یا روی این دستگاه قابل خواندن نیست.')
   return { ...c, secret }
 }
@@ -399,6 +407,32 @@ async function wooRequest<T>(path: string, opts: { method?: string; body?: unkno
   } finally {
     clearTimeout(t)
   }
+}
+
+// پاسخ 2xxِ ناقص (صفحه‌ی HTML پروکسی، {} یا JSON نیمه) نباید به‌عنوان موفقیت قرارداد مصرف شود.
+function requireWooOk(r: any, endpointName: string): void {
+  if (!r || typeof r !== 'object' || r.ok !== true) throw new BusinessError(`پاسخ ${endpointName} سایت ناقص یا نامعتبر است؛ برای جلوگیری از تصمیم اشتباه، دوباره امن تلاش می‌شود.`)
+}
+
+function wooStrictIntField(x: unknown): number | null {
+  if (typeof x === 'number') return Number.isSafeInteger(x) ? x : null
+  if (typeof x !== 'string') return null
+  const s = x.trim()
+  if (!/^-?\d+$/.test(s)) return null
+  const n = Number(s)
+  return Number.isSafeInteger(n) ? n : null
+}
+
+// mutationهای بعد از خوان شبکه (reconcile/preview) فقط وقتی مجازند لینک را تغییر دهند که لینک
+// از snapshot خوانده‌شده عوض نشده باشد؛ وگرنه unlink/pause هم‌زمان با اسنپ‌شات کهنه overwrite می‌شود.
+async function updateLinkIfSnapshotUnchanged(link: any, data: any, extra?: (tx: any) => Promise<void>): Promise<boolean> {
+  return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const fresh = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
+    if (!fresh || fresh.status !== link.status || !sameDbTime(fresh.updatedAt, link.updatedAt)) return false
+    await (tx as any).wooProductLink.update({ where: { id: link.id }, data })
+    if (extra) await extra(tx)
+    return true
+  }, TX_OPTIONS).catch(() => false)
 }
 
 async function log(action: string, message: string, input: { level?: 'INFO' | 'WARN' | 'ERROR'; linkId?: number | null; variantId?: number | null; payload?: unknown } = {}) {
@@ -489,7 +523,8 @@ async function ensureApproval(input: {
 async function freezeLinkForApproval(client: any, link: any, reason: string, title: string, message: string, payload?: unknown): Promise<void> {
   await client.wooProductLink.update({
     where: { id: link.id },
-    data: { status: WooLinkStatus.FROZEN, pauseReason: reason, pausedAt: new Date(), pauseSeqFloor: link.pauseSeqFloor ?? BigInt(await lastCursor()) }
+    // cursor باید از همان snapshot تراکنش خوانده شود، نه client عمومی بیرون تراکنش.
+    data: { status: WooLinkStatus.FROZEN, pauseReason: reason, pausedAt: new Date(), pauseSeqFloor: link.pauseSeqFloor ?? BigInt(await lastCursor(client)) }
   })
   await ensureApproval({ client, action: WooApprovalAction.LOOP_FUSE, linkId: link.id, variantId: link.variantId, holderKey: link.holderKey, reason, title, message, payload })
 }
@@ -641,19 +676,21 @@ export const wooSyncService = {
   },
 
   async saveSettings(input: { siteUrl?: string; token?: string; enabled?: boolean; autoSync?: boolean; intervalSeconds?: number; userId?: number | null }) {
-    const prev = await safeConfig()
-    const siteUrl = normalizeWooBaseUrl(input.siteUrl ?? prev.siteUrl)
-    const intervalSeconds = Math.min(3600, Math.max(30, Math.round(Number(input.intervalSeconds ?? prev.intervalSeconds) || 120)))
     const incomingToken = String(input.token ?? '').trim()
-    if (input.enabled === true && !siteUrl) throw new BusinessError('برای فعال‌سازی همگام‌سازی، آدرس سایت لازم است.')
-    if (input.enabled === true && !incomingToken && !prev.hasSecret) throw new BusinessError('برای فعال‌سازی همگام‌سازی، ابتدا کلید اتصال افزونه را ذخیره کنید.')
-    const next: StoredConfig = {
-      siteUrl,
-      enabled: input.enabled === true,
-      autoSync: input.autoSync !== false,
-      intervalSeconds
-    }
+    let saved: { next: StoredConfig; prev: WooSyncSafeConfig } | null = null
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      // read/merge/write داخل همان تراکنش انجام می‌شود تا فراخوانی هم‌زمان دو نسخه، تغییر همدیگر را بازنویسی نکند.
+      const prevRaw = await rawConfig(tx)
+      const prevHasSecret = !!(await readSetting(WOO_SYNC_SECRET_KEY, tx))
+      const siteUrl = normalizeWooBaseUrl(input.siteUrl === undefined ? prevRaw.siteUrl : input.siteUrl)
+      // فیلد حذف‌شده (undefined) با مقدار صریح false فرق دارد؛ حذف یعنی «دست‌نخورده بماند».
+      const enabled = input.enabled === undefined ? prevRaw.enabled === true : input.enabled === true
+      const autoSync = input.autoSync === undefined ? prevRaw.autoSync !== false : input.autoSync !== false
+      const intervalSeconds = Math.min(3600, Math.max(30, Math.round(Number(input.intervalSeconds === undefined ? prevRaw.intervalSeconds : input.intervalSeconds) || 120)))
+      if (enabled === true && !siteUrl) throw new BusinessError('برای فعال‌سازی همگام‌سازی، آدرس سایت لازم است.')
+      if (siteUrl && wooUrlRequiresTls(siteUrl)) throw new BusinessError('آدرس سایت باید با https:// امن باشد؛ ارسال کلید اتصال روی HTTP ممنوع است. فقط برای تست روی همین کامپیوتر (127.0.0.1/localhost) می‌توان از http استفاده کرد.')
+      if (enabled === true && !incomingToken && !prevHasSecret) throw new BusinessError('برای فعال‌سازی همگام‌سازی، ابتدا کلید اتصال افزونه را ذخیره کنید.')
+      const next: StoredConfig = { siteUrl, enabled, autoSync, intervalSeconds }
       await writeSetting(WOO_SYNC_SETTING_KEY, json(next), tx)
       if (incomingToken) {
         const sealed = sealSecret(incomingToken)
@@ -665,17 +702,20 @@ export const wooSyncService = {
         entity: 'WooSync',
         entityId: 0,
         userId: input.userId ?? null,
-        before: json({ ...prev, hasSecret: prev.hasSecret }),
-        after: json({ ...next, hasSecret: incomingToken ? true : prev.hasSecret }),
+        before: json({ ...prevRaw, hasSecret: prevHasSecret }),
+        after: json({ ...next, hasSecret: incomingToken ? true : prevHasSecret }),
         note: 'تغییر تنظیمات همگام‌سازی موجودی سایت (فقط موجودی)'
       })
+      saved = { next, prev: { enabled: prevRaw.enabled === true, siteUrl: normalizeWooBaseUrl(prevRaw.siteUrl), autoSync: prevRaw.autoSync !== false, intervalSeconds: Math.min(3600, Math.max(30, Math.round(Number(prevRaw.intervalSeconds) || 120))), hasSecret: prevHasSecret, lastCursor: await lastCursor(tx) } }
     }, TX_OPTIONS)
-    await log('SETTINGS', 'تنظیمات اتصال سایت ذخیره شد', { payload: { siteUrl, enabled: next.enabled } })
+    const out = saved!
+    await log('SETTINGS', 'تنظیمات اتصال سایت ذخیره شد', { payload: { siteUrl: out.next.siteUrl, enabled: out.next.enabled } })
     return this.status()
   },
 
   async testConnection() {
     const r = await wooRequest<any>('/ping')
+    requireWooOk(r, 'ping')
     return { ok: true, site: r?.site ?? null, plugin: r?.plugin ?? null, time: r?.time ?? null }
   },
 
@@ -705,7 +745,9 @@ export const wooSyncService = {
       if (params.search) q.set('search', String(params.search))
       q.set('limit', String(limit))
       q.set('page', String(page))
-      return wooRequest<any>(`/catalog?${q.toString()}`)
+      const r = await wooRequest<any>(`/catalog?${q.toString()}`)
+      requireWooOk(r, 'catalog')
+      return r
     }
     if (requestedPage != null) {
       const r = await fetchPage(requestedPage)
@@ -886,7 +928,8 @@ export const wooSyncService = {
     const stockRes = await this.remoteStock([link])
     const remote = stockRes[0]
     if (!remoteStockUsable(remote)) {
-      await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_REMOTE } }).catch(() => null)
+      // ممکن است بین خوان و پاسخ شبکه، مدیر لینک را unlink/resume کرده باشد؛ فقط در صورت ثابت‌ماندن snapshot علامت BROKEN می‌زنیم.
+      await updateLinkIfSnapshotUnchanged(link, { status: WooLinkStatus.BROKEN_REMOTE })
       throw new BusinessError('این اتصال در سایت دیگر موجودی مستقل عددی ندارد (manage_stock خاموش/والد/اعشاری است). ابتدا تنظیم موجودی WooCommerce را اصلاح کنید.')
     }
     const remoteLastSeq = remote?.lastSeq == null ? null : Number(remote.lastSeq)
@@ -1107,6 +1150,7 @@ export const wooSyncService = {
     if (!links.length) return []
     const holders = links.map((l) => ({ holder_key: l.holderKey, product_id: l.wooProductId, variation_id: l.wooVariationId ?? null }))
     const r = await wooRequest<any>('/stock', { method: 'POST', body: { holders } })
+    requireWooOk(r, 'stock')
     const items = Array.isArray(r?.items) ? r.items : []
     return items.map((x: any) => ({
       holderKey: String(x.holder_key ?? x.holderKey ?? ''),
@@ -1167,7 +1211,11 @@ export const wooSyncService = {
           }
         })
         if (res?.ok === false || res?.conflict === true) throw new BusinessError(String(res?.message ?? 'اختلاف موجودی سایت'))
-        const appliedWooQty = res?.new_qty == null ? target : wooSafeInt(res.new_qty)
+        // پاسخ 2xx بدون قرارداد معتبر افزونه (صفحه‌ی پروکسی/JSON ناقص) نباید outbox را SENT کند.
+        if (res?.ok !== true) throw new BusinessError('پاسخ نوشتن موجودی سایت ناقص یا نامعتبر است؛ نتیجه‌ی نوشتن نامعلوم ماند و دوباره امن تلاش می‌شود.')
+        if (res?.holder_key != null && String(res.holder_key) !== String(link.holderKey)) throw new BusinessError('پاسخ نوشتن موجودی سایت برای holder دیگری برگشته است؛ outbox ارسال‌شده محسوب نمی‌شود.')
+        const appliedWooQty = wooStrictIntField(res?.new_qty)
+        if (appliedWooQty == null) throw new BusinessError('عدد موجودی جدید در پاسخ سایت معتبر نیست؛ نتیجه‌ی نوشتن نامعلوم ماند و دوباره امن تلاش می‌شود.')
         let needsFreshOutbox = false
         let finalized = false
         await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -1245,6 +1293,7 @@ export const wooSyncService = {
     const afterSeq = Math.max(0, cursor - 50)
     const q = new URLSearchParams({ after_seq: String(afterSeq), limit: String(Math.min(200, Math.max(1, Math.round(Number(limit) || 100)))) })
     const res = await wooRequest<any>(`/journal?${q.toString()}`)
+    requireWooOk(res, 'journal')
     const events = Array.isArray(res?.events) ? res.events : []
     let received = 0
     let applied = 0
@@ -1297,8 +1346,11 @@ export const wooSyncService = {
           continue
         }
         if (isMahakApplyEcho) {
-          const parked = await db().wooInboundEvent.create({ data: { ...baseEvent, linkId: link?.id ?? null, variantId: link?.variantId ?? null, status: WooInboundStatus.PARKED, processedAt: new Date() } })
-          await ensureApproval({ action: WooApprovalAction.APPLY_INBOUND, linkId: link?.id ?? null, variantId: link?.variantId ?? null, holderKey, sourceType: 'WooInboundEvent', sourceId: parked.id, reason: 'MAHAK_ECHO_WITHOUT_OUTBOX', title: 'echo نامعتبر اعمال موجودی سایت', message: 'سایت رویداد mahak_apply برگرداند اما outbox متناظر پیدا نشد؛ برای جلوگیری از اعمال delta تکراری، رویداد پارک شد.', payload: { seq, delta, newQty, requestId } })
+          // ساخت رویداد پارک‌شده و تأیید مدیر باید اتمیک باشد؛ وگرنه رویداد بدون مسیر تصمیم مدیر می‌ماند.
+          await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+            const parked = await (tx as any).wooInboundEvent.create({ data: { ...baseEvent, linkId: link?.id ?? null, variantId: link?.variantId ?? null, status: WooInboundStatus.PARKED, processedAt: new Date() } })
+            await ensureApproval({ client: tx as any, action: WooApprovalAction.APPLY_INBOUND, linkId: link?.id ?? null, variantId: link?.variantId ?? null, holderKey, sourceType: 'WooInboundEvent', sourceId: parked.id, reason: 'MAHAK_ECHO_WITHOUT_OUTBOX', title: 'echo نامعتبر اعمال موجودی سایت', message: 'سایت رویداد mahak_apply برگرداند اما outbox متناظر پیدا نشد؛ برای جلوگیری از اعمال delta تکراری، رویداد پارک شد.', payload: { seq, delta, newQty, requestId } })
+          }, TX_OPTIONS)
           skipped++
           continue
         }
@@ -1312,22 +1364,29 @@ export const wooSyncService = {
           if (canSupersedeByRelinkFloor(link, baseEvent)) {
             await db().wooInboundEvent.create({ data: { ...baseEvent, linkId: link.id, variantId: link.variantId, status: WooInboundStatus.SUPERSEDED, relinkId: link.lastRelinkId ?? null, processedAt: new Date() } })
           } else {
-            const parked = await db().wooInboundEvent.create({ data: { ...baseEvent, linkId: link.id, variantId: link.variantId, status: WooInboundStatus.PARKED, processedAt: new Date() } })
-            await ensureApproval({ action: WooApprovalAction.APPLY_INBOUND, linkId: link.id, variantId: link.variantId, holderKey, sourceType: 'WooInboundEvent', sourceId: parked.id, reason: 'INBOUND_BEFORE_RELINK_FLOOR', title: 'رویداد سفارش سایت نزدیک به وصل دوباره', message: 'این رویداد سفارش/Refund قبل از floor قبلی دیده شد اما بدون تصمیم صریح مدیر حذف نشد.', payload: { seq, delta, newQty, source, orderId: baseEvent.orderId } })
+            await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+              const parked = await (tx as any).wooInboundEvent.create({ data: { ...baseEvent, linkId: link.id, variantId: link.variantId, status: WooInboundStatus.PARKED, processedAt: new Date() } })
+              await ensureApproval({ client: tx as any, action: WooApprovalAction.APPLY_INBOUND, linkId: link.id, variantId: link.variantId, holderKey, sourceType: 'WooInboundEvent', sourceId: parked.id, reason: 'INBOUND_BEFORE_RELINK_FLOOR', title: 'رویداد سفارش سایت نزدیک به وصل دوباره', message: 'این رویداد سفارش/Refund قبل از floor قبلی دیده شد اما بدون تصمیم صریح مدیر حذف نشد.', payload: { seq, delta, newQty, source, orderId: baseEvent.orderId } })
+            }, TX_OPTIONS)
           }
           skipped++
           continue
         }
         const untrustedJournal = payload?.lock_timeout === true || (oldQty !== null && oldQty !== wooSafeInt(link.lastWooQty))
         if (link.status === WooLinkStatus.ACTIVE && untrustedJournal) {
-          const parked = await db().wooInboundEvent.create({ data: { ...baseEvent, linkId: link.id, variantId: link.variantId, status: WooInboundStatus.PARKED, processedAt: new Date() } })
-          await ensureApproval({ action: WooApprovalAction.APPLY_INBOUND, linkId: link.id, variantId: link.variantId, holderKey, sourceType: 'WooInboundEvent', sourceId: parked.id, reason: payload?.lock_timeout === true ? 'INBOUND_LOCK_TIMEOUT' : 'INBOUND_STOCK_GAP', title: 'رویداد سایت با زنجیره موجودی نامطمئن', message: 'ژورنال سایت با lock timeout یا old_qty ناپیوسته رسید؛ برای جلوگیری از تغییر کور موجودی، اعمال آن نیازمند تأیید مدیر است.', payload: { seq, oldQty, lastWooQty: link.lastWooQty, newQty, delta, source, lockTimeout: payload?.lock_timeout === true } })
+          await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+            const parked = await (tx as any).wooInboundEvent.create({ data: { ...baseEvent, linkId: link.id, variantId: link.variantId, status: WooInboundStatus.PARKED, processedAt: new Date() } })
+            await ensureApproval({ client: tx as any, action: WooApprovalAction.APPLY_INBOUND, linkId: link.id, variantId: link.variantId, holderKey, sourceType: 'WooInboundEvent', sourceId: parked.id, reason: payload?.lock_timeout === true ? 'INBOUND_LOCK_TIMEOUT' : 'INBOUND_STOCK_GAP', title: 'رویداد سایت با زنجیره موجودی نامطمئن', message: 'ژورنال سایت با lock timeout یا old_qty ناپیوسته رسید؛ برای جلوگیری از تغییر کور موجودی، اعمال آن نیازمند تأیید مدیر است.', payload: { seq, oldQty, lastWooQty: link.lastWooQty, newQty, delta, source, lockTimeout: payload?.lock_timeout === true } })
+          }, TX_OPTIONS)
           skipped++
           continue
         }
         if (link.status !== WooLinkStatus.ACTIVE) {
-          const event = await db().wooInboundEvent.create({ data: { ...baseEvent, linkId: link.id, variantId: link.variantId, status: WooInboundStatus.SKIPPED_PAUSED } })
-          await ensureApproval({ action: WooApprovalAction.APPLY_INBOUND, linkId: link.id, variantId: link.variantId, holderKey, sourceType: 'WooInboundEvent', sourceId: event.id, reason: 'INBOUND_DURING_HOLD', title: 'رویداد سایت هنگام قطع/توقف', message: 'در زمان قطع/توقف لینک، سایت موجودی را تغییر داده است. اعمال روی MAHAK فقط با تأیید مدیر انجام می‌شود.', payload: { seq, delta, newQty, source: baseEvent.source, orderId: baseEvent.orderId } })
+          // ساخت SKIPPED_PAUSED و تأیید مدیر اتمیک است؛ یک رویداد نباید بدون approval باقی بماند.
+          await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+            const event = await (tx as any).wooInboundEvent.create({ data: { ...baseEvent, linkId: link.id, variantId: link.variantId, status: WooInboundStatus.SKIPPED_PAUSED } })
+            await ensureApproval({ client: tx as any, action: WooApprovalAction.APPLY_INBOUND, linkId: link.id, variantId: link.variantId, holderKey, sourceType: 'WooInboundEvent', sourceId: event.id, reason: 'INBOUND_DURING_HOLD', title: 'رویداد سایت هنگام قطع/توقف', message: 'در زمان قطع/توقف لینک، سایت موجودی را تغییر داده است. اعمال روی MAHAK فقط با تأیید مدیر انجام می‌شود.', payload: { seq, delta, newQty, source: baseEvent.source, orderId: baseEvent.orderId } })
+          }, TX_OPTIONS)
           skipped++
           continue
         }
@@ -1368,12 +1427,14 @@ export const wooSyncService = {
         const message = String((e as any)?.message ?? e)
         await log('INBOUND_FAILED', message, { level: 'ERROR', payload: sanitizeWooInboundRaw(raw, payload) })
         const link = await db().wooProductLink.findFirst({ where: { holderKey, status: { not: WooLinkStatus.UNLINKED } } })
-        const parked = await db().wooInboundEvent.upsert({
-          where: { eventUuid: baseEvent.eventUuid },
-          update: {},
-          create: { ...baseEvent, linkId: link?.id ?? null, variantId: link?.variantId ?? null, status: WooInboundStatus.PARKED, processedAt: new Date() }
-        })
-        await ensureApproval({ action: WooApprovalAction.APPLY_INBOUND, linkId: link?.id ?? null, variantId: link?.variantId ?? null, holderKey, sourceType: 'WooInboundEvent', sourceId: parked.id, reason: 'INBOUND_PARKED', title: 'رویداد سایت پارک‌شده', message: 'پردازش رویداد سایت خطا داد و برای جلوگیری از تغییر کور موجودی، در انتظار تأیید مدیر ماند.', payload: { seq, delta, newQty, source: baseEvent.source, orderId: baseEvent.orderId, error: message } })
+        await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+          const parked = await (tx as any).wooInboundEvent.upsert({
+            where: { eventUuid: baseEvent.eventUuid },
+            update: {},
+            create: { ...baseEvent, linkId: link?.id ?? null, variantId: link?.variantId ?? null, status: WooInboundStatus.PARKED, processedAt: new Date() }
+          })
+          await ensureApproval({ client: tx as any, action: WooApprovalAction.APPLY_INBOUND, linkId: link?.id ?? null, variantId: link?.variantId ?? null, holderKey, sourceType: 'WooInboundEvent', sourceId: parked.id, reason: 'INBOUND_PARKED', title: 'رویداد سایت پارک‌شده', message: 'پردازش رویداد سایت خطا داد و برای جلوگیری از تغییر کور موجودی، در انتظار تأیید مدیر ماند.', payload: { seq, delta, newQty, source: baseEvent.source, orderId: baseEvent.orderId, error: message } })
+        }, TX_OPTIONS)
         skipped++
       } finally {
         received++
@@ -1416,7 +1477,7 @@ export const wooSyncService = {
       take: take - firstBatch.length
     }))
     if (!links.length) return { checked: 0, queued: 0, skipped: 0 }
-    await writeSetting(WOO_RECONCILE_LAST_ID_KEY, String(Number(links[links.length - 1].id || 0))).catch(() => undefined)
+    await setSettingMonotonic(WOO_RECONCILE_LAST_ID_KEY, Number(links[links.length - 1].id || 0)).catch(() => undefined)
     const cursor = await lastCursor()
     const remote = await this.remoteStock(links)
     const byKey = new Map(remote.map((r: any) => [String(r.holderKey), r]))
@@ -1426,13 +1487,14 @@ export const wooSyncService = {
     for (const link of links) {
       const r = byKey.get(String(link.holderKey)) as any
       if (!r) {
-        await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_REMOTE } }).catch(() => null)
+        // لینک ممکن است حین درخواست شبکه unlink شده باشد؛ فقط snapshot ثابت mutation می‌گیرد.
+        await updateLinkIfSnapshotUnchanged(link, { status: WooLinkStatus.BROKEN_REMOTE })
         skipped++
         continue
       }
       if (!remoteStockUsable(r)) {
-        await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_REMOTE } }).catch(() => null)
-        await log('RECONCILE_BROKEN_REMOTE', 'بررسی دوره‌ای متوقف شد چون holder سایت موجودی مستقل عددی ندارد', { level: 'WARN', linkId: link.id, variantId: link.variantId, payload: { manageStock: r.manageStock, manageStockMode: r.manageStockMode, stockQuantity: r.stockQuantity } })
+        const changed = await updateLinkIfSnapshotUnchanged(link, { status: WooLinkStatus.BROKEN_REMOTE })
+        if (changed) await log('RECONCILE_BROKEN_REMOTE', 'بررسی دوره‌ای متوقف شد چون holder سایت موجودی مستقل عددی ندارد', { level: 'WARN', linkId: link.id, variantId: link.variantId, payload: { manageStock: r.manageStock, manageStockMode: r.manageStockMode, stockQuantity: r.stockQuantity } })
         skipped++
         continue
       }
@@ -1444,7 +1506,7 @@ export const wooSyncService = {
       }
       const localStock = await productStock(link.variantId).catch(() => null)
       if (localStock == null) {
-        await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_LOCAL } }).catch(() => null)
+        await updateLinkIfSnapshotUnchanged(link, { status: WooLinkStatus.BROKEN_LOCAL })
         skipped++
         continue
       }
@@ -1452,23 +1514,29 @@ export const wooSyncService = {
       const remotePublished = publishedQty(r.stockQuantity)
       if (target === remotePublished) {
         if (Number(link.lastWooQty) !== Number(r.stockQuantity) || Number(link.lastMahakQty) !== Number(localStock))
-          await db().wooProductLink.update({ where: { id: link.id }, data: { lastWooQty: wooSafeInt(r.stockQuantity), lastMahakQty: Number(localStock) } }).catch(() => null)
+          await updateLinkIfSnapshotUnchanged(link, { lastWooQty: wooSafeInt(r.stockQuantity), lastMahakQty: Number(localStock) })
         continue
       }
-      const open = await db().wooSyncOutbox.count({ where: { linkId: link.id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED, WooOutboxStatus.CONFLICT, WooOutboxStatus.IN_FLIGHT] } } })
-      if (open) {
+      const changed = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+        const fresh = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
+        if (!fresh || fresh.status !== link.status || !sameDbTime(fresh.updatedAt, link.updatedAt)) return false
+        const open = await (tx as any).wooSyncOutbox.count({ where: { linkId: link.id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED, WooOutboxStatus.CONFLICT, WooOutboxStatus.IN_FLIGHT] } } })
+        if (open) return false
+        await (tx as any).wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.CONFLICT, pauseReason: 'RECONCILE_DISCREPANCY', pausedAt: new Date(), pauseSeqFloor: fresh.pauseSeqFloor == null ? BigInt(cursor) : BigInt(fresh.pauseSeqFloor) } })
+        await ensureApproval({ client: tx as any, action: WooApprovalAction.RECONCILE_DISCREPANCY, linkId: link.id, variantId: link.variantId, holderKey: link.holderKey, reason: 'RECONCILE_DISCREPANCY', title: 'اختلاف دوره‌ای موجودی سایت و فروشگاه', message: 'پس از خواندن ژورنال سایت، موجودی MAHAK و Woo هنوز متفاوت است. برای جلوگیری از overwrite کور، تصمیم مدیر لازم است.', payload: { mahakStock: localStock, wooQty: r.stockQuantity, target, cursor } })
+        return true
+      }, TX_OPTIONS).catch(() => false)
+      if (changed) {
+        await log('RECONCILE_DIFF', 'اختلاف دوره‌ای موجودی سایت پیدا شد و برای تأیید مدیر نگه داشته شد', { level: 'WARN', linkId: link.id, variantId: link.variantId, payload: { mahakStock: localStock, wooQty: r.stockQuantity, target } })
+        queued++
+      } else {
         skipped++
-        continue
       }
-      await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.CONFLICT, pauseReason: 'RECONCILE_DISCREPANCY', pausedAt: new Date(), pauseSeqFloor: link.pauseSeqFloor == null ? BigInt(cursor) : BigInt(link.pauseSeqFloor) } })
-      await ensureApproval({ action: WooApprovalAction.RECONCILE_DISCREPANCY, linkId: link.id, variantId: link.variantId, holderKey: link.holderKey, reason: 'RECONCILE_DISCREPANCY', title: 'اختلاف دوره‌ای موجودی سایت و فروشگاه', message: 'پس از خواندن ژورنال سایت، موجودی MAHAK و Woo هنوز متفاوت است. برای جلوگیری از overwrite کور، تصمیم مدیر لازم است.', payload: { mahakStock: localStock, wooQty: r.stockQuantity, target, cursor } })
-      await log('RECONCILE_DIFF', 'اختلاف دوره‌ای موجودی سایت پیدا شد و برای تأیید مدیر نگه داشته شد', { level: 'WARN', linkId: link.id, variantId: link.variantId, payload: { mahakStock: localStock, wooQty: r.stockQuantity, target } })
-      queued++
     }
     return { checked, queued, skipped }
   },
 
-  async retryParked(limit = 50) {
+  async retryParked(limit = 50, userId: number | null = null) {
     const rows = await db().wooInboundEvent.findMany({
       where: { status: WooInboundStatus.PARKED },
       orderBy: [{ seq: 'asc' }, { id: 'asc' }],
@@ -1535,7 +1603,7 @@ export const wooSyncService = {
             stock = r.stock
           }
           await (tx as any).wooInboundEvent.update({ where: { id: row.id }, data: { status: WooInboundStatus.APPLIED, linkId: link.id, variantId: link.variantId, movementId, processedAt: new Date() } })
-          await (tx as any).wooApproval.updateMany({ where: { sourceType: 'WooInboundEvent', sourceId: row.id, status: WooApprovalStatus.PENDING }, data: { status: WooApprovalStatus.APPROVED, resolvedAt: new Date(), resolution: 'BULK_RETRY_APPLIED', resolutionNote: 'پردازش دستی پارک‌شده‌ها' } })
+          await (tx as any).wooApproval.updateMany({ where: { sourceType: 'WooInboundEvent', sourceId: row.id, status: WooApprovalStatus.PENDING }, data: { status: WooApprovalStatus.APPROVED, resolvedAt: new Date(), resolvedBy: userId ?? null, resolution: 'BULK_RETRY_APPLIED', resolutionNote: 'پردازش دستی پارک‌شده‌ها' } })
           await (tx as any).wooSyncOutbox.updateMany({
             where: { linkId: link.id, status: { in: openOutboxStatuses() } },
             data: { status: WooOutboxStatus.SUPERSEDED, lastError: 'REBASING_AFTER_PARKED_RETRY', updatedAt: new Date() }
@@ -1671,7 +1739,8 @@ export const wooSyncService = {
       await this.pullJournalDrain(5, 200)
       const freshRemoteForDecision = (await this.remoteStock([link]))[0]
       if (!remoteStockUsable(freshRemoteForDecision)) {
-        await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_REMOTE } }).catch(() => null)
+        // بین خوان لینک و پاسخ شبکه ممکن است unlink/pause رخ داده باشد؛ فقط snapshot ثابت به BROKEN_REMOTE می‌رود.
+        await updateLinkIfSnapshotUnchanged(link, { status: WooLinkStatus.BROKEN_REMOTE })
         throw new BusinessError('سایت برای این اتصال موجودی مستقل عددی ندارد؛ انتخاب مرجع یا فعال‌سازی بدون تغییر مجاز نیست.')
       }
       const remoteLastSeq = freshRemoteForDecision.lastSeq == null ? null : Number(freshRemoteForDecision.lastSeq)
@@ -1804,6 +1873,11 @@ export const wooSyncService = {
               lastMahakQty: stock
             }
           })
+          // مثل وصل تک‌لینک، تأییدهای قدیمی reconcile/conflict/loop-fuse باید با همین تصمیم منقضی شوند تا صف تأیید stale نماند.
+          await (tx as any).wooApproval.updateMany({
+            where: { linkId: link.id, status: WooApprovalStatus.PENDING, action: { in: [WooApprovalAction.RECONCILE_DISCREPANCY, WooApprovalAction.CONFLICT_RESOLUTION, WooApprovalAction.LOOP_FUSE, WooApprovalAction.UNFREEZE_LINK] } },
+            data: { status: WooApprovalStatus.EXPIRED, resolvedAt: new Date(), resolvedBy: input.userId ?? null, resolution: 'SUPERSEDED_BY_GROUP_MAHAK_WINS', resolutionNote: 'این درخواست با وصل گروهی مرجع MAHAK تعیین تکلیف شد.' }
+          })
           didQueue = true
         }, TX_OPTIONS)
       } catch (e) {
@@ -1850,7 +1924,9 @@ export const wooSyncService = {
         await log('SYNC_PUSH_FAILED', message, { level: 'ERROR' })
       }
       await log('SYNC_NOW', 'همگام‌سازی دستی انجام شد', { payload: { pulled, reconciled, pushed, errors } })
-      return { parked: { applied: 0, skipped: 0, failed: 0, total: 0 }, pulled, reconciled, pushed, errors, status: await this.status() }
+      const finalStatus = await this.status()
+      // فیلد legacy باید مقدار واقعی نشان دهد، نه صفر همیشگی.
+      return { parked: { applied: 0, skipped: 0, failed: 0, total: Number(finalStatus.counts?.parkedEvents || 0) }, pulled, reconciled, pushed, errors, status: finalStatus }
     } finally {
       busy = false
     }

@@ -69,6 +69,14 @@ export default function WooSync() {
     return pass
   }
 
+  // Mutationهای لینک باید شمارنده‌ها و صف تأیید را هم تازه کنند؛ load() کامل فرم تنظیمات را بازنویسی می‌کند، پس فقط پنل تازه می‌شود.
+  const refreshPanel = async (rows?: WooLinkRow[]) => {
+    const [s, a] = await Promise.all([call<WooStatusView>(CH.wooStatus), call<WooApprovalRow[]>(CH.wooApprovals)])
+    setStatus(s)
+    if (rows) setLinks(rows)
+    setApprovals(a)
+  }
+
   const load = async () => {
     const [s, l, a] = await Promise.all([call<WooStatusView>(CH.wooStatus), call<WooLinkRow[]>(CH.wooLinks), call<WooApprovalRow[]>(CH.wooApprovals)])
     setStatus(s)
@@ -109,6 +117,11 @@ export default function WooSync() {
     try {
       const s = await call<WooStatusView>(CH.wooSettingsSave, { siteUrl, token, enabled, autoSync, intervalSeconds })
       setStatus(s)
+      // مقدار clamp/نرمال‌شده‌ی سرور باید در فرم هم دیده شود (مثل interval کمتر از ۳۰ ثانیه یا آدرس نرمال‌شده).
+      setSiteUrl(s.config.siteUrl)
+      setEnabled(s.config.enabled)
+      setAutoSync(s.config.autoSync)
+      setIntervalSeconds(s.config.intervalSeconds)
       setToken('')
       flash('تنظیمات ذخیره شد. اگر کلید جدید وارد کرده بودید، به‌صورت امن در همین دستگاه ذخیره شد.')
     } catch (e) {
@@ -162,8 +175,19 @@ export default function WooSync() {
     setBusy(true)
     try {
       const r = await call<any>(CH.wooSyncNow)
-      setStatus(r.status)
+      if (r?.status) setStatus(r.status)
       await load()
+      // پاسخ موفق IPC به معنی موفقیت عملیات نیست: حالت busy و خطاهای مرحله‌ای باید صادقانه نمایش داده شوند.
+      if (r?.busy === true) {
+        flash('همگام‌سازی دیگری در حال اجراست؛ این درخواست اجرا نشد. چند لحظه بعد دوباره بزنید.')
+        return
+      }
+      const errs = Array.isArray(r?.errors) ? r.errors : []
+      if (errs.length) {
+        setMsg(null)
+        setErr(`بخشی از همگام‌سازی کامل نشد: ${errs.map((x: any) => `${x.phase}: ${x.message}`).join(' | ')}`)
+        return
+      }
       flash(`همگام‌سازی انجام شد. ورودی: ${faDigits(r.pulled.applied)} اعمال، خروجی: ${faDigits(r.pushed.sent)} ارسال. رویدادهای پارک‌شده فقط با دکمه جداگانه و بررسی مدیر پردازش می‌شوند.`)
     } catch (e) {
       fail(e)
@@ -191,8 +215,8 @@ export default function WooSync() {
     setBusy(true)
     try {
       const rows = await call<WooLinkRow[]>(CH.wooLinksPause, { linkIds: [id], note: 'قطع دستی از پنل همگام‌سازی' })
-      setLinks(rows)
-      flash('اتصال موقتاً قطع شد؛ موجودی هیچ طرفی تغییر نکرد.')
+      await refreshPanel(rows)
+      flash('اتصال موقتاً قطع شد؛ خود قطع موجودی را تغییر نمی‌دهد، اما ارسال‌هایی که قبل از قطع در حال اجرا بودند ممکن است تکمیل شوند و نتیجه‌شان ثبت می‌شود.')
     } catch (e) {
       fail(e)
     } finally {
@@ -246,7 +270,7 @@ export default function WooSync() {
     setBusy(true)
     try {
       const rows = await call<WooLinkRow[]>(CH.wooLinksUnlink, { linkId: id, managerPassword })
-      setLinks(rows)
+      await refreshPanel(rows)
       flash('اتصال دائم حذف شد؛ سابقه‌ی قبلی در لاگ‌ها باقی می‌ماند.')
     } catch (e) {
       fail(e)
@@ -278,8 +302,7 @@ export default function WooSync() {
     setBusy(true)
     try {
       const rows = await call<WooLinkRow[]>(CH.wooLinksPauseProduct, { linkId: id, note: 'قطع گروهی از پنل Woo' })
-      setLinks(rows)
-      await load()
+      await refreshPanel(rows)
       flash('اتصال‌های گروه محصول موقتاً قطع شدند.')
     } catch (e) {
       fail(e)

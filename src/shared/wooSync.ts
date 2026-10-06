@@ -187,6 +187,21 @@ export function normalizeWooBaseUrl(raw: unknown): string {
   }
 }
 
+// کلید اتصال افزونه فقط روی TLS امن ارسال می‌شود؛ فقط loopback (تست محلی) از https مستثنا است.
+export function wooUrlRequiresTls(raw: unknown): boolean {
+  const s = String(raw ?? '').trim()
+  if (!s) return false
+  try {
+    const u = new URL(s)
+    if (u.protocol === 'https:') return false
+    const host = u.hostname.toLowerCase()
+    const loopback = host === 'localhost' || host.endsWith('.localhost') || host.startsWith('127.') || host === '[::1]' || host === '::1'
+    return !loopback
+  } catch {
+    return false
+  }
+}
+
 export function wooHolderKey(productId: unknown, variationId?: unknown): string {
   const p = Math.max(0, Math.round(Number(productId) || 0))
   const v = Math.max(0, Math.round(Number(variationId) || 0))

@@ -391,7 +391,9 @@ export function registerIpcHandlers(): void {
   handle(IPC.wooParkedRetry, async (p) => {
     await assertPanelUnlocked(PANEL_KEYS.wooSync, 'پردازش دوباره رویدادهای پارک‌شده سایت')
     await assertManagerPassword((p ?? {}).managerPassword ?? null, 'پردازش دستی رویدادهای پارک‌شده سایت')
-    return wooSyncService.retryParked(100)
+    // actor نشست به service می‌رسد تا resolvedBy در approvalهای اعمال‌شده ثبت شود.
+    const actor = await withOptionalSessionActor(p ?? {})
+    return wooSyncService.retryParked(100, actor?.userId ?? null)
   })
   handle(IPC.wooApprovals, async (p) => {
     await assertPanelUnlocked(PANEL_KEYS.wooSync, 'دیدن صف تأیید موجودی سایت')

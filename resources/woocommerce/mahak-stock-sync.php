@@ -2,14 +2,14 @@
 /**
  * Plugin Name: MAHAK Stock Sync
  * Description: Stock-only bridge for MAHAK desktop app and WooCommerce. It reads/writes only stock_quantity and never exposes prices, customers, orders totals or addresses.
- * Version: 1.0.9
+ * Version: 1.1.0
  * Author: MAHAK Local
  */
 
 if (!defined('ABSPATH')) exit;
 
 final class Mahak_Stock_Sync_Plugin {
-  const VERSION = '1.0.9';
+  const VERSION = '1.1.0';
   const DB_VERSION = '4';
   const OPTION_TOKEN = 'mahak_stock_sync_token';
   const OPTION_LAST_SECRET_HINT = 'mahak_stock_sync_secret_hint';
@@ -25,6 +25,8 @@ final class Mahak_Stock_Sync_Plugin {
   private static $lock_missed = array();
   private static $order_id = null;
   private static $order_source = 'order';
+  // seq ردیف journal ساخته‌شده در همین request، به‌کلید holder؛ برای tagging دقیق order/refund روی همان ردیف.
+  private static $last_event_seq = array();
 
   public static function init() {
     self::maybe_upgrade();
@@ -245,14 +247,24 @@ final class Mahak_Stock_Sync_Plugin {
     $new_qty = $new_qty === null ? null : self::int_stock_value($new_qty);
     global $wpdb;
     $payload = array('order_item_qty' => $qty === null ? null : intval($qty));
-    $where_order = $order_id === null ? 'order_id IS NULL' : $wpdb->prepare('(order_id = %s OR order_id IS NULL)', (string)$order_id);
-    // مقدار old در hook عمومی Woo ممکن است زیر هم‌زمانی کهنه باشد؛ برای پیدا کردن ردیف، new_qty اتمیک‌تر است.
-    $where_qty = '';
-    if ($new_qty !== null) $where_qty .= $wpdb->prepare(' AND new_qty = %d', intval($new_qty));
-    elseif ($old_qty !== null) $where_qty .= $wpdb->prepare(' AND old_qty = %d', intval($old_qty));
-    $allowed_sources = $source === 'refund_restock' ? "('admin_edit','woocommerce','rest_other','order_restore','refund_restock')" : "('order','order_reduce','order_restore','woocommerce','rest_other')";
-    $since = gmdate('Y-m-d H:i:s', time() - 10 * MINUTE_IN_SECONDS);
-    $row = $wpdb->get_row($wpdb->prepare('SELECT seq FROM ' . self::table() . " WHERE holder_key = %s AND order_item_id IS NULL AND source IN {$allowed_sources} AND created_at >= %s {$where_qty} AND {$where_order} ORDER BY seq DESC LIMIT 1", $key, $since), ARRAY_A);
+    // اگر در همین request خودمان ردیف را ساخته‌ایم، دقیقاً همان seq را tag می‌کنیم؛ جست‌وجوی heuristic «آخرین ردیف شبیه»
+    // ممکن بود ردیف actor هم‌زمان دیگری (مثلاً ویرایش ادمین هم‌راستا) را اشتباه به این سفارش نسبت دهد.
+    $exact_seq = isset(self::$last_event_seq[$key]) ? (int)self::$last_event_seq[$key] : 0;
+    unset(self::$last_event_seq[$key]);
+    $row = null;
+    if ($exact_seq > 0) {
+      $row = $wpdb->get_row($wpdb->prepare('SELECT seq FROM ' . self::table() . ' WHERE seq = %d AND order_item_id IS NULL LIMIT 1', $exact_seq), ARRAY_A);
+    }
+    if (!$row) {
+      $where_order = $order_id === null ? 'order_id IS NULL' : $wpdb->prepare('(order_id = %s OR order_id IS NULL)', (string)$order_id);
+      // مقدار old در hook عمومی Woo ممکن است زیر هم‌زمانی کهنه باشد؛ برای پیدا کردن ردیف، new_qty اتمیک‌تر است.
+      $where_qty = '';
+      if ($new_qty !== null) $where_qty .= $wpdb->prepare(' AND new_qty = %d', intval($new_qty));
+      elseif ($old_qty !== null) $where_qty .= $wpdb->prepare(' AND old_qty = %d', intval($old_qty));
+      $allowed_sources = $source === 'refund_restock' ? "('admin_edit','woocommerce','rest_other','order_restore','refund_restock')" : "('order','order_reduce','order_restore','woocommerce','rest_other')";
+      $since = gmdate('Y-m-d H:i:s', time() - 10 * MINUTE_IN_SECONDS);
+      $row = $wpdb->get_row($wpdb->prepare('SELECT seq FROM ' . self::table() . " WHERE holder_key = %s AND order_item_id IS NULL AND source IN {$allowed_sources} AND created_at >= %s {$where_qty} AND {$where_order} ORDER BY seq DESC LIMIT 1", $key, $since), ARRAY_A);
+    }
     if (!$row) return;
     $data = array(
       'source' => sanitize_key($source),
@@ -325,16 +337,25 @@ final class Mahak_Stock_Sync_Plugin {
 
   private static function request_int_value($value, $allow_negative = true) {
     if (is_bool($value) || is_array($value) || is_object($value) || $value === null) return null;
-    if (is_int($value)) return (!$allow_negative && $value < 0) ? null : $value;
+    if (is_int($value)) {
+      // ستون‌های journal عدد INT (32 بیتی علامت‌دار) هستند؛ سقف عملیاتی ±۱ میلیارد هم برای موجودی واقعی کافی است
+      // و هم delta هر تغییر را در محدوده‌ی قابل‌ذخیره نگه می‌دارد.
+      if (abs($value) > 1000000000) return null;
+      return (!$allow_negative && $value < 0) ? null : $value;
+    }
     if (is_float($value)) return null;
     $s = trim((string)$value);
     $re = $allow_negative ? '/^-?\d+$/' : '/^\d+$/';
     if (!preg_match($re, $s)) return null;
-    return intval($s);
+    $i = intval($s);
+    if (abs($i) > 1000000000) return null;
+    return $i;
   }
 
   private static function normalize_request_id($request_id, $empty_to_null = true) {
     if ($request_id === null) return $empty_to_null ? null : '';
+    // مقدار غیر scalar نباید به رشته‌ای مثل "Array" تبدیل و idempotency را روی یک کلید جعلی فروببرد.
+    if (is_array($request_id) || is_object($request_id) || is_bool($request_id) || is_float($request_id)) return $empty_to_null ? null : '';
     $s = sanitize_text_field((string)$request_id);
     if ($s === '') return $empty_to_null ? null : '';
     if (strlen($s) > 96) $s = substr($s, 0, 63) . '-' . md5($s);
@@ -443,6 +464,12 @@ final class Mahak_Stock_Sync_Plugin {
   }
 
   private static function product_from_holder($holder) {
+    // شناسه‌ها باید عدد صحیح یا رشته‌ی عددی باشند؛ آرایه/آبجکت/bool/float قبل از cast دفاعی رد می‌شوند.
+    foreach (array('product_id', 'variation_id') as $f) {
+      if (!isset($holder[$f])) continue;
+      if (!is_int($holder[$f]) && !(is_string($holder[$f]) && preg_match('/^\d+$/', trim($holder[$f])))) return null;
+    }
+    if (isset($holder['holder_key']) && !is_string($holder['holder_key']) && !is_int($holder['holder_key'])) return null;
     $input_product_id = isset($holder['product_id']) ? absint($holder['product_id']) : 0;
     $product_id = $input_product_id;
     $variation_id = isset($holder['variation_id']) ? absint($holder['variation_id']) : 0;
@@ -562,6 +589,8 @@ final class Mahak_Stock_Sync_Plugin {
   public static function catalog(WP_REST_Request $req) {
     $limit = max(1, min(200, absint($req->get_param('limit') ?: 100)));
     $page = max(1, absint($req->get_param('page') ?: 1));
+    // pageهای بسیار بزرگ همه‌ی pageهای قبلی را walk می‌کنند؛ سقف دفاعی می‌گذاریم تا درخواست عادی sync timeout نخورد.
+    if ($page > 500) return new WP_Error('mahak_bad_request', 'catalog page is outside the supported range.', array('status' => 400));
     $search = sanitize_text_field((string)$req->get_param('search'));
     // page روی holderها اعمال می‌شود نه روی product خام، تا variationهای یک product در مرز صفحه گم نشوند.
     $holder_offset = ($page - 1) * $limit;
@@ -592,21 +621,36 @@ final class Mahak_Stock_Sync_Plugin {
   public static function stock(WP_REST_Request $req) {
     $holders = $req->get_param('holders');
     if (!is_array($holders)) $holders = array();
+    // سقف دفاعی: هر holder یک lookup محصول و یک کوئری journal دارد؛ بدون سقف می‌شود worker PHP را اشغال کرد.
+    if (count($holders) > 200) return new WP_Error('mahak_bad_request', 'Too many holders in one stock request (max 200).', array('status' => 400));
     $items = array();
     global $wpdb;
     foreach ($holders as $h) {
       $found = self::product_from_holder(is_array($h) ? $h : array('holder_key' => $h));
       if (!$found) continue;
       list($product, $pid, $vid, $key) = $found;
-      $last_seq = (int)$wpdb->get_var($wpdb->prepare('SELECT MAX(seq) FROM ' . self::table() . ' WHERE holder_key = %s', $key));
-      $items[] = array_merge(self::item($product), array('last_seq' => $last_seq));
+      // مثل /apply و /catalog، variationای که موجودی‌اش توسط والد مدیریت می‌شود holder مستقل معتبر نیست.
+      if (self::manage_stock_mode($product) === 'parent') continue;
+      $last_seq_raw = $wpdb->get_var($wpdb->prepare('SELECT MAX(seq) FROM ' . self::table() . ' WHERE holder_key = %s', $key));
+      // شکست کوئری نباید مثل «journal خالی» (seq=0) به برنامه برسد؛ وگرنه drain/‌relink floor بر پایه‌ی داده‌ی نادرست ساخته می‌شود.
+      if ($last_seq_raw === null && !empty($wpdb->last_error)) return new WP_Error('mahak_stock_query_failed', 'MAHAK stock journal query failed.', array('status' => 500));
+      $items[] = array_merge(self::item($product), array('last_seq' => (int)$last_seq_raw));
     }
     return array('ok' => true, 'items' => $items);
   }
 
   public static function apply(WP_REST_Request $req) {
     $body = $req->get_json_params();
-    if (!is_array($body)) $body = array();
+    // بدنه‌ی malformed با «محصول پیدا نشد» فرق دارد؛ 404 فقط برای holder ناشناخته‌ی معتبر است.
+    if (!is_array($body)) return new WP_Error('mahak_bad_request', 'A JSON object body is required.', array('status' => 400));
+    foreach (array('product_id', 'variation_id', 'holder_key') as $f) {
+      if (isset($body[$f]) && !is_scalar($body[$f])) return new WP_Error('mahak_bad_request', $f . ' must be a scalar identifier.', array('status' => 400));
+    }
+    if (array_key_exists('request_id', $body)) {
+      $rid_raw = $body['request_id'];
+      // مقدار غیر integer-string روی کلید idempotency جعلی collapse می‌شود؛ باید رد شود.
+      if ($rid_raw !== null && !is_string($rid_raw) && !is_int($rid_raw)) return new WP_Error('mahak_bad_request', 'request_id must be a string identifier.', array('status' => 400));
+    }
     $found = self::product_from_holder($body);
     if (!$found) return new WP_Error('mahak_not_found', 'Product/variation not found.', array('status' => 404));
     list($product, $pid, $vid, $key) = $found;
@@ -729,7 +773,13 @@ final class Mahak_Stock_Sync_Plugin {
   }
   public static function journal(WP_REST_Request $req) {
     global $wpdb;
-    $after = max(0, absint($req->get_param('after_seq')));
+    // cursor نامعتبر نباید بی‌صدا به صفر تبدیل شود؛ وگرنه کل journal از ابتدا دوباره خوانده می‌شود.
+    $after_param = $req->get_param('after_seq');
+    $after = 0;
+    if ($after_param !== null && $after_param !== '') {
+      $after = self::request_int_value($after_param, false);
+      if ($after === null) return new WP_Error('mahak_bad_request', 'after_seq must be a non-negative integer.', array('status' => 400));
+    }
     $limit = max(1, min(200, absint($req->get_param('limit') ?: 100)));
     $settle_cutoff = gmdate('Y-m-d H:i:s', time() - 2);
     $rows = $wpdb->get_results($wpdb->prepare('SELECT *, (created_at <= %s) AS mahak_settled FROM ' . self::table() . ' WHERE seq > %d ORDER BY seq ASC LIMIT %d', $settle_cutoff, $after, $limit), ARRAY_A);
@@ -830,8 +880,10 @@ final class Mahak_Stock_Sync_Plugin {
       list($pid, $vid) = self::stock_holder_parts($product);
       $source = self::$order_id ? self::$order_source : (is_admin() ? 'admin_edit' : ((defined('REST_REQUEST') && REST_REQUEST) ? 'rest_other' : 'woocommerce'));
       $payload = isset(self::$lock_missed[$id]) ? array('lock_timeout' => true) : null;
-      if (self::record($pid, $vid, $old, $new, $source, self::$order_id, null, null, $payload)) {
+      $recorded_seq = self::record($pid, $vid, $old, $new, $source, self::$order_id, null, null, $payload);
+      if ($recorded_seq) {
         update_post_meta($id, '_mahak_stock_last_qty', $new);
+        if (is_int($recorded_seq)) self::$last_event_seq[self::holder_key($pid, $vid)] = $recorded_seq;
       }
       unset(self::$meta_recorded[$id], self::$before[$id], self::$lock_missed[$id]);
       if ($source === 'refund_restock') self::clear_order_context();
@@ -870,9 +922,11 @@ final class Mahak_Stock_Sync_Plugin {
       $source = self::$order_id ? self::$order_source : (is_admin() ? 'admin_edit' : ((defined('REST_REQUEST') && REST_REQUEST) ? 'rest_other' : 'woocommerce_meta'));
       $payload = array('meta_hook' => true);
       if (isset(self::$lock_missed[$id])) $payload['lock_timeout'] = true;
-      if (self::record($pid, $vid, $old, $new, $source, self::$order_id, null, null, $payload)) {
+      $recorded_seq = self::record($pid, $vid, $old, $new, $source, self::$order_id, null, null, $payload);
+      if ($recorded_seq) {
         update_post_meta($id, '_mahak_stock_last_qty', $new);
         self::$meta_recorded[$id] = $new;
+        if (is_int($recorded_seq)) self::$last_event_seq[self::holder_key($pid, $vid)] = $recorded_seq;
       }
       unset(self::$before[$id], self::$lock_missed[$id]);
     } finally {
@@ -880,10 +934,12 @@ final class Mahak_Stock_Sync_Plugin {
     }
   }
 
+  // خروجی روی موفقیت، seq ردیف journal است تا hookهای بعدی (tagging سفارش) دقیقاً همان ردیف را پیدا کنند، نه «آخرین ردیف شبیه».
   private static function record($product_id, $variation_id, $old, $new, $source, $order_id = null, $order_item_id = null, $request_id = null, $payload = null, $strict = false) {
     $old = ($old === null) ? null : self::int_stock_value($old);
     $new = self::int_stock_value($new);
-    if ($new === null || ($old !== null && $old === $new)) return true;
+    // receipt تغییر-صفر فقط در مسیر strict (apply/noop) لازم است؛ هوک‌های عادی همچنان تغییر صفر را رد می‌کنند.
+    if ($new === null || (!$strict && $old !== null && $old === $new)) return true;
     global $wpdb;
     $event_uuid = wp_generate_uuid4();
     $ok = $wpdb->insert(self::table(), array(
@@ -907,7 +963,8 @@ final class Mahak_Stock_Sync_Plugin {
       error_log('[mahak-stock-sync] journal insert failed: ' . $msg);
       return false;
     }
-    return true;
+    $seq = (int)$wpdb->insert_id;
+    return $seq > 0 ? $seq : true;
   }
 
   public static function admin_menu() {
