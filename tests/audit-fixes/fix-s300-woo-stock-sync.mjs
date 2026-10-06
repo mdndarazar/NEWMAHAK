@@ -86,7 +86,7 @@ check('Retry بعد timeout/idempotent از new_qty سایت استفاده می
   /appliedWooQty = res\?\.new_qty == null \? target : wooSafeInt\(res\.new_qty\)/.test(svc), /res\?\.idempotent === true && appliedWooQty !== target/.test(svc), /STOCK_PUSH_RETRY_AFTER_IDEMPOTENT/.test(svc)
 ], [true, true, true])
 check('خطای HTTP ساختاری است و فقط کدهای افزونه لینک را BROKEN_REMOTE می‌کنند', [
-  /class WooHttpError/.test(svc), /throw new WooHttpError\(res\.status, code/.test(svc), /\['mahak_not_found', 'mahak_manage_stock_off', 'mahak_manage_stock_parent'\]\.includes\(errCode\)/.test(svc), !/remoteBroken = \/manage_stock\|not found\|404/i.test(svc)
+  /class WooHttpError/.test(svc), /throw new WooHttpError\(res\.status, code/.test(svc), /mahak_fractional_stock/.test(svc) && /mahak_manage_stock_parent/.test(svc), !/remoteBroken = \/manage_stock\|not found\|404/i.test(svc)
 ], [true, true, true, true])
 check('وصل دوباره/حل اختلاف کورکورانه نیست و relinkSeqFloor جلوی دوباره‌شماری را می‌گیرد', [
   /remoteLastSeq/.test(svc) && /this\.pullJournal\(200\)/.test(svc), /seq <= relinkFloor/.test(svc), /expectedPausedEventCount/.test(svc), /pendingReconcilePush/.test(svc), /حل اختلاف/.test(page)
@@ -104,16 +104,22 @@ check('Plugin تحویل شده و endpointها فقط موجودی/catalog/jour
 check('Plugin idempotent است، meta قدیمی را بعد از apply به‌روز می‌کند و token خام در URL نمی‌گذارد', [
   /previous_record_for_request/.test(plugin), /remember_qty\(\$product, \$target\)/.test(plugin), /mahak_token_notice/.test(plugin), !/mahak_new_token/.test(plugin)
 ], [true, true, true, true])
-
-check('Plugin apply موجودی/status را با Woo save می‌کند، target/expected اجباری و قفل DB دارد', [
-  /wc_update_product_stock\(\$product, \$target, 'set'\)/.test(plugin), !/wc_update_product_stock\(\$product, \$target, 'set', true\)/.test(plugin), /expected and target integer fields are required/.test(plugin), /GET_LOCK/.test(plugin) && /RELEASE_LOCK/.test(plugin), /FOR UPDATE/.test(plugin) && /START TRANSACTION/.test(plugin)
+check('Plugin journal failure-safe و idempotency داخل lock دارد', [
+  /UNIQUE KEY request_holder/.test(plugin), /previous = self::previous_record_for_request\(\$request_id, \$key\);[\s\S]{0,120}if \(\$previous\) return \$previous;[\s\S]{0,120}\$wpdb->query\('START TRANSACTION'\)/.test(plugin), /strict = false/.test(plugin), /throw new RuntimeException\('MAHAK journal insert failed/.test(plugin), /self::record\([\s\S]*true\);/.test(plugin)
 ], [true, true, true, true, true])
+
+check('Plugin apply موجودی/status را با Woo save می‌کند، target/expected اجباری و قفل DB/CAS دارد', [
+  /wc_update_product_stock\(\$product, \$target, 'set'\)/.test(plugin), !/wc_update_product_stock\(\$product, \$target, 'set', true\)/.test(plugin), /expected and target integer fields are required/.test(plugin), /GET_LOCK/.test(plugin) && /RELEASE_LOCK/.test(plugin), /FOR UPDATE/.test(plugin) && /START TRANSACTION/.test(plugin), /UPDATE \{\$wpdb->postmeta\} SET meta_value = %s WHERE post_id = %d AND meta_key = '_stock' AND meta_value = %s/.test(plugin)
+], [true, true, true, true, true, true])
 check('Variation با manage_stock والد قابل اتصال/نوشتن نیست و catalog صفحه‌بندی دارد', [
   /manage_stock_mode/.test(plugin), /mahak_manage_stock_parent/.test(plugin), /get_meta\('_manage_stock'/.test(plugin), /has_more/.test(plugin) && /page/.test(plugin), /manageStockMode/.test(svc), /موجودی مشترک والد/.test(page)
 ], [true, true, true, true, true, true])
 check('Refund/order item context بعد از hookهای item stock روی آخرین journal row patch می‌شود و به تغییر قدیمی/نامرتبط نمی‌چسبد', [
   /woocommerce_reduce_order_item_stock/.test(plugin), /woocommerce_restore_order_item_stock/.test(plugin), /order_item_id/.test(plugin), /order_item_qty/.test(plugin), /refund_restock/.test(plugin), /created_at >= \(UTC_TIMESTAMP\(\) - INTERVAL 10 MINUTE\)/.test(plugin), /allowed_sources/.test(plugin)
 ], [true, true, true, true, true, true, true])
+check('Plugin مسیرهای metadata مستقیم و suppress محدود به holder را پوشش می‌دهد', [
+  /updated_post_meta/.test(plugin) && /added_post_meta/.test(plugin), /after_stock_meta/.test(plugin), /suppress_ids/.test(plugin) && /is_suppressed/.test(plugin), /stock_holder_parts/.test(plugin), /mahak_fractional_stock/.test(plugin)
+], [true, true, true, true, true])
 check('Plugin قیمت/مشتری را در خروجی نمی‌دهد و فقط stock_quantity را expose می‌کند', [
   /stock_quantity/.test(plugin), !/_price|regular_price|sale_price|billing|shipping|customer_email/i.test(plugin), /old.*new/.test(plugin) && /return;/.test(plugin)
 ], [true, true, true])

@@ -925,7 +925,7 @@ export const wooSyncService = {
         const attempt = Number(row.attemptCount || 0) + 1
         const errStatus = Number((e as any)?.status || 0)
         const errCode = String((e as any)?.code || '')
-        const remoteBroken = ['mahak_not_found', 'mahak_manage_stock_off', 'mahak_manage_stock_parent'].includes(errCode)
+        const remoteBroken = ['mahak_not_found', 'mahak_manage_stock_off', 'mahak_manage_stock_parent', 'mahak_fractional_stock'].includes(errCode)
         const conflict = !remoteBroken && (errCode === 'mahak_stock_conflict' || /اختلاف|conflict|409/i.test(msg) || errStatus === 409)
         const status = attempt >= MAX_OUTBOX_ATTEMPTS ? WooOutboxStatus.DEAD : conflict ? WooOutboxStatus.CONFLICT : WooOutboxStatus.FAILED
         const conflictCursor = status === WooOutboxStatus.CONFLICT ? await lastCursor() : null
