@@ -42,11 +42,23 @@ function publishedQty(raw: unknown): number {
 }
 
 function isReconcileOutboxKind(kind: unknown): boolean {
-  return ['RECONCILE_PUSH', 'STOCK_PUSH_REBASED', 'DELETE_ZERO'].includes(String(kind || ''))
+  return ['RECONCILE_PUSH', 'STOCK_PUSH_REBASED', 'STOCK_PUSH_RETRY_AFTER_IDEMPOTENT', 'DELETE_ZERO'].includes(String(kind || ''))
 }
 
 function openOutboxStatuses(): string[] {
-  return [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED, WooOutboxStatus.CONFLICT, WooOutboxStatus.DEAD, WooOutboxStatus.IN_FLIGHT]
+  // عملیات مدیریتی نباید ردیف در حال ارسال را زیر پای worker عوض کند؛ نتیجه‌ی همان ارسال ثبت می‌شود و وضعیت لینک دوباره از DB خوانده می‌شود.
+  return [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED, WooOutboxStatus.CONFLICT, WooOutboxStatus.DEAD]
+}
+
+class WooHttpError extends BusinessError {
+  readonly status: number
+  readonly code: string | null
+  constructor(status: number, code: string | null, message: string) {
+    super(message)
+    this.name = 'WooHttpError'
+    this.status = status
+    this.code = code
+  }
 }
 
 interface StoredConfig {
@@ -99,8 +111,28 @@ function isWooOrderPausedEvent(e: { source?: unknown; orderId?: unknown }): bool
   return /^(order|order_reduce|order_restore|refund_restock)$/.test(String(e.source ?? '').toLowerCase()) && String(e.orderId ?? '').trim() !== ''
 }
 
+function isWooRestoreSource(source: unknown): boolean {
+  return /^(order_restore|refund_restock)$/.test(String(source ?? '').toLowerCase())
+}
+
+async function remainingRestoreAllowance(input: { client: any; variantId: number; orderId: unknown }): Promise<number> {
+  const orderId = String(input.orderId ?? '').trim()
+  if (!orderId) return 0
+  const rows = await input.client.wooInboundEvent.findMany({
+    where: {
+      variantId: input.variantId,
+      orderId,
+      status: { in: [WooInboundStatus.APPLIED, WooInboundStatus.APPLIED_ON_RELINK] }
+    },
+    select: { delta: true, source: true }
+  })
+  const sold = rows.filter((r: any) => Number(r.delta || 0) < 0).reduce((sum: number, r: any) => sum + Math.abs(Number(r.delta || 0)), 0)
+  const restored = rows.filter((r: any) => Number(r.delta || 0) > 0 && isWooRestoreSource(r.source)).reduce((sum: number, r: any) => sum + Number(r.delta || 0), 0)
+  return Math.max(0, sold - restored)
+}
+
 async function readSetting(key: string): Promise<string | null> {
-  const row = await prisma.setting.findUnique({ where: { key } }).catch(() => null)
+  const row = await prisma.setting.findUnique({ where: { key } })
   return row?.value ?? null
 }
 
@@ -167,11 +199,12 @@ async function wooRequest<T>(path: string, opts: { method?: string; body?: unkno
     const data = safeJson(text) ?? { raw: text }
     if (!res.ok) {
       const msg = String(data?.message ?? data?.error ?? text ?? '').trim()
-      throw new BusinessError(`پاسخ سایت ناموفق بود (${res.status}): ${msg || 'خطای نامشخص'}`)
+      const code = data?.code == null ? null : String(data.code)
+      throw new WooHttpError(res.status, code, `پاسخ سایت ناموفق بود (${res.status}${code ? `/${code}` : ''}): ${msg || 'خطای نامشخص'}`)
     }
     return data as T
   } catch (e: any) {
-    if (e?.name === 'AbortError') throw new BusinessError('ارتباط با سایت در مهلت مقرر پاسخ نداد؛ نتیجه همگام‌سازی نامعلوم نیست چون هیچ عملیات مالی انجام نشد، فقط دوباره تلاش کنید.')
+    if (e?.name === 'AbortError') throw new BusinessError('ارتباط با سایت در مهلت مقرر پاسخ نداد؛ نتیجه‌ی نوشتن موجودی نامعلوم است و سیستم با کلید idempotency دوباره امن تلاش می‌کند.')
     throw e
   } finally {
     clearTimeout(t)
@@ -231,7 +264,7 @@ async function createOutbox(input: {
       variantId: input.variantId,
       movementId: input.movementId ?? null,
       kind: input.kind ?? 'STOCK_PUSH',
-      expectedWooQty: input.expectedWooQty == null ? (input.link.lastWooQty == null ? null : publishedQty(input.link.lastWooQty)) : publishedQty(input.expectedWooQty),
+      expectedWooQty: input.expectedWooQty == null ? (input.link.lastWooQty == null ? null : wooSafeInt(input.link.lastWooQty)) : wooSafeInt(input.expectedWooQty),
       targetQty: publishedQty(input.targetQty),
       status: WooOutboxStatus.PENDING,
       idempotencyKey: `mahak:${input.link.id}:${input.movementId ?? 'manual'}:${randomUUID()}`
@@ -245,8 +278,8 @@ export async function enqueueWooForMovement(
   tx: Prisma.TransactionClient
 ): Promise<void> {
   if (String(input.reason).startsWith('WOO_SYNC_')) return
-  const cfg = await safeConfig().catch(() => null)
-  if (!cfg?.enabled) return
+  const cfg = await safeConfig()
+  if (!cfg.enabled) return
   const client = tx as any
   const links = await client.wooProductLink.findMany({
     where: { variantId: input.variantId, status: WooLinkStatus.ACTIVE }
@@ -305,18 +338,19 @@ async function applyWooDelta(input: {
 export const wooSyncService = {
   async status(): Promise<WooStatusView> {
     const config = await safeConfig()
-    const [activeLinks, pausedLinks, conflictLinks, pendingOutbox, failedOutbox, pausedEvents, lastLogs] = await Promise.all([
+    const [activeLinks, pausedLinks, conflictLinks, pendingOutbox, failedOutbox, pausedEvents, parkedEvents, lastLogs] = await Promise.all([
       db().wooProductLink.count({ where: { status: WooLinkStatus.ACTIVE } }).catch(() => 0),
       db().wooProductLink.count({ where: { status: WooLinkStatus.PAUSED } }).catch(() => 0),
       db().wooProductLink.count({ where: { status: WooLinkStatus.CONFLICT } }).catch(() => 0),
       db().wooSyncOutbox.count({ where: { status: WooOutboxStatus.PENDING } }).catch(() => 0),
       db().wooSyncOutbox.count({ where: { status: { in: [WooOutboxStatus.FAILED, WooOutboxStatus.CONFLICT, WooOutboxStatus.DEAD] } } }).catch(() => 0),
       db().wooInboundEvent.count({ where: { status: WooInboundStatus.SKIPPED_PAUSED } }).catch(() => 0),
+      db().wooInboundEvent.count({ where: { status: WooInboundStatus.PARKED } }).catch(() => 0),
       db().wooSyncLog.findMany({ orderBy: { id: 'desc' }, take: 10 }).catch(() => [])
     ])
     return {
       config,
-      counts: { activeLinks, pausedLinks, conflictLinks, pendingOutbox, failedOutbox, pausedEvents },
+      counts: { activeLinks, pausedLinks, conflictLinks, pendingOutbox, failedOutbox, pausedEvents, parkedEvents },
       lastLogs: (lastLogs ?? []).map((l: any) => ({ id: l.id, at: asDateString(l.at) ?? '', level: l.level, action: l.action, message: l.message }))
     }
   },
@@ -357,10 +391,12 @@ export const wooSyncService = {
     return { ok: true, site: r?.site ?? null, plugin: r?.plugin ?? null, time: r?.time ?? null }
   },
 
-  async catalog(params: { search?: string; limit?: number } = {}): Promise<WooCatalogItem[]> {
+  async catalog(params: { search?: string; limit?: number; page?: number; offset?: number } = {}): Promise<WooCatalogItem[]> {
     const q = new URLSearchParams()
     if (params.search) q.set('search', String(params.search))
     q.set('limit', String(Math.min(200, Math.max(1, Math.round(Number(params.limit) || 100)))))
+    if (params.page != null) q.set('page', String(Math.max(1, Math.round(Number(params.page) || 1))))
+    else if (params.offset != null) q.set('page', String(Math.max(1, Math.floor(Number(params.offset || 0) / Math.max(1, Math.round(Number(params.limit) || 100))) + 1)))
     const r = await wooRequest<any>(`/catalog?${q.toString()}`)
     const rows = Array.isArray(r?.items) ? r.items : []
     return rows.map((x: any) => ({
@@ -371,6 +407,7 @@ export const wooSyncService = {
       name: String(x.name ?? ''),
       type: String(x.type ?? ''),
       manageStock: x.manage_stock === true || x.manageStock === true,
+      manageStockMode: x.manage_stock_mode == null ? null : String(x.manage_stock_mode),
       stockQuantity: wooSafeInt(x.stock_quantity ?? x.stockQuantity),
       stockStatus: String(x.stock_status ?? x.stockStatus ?? ''),
       backorders: x.backorders == null ? null : String(x.backorders),
@@ -379,7 +416,7 @@ export const wooSyncService = {
   },
 
   async links(): Promise<WooLinkRow[]> {
-    const rows = await prisma.$queryRawUnsafe<any[]>(`
+    const rows = await (prisma as any).$queryRawUnsafe(`
       SELECT l.*, v.code, v.barcode, v.stock AS mahakStock, v.size, v.color, p.name AS productName,
         (SELECT COUNT(*) FROM WooSyncOutbox o WHERE o.linkId = l.id AND o.status = 'PENDING') AS pendingOutbox,
         (SELECT COUNT(*) FROM WooSyncOutbox o WHERE o.linkId = l.id AND o.status IN ('FAILED','CONFLICT','DEAD')) AS failedOutbox,
@@ -433,9 +470,10 @@ export const wooSyncService = {
     const variationId = input.variationId == null ? null : int(input.variationId, 'شناسه Variation سایت', { positive: true })
     const holderKey = input.holderKey || wooHolderKey(productId, variationId)
     if (input.manageStock !== true) throw new BusinessError('این محصول در سایت manage_stock ندارد؛ تا وقتی موجودی سایت مستقل نباشد، اتصال امن نیست.')
-    const catalogWooQty = int(input.wooQty, 'موجودی سایت', { allowZero: true })
+    const catalogWooQty = wooSafeInt(input.wooQty)
     const freshRemote = (await this.remoteStock([{ holderKey, wooProductId: productId, wooVariationId: variationId }]))[0]
-    const wooQty = freshRemote?.stockQuantity == null ? catalogWooQty : publishedQty(freshRemote.stockQuantity)
+    const wooQty = freshRemote?.stockQuantity == null ? catalogWooQty : wooSafeInt(freshRemote.stockQuantity)
+    if (freshRemote?.manageStock !== true) throw new BusinessError('این محصول/Variation در سایت موجودی مستقل ندارد (manage_stock والد/خاموش است)؛ اتصال امن نیست.')
     const decision = String(input.decision || WooResumeDecision.MAHAK_WINS)
     const variant = await prisma.productVariant.findUnique({ where: { id: variantId }, select: { id: true, stock: true, code: true } })
     if (!variant) throw new BusinessError('کالای فروشگاه پیدا نشد.')
@@ -466,8 +504,10 @@ export const wooSyncService = {
           tx
         })
         localStock = r.stock
-      } else if (decision === WooResumeDecision.MAHAK_WINS && localStock !== wooQty) {
+      } else if (decision === WooResumeDecision.MAHAK_WINS && publishedQty(localStock) !== publishedQty(wooQty)) {
         await createOutbox({ client: tx as any, link, variantId, kind: 'RECONCILE_PUSH', targetQty: localStock, expectedWooQty: wooQty })
+      } else if ((decision === WooResumeDecision.VERIFY_ONLY || decision === WooResumeDecision.NOOP) && publishedQty(localStock) !== publishedQty(wooQty)) {
+        throw new BusinessError('برای «فقط بررسی»، موجودی MAHAK و سایت باید برابر باشد؛ یکی از گزینه‌های مرجع را انتخاب کنید.')
       } else if (decision !== WooResumeDecision.MAHAK_WINS && decision !== WooResumeDecision.WOO_WINS && decision !== WooResumeDecision.VERIFY_ONLY && decision !== WooResumeDecision.NOOP) {
         throw new BusinessError('روش اتصال اولیه نامعتبر است.')
       }
@@ -600,22 +640,27 @@ export const wooSyncService = {
     const relinkId = randomUUID()
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const fresh = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
-      if (!fresh || ![WooLinkStatus.PAUSED, WooLinkStatus.CONFLICT].includes(fresh.status)) throw new BusinessError('این اتصال دیگر در وضعیت قطع موقت/اختلاف نیست؛ فهرست را تازه کنید.')
+      if (!fresh || ![WooLinkStatus.PAUSED, WooLinkStatus.CONFLICT, WooLinkStatus.BROKEN_REMOTE].includes(fresh.status)) throw new BusinessError('این اتصال دیگر در وضعیت قطع موقت/اختلاف/خرابی سایت نیست؛ فهرست را تازه کنید.')
       const txStock = await productStock(link.variantId, tx as any)
       if (txStock !== Number(preview.mahakStock)) throw new BusinessError('موجودی MAHAK بعد از پیش‌نمایش تغییر کرده است؛ دوباره پیش‌نمایش بگیرید.')
       await (tx as any).wooSyncOutbox.updateMany({
         where: { linkId: link.id, status: { in: openOutboxStatuses() } },
         data: { status: WooOutboxStatus.SUPERSEDED, lastError: 'LINK_RECONCILED', updatedAt: new Date() }
       })
+      const pausedEventWhere: any = { linkId: link.id, status: WooInboundStatus.SKIPPED_PAUSED }
+      const seqRange: any = {}
+      if (fresh.pauseSeqFloor != null) seqRange.gt = BigInt(fresh.pauseSeqFloor)
+      if (preview.lastSeq != null) seqRange.lte = BigInt(preview.lastSeq)
+      if (Object.keys(seqRange).length) pausedEventWhere.seq = seqRange
 
       if (decision === WooResumeDecision.WOO_WINS) {
         const delta = Number(preview.wooQty) - txStock
         const r = await applyWooDelta({ variantId: link.variantId, delta, reason: StockReason.WOO_SYNC_ADJUST, note: 'وصل دوباره سایت: سایت مرجع موجودی شد', tx })
         finalStock = r.stock
-        const upd = await (tx as any).wooInboundEvent.updateMany({ where: { linkId: link.id, status: WooInboundStatus.SKIPPED_PAUSED }, data: { status: WooInboundStatus.SUPERSEDED, relinkId, processedAt: new Date() } })
+        const upd = await (tx as any).wooInboundEvent.updateMany({ where: pausedEventWhere, data: { status: WooInboundStatus.SUPERSEDED, relinkId, processedAt: new Date() } })
         supersededPausedEvents += Number(upd.count || 0)
       } else if (decision === WooResumeDecision.MAHAK_PLUS_ORDERS) {
-        const events = await (tx as any).wooInboundEvent.findMany({ where: { linkId: link.id, status: WooInboundStatus.SKIPPED_PAUSED }, orderBy: [{ seq: 'asc' }, { id: 'asc' }] })
+        const events = await (tx as any).wooInboundEvent.findMany({ where: pausedEventWhere, orderBy: [{ seq: 'asc' }, { id: 'asc' }] })
         for (const e of events) {
           const delta = Number(e.delta || 0)
           if (!isWooOrderPausedEvent(e)) {
@@ -629,16 +674,25 @@ export const wooSyncService = {
             supersededPausedEvents++
             continue
           }
+          if (delta > 0 && isWooRestoreSource(e.source)) {
+            const allowed = await remainingRestoreAllowance({ client: tx as any, variantId: link.variantId, orderId: e.orderId })
+            if (delta > allowed) {
+              await (tx as any).wooInboundEvent.update({ where: { id: e.id }, data: { status: WooInboundStatus.PARKED, relinkId, processedAt: new Date() } })
+              continue
+            }
+          }
           const r = await applyWooDelta({ eventId: e.id, variantId: link.variantId, delta, note: `اعمال سفارش سایت هنگام وصل دوباره (${e.orderId ?? 'بدون سفارش'})`, tx })
           finalStock = r.stock
           appliedPausedOrderEvents++
           await (tx as any).wooInboundEvent.update({ where: { id: e.id }, data: { status: WooInboundStatus.APPLIED_ON_RELINK, movementId: r.movementId, relinkId, processedAt: new Date() } })
         }
       } else if (decision === WooResumeDecision.MAHAK_WINS) {
-        const upd = await (tx as any).wooInboundEvent.updateMany({ where: { linkId: link.id, status: WooInboundStatus.SKIPPED_PAUSED }, data: { status: WooInboundStatus.SUPERSEDED, relinkId, processedAt: new Date() } })
+        const upd = await (tx as any).wooInboundEvent.updateMany({ where: pausedEventWhere, data: { status: WooInboundStatus.SUPERSEDED, relinkId, processedAt: new Date() } })
         supersededPausedEvents += Number(upd.count || 0)
       } else if (decision === WooResumeDecision.VERIFY_ONLY || decision === WooResumeDecision.NOOP) {
-        const upd = await (tx as any).wooInboundEvent.updateMany({ where: { linkId: link.id, status: WooInboundStatus.SKIPPED_PAUSED }, data: { status: WooInboundStatus.SUPERSEDED, relinkId, processedAt: new Date() } })
+        const pendingPaused = await (tx as any).wooInboundEvent.count({ where: pausedEventWhere })
+        if (pendingPaused > 0 || publishedQty(txStock) !== publishedQty(preview.wooQty)) throw new BusinessError('«فقط بررسی» فقط وقتی مجاز است که موجودی منتشرشده دو طرف برابر باشد و رویداد زمان قطع باقی نمانده باشد.')
+        const upd = await (tx as any).wooInboundEvent.updateMany({ where: pausedEventWhere, data: { status: WooInboundStatus.SUPERSEDED, relinkId, processedAt: new Date() } })
         supersededPausedEvents += Number(upd.count || 0)
       } else {
         throw new BusinessError('روش وصل دوباره نامعتبر است.')
@@ -656,11 +710,11 @@ export const wooSyncService = {
           relinkSeqFloor: preview.lastSeq == null ? null : BigInt(preview.lastSeq),
           lastRelinkId: relinkId,
           lastMahakQty: finalStock,
-          lastWooQty: publishedQty(preview.wooQty)
+          lastWooQty: wooSafeInt(preview.wooQty)
         }
       })
       if (pendingReconcilePush) {
-        await createOutbox({ client: tx as any, link: { ...link, lastWooQty: publishedQty(preview.wooQty) }, variantId: link.variantId, kind: 'RECONCILE_PUSH', targetQty: targetForSite, expectedWooQty: publishedQty(preview.wooQty) })
+        await createOutbox({ client: tx as any, link: { ...link, lastWooQty: wooSafeInt(preview.wooQty) }, variantId: link.variantId, kind: 'RECONCILE_PUSH', targetQty: targetForSite, expectedWooQty: wooSafeInt(preview.wooQty) })
       }
       await audit(tx, {
         action: AuditAction.WOO_LINK_RESUME,
@@ -695,6 +749,8 @@ export const wooSyncService = {
     return items.map((x: any) => ({
       holderKey: String(x.holder_key ?? x.holderKey ?? ''),
       stockQuantity: wooSafeInt(x.stock_quantity ?? x.stockQuantity),
+      manageStock: x.manage_stock === true || x.manageStock === true,
+      manageStockMode: x.manage_stock_mode ?? x.manageStockMode ?? x.manage_stock ?? x.manageStock ?? null,
       lastSeq: x.last_seq == null ? null : wooSafeInt(x.last_seq)
     }))
   },
@@ -731,7 +787,7 @@ export const wooSyncService = {
         continue
       }
       try {
-        const expected = publishedQty(row.expectedWooQty ?? link.lastWooQty ?? 0)
+        const expected = wooSafeInt(row.expectedWooQty ?? link.lastWooQty ?? 0)
         let localStock = Number(row.targetQty)
         if (String(row.kind) !== 'DELETE_ZERO') localStock = await productStock(row.variantId)
         const target = String(row.kind) === 'DELETE_ZERO' ? 0 : publishedQty(localStock)
@@ -747,31 +803,52 @@ export const wooSyncService = {
           }
         })
         if (res?.ok === false || res?.conflict === true) throw new BusinessError(String(res?.message ?? 'اختلاف موجودی سایت'))
+        const appliedWooQty = res?.new_qty == null ? target : wooSafeInt(res.new_qty)
+        let needsFreshOutbox = false
         await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-          await (tx as any).wooSyncOutbox.update({ where: { id: row.id }, data: { status: WooOutboxStatus.SENT, sentAt: new Date(), updatedAt: new Date(), lastError: null, targetQty: target } })
-          await (tx as any).wooProductLink.update({
-            where: { id: link.id },
-            data: {
-              status: reconcileKind && link.status !== WooLinkStatus.BROKEN_LOCAL ? WooLinkStatus.ACTIVE : link.status,
-              lastWooQty: target,
-              lastMahakQty: localStock,
-              lastPushedMovementId: row.movementId ?? link.lastPushedMovementId
-            }
+          await (tx as any).wooSyncOutbox.updateMany({
+            where: { id: row.id, status: WooOutboxStatus.IN_FLIGHT },
+            data: { status: WooOutboxStatus.SENT, sentAt: new Date(), updatedAt: new Date(), lastError: null, targetQty: target }
           })
+          const freshLink = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
+          if (freshLink) {
+            const statusUnchanged = freshLink.status === link.status
+            const nextStatus = reconcileKind && statusUnchanged && freshLink.status !== WooLinkStatus.BROKEN_LOCAL ? WooLinkStatus.ACTIVE : freshLink.status
+            await (tx as any).wooProductLink.update({
+              where: { id: link.id },
+              data: {
+                status: nextStatus,
+                lastWooQty: appliedWooQty,
+                lastMahakQty: localStock,
+                lastPushedMovementId: row.movementId ?? freshLink.lastPushedMovementId
+              }
+            })
+            const canQueueAfterIdempotent = nextStatus === WooLinkStatus.ACTIVE || nextStatus === WooLinkStatus.CONFLICT || (nextStatus === WooLinkStatus.PAUSED && statusUnchanged && reconcileKind)
+            needsFreshOutbox = res?.idempotent === true && appliedWooQty !== target && canQueueAfterIdempotent
+            if (needsFreshOutbox) {
+              await createOutbox({ client: tx as any, link: { ...freshLink, lastWooQty: appliedWooQty }, variantId: row.variantId, kind: 'STOCK_PUSH_RETRY_AFTER_IDEMPOTENT', targetQty: localStock, expectedWooQty: appliedWooQty })
+            }
+          }
         })
+        if (needsFreshOutbox) await log('OUTBOX_IDEMPOTENT_RETRY', 'پاسخ idempotent سایت با هدف فعلی متفاوت بود؛ یک ارسال تازه ساخته شد', { level: 'WARN', linkId: link.id, variantId: row.variantId, payload: { outboxId: row.id, appliedWooQty, target } })
         sent++
       } catch (e: any) {
         const msg = String(e?.message ?? e)
         const attempt = Number(row.attemptCount || 0) + 1
-        const remoteBroken = /manage_stock|not found|404/i.test(msg)
-        const conflict = !remoteBroken && /اختلاف|conflict|409/i.test(msg)
+        const errStatus = Number((e as any)?.status || 0)
+        const errCode = String((e as any)?.code || '')
+        const remoteBroken = ['mahak_not_found', 'mahak_manage_stock_off', 'mahak_manage_stock_parent'].includes(errCode)
+        const conflict = !remoteBroken && (errCode === 'mahak_stock_conflict' || /اختلاف|conflict|409/i.test(msg) || errStatus === 409)
         const status = attempt >= MAX_OUTBOX_ATTEMPTS ? WooOutboxStatus.DEAD : conflict ? WooOutboxStatus.CONFLICT : WooOutboxStatus.FAILED
         const conflictCursor = status === WooOutboxStatus.CONFLICT ? await lastCursor() : null
         await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-          await (tx as any).wooSyncOutbox.update({ where: { id: row.id }, data: { status, lastError: msg, updatedAt: new Date() } })
-          if (remoteBroken) await (tx as any).wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_REMOTE } })
-          else if (status === WooOutboxStatus.CONFLICT) {
-            await (tx as any).wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.CONFLICT, pauseReason: 'CONFLICT', pausedAt: new Date(), pauseSeqFloor: BigInt(conflictCursor ?? 0) } })
+          await (tx as any).wooSyncOutbox.updateMany({ where: { id: row.id, status: WooOutboxStatus.IN_FLIGHT }, data: { status, lastError: msg, updatedAt: new Date() } })
+          const freshLink = await (tx as any).wooProductLink.findUnique({ where: { id: link.id } })
+          if (freshLink && freshLink.status === link.status) {
+            if (remoteBroken) await (tx as any).wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_REMOTE } })
+            else if (status === WooOutboxStatus.CONFLICT) {
+              await (tx as any).wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.CONFLICT, pauseReason: 'CONFLICT', pausedAt: new Date(), pauseSeqFloor: BigInt(conflictCursor ?? 0) } })
+            }
           }
         })
         await log('OUTBOX_FAILED', msg, { level: status === WooOutboxStatus.CONFLICT ? 'WARN' : 'ERROR', linkId: link?.id, variantId: row.variantId, payload: { outboxId: row.id, attempt, status } })
@@ -798,7 +875,7 @@ export const wooSyncService = {
       const eventUuid = String(raw.event_uuid ?? raw.uuid ?? `${seq}:${raw.holder_key ?? ''}`)
       const holderKey = String(raw.holder_key ?? raw.holderKey ?? wooHolderKey(raw.product_id, raw.variation_id))
       const oldQty = raw.old_qty == null ? null : wooSafeInt(raw.old_qty)
-      const newQty = publishedQty(raw.new_qty ?? raw.stock_quantity)
+      const newQty = wooSafeInt(raw.new_qty ?? raw.stock_quantity)
       const delta = raw.delta == null ? (oldQty == null ? 0 : newQty - oldQty) : wooSafeInt(raw.delta)
       const baseEvent = {
         eventUuid,
@@ -864,14 +941,12 @@ export const wooSyncService = {
       } catch (e) {
         const message = String((e as any)?.message ?? e)
         await log('INBOUND_FAILED', message, { level: 'ERROR', payload: raw })
-        try {
-          const link = await db().wooProductLink.findFirst({ where: { holderKey, status: { not: WooLinkStatus.UNLINKED } } })
-          await db().wooInboundEvent.create({
-            data: { ...baseEvent, linkId: link?.id ?? null, variantId: link?.variantId ?? null, status: WooInboundStatus.PARKED, processedAt: new Date() }
-          })
-        } catch {
-          // اگر رویداد قبلاً ثبت شده باشد، cursor را عقب نگه نمی‌داریم؛ idempotency با eventUuid حفظ می‌شود.
-        }
+        const link = await db().wooProductLink.findFirst({ where: { holderKey, status: { not: WooLinkStatus.UNLINKED } } })
+        await db().wooInboundEvent.upsert({
+          where: { eventUuid: baseEvent.eventUuid },
+          update: {},
+          create: { ...baseEvent, linkId: link?.id ?? null, variantId: link?.variantId ?? null, status: WooInboundStatus.PARKED, processedAt: new Date() }
+        })
         skipped++
       } finally {
         received++
@@ -881,6 +956,102 @@ export const wooSyncService = {
     return { received, applied, skipped }
   },
 
+  async reconcileActiveLinks(limit = 50) {
+    const cfg = await safeConfig()
+    if (!cfg.enabled) return { checked: 0, queued: 0, skipped: 0 }
+    const links = await db().wooProductLink.findMany({
+      where: { status: WooLinkStatus.ACTIVE },
+      orderBy: { id: 'asc' },
+      take: Math.min(100, Math.max(1, Math.round(Number(limit) || 50)))
+    })
+    if (!links.length) return { checked: 0, queued: 0, skipped: 0 }
+    const remote = await this.remoteStock(links)
+    const byKey = new Map(remote.map((r: any) => [String(r.holderKey), r]))
+    let checked = 0
+    let queued = 0
+    let skipped = 0
+    for (const link of links) {
+      const r = byKey.get(String(link.holderKey)) as any
+      if (!r) {
+        await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_REMOTE } }).catch(() => null)
+        skipped++
+        continue
+      }
+      checked++
+      const localStock = await productStock(link.variantId).catch(() => null)
+      if (localStock == null) {
+        await db().wooProductLink.update({ where: { id: link.id }, data: { status: WooLinkStatus.BROKEN_LOCAL } }).catch(() => null)
+        skipped++
+        continue
+      }
+      const target = publishedQty(localStock)
+      const remotePublished = publishedQty(r.stockQuantity)
+      if (target === remotePublished) {
+        if (Number(link.lastWooQty) !== Number(r.stockQuantity) || Number(link.lastMahakQty) !== Number(localStock))
+          await db().wooProductLink.update({ where: { id: link.id }, data: { lastWooQty: wooSafeInt(r.stockQuantity), lastMahakQty: Number(localStock) } }).catch(() => null)
+        continue
+      }
+      const open = await db().wooSyncOutbox.count({ where: { linkId: link.id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED, WooOutboxStatus.CONFLICT, WooOutboxStatus.IN_FLIGHT] } } })
+      if (open) {
+        skipped++
+        continue
+      }
+      await createOutbox({ link: { ...link, lastWooQty: wooSafeInt(r.stockQuantity) }, variantId: link.variantId, kind: 'RECONCILE_PUSH', targetQty: target, expectedWooQty: wooSafeInt(r.stockQuantity) })
+      await log('RECONCILE_DIFF', 'اختلاف دوره‌ای موجودی سایت پیدا شد و برای ارسال امن صف شد', { level: 'WARN', linkId: link.id, variantId: link.variantId, payload: { mahakStock: localStock, wooQty: r.stockQuantity, target } })
+      queued++
+    }
+    return { checked, queued, skipped }
+  },
+
+  async retryParked(limit = 50) {
+    const rows = await db().wooInboundEvent.findMany({
+      where: { status: WooInboundStatus.PARKED },
+      orderBy: [{ seq: 'asc' }, { id: 'asc' }],
+      take: Math.min(100, Math.max(1, Math.round(Number(limit) || 50)))
+    })
+    let applied = 0
+    let skipped = 0
+    let failed = 0
+    for (const row of rows) {
+      try {
+        const link = row.linkId
+          ? await db().wooProductLink.findUnique({ where: { id: row.linkId } })
+          : await db().wooProductLink.findFirst({ where: { holderKey: row.holderKey, status: { not: WooLinkStatus.UNLINKED } } })
+        if (!link || link.status !== WooLinkStatus.ACTIVE) {
+          skipped++
+          continue
+        }
+        await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+          const fresh = await (tx as any).wooInboundEvent.findUnique({ where: { id: row.id } })
+          if (!fresh || fresh.status !== WooInboundStatus.PARKED) return
+          const existingMove = await (tx as any).stockMovement.findFirst({ where: { refType: 'WooInboundEvent', refId: row.id }, select: { id: true } })
+          let movementId = existingMove?.id == null ? null : Number(existingMove.id)
+          let stock = await productStock(link.variantId, tx as any)
+          if (!movementId) {
+            const r = await applyWooDelta({ eventId: row.id, variantId: link.variantId, delta: Number(row.delta || 0), note: `پردازش دوباره رویداد سایت${row.orderId ? ` · سفارش ${row.orderId}` : ''}`, tx })
+            movementId = r.movementId
+            stock = r.stock
+          }
+          await (tx as any).wooInboundEvent.update({ where: { id: row.id }, data: { status: WooInboundStatus.APPLIED, movementId, processedAt: new Date() } })
+          await (tx as any).wooSyncOutbox.updateMany({
+            where: { linkId: link.id, status: { in: [WooOutboxStatus.PENDING, WooOutboxStatus.FAILED, WooOutboxStatus.CONFLICT] } },
+            data: { status: WooOutboxStatus.SUPERSEDED, lastError: 'REBASING_AFTER_PARKED_RETRY', updatedAt: new Date() }
+          })
+          const targetAfterInbound = publishedQty(stock)
+          if (targetAfterInbound !== publishedQty(row.newQty)) {
+            await createOutbox({ client: tx as any, link: { ...link, lastWooQty: row.newQty }, variantId: link.variantId, kind: 'STOCK_PUSH_REBASED', targetQty: targetAfterInbound, expectedWooQty: row.newQty })
+          }
+          await (tx as any).wooProductLink.update({ where: { id: link.id }, data: { lastWooQty: row.newQty, lastMahakQty: stock } })
+        })
+        applied++
+      } catch (e) {
+        failed++
+        await log('PARKED_RETRY_FAILED', String((e as any)?.message ?? e), { level: 'ERROR', payload: { inboundEventId: row.id } })
+      }
+    }
+    return { applied, skipped, failed, total: rows.length }
+  },
+
   async syncNow() {
     if (busy) {
       const status = await this.status()
@@ -888,10 +1059,12 @@ export const wooSyncService = {
     }
     busy = true
     try {
+      const parked = await this.retryParked(50)
       const pulled = await this.pullJournal(100)
+      const reconciled = await this.reconcileActiveLinks(50)
       const pushed = await this.processOutbox(100)
-      await log('SYNC_NOW', 'همگام‌سازی دستی انجام شد', { payload: { pulled, pushed } })
-      return { pulled, pushed, status: await this.status() }
+      await log('SYNC_NOW', 'همگام‌سازی دستی انجام شد', { payload: { parked, pulled, reconciled, pushed } })
+      return { parked, pulled, reconciled, pushed, status: await this.status() }
     } finally {
       busy = false
     }
@@ -903,24 +1076,34 @@ export const wooSyncService = {
   }
 }
 
-let timer: ReturnType<typeof setInterval> | null = null
+let timer: ReturnType<typeof setTimeout> | null = null
 let busy = false
 
 export function startWooSyncScheduler(): void {
-  if (timer) clearInterval(timer)
+  if (timer) clearTimeout(timer)
+  const schedule = (seconds: number) => {
+    timer = setTimeout(() => void tick(), Math.min(3600, Math.max(30, Math.round(Number(seconds) || 120))) * 1000)
+  }
   const tick = async () => {
-    if (busy) return
+    let nextSeconds = 120
+    if (busy) {
+      schedule(nextSeconds)
+      return
+    }
     busy = true
     try {
       const cfg = await safeConfig()
+      nextSeconds = cfg.intervalSeconds
       if (cfg.enabled && cfg.autoSync) {
+        await wooSyncService.retryParked(50).catch((e) => log('AUTO_PARKED_RETRY_FAILED', String(e?.message ?? e), { level: 'ERROR' }))
         await wooSyncService.pullJournal(100).catch((e) => log('AUTO_PULL_FAILED', String(e?.message ?? e), { level: 'ERROR' }))
+        await wooSyncService.reconcileActiveLinks(50).catch((e) => log('AUTO_RECONCILE_FAILED', String(e?.message ?? e), { level: 'ERROR' }))
         await wooSyncService.processOutbox(100).catch((e) => log('AUTO_PUSH_FAILED', String(e?.message ?? e), { level: 'ERROR' }))
       }
     } finally {
       busy = false
+      schedule(nextSeconds)
     }
   }
-  timer = setInterval(() => void tick(), 60_000)
   void tick()
 }

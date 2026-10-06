@@ -386,6 +386,10 @@ export function registerIpcHandlers(): void {
     await assertPanelUnlocked(PANEL_KEYS.wooSync, 'اجرای همگام‌سازی موجودی سایت')
     return wooSyncService.syncNow()
   })
+  handle(IPC.wooParkedRetry, async () => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'پردازش دوباره رویدادهای پارک‌شده سایت')
+    return wooSyncService.retryParked(100)
+  })
   handle(IPC.wooLogs, async (p) => {
     await assertPanelUnlocked(PANEL_KEYS.wooSync, 'دیدن لاگ همگام‌سازی موجودی سایت')
     return wooSyncService.logs(p ?? {})

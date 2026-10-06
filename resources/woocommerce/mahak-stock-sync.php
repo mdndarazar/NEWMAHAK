@@ -37,7 +37,9 @@ final class Mahak_Stock_Sync_Plugin {
     add_action('woocommerce_reduce_order_stock', array(__CLASS__, 'clear_order_context'), 999, 1);
     add_filter('woocommerce_can_restore_order_stock', array(__CLASS__, 'mark_restore_order_context'), 999, 2);
     add_action('woocommerce_restore_order_stock', array(__CLASS__, 'clear_order_context'), 999, 1);
-    add_action('woocommerce_restock_refunded_item', array(__CLASS__, 'mark_refund_context'), 1, 5);
+    add_action('woocommerce_reduce_order_item_stock', array(__CLASS__, 'tag_reduce_order_item_event'), 999, 10);
+    add_action('woocommerce_restore_order_item_stock', array(__CLASS__, 'tag_restore_order_item_event'), 999, 10);
+    add_action('woocommerce_restock_refunded_item', array(__CLASS__, 'mark_refund_context'), 999, 10);
   }
 
   public static function activate() {
@@ -130,8 +132,51 @@ final class Mahak_Stock_Sync_Plugin {
     return $can;
   }
 
-  public static function mark_refund_context($product_id = null, $old_stock = null, $new_stock = null, $order = null, $product = null) {
-    self::set_order_context($order, 'refund_restock');
+  private static function order_id_from_args($args) {
+    foreach ($args as $a) if ($a && is_object($a) && method_exists($a, 'get_id') && method_exists($a, 'get_items')) return (string)$a->get_id();
+    return self::$order_id;
+  }
+
+  private static function item_from_args($args) {
+    foreach ($args as $a) if ($a && is_object($a) && method_exists($a, 'get_product') && method_exists($a, 'get_quantity')) return $a;
+    return null;
+  }
+
+  private static function patch_last_order_event($source, $order_id, $item = null, $product = null, $qty = null) {
+    if (!$product && $item && method_exists($item, 'get_product')) $product = $item->get_product();
+    if (!$product) return;
+    $pid = $product->is_type('variation') ? $product->get_parent_id() : $product->get_id();
+    $vid = $product->is_type('variation') ? $product->get_id() : null;
+    $key = self::holder_key($pid, $vid);
+    $item_id = ($item && method_exists($item, 'get_id')) ? (string)$item->get_id() : null;
+    if ($qty === null && $item && method_exists($item, 'get_quantity')) $qty = (int)$item->get_quantity();
+    global $wpdb;
+    $payload = array('order_item_qty' => $qty === null ? null : intval($qty));
+    $where_order = $order_id === null ? 'order_id IS NULL' : $wpdb->prepare('(order_id = %s OR order_id IS NULL)', (string)$order_id);
+    $row = $wpdb->get_row($wpdb->prepare('SELECT seq FROM ' . self::table() . " WHERE holder_key = %s AND order_item_id IS NULL AND {$where_order} ORDER BY seq DESC LIMIT 1", $key), ARRAY_A);
+    if (!$row) return;
+    $wpdb->update(self::table(), array(
+      'source' => sanitize_key($source),
+      'order_id' => $order_id === null ? null : (string)$order_id,
+      'order_item_id' => $item_id,
+      'payload_json' => wp_json_encode($payload),
+    ), array('seq' => (int)$row['seq']), array('%s','%s','%s','%s'), array('%d'));
+  }
+
+  public static function tag_reduce_order_item_event(...$args) {
+    self::patch_last_order_event('order_reduce', self::order_id_from_args($args), self::item_from_args($args));
+  }
+
+  public static function tag_restore_order_item_event(...$args) {
+    self::patch_last_order_event('order_restore', self::order_id_from_args($args), self::item_from_args($args));
+  }
+
+  public static function mark_refund_context(...$args) {
+    $product = null;
+    foreach ($args as $a) if ($a && is_object($a) && method_exists($a, 'get_stock_quantity')) $product = $a;
+    if (!$product && isset($args[0])) $product = function_exists('wc_get_product') ? wc_get_product(absint($args[0])) : null;
+    self::patch_last_order_event('refund_restock', self::order_id_from_args($args), self::item_from_args($args), $product);
+    self::clear_order_context();
   }
 
   public static function clear_order_context($order = null) {
@@ -192,6 +237,8 @@ final class Mahak_Stock_Sync_Plugin {
     $is_variation = $product->is_type('variation');
     $product_id = $is_variation ? $product->get_parent_id() : $product->get_id();
     $variation_id = $is_variation ? $product->get_id() : null;
+    $manage_raw = method_exists($product, 'get_manage_stock') ? $product->get_manage_stock('edit') : ($product->managing_stock() ? 'yes' : 'no');
+    $manage_mode = ($product->is_type('variation') && $manage_raw === 'parent') ? 'parent' : ($product->managing_stock() ? 'yes' : 'no');
     self::remember_qty($product);
     return array(
       'holder_key' => self::holder_key($product_id, $variation_id),
@@ -200,7 +247,8 @@ final class Mahak_Stock_Sync_Plugin {
       'sku' => $product->get_sku() ?: null,
       'name' => html_entity_decode(wp_strip_all_tags($product->get_name()), ENT_QUOTES, 'UTF-8'),
       'type' => $product->get_type(),
-      'manage_stock' => (bool)$product->managing_stock(),
+      'manage_stock' => $manage_mode === 'yes',
+      'manage_stock_mode' => $manage_mode,
       'stock_quantity' => (int)$product->get_stock_quantity(),
       'stock_status' => (string)$product->get_stock_status(),
       'backorders' => method_exists($product, 'get_backorders') ? $product->get_backorders() : null,
@@ -210,8 +258,9 @@ final class Mahak_Stock_Sync_Plugin {
 
   public static function catalog(WP_REST_Request $req) {
     $limit = max(1, min(200, absint($req->get_param('limit') ?: 100)));
+    $page = max(1, absint($req->get_param('page') ?: 1));
     $search = sanitize_text_field((string)$req->get_param('search'));
-    $args = array('limit' => $limit, 'status' => array('publish', 'private', 'draft'), 'return' => 'objects');
+    $args = array('limit' => $limit + 1, 'page' => $page, 'status' => array('publish', 'private', 'draft'), 'return' => 'objects');
     if ($search !== '') $args['search'] = $search;
     $products = wc_get_products($args);
     $items = array();
@@ -224,9 +273,11 @@ final class Mahak_Stock_Sync_Plugin {
       } else {
         $items[] = self::item($p);
       }
-      if (count($items) >= $limit) break;
+      if (count($items) >= $limit + 1) break;
     }
-    return array('ok' => true, 'items' => $items);
+    $has_more = count($items) > $limit;
+    if ($has_more) $items = array_slice($items, 0, $limit);
+    return array('ok' => true, 'items' => $items, 'page' => $page, 'has_more' => $has_more);
   }
 
   public static function stock(WP_REST_Request $req) {
@@ -250,28 +301,45 @@ final class Mahak_Stock_Sync_Plugin {
     $found = self::product_from_holder($body);
     if (!$found) return new WP_Error('mahak_not_found', 'Product/variation not found.', array('status' => 404));
     list($product, $pid, $vid, $key) = $found;
+    $manage_raw = method_exists($product, 'get_manage_stock') ? $product->get_manage_stock('edit') : ($product->managing_stock() ? 'yes' : 'no');
+    if ($product->is_type('variation') && $manage_raw === 'parent') return new WP_Error('mahak_manage_stock_parent', 'Variation stock is managed by parent product.', array('status' => 409));
     if (!$product->managing_stock()) return new WP_Error('mahak_manage_stock_off', 'manage_stock is disabled for this holder.', array('status' => 409));
-    $expected = isset($body['expected']) ? intval($body['expected']) : null;
+    if (!array_key_exists('expected', $body) || !preg_match('/^-?\d+$/', (string)$body['expected']) || !array_key_exists('target', $body) || !preg_match('/^\d+$/', (string)$body['target'])) {
+      return new WP_Error('mahak_bad_request', 'expected and target integer fields are required.', array('status' => 400));
+    }
+    $expected = intval($body['expected']);
     $target = max(0, intval($body['target']));
     $request_id = sanitize_text_field((string)($body['request_id'] ?? wp_generate_uuid4()));
     $previous = self::previous_record_for_request($request_id, $key);
     if ($previous) return $previous;
-    $current = (int)$product->get_stock_quantity();
-    if ($expected !== null && $current !== $expected) {
-      return new WP_REST_Response(array('ok' => false, 'conflict' => true, 'current' => $current, 'expected' => $expected, 'message' => 'Stock changed on WooCommerce before MAHAK apply.'), 409);
+    global $wpdb;
+    $lock_name = 'mahak_stock_' . $product->get_id();
+    $locked = (int)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 10)', $lock_name));
+    if ($locked !== 1) return new WP_Error('mahak_stock_lock_timeout', 'Could not lock stock row for safe apply.', array('status' => 409));
+    try {
+      $current = (int)$product->get_stock_quantity();
+      if ($current !== $expected) {
+        return new WP_REST_Response(array('ok' => false, 'code' => 'mahak_stock_conflict', 'conflict' => true, 'current' => $current, 'expected' => $expected, 'message' => 'Stock changed on WooCommerce before MAHAK apply.'), 409);
+      }
+      if ($current === $target) {
+        self::remember_qty($product, $target);
+        return array('ok' => true, 'old_qty' => $current, 'new_qty' => $target, 'holder_key' => $key, 'noop' => true);
+      }
+      self::$suppress = true;
+      self::$request_id = $request_id;
+      try {
+        // بدون پارامتر چهارم true تا WooCommerce خودش stock_status/cache را به‌روز کند.
+        wc_update_product_stock($product, $target, 'set');
+        self::remember_qty($product, $target);
+      } finally {
+        self::$suppress = false;
+        self::$request_id = null;
+      }
+      self::record($pid, $vid, $current, $target, 'mahak_apply', null, null, $request_id, array('target' => $target));
+      return array('ok' => true, 'old_qty' => $current, 'new_qty' => $target, 'holder_key' => $key);
+    } finally {
+      $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock_name));
     }
-    if ($current === $target) {
-      self::remember_qty($product, $target);
-      return array('ok' => true, 'old_qty' => $current, 'new_qty' => $target, 'holder_key' => $key, 'noop' => true);
-    }
-    self::$suppress = true;
-    self::$request_id = $request_id;
-    wc_update_product_stock($product, $target, 'set', true);
-    self::remember_qty($product, $target);
-    self::$suppress = false;
-    self::record($pid, $vid, $current, $target, 'mahak_apply', null, null, $request_id, array('target' => $target));
-    self::$request_id = null;
-    return array('ok' => true, 'old_qty' => $current, 'new_qty' => $target, 'holder_key' => $key);
   }
 
   public static function journal(WP_REST_Request $req) {

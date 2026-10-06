@@ -64,6 +64,7 @@ export interface WooCatalogItem {
   name: string
   type: string
   manageStock: boolean
+  manageStockMode?: string | null
   stockQuantity: number
   stockStatus: string
   backorders?: string | null
@@ -125,6 +126,7 @@ export interface WooStatusView {
     pendingOutbox: number
     failedOutbox: number
     pausedEvents: number
+    parkedEvents: number
   }
   lastLogs: Array<{ id: number; at: string; level: string; action: string; message: string }>
 }

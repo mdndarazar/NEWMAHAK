@@ -155,7 +155,20 @@ export default function WooSync() {
       const r = await call<any>(CH.wooSyncNow)
       setStatus(r.status)
       await load()
-      flash(`همگام‌سازی انجام شد. ورودی: ${faDigits(r.pulled.applied)} اعمال، خروجی: ${faDigits(r.pushed.sent)} ارسال`)
+      flash(`همگام‌سازی انجام شد. پارک‌شده: ${faDigits(r.parked?.applied ?? 0)} اعمال دوباره، ورودی: ${faDigits(r.pulled.applied)} اعمال، خروجی: ${faDigits(r.pushed.sent)} ارسال`)
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const retryParked = async () => {
+    setBusy(true)
+    try {
+      const r = await call<any>(CH.wooParkedRetry)
+      await load()
+      flash(`رویدادهای پارک‌شده بررسی شد: ${faDigits(r.applied ?? 0)} اعمال، ${faDigits(r.failed ?? 0)} خطا`)
     } catch (e) {
       fail(e)
     } finally {
@@ -238,16 +251,20 @@ export default function WooSync() {
               این ماژول فقط موجودی انبار فروشگاه و stock_quantity ووکامرس را هماهنگ می‌کند؛ قیمت، سفارش، مشتری و گزارش فروش سایت وارد برنامه نمی‌شود.
             </p>
           </div>
-          <button className="btn btn-primary" disabled={busy} onClick={syncNow}>همگام‌سازی الآن</button>
+          <div className="flex gap-2"><button className="btn" disabled={busy || !(status?.counts.parkedEvents)} onClick={retryParked}>پردازش پارک‌شده‌ها</button><button className="btn btn-primary" disabled={busy} onClick={syncNow}>همگام‌سازی الآن</button></div>
+        </div>
+        <div className="rounded border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-sm leading-7">
+          نسخه فعلی فقط همگام‌سازی عدد موجودی است. رویدادهای خطادار به‌جای گم‌شدن «پارک» می‌شوند و با دکمه بالا دوباره پردازش می‌شوند، اما workflow کامل تأیید مدیر WooApproval/HOLD/FROZEN هنوز به‌عنوان محدودیت نسخه ۱ ثبت شده است.
         </div>
         {msg && <div className="rounded border border-emerald-300 bg-emerald-50 text-emerald-900 px-3 py-2 text-sm">{msg}</div>}
         {err && <div className="rounded border border-rose-300 bg-rose-50 text-rose-800 px-3 py-2 text-sm whitespace-pre-wrap">{err}</div>}
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-sm">
+        <div className="grid grid-cols-2 md:grid-cols-7 gap-2 text-sm">
           <div className="kbd">متصل: {faDigits(status?.counts.activeLinks ?? 0)}</div>
           <div className="kbd">قطع موقت: {faDigits(status?.counts.pausedLinks ?? 0)}</div>
           <div className="kbd">اختلاف: {faDigits(status?.counts.conflictLinks ?? 0)}</div>
           <div className="kbd">صف ارسال: {faDigits(status?.counts.pendingOutbox ?? 0)}</div>
           <div className="kbd">خطا: {faDigits(status?.counts.failedOutbox ?? 0)}</div>
+          <div className="kbd">پارک‌شده: {faDigits(status?.counts.parkedEvents ?? 0)}</div>
           <div className="kbd">Cursor: {faDigits(status?.config.lastCursor ?? 0)}</div>
         </div>
       </div>
@@ -275,7 +292,7 @@ export default function WooSync() {
         </div>
         <div className="grid md:grid-cols-2 gap-3">
           <label className="space-y-1"><span className="text-sm">کالای فروشگاه</span><select className="input" value={selectedVariantId} onChange={(e) => setSelectedVariantId(e.target.value ? Number(e.target.value) : '')}><option value="">انتخاب کنید…</option>{variants.map((v) => <option key={v.id} value={v.id}>{titleOf(v)} · موجودی {faDigits(v.stock)}</option>)}</select></label>
-          <label className="space-y-1"><span className="text-sm">محصول/Variation سایت</span><select className="input" value={selectedHolderKey} onChange={(e) => setSelectedHolderKey(e.target.value)}><option value="">انتخاب کنید…</option>{catalog.map((c) => <option key={c.holderKey} value={c.holderKey}>{c.name} · SKU {c.sku || '—'} · موجودی {faDigits(c.stockQuantity)} {c.manageStock ? '' : '· manage_stock خاموش'}</option>)}</select></label>
+          <label className="space-y-1"><span className="text-sm">محصول/Variation سایت</span><select className="input" value={selectedHolderKey} onChange={(e) => setSelectedHolderKey(e.target.value)}><option value="">انتخاب کنید…</option>{catalog.map((c) => <option key={c.holderKey} value={c.holderKey}>{c.name} · SKU {c.sku || '—'} · موجودی {faDigits(c.stockQuantity)} {c.manageStock ? '' : c.manageStockMode === 'parent' ? '· موجودی مشترک والد (قابل اتصال نیست)' : '· manage_stock خاموش'}</option>)}</select></label>
         </div>
         <div className="flex flex-wrap gap-3 items-center">
           <label className="text-sm">مبنای اتصال اولیه:</label>
@@ -306,6 +323,7 @@ export default function WooSync() {
                     {l.status === 'ACTIVE' ? <button className="btn btn-xs" disabled={busy} onClick={() => pause(l.id)}>قطع موقت</button> : null}
                     {l.status === 'PAUSED' ? <button className="btn btn-xs" disabled={busy} onClick={() => previewResume(l.id)}>پیش‌نمایش وصل</button> : null}
                     {l.status === 'CONFLICT' ? <button className="btn btn-xs" disabled={busy} onClick={() => previewResume(l.id)}>حل اختلاف</button> : null}
+                    {l.status === 'BROKEN_REMOTE' ? <button className="btn btn-xs" disabled={busy} onClick={() => previewResume(l.id)}>بررسی سایت</button> : null}
                     <button className="btn btn-xs" disabled={busy} onClick={() => unlink(l.id)}>قطع دائم</button>
                   </td>
                 </tr>
@@ -336,7 +354,7 @@ export default function WooSync() {
             <button className="btn btn-primary" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.MAHAK_WINS)}>فروشگاه مرجع؛ سایت به MAHAK برسد</button>
             <button className="btn" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.WOO_WINS)}>سایت مرجع؛ MAHAK به سایت برسد</button>
             <button className="btn" disabled={busy || resumePreview.orderEvents === 0} onClick={() => applyResumeDecision(WooResumeDecision.MAHAK_PLUS_ORDERS)}>MAHAK + سفارش‌های سایت زمان قطع</button>
-            <button className="btn" disabled={busy} onClick={() => applyResumeDecision(WooResumeDecision.VERIFY_ONLY)}>فقط بررسی؛ فعال کن بدون تغییر موجودی</button>
+            <button className="btn" disabled={busy || resumePreview.pausedEvents.length > 0 || resumePreview.mahakStock !== resumePreview.wooQty} onClick={() => applyResumeDecision(WooResumeDecision.VERIFY_ONLY)}>فقط بررسی؛ فعال کن بدون تغییر موجودی</button>
           </div>
         </div>
       )}
