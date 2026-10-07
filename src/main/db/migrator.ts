@@ -282,7 +282,10 @@ export async function applyMigrations(
 
   // صبر داخلی SQLite برای قفل‌های لحظه‌ای را فقط در مسیر migration بیشتر می‌کنیم؛
   // retry بیرونی (پایین‌تر) روی صاحب‌های حقیقی قفل حاکم است و بی‌نهایت نمی‌چرخد.
-  await client.$executeRawUnsafe(`PRAGMA busy_timeout = ${MIGRATION_BUSY_TIMEOUT_MS}`).catch(() => undefined)
+  // PRAGMA busy_timeout یک سطر نتیجه برمی‌گرداند؛ با $executeRawUnsafe خطای
+// «Execute returned results» می‌دهد و (به‌خاطر catch) بی‌صدا رد می‌شد، یعنی
+// busy_timeout هرگز واقعاً اعمال نمی‌شد. حتماً با $queryRawUnsafe اجرا شود.
+await client.$queryRawUnsafe(`PRAGMA busy_timeout = ${MIGRATION_BUSY_TIMEOUT_MS}`).catch(() => undefined)
   await client.$executeRawUnsafe(PRISMA_MIGRATIONS_DDL)
 
   const doneRows = await client.$queryRawUnsafe<{ migration_name: string }[]>(

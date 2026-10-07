@@ -43,8 +43,10 @@ check('PRAGMAهای خروجی‌دار با $queryRawUnsafe اجرا می‌ش�
   !backup.includes("$executeRawUnsafe('PRAGMA wal_checkpoint"),
   !maint.includes("$executeRawUnsafe('PRAGMA wal_checkpoint"),
   (backup.match(/\$queryRawUnsafe\('PRAGMA wal_checkpoint/g) || []).length === 3,
-  (maint.match(/\$queryRawUnsafe\('PRAGMA wal_checkpoint/g) || []).length === 1
-], [true, true, true, true])
+  (maint.match(/\$queryRawUnsafe\('PRAGMA wal_checkpoint/g) || []).length === 1,
+  !migrator.includes('$executeRawUnsafe(`PRAGMA busy_timeout'),
+  (migrator.match(/\$queryRawUnsafe\(`PRAGMA busy_timeout/g) || []).length === 1
+], [true, true, true, true, true, true])
 
 console.log(`\n${failed ? '✗' : '✓'} ${passed} بررسی موفق${failed ? ` · ${failed} ناموفق` : ''}\n`)
 process.exit(failed ? 1 : 0)
