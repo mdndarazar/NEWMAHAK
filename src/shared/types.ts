@@ -1356,6 +1356,19 @@ export interface ShiftSuggestion {
   templates: { number: number; name: string; startTime: string; endTime: string; windowLabel: string }[]
 }
 
+/**
+ * نشستِ بازِ روزِ دیگر (جامانده) که از دید openShift پنهان می‌ماند؛ بستنش در
+ * openSession دلیل و رمز مدیر می‌خواهد و مودال باید از قبل فیلدهایش را نشان دهد.
+ */
+export interface ShiftStaleOpen {
+  id: number
+  name: string
+  sessionLabel: string
+  dayJalali: string
+  userId: number | null
+  userName: string | null
+}
+
 /** داده‌ی فرم «باز کردن نشست / تعویض کارمند». */
 export interface ShiftSessionForm {
   suggestion: ShiftSuggestion
@@ -1363,6 +1376,8 @@ export interface ShiftSessionForm {
   /** آخرین کارمند نشست قبلی — فقط پیش‌فرضِ highlight‌شده، بدون تأیید خودکار */
   defaultStaffId: number | null
   current: ShiftInfo | null
+  /** نشست جامانده‌ی روزِ دیگر (در صورت وجود) — بستنش در مودال دلیل + رمز مدیر می‌خواهد */
+  staleOpen: ShiftStaleOpen | null
   guide: string
 }
 

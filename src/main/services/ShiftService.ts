@@ -333,6 +333,23 @@ export const shiftService = {
   async sessionForm(): Promise<ShiftSessionForm> {
     const suggestion = await this.suggest(prisma)
     const open = await this.openShift(prisma)
+    /**
+     * نشست جامانده‌ی روزِ دیگر: openShift آن را پنهان می‌کند (current=null) ولی
+     * openSession بستنش را با دلیل + رمز مدیر می‌خواهد. مودال باید *قبل* از
+     * submit فیلدهایش را نشان دهد؛ شرط دقیقاً همان staleOvernight سرور است
+     * (dayJalali پر و مخالف امروز) — ردیف‌های قدیمیِ بدون dayJalali مثل سرور
+     * stale حساب نمی‌شوند.
+     */
+    const anyOpen = await this.anyOpenShift(prisma)
+    const staleRaw = anyOpen && anyOpen.dayJalali && anyOpen.dayJalali !== jalaliToday() ? anyOpen : null
+    let staleUserName: string | null = null
+    if (staleRaw?.userId != null) {
+      const su = await prisma.user.findUnique({
+        where: { id: staleRaw.userId },
+        select: { displayName: true, username: true }
+      })
+      staleUserName = su?.displayName || su?.username || null
+    }
     const lastWithStaff = await prisma.shift.findFirst({
       where: { userId: { not: null } },
       orderBy: { id: 'desc' },
@@ -348,6 +365,16 @@ export const shiftService = {
       staff: staff.map((u) => ({ id: u.id, name: u.displayName || u.username, role: u.role })),
       defaultStaffId: lastWithStaff?.user?.isActive ? lastWithStaff.userId ?? null : null,
       current: open ? await this.info(open.id) : null,
+      staleOpen: staleRaw
+        ? {
+            id: staleRaw.id,
+            name: staleRaw.name,
+            sessionLabel: sessionLabelOf(staleRaw.name, staleRaw.sessionSeq),
+            dayJalali: staleRaw.dayJalali!,
+            userId: staleRaw.userId,
+            userName: staleUserName
+          }
+        : null,
       /** بند ۴ — راهنمای همیشه‌قابل‌مشاهده‌ی همین فرم (متن از سرور، یک‌جا) */
       guide:
         'هر بار که صندوق دست‌به‌دست می‌شود (حتی موقت)، حتماً همین‌جا یک نشست جدید ثبت کنید؛ ' +
