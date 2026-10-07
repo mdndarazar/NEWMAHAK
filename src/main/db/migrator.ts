@@ -2,7 +2,8 @@ import { app } from 'electron'
 import { dirname, join } from 'node:path'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
-import { prisma, databaseFile } from './client'
+import { PrismaClient } from '@prisma/client'
+import { databaseFile } from './client'
 
 /**
  * ---------------------------------------------------------------------------
@@ -203,10 +204,51 @@ function ensureDatabaseFile(file: string): void {
 /**
  * اجرای همه‌ی migration های اعمال‌نشده.
  * در صورت شکست، خطایی با پیام فارسی و قابل‌فهم پرتاب می‌کند (نه stack خام Prisma).
+ *
+ * ⚠️ چرا یک PrismaClient جدا و تک‌اتصاله؟
+ * این اجراکننده برای تراکنش از دستورهای rawِ `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK`
+ * استفاده می‌کند. این دستورها فقط وقتی معتبرند که *همه‌ی* جمله‌ها روی **همان یک
+ * اتصال فیزیکی** بروند؛ وگرنه اتصال دوم قفل اتصال اول را می‌بیند و خطاهای
+ * «database is locked» و «cannot rollback - no transaction is active»
+ * خودبه‌خود از داخل خود برنامه ساخته می‌شوند (منشأ باگ startup). کلاینت اصلی
+ * برنامه دست‌نخورده می‌ماند؛ فقط مسیر migration اتصال تک‌تایی دارد و پس از پایان
+ * کار بسته می‌شود.
  */
 export async function runMigrations(): Promise<MigrationReport> {
-  return applyMigrations(prisma, databaseFile())
+  const file = databaseFile()
+  const migrateClient = new PrismaClient({ datasources: { db: { url: `file:${file}?connection_limit=1` } }, log: ['warn', 'error'] })
+  try {
+    return await applyMigrations(migrateClient, file)
+  } finally {
+    await migrateClient.$disconnect().catch(() => {})
+  }
 }
+
+/** sleep کوتاه برای backoff محدود هنگام قفل موقت SQLite. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * خطاهای «قفل موقت» SQLite — فقط همین‌ها retry می‌شوند.
+ * خطای SQL واقعی (syntax/schema) هرگز retry نشود تا علت واقعی پنهان نماند.
+ */
+function isLockError(e: unknown): boolean {
+  const m = String((e as any)?.message ?? e ?? '').toLowerCase()
+  return m.includes('database is locked') || m.includes('database table is locked') || m.includes('sqlite_busy') || m.includes('database is busy')
+}
+
+/**
+ * سیاست retry قفل: حداکثر چند تلاش کامل (BEGIN..COMMITِ یک migration) و صف backoff.
+ * مجموع انتظار عمدی ≈ ۸ ثانیه؛ با busy_timeout داخلی (۱۵ ثانیه به‌ازای هر جمله)
+ * حدود واقعی صبر در حالت رقابت سبک کافی است و در قفل دائمی هم برنامه بی‌نهایت
+ * معطل نمی‌ماند.
+ */
+const LOCK_MAX_ATTEMPTS = 5
+const LOCK_BACKOFF_MS = [250, 500, 1000, 2000, 4000]
+
+/** busy_timeout به‌ازای هر جمله روی همان اتصال migration (فقط مسیر migration). */
+const MIGRATION_BUSY_TIMEOUT_MS = 15000
 
 /**
  * همان کار، ولی روی هر کلاینت/فایل دلخواه (دیتابیس اصلی یا یک فایل بکاپ).
@@ -238,6 +280,9 @@ export async function applyMigrations(
   const migrations = listMigrations(dir)
   if (!migrations.length) return report
 
+  // صبر داخلی SQLite برای قفل‌های لحظه‌ای را فقط در مسیر migration بیشتر می‌کنیم؛
+  // retry بیرونی (پایین‌تر) روی صاحب‌های حقیقی قفل حاکم است و بی‌نهایت نمی‌چرخد.
+  await client.$executeRawUnsafe(`PRAGMA busy_timeout = ${MIGRATION_BUSY_TIMEOUT_MS}`).catch(() => undefined)
   await client.$executeRawUnsafe(PRISMA_MIGRATIONS_DDL)
 
   const doneRows = await client.$queryRawUnsafe<{ migration_name: string }[]>(
@@ -266,42 +311,66 @@ export async function applyMigrations(
   for (const m of migrations) {
     if (done.has(m.name)) continue
     const statements = splitStatements(m.sql)
-    let ran = 0
-    let inTx = false
-    try {
+    /**
+     * قواعد سخت‌گیرانه‌ی تراکنش (رفع باگ startup قفل SQLite):
+     * ۱. اگر `BEGIN IMMEDIATE` شکست بخورد، خطا نادیده گرفته نمی‌شود و migration
+     *    خارج از تراکنش هرگز اجرا نمی‌شود؛ فقط خطای «قفل موقت» با backoff محدود
+     *    دوباره امتحان می‌شود و خطای SQL واقعی بدون retry ظاهر می‌شود.
+     * ۲. `ROLLBACK` فقط وقتی زده می‌شود که `BEGIN` واقعاً موفق شده باشد.
+     * ۳. ثبت در `_prisma_migrations` داخل همان تراکنش و فقط بعد از اجرای کامل
+     *    جمله‌هاست؛ migration ناقص هرگز «موفق» ثبت نمی‌شود.
+     * چون تراکنش اتمیک است، retry یعنی «اجرا از سرِ همان migration»، نه از میانه.
+     */
+    for (let attempt = 1; ; attempt++) {
+      let inTx = false
+      let ran = 0
+      const skippedThisAttempt: string[] = []
       try {
         await client.$executeRawUnsafe('BEGIN IMMEDIATE')
         inTx = true
-      } catch {
-        inTx = false
-      }
-      for (const stmt of statements) {
-        try {
-          await client.$executeRawUnsafe(stmt)
-          ran++
-        } catch (e: any) {
-          const msg = String(e?.message ?? e)
-          if (isAlreadyApplied(msg)) {
-            report.skipped.push(`${m.name}: ${firstLine(stmt)}`)
-            continue
+        for (const stmt of statements) {
+          try {
+            await client.$executeRawUnsafe(stmt)
+            ran++
+          } catch (e: any) {
+            const msg = String(e?.message ?? e)
+            if (isAlreadyApplied(msg)) {
+              skippedThisAttempt.push(`${m.name}: ${firstLine(stmt)}`)
+              continue
+            }
+            throw e
           }
-          throw e
         }
-      }
-      await markApplied(client, m.name, m.checksum, ran)
-      if (inTx) {
+        await markApplied(client, m.name, m.checksum, ran)
         await client.$executeRawUnsafe('COMMIT')
         inTx = false
+      } catch (e: any) {
+        // rollback فقط بعد از BEGIN موفق معنا دارد؛ شکست rollback خود خطای اول را پنهان نکند.
+        if (inTx) await client.$executeRawUnsafe('ROLLBACK').catch(() => {})
+        const lock = isLockError(e)
+        if (lock && attempt < LOCK_MAX_ATTEMPTS) {
+          await sleep(LOCK_BACKOFF_MS[Math.min(attempt - 1, LOCK_BACKOFF_MS.length - 1)])
+          continue
+        }
+        if (lock) {
+          throw new Error(
+            `به‌روزرسانی ساختار دیتابیس در مرحله‌ی «${m.name}» به‌خاطر قفل فایل دیتابیس پس از ${LOCK_MAX_ATTEMPTS} بار تلاش انجام نشد.\n` +
+              `فایل دیتابیس: ${file}\n` +
+              'احتمالاً برنامه‌ی دیگری همین فایل را باز نگه داشته است (مثلاً DB Browser یا یک نمونه‌ی باقی‌مانده از خود برنامه). ' +
+              'آن را ببندید و دوباره اجرا کنید؛ هیچ migration ناقصی روی فایل ثبت نشده است.\n' +
+              `جزئیات فنی: ${String(e?.message ?? e).split('\n')[0]}`
+          )
+        }
+        throw new Error(
+          `به‌روزرسانی ساختار دیتابیس در مرحله‌ی «${m.name}» ناموفق بود و ناتمام ماند.\n` +
+            `فایل دیتابیس: ${file}\n` +
+            `جزئیات فنی: ${String(e?.message ?? e).split('\n')[0]}\n\n` +
+            'پیشنهاد: از فایل دیتابیس یک نسخه‌ی پشتیبان بگیرید و دوباره برنامه را باز کنید. ' +
+            'اگر مشکل تکرار شد، متن همین پیام را نگه دارید.'
+        )
       }
-    } catch (e: any) {
-      if (inTx) await client.$executeRawUnsafe('ROLLBACK').catch(() => {})
-      throw new Error(
-        `به‌روزرسانی ساختار دیتابیس در مرحله‌ی «${m.name}» ناموفق بود و ناتمام ماند.\n` +
-          `فایل دیتابیس: ${file}\n` +
-          `جزئیات فنی: ${String(e?.message ?? e).split('\n')[0]}\n\n` +
-          'پیشنهاد: از فایل دیتابیس یک نسخه‌ی پشتیبان بگیرید و دوباره برنامه را باز کنید. ' +
-          'اگر مشکل تکرار شد، متن همین پیام را نگه دارید.'
-      )
+      report.skipped.push(...skippedThisAttempt)
+      break
     }
     report.applied.push(m.name)
   }
