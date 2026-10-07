@@ -38,6 +38,7 @@ import { runPrintDiagnose } from '../print/diagnose'
 // نشست ۲۲۲ · فاز ۵ — دروازه‌ی مسیر RAW (بخش ۷.۱ طرح)
 import { assertRawMethodAllowed } from '../print/raw/gate'
 import { runPrintTestPage } from '../print/testPage'
+import { runPrintSampleInvoice } from '../print/sampleInvoice'
 // نشست ۲۲۲ · فاز ۵ — مسیر خام (RAW): TSPL برای لیبل، ESC/POS برای رسید
 import { assertRawNotDialog, isRawMethod, printMaybeRaw } from '../print/raw/route'
 import { mmToPrinterDots, printTsplRows } from '../print/raw'
@@ -1168,6 +1169,11 @@ export function registerIpcHandlers(): void {
    * خواندن قالب و اندازه‌ی کاغذ همه سمت main انجام می‌شود.
    */
   handle(IPC.printTestPage, (p) => runPrintTestPage(p ?? {}))
+  /**
+   * «چاپ فاکتور نمونه» کارت‌های تکی/عمده — فاکتور واقعی با داده‌ی نمونه (نه برگه‌ی
+   * کالیبراسیون). resolver، روش ذخیره‌شده و موتور همان مسیر فاکتور واقعی است.
+   */
+  handle(IPC.printSampleInvoice, (p) => runPrintSampleInvoice(p ?? {}))
 
   // =======================================================================
   // جلسه ۱۷ — بندهای ۱ تا ۶

@@ -653,9 +653,13 @@ export const printService = {
     return { paymentId }
   },
 
-  /** نمونه‌ی رسید برای پیش‌نمایش زنده‌ی پنل تنظیمات (بدون نیاز به فاکتور واقعی). */
-  sampleData(tpl: ReceiptTemplate): ReceiptData {
-    return {
+  /**
+   * نمونه‌ی رسید برای پیش‌نمایش زنده‌ی پنل تنظیمات (بدون نیاز به فاکتور واقعی).
+   * پروفایل `WHOLESALE` همان نمونه است به‌اضافه‌ی پرداخت جزئی، تا سطرهای «مبلغ
+   * پرداختی» و «مانده حساب» فاکتور عمده هم دیده/چاپ شوند. غایب ⇒ همان نمونه‌ی قبلی.
+   */
+  sampleData(tpl: ReceiptTemplate, profile: ReceiptProfile = 'RETAIL'): ReceiptData {
+    const base: ReceiptData = {
       receiptNo: 1024,
       dateJalali: jalaliToday(),
       time: toClock(new Date()),
@@ -680,6 +684,13 @@ export const printService = {
       returnCode: 'K7M4QP',
       returnCodeExpiresJalali: jalaliToday()
     }
+    if (profile !== 'WHOLESALE') return base
+    return {
+      ...base,
+      customerName: 'مشتری عمده‌ی نمونه',
+      payments: [{ label: 'نقدی', amount: 10000000 }],
+      paidTotal: 10000000
+    }
   },
 
   /**
@@ -688,12 +699,19 @@ export const printService = {
    * قبل از ذخیره ببیند.
    */
   async previewHtml(
-    input: { template?: Partial<ReceiptTemplate>; invoiceId?: number | null; paidTotal?: number | null } = {}
+    input: {
+      template?: Partial<ReceiptTemplate>
+      invoiceId?: number | null
+      paidTotal?: number | null
+      /** پروفایل نمونه (کارت «فاکتور عمده»)؛ غایب ⇒ `RETAIL` مثل قبل. */
+      profile?: 'RETAIL' | 'WHOLESALE'
+    } = {}
   ) {
     const tpl = { ...(await settingsService.receiptTemplate()), ...(input.template ?? {}) }
     if (input.invoiceId) return this.invoiceHtml(input.invoiceId, input.template, input.paidTotal ?? null)
-    const data = await this.withBarcode(this.sampleData(tpl), tpl)
-    return receiptHtml(data, tpl)
+    const profile: ReceiptProfile = input.profile === 'WHOLESALE' ? 'WHOLESALE' : 'RETAIL'
+    const data = await this.withBarcode(this.sampleData(tpl, profile), tpl)
+    return receiptHtml(data, tpl, profile)
   },
 
   /**

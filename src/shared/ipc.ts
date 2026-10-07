@@ -340,6 +340,12 @@ export const IPC = {
    * ورودی هیچ قالبی ندارد: تنظیمات *ذخیره‌شده* سمت main خوانده می‌شود.
    */
   printTestPage: 'print:testPage',
+  /**
+   * «چاپ فاکتور نمونه» کارت‌های تکی/عمده: یک رسید *واقعی* با داده‌ی نمونه‌ی
+   * همان پیش‌نمایش (`printService.previewHtml`) و تنظیمات ذخیره‌شده، از همان
+   * موتور فاکتور واقعی (`printMaybeRaw`). برگه‌ی کالیبراسیون همچنان `printTestPage` است.
+   */
+  printSampleInvoice: 'print:sampleInvoice',
   barcodePng: 'barcode:png',
 
   // مدیر (رمز تنظیمات / کالاها / فاکتور خرید و «نشست مدیر»)
