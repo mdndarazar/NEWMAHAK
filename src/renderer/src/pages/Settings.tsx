@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — کارت‌های چاپگر و بخش پیشرفته‌ی تب چاپ
@@ -302,6 +302,13 @@ export default function Settings() {
   const [lockBusy, setLockBusy] = useState('')
   const [busy, setBusy] = useState(false)
   const [dirty, setDirty] = useState(false)
+  /**
+   * نام چاپگرِ رسید/لیبل در لحظه‌ی بارگذاری (یا آخرین ذخیره‌ی موفق) صفحه. save() با مقایسه‌ی نام فعلیِ
+   * فرم با این مقدار می‌فهمد کاربر *خودش* چاپگر را روی همین صفحه عوض کرده یا نه (ضد‌کهنگیِ mergeFreshPrinter
+   * فقط برای حالت «دست‌نخورده» می‌ماند).
+   */
+  const receiptPrinterAtLoad = useRef('')
+  const labelPrinterAtLoad = useRef('')
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   // ---- بکاپ و بازگردانی ----
@@ -417,10 +424,14 @@ export default function Settings() {
         /** جلسه ۱۹ · بند ۹ — افست دستی ساعت رسمی */
         time: OfficialTimeConfig
       }>(CH.settingsBundle)
-      setReceipt({ ...DEFAULT_RECEIPT_TEMPLATE, ...b.receipt })
+      const loadedReceipt = { ...DEFAULT_RECEIPT_TEMPLATE, ...b.receipt }
+      const loadedLabel = parseLabelTemplate(b.label)
+      receiptPrinterAtLoad.current = loadedReceipt.printerName
+      labelPrinterAtLoad.current = loadedLabel.printerName
+      setReceipt(loadedReceipt)
       setSale({ ...DEFAULT_SALE_DEFAULTS, ...b.sale })
       setShift(parseShiftConfig(b.shift))
-      setLabel(parseLabelTemplate(b.label))
+      setLabel(loadedLabel)
       setSecurity(parseSecurityConfig(b.security))
       // مقدار خراب یا نبودِ کلید ⇒ پیش‌فرض FREE (رفتار نسخه‌های قبل)، بدون کرش
       setDiscount(parseDiscountPolicy(b.discount))
@@ -1006,14 +1017,22 @@ export default function Settings() {
        * در پنجره‌ی انتخاب چاپگر «ذخیره به‌عنوان پیش‌فرض» زده، این ذخیره‌ی کهنه
        * آن انتخاب را برنگرداند (همان نقش mergeFreshPosToggles برای چاپگر).
        */
-      const receiptToSave = mergeFreshPrinter(receipt, { ...DEFAULT_RECEIPT_TEMPLATE, ...fresh.receipt })
-      const labelToSave = mergeFreshPrinter(label, { ...DEFAULT_LABEL_TEMPLATE, ...fresh.label })
+      const receiptToSave =
+        receipt.printerName !== receiptPrinterAtLoad.current
+          ? receipt // کاربر خودش روی همین صفحه چاپگر را عوض کرده ⇒ انتخاب صفحه ذخیره شود
+          : mergeFreshPrinter(receipt, { ...DEFAULT_RECEIPT_TEMPLATE, ...fresh.receipt })
+      const labelToSave =
+        label.printerName !== labelPrinterAtLoad.current
+          ? label
+          : mergeFreshPrinter(label, { ...DEFAULT_LABEL_TEMPLATE, ...fresh.label })
       /**
        * ⚠️ این خط عمداً یک‌خطی و با همین کلیدها/ترتیب می‌ماند: تست
        * `fix-s168-settings-stale-pos-toggles` این payload را به‌صورت متن دقیق
        * بررسی می‌کند (قرارداد «صفحه‌ی کهنه نباید مقدار POS را برگرداند»).
        */
       await call(CH.settingsSaveBundle, { receipt: receiptToSave, sale: saleToSave, shift, label: labelToSave, security, time, managerPassword: bundlePw })
+      receiptPrinterAtLoad.current = receiptToSave.printerName
+      labelPrinterAtLoad.current = labelToSave.printerName
       setReceipt(receiptToSave)
       setLabel(labelToSave)
       setSale(saleToSave)
@@ -1618,7 +1637,8 @@ export default function Settings() {
   }, [tab])
 
   const resetReceipt = () => {
-    setReceipt(DEFAULT_RECEIPT_TEMPLATE)
+    // نام چاپگر جزو «قالب» نیست؛ ریست قالب نباید آن را خالی کند (همان رفتار قبلِ ذخیره: چاپگر دست‌نخورده)
+    setReceipt((p) => ({ ...DEFAULT_RECEIPT_TEMPLATE, printerName: p.printerName }))
     setDirty(true)
     flash('قالب رسید به حالت پیش‌فرض برگشت (برای اعمال، ذخیره کنید).')
   }
