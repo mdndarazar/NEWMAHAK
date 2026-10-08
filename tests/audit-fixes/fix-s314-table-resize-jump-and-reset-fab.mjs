@@ -55,7 +55,9 @@ check('فاب: شناورِ بیرون از DOM React، ریست دوتایی، 
   /document\.body\.appendChild\(btn\)/.test(fab),
   /resetTableCols\(table\)/.test(fab) && /resetTableRows\(table\)/.test(fab),
   /document\.elementFromPoint/.test(fab),
-  /isHookManagedTable\(t\)/.test(fab),
+  // نشست ۳۱۵ — شکستِ عمدیِ قفل قدیمی: دورزدن جدول‌های هوک‌محور معکوس شد و
+  // حالا با `data-rzkey` پوشش داده می‌شوند (قفل نو در s315)
+  !/isHookManagedTable\(t\)/.test(fab),
   /className = 'tbl-fab'/.test(fab)
 ], [true, true, true, true, true])
 

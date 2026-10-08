@@ -19,6 +19,7 @@ import {
   normalizePlan,
   planHasNegative,
   storeLinesOf,
+  warehouseEntriesOf,
   /** جلسه ۵۰ · مرحله ۱-ب — ردیابی برداشت انبار مرکزی در سند تعویض */
   buildCentralWithdrawNote,
   centralWithdrawGroups,
@@ -3703,11 +3704,24 @@ export const salesService = {
      *
      * ⚠️ قفل خاموش ⇒ `assertPanelPassword` بی رمز `OPEN` می‌دهد (سیاست موجود
      * «قفل ماژول‌ها»، اینجا سیاست تازه‌ای اختراع نمی‌شود).
+     *
+     * نشست ۳۱۵ — دقیق‌سازی گیت رمز (هم‌راستا با رندرر و با متنِ خودِ راهنمای
+     * پنجره): رمز مدیر فقط وقتی لازم است که برنامه‌ی کسر مبدأی **غیر از انبار
+     * فروشگاه** داشته باشد (`warehouseEntriesOf`). برنامه‌ی «همه از انبار
+     * فروشگاه» — یعنی همان سناریوی رایج «کالا فیزیکی آمده ولی انباردار موجودی
+     * سیستم را عقب انداخته» — با رضایت دکمه‌ایِ فروشنده تا منفی ثبت می‌شود؛
+     * «موجودی کافی نیست» در این مسیر همیشه هشدار بوده، نه مانع. قبلاً رمز برای
+     * *هر* برنامه‌ی کسر در فروش تکی لازم بود و ثبتِ واقعیِ فروش بی‌رمز رد
+     * می‌شد (فاکتور ساخته نمی‌شد و انبار منفی نمی‌رفت — درحالی‌که UI دیگر
+     * برای مسیر فروشگاهی رمز نمی‌خواست و کاربر با بن‌بست مواجه می‌شد).
+     * خط دفاع سرویسیِ انتخاب انبار *دیگر* دست‌نخورده باقی می‌ماند.
      * =====================================================================
      */
-    const posPlanRequested =
-      deductInventory && normalizePlan((input as any).stockPlan) != null && orderType === OrderType.INTERNAL
-    if (posPlanRequested)
+    const posRequestedPlan =
+      deductInventory && orderType === OrderType.INTERNAL ? normalizePlan((input as any).stockPlan) : null
+    const posPlanRequested = posRequestedPlan != null
+    const posPlanHasForeignSource = posPlanRequested && warehouseEntriesOf(posRequestedPlan).length > 0
+    if (posPlanHasForeignSource)
       await assertPanelPassword(
         PANEL_KEYS.posCentralWithdrawToggle,
         input.panelPassword ?? null,

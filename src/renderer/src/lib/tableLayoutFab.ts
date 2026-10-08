@@ -17,9 +17,14 @@
  * ریست، اگر چیزی برای ریست کردن نمانده باشد دکمه هم محو می‌شود.
  *
  * ⚠️ دکمه فقط وقتی دیده می‌شود که برای همان جدول واقعاً چیزی برای برگرداندن
- * وجود داشته باشد (چیدمان دستی فعال). جدول‌هایی که هوک React خودشان
- * مدیریتشان می‌کند (گزارشات فروش، جدول اقلام پنل فروش) نادیده گرفته می‌شوند —
- * همان قاعده‌ی colResize (دو منطق روی یک جدول نمی‌نشینند).
+ * وجود داشته باشد (چیدمان دستی فعال).
+ * ⚠️ جدول‌های هوک‌محور (گزارشات فروش، جدول اقلام پنل فروش) — کلید هوک روی
+ * خودِ جدول (`data-rzkey`) نشسته و ریست از رجیستری زنده‌ی هوک فراخوانده
+ * می‌شود؛ پس آن‌ها هم دکمه دارند بدون اینکه دو منطقِ کشیدن روی یک جدول
+ * بنشیند (کشیدن همان دایمی هوک می‌ماند؛ colResize همچنان دورشان می‌زند).
+ * ⚠️ نشست ۳۱۵ — شکل دکمه «متن‌دار» شد (نه فلشِ کوچک)، و محلش به کادر دید
+ * گیر انداخته می‌شود تا با بزرگ‌کردنِ بیش‌ازحدِ جدول هم پیدا کردنش ممکن
+ * بماند.
  * ⚠️ پوشانده‌شدن با مودال: اگر روی جدول یک overlay تمام‌صفحه (مودال z-50)
  * باز باشد، elementFromPoint آن را تشخیص می‌دهد و دکمه مخفی می‌ماند؛ دکمه‌ی
  * جدولی که خودش داخل همان مودال است دیده می‌شود و با z-index بالاتر از مودال
@@ -27,11 +32,12 @@
  * ===========================================================================
  */
 
-import { isHookManagedTable, resetTableCols, tableColsCustomized } from './colResize'
+import { resetTableCols, tableColsCustomized } from './colResize'
 import { resetTableRows, tableRowsCustomized } from './rowResize'
+import { getHookColsByKey } from '../components/ResizableColumns'
 
-const BTN_TEXT = '↺'
-const BTN_TITLE = 'برگشت اندازه‌ی ستون‌ها و ارتفاع ردیف‌های این جدول به حالت پیش‌فرض'
+const BTN_TEXT = '↺ پیش‌فرض'
+const BTN_TITLE = 'برگشت اندازه‌ی ستون‌ها و ارتفاع ردیف‌های این جدول به حالت پیش‌فرض (یک کلیک)'
 /** بالاتر از بک‌دراپ مودال‌ها (z-50) تا دکمه‌ی جدولِ داخل مودال هم دیده شود */
 const Z = '60'
 
@@ -39,8 +45,18 @@ const fabs = new Map<HTMLTableElement, HTMLButtonElement>()
 let syncing = false
 let queued = false
 
-/** چیدمان دستی فعال دارد؟ (ستون یا ردیف — هرکدام کافی است) */
-const customized = (t: HTMLTableElement): boolean => tableColsCustomized(t) || tableRowsCustomized(t)
+/** کلید هوک React روی جدول‌های هوک‌محور (گزارشات فروش، اقلام پنل فروش) */
+const hookKeyOf = (t: HTMLTableElement): string | null => t.getAttribute('data-rzkey')
+
+/**
+ * چیدمان دستی فعال دارد؟ (ستون یا ردیف — هرکدام کافی است)
+ * جدول‌های هوک‌محور از رجیستری زنده‌ی هوک خوانده می‌شوند (نه مخزن colResize).
+ */
+const customized = (t: HTMLTableElement): boolean => {
+  const hk = hookKeyOf(t)
+  if (hk) return (getHookColsByKey(hk)?.customized() ?? false) || tableRowsCustomized(t)
+  return tableColsCustomized(t) || tableRowsCustomized(t)
+}
 
 function makeFab(table: HTMLTableElement): HTMLButtonElement {
   const btn = document.createElement('button')
@@ -53,7 +69,9 @@ function makeFab(table: HTMLTableElement): HTMLButtonElement {
   btn.addEventListener('click', (e) => {
     e.preventDefault()
     e.stopPropagation()
-    resetTableCols(table)
+    const hk = hookKeyOf(table)
+    if (hk) getHookColsByKey(hk)?.reset()
+    else resetTableCols(table)
     resetTableRows(table)
     sync()
   })
@@ -75,11 +93,11 @@ function sync(): void {
   try {
     // جدولِ حذف‌شده یا ریست‌شده ⇒ دکمه‌اش هم برود
     for (const [t] of fabs) {
-      if (!document.contains(t) || isHookManagedTable(t) || !customized(t)) dropFab(t)
+      if (!document.contains(t) || !customized(t)) dropFab(t)
     }
     const tables = Array.from(document.querySelectorAll<HTMLTableElement>('table.tbl'))
     for (const t of tables) {
-      if (isHookManagedTable(t) || !customized(t)) continue
+      if (!customized(t)) continue
       const r = t.getBoundingClientRect()
       // جدول کوچک/پنهان یا بیرون از دید ⇒ دکمه‌ای نما
       if (
@@ -107,8 +125,16 @@ function sync(): void {
       fabs.set(t, btn)
       btn.style.visibility = ''
       btn.style.zIndex = Z
-      btn.style.top = `${Math.max(2, r.top + 3)}px`
-      btn.style.left = `${Math.max(2, r.left + 3)}px`
+      /**
+       * دکمه همیشه داخل کادر دید بماند: اگر کاربر جدول را بیش‌ازحد بزرگ کرده
+       * باشد و گوشه‌ی واقعی جدول بیرون از صفحه رفته، دکمه به لبه‌ی نزدیکِ
+       * صفحه می‌چسبد تا بازگرداندن ناب شدن جدول همیشه یک‌کلیک فاصله داشته
+       * باشد (نکته‌ی مهمِ گزارش صاحب‌کار).
+       */
+      const top = Math.min(Math.max(r.top + 3, 2), Math.max(2, window.innerHeight - 28))
+      const left = Math.min(Math.max(r.left + 3, 2), Math.max(2, window.innerWidth - 120))
+      btn.style.top = `${top}px`
+      btn.style.left = `${left}px`
     }
   } finally {
     syncing = false
