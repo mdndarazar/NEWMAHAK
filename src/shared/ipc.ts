@@ -173,6 +173,9 @@ export const IPC = {
   creditPdf: 'credit:pdf',
   /** HTML پیش‌نمایش سند اعتبار (بدون چاپ) */
   creditPreviewHtml: 'credit:previewHtml',
+  /** نشست ۳۱۷ — پیش‌نمایش/چاپ آزمایشی چاپگر در کارت «چاپ سند اعتبار» */
+  creditSampleHtml: 'credit:sampleHtml',
+  creditSamplePrint: 'credit:samplePrint',
   /** فهرست فاکتورهای نسیه (تسویه‌نشده/جزئی) + تسویه‌های نسیه‌ی بازه‌های قبل */
   saleCreditList: 'sale:credit:list',
   saleReportSummary: 'sale:report:summary',

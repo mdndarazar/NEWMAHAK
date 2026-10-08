@@ -37,6 +37,7 @@ import {
   MIN_CREDIT_CODE_LENGTH,
   assessCodeSpace,
   creditAlphabet,
+  creditPaperSize,
   isCreditReprint,
   normalizeCreditPrefix,
   normalizeRestrictScope,
@@ -1358,6 +1359,42 @@ export const CREDIT_PAPER_OPTIONS: { value: string; label: string }[] = [
   CreditPaper.T58,
   CreditPaper.CUSTOM
 ].map((k) => ({ value: k, label: CREDIT_PAPER_LABELS[k] ?? k }))
+
+// ===== نشست ۳۱۷ · طرح کلاد (برنده) — کارت «چاپ سند اعتبار» (§۷ + §۱۳) =====
+
+/** گزینه‌های اندازه‌ی فونت چاپ سند (مثل سایه‌های فاکتور/لیبل: ثابت و خوانا). */
+export const CREDIT_FONT_SIZE_OPTIONS: { value: string; label: string }[] = [
+  { value: '8', label: 'ریز (۸)' },
+  { value: '10', label: 'کوچک (۱۰)' },
+  { value: '11', label: 'پیش‌فرض (۱۱)' },
+  { value: '12', label: 'متوسط (۱۲)' },
+  { value: '14', label: 'درشت (۱۴)' },
+  { value: '16', label: 'خیلی درشت (۱۶)' }
+]
+
+/**
+ * برچسب کوتاهِ کاغذ/فونت/حاشیه‌ی فعلی برای نمایش داخل کارت و هشدار ویژگی‌ها.
+ * (شبیه سربرگِ «چاپ: فونت X · حاشیه Y×Zmm · کاغذ D»)
+ */
+export function creditPrintSummaryLabel(form: CreditSettings): string {
+  return `فونت ${form.printFontPx}px · حاشیه ${form.printMarginYMm}×${form.printMarginXMm}mm · ${CREDIT_PAPER_LABELS[form.paper] ?? form.paper}`
+}
+
+/**
+ * هشدارهای نمایشی کارت چاپ سند (صرفاً اخطار UI؛ clamp نهایی همیشه در main
+ * انجام می‌شود — §۶: هیچ‌کدام سند واقعی چاپ نمی‌کنند).
+ */
+export function creditPrintWarnings(form: CreditSettings): string[] {
+  const out: string[] = []
+  const width = creditPaperSize(form.paper, form.customWidthMm, form.customHeightMm).widthMm
+  if (form.printFontPx >= 14 && width < 105)
+    out.push('فونت درشت روی کاغذ باریک (کمتر از A6) ممکن است سطرها بپیچد یا از عرض بیرون بزند — پیش‌نمایش را ببینید.')
+  if (form.printMarginXMm >= 8 && width <= 80)
+    out.push('حاشیه‌ی افقی پهن روی رول حرارتی، عرض مفید لایه را بیش از حد کوچک می‌کند — پیش‌نمایش را ببینید.')
+  if (form.printFontPx <= 8)
+    out.push('فونت ریز ممکن است روی برگه‌ی باطل‌شده/نمونه هم خوانا نباشد — رعایت کنید هر سند بدون استثنا خوانا شود.')
+  return out
+}
 
 export const CREDIT_EXPIRY_MODE_OPTIONS: { value: IssueDraft['expiryMode']; label: string }[] = [
   { value: 'default', label: 'پیش‌فرض همین نوع اعتبار' },
