@@ -25,6 +25,7 @@ import PriceAdjust from './pages/PriceAdjust'
 import CreditManagement from './pages/CreditManagement'
 import { enableRowResize } from './lib/rowResize'
 import { enableColResize } from './lib/colResize'
+import { enableTableLayoutFab } from './lib/tableLayoutFab'
 import { PANEL_KEYS, type PanelKey } from '@shared/panels'
 
 /**
@@ -268,6 +269,11 @@ const router = createHashRouter([
  */
 enableColResize()
 enableRowResize()
+/**
+ * دکمه‌ی شناور «↺ برگشت به پیش‌فرض» برای هر جدولی که چیدمان دستی دارد
+ * (ستون با colResize، ردیف با rowResize) — بدون دست‌زدن به هیچ صفحه‌ای.
+ */
+enableTableLayoutFab()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

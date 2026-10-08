@@ -58,6 +58,25 @@ body.col-resizing-hot, body.col-resizing-hot * { cursor: col-resize !important; 
 /* سرستونِ جدولی که عرض دستی دارد، متن بلندش را با «…» کوتاه می‌کند (نه شکستن) */
 .tbl[data-colw] th { overflow: hidden; text-overflow: ellipsis; }
 
+/* دکمه‌ی شناور «↺ برگشت به پیش‌فرض» (lib/tableLayoutFab.ts) — گوشه‌ی بالای
+   چپ جدولی که چیدمان دستی دارد می‌نشیند و یک‌کلیک همه چیز را خودکار می‌کند. */
+.tbl-fab {
+  position: fixed;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: rgba(30, 41, 59, 0.78);
+  color: #fff;
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+.tbl-fab:hover { background: rgba(15, 23, 42, 0.95); }
+
 /* ===========================================================================
    بند ۵ — «جدول گزارش کامل، با اسکرول ماوس»
 

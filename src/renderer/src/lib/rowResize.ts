@@ -82,6 +82,20 @@ const rowsOf = (tr: HTMLTableRowElement): HTMLTableRowElement[] => {
   return table ? (Array.from(table.querySelectorAll('tbody > tr')) as HTMLTableRowElement[]) : [tr]
 }
 
+// ---------------------------------------------------------------------------
+// API برای دکمه‌ی «↺ برگشت به پیش‌فرض» (tableLayoutFab.ts)
+// ---------------------------------------------------------------------------
+
+/** آیا حداقل یک ردیف این جدول ارتفاع دستی گرفته است؟ */
+export function tableRowsCustomized(table: HTMLTableElement): boolean {
+  return !!table.querySelector('tr[data-row-h]')
+}
+
+/** پاک‌کردن ارتفاع دستیِ همه‌ی ردیف‌های این جدول (برگشت به خودکار). */
+export function resetTableRows(table: HTMLTableElement): void {
+  table.querySelectorAll<HTMLTableRowElement>('tr[data-row-h]').forEach((tr) => applyHeight(tr, null))
+}
+
 /** یک بار در main.tsx صدا زده می‌شود. */
 export function enableRowResize(): void {
   if ((window as any).__rowResizeReady) return
