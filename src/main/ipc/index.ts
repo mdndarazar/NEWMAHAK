@@ -39,6 +39,8 @@ import { runPrintDiagnose } from '../print/diagnose'
 import { assertRawMethodAllowed } from '../print/raw/gate'
 import { runPrintTestPage } from '../print/testPage'
 import { runPrintSampleInvoice } from '../print/sampleInvoice'
+// نشست ۳۱۷ — نمونه‌ی چاپ سند اعتبار (ایمن: بدون DB-write/شمارنده/audit)
+import { creditSampleHtml, runCreditSamplePrint } from '../print/sampleCredit'
 // نشست ۲۲۲ · فاز ۵ — مسیر خام (RAW): TSPL برای لیبل، ESC/POS برای رسید
 import { assertRawNotDialog, isRawMethod, printMaybeRaw } from '../print/raw/route'
 import { mmToPrinterDots, printTsplRows } from '../print/raw'
@@ -704,6 +706,15 @@ export function registerIpcHandlers(): void {
   handle(IPC.creditPreviewHtml, async (p) => {
     await assertCreditRead('پیش‌نمایش چاپی اعتبار خرید')
     return printService.creditHtml(Number(p?.id ?? 0))
+  })
+  // نشست ۳۱۷ — پیش‌نمایش/چاپ آزمایشی سند نمونه (کارت «چاپ سند اعتبار»)
+  handle(IPC.creditSampleHtml, async (p) => {
+    await assertCreditRead('پیش‌نمایش نمونه‌ی چاپ سند اعتبار خرید')
+    return creditSampleHtml(p ?? {})
+  })
+  handle(IPC.creditSamplePrint, async (p) => {
+    await assertCreditRead('چاپ آزمایشی سند اعتبار خرید')
+    return runCreditSamplePrint(p ?? {})
   })
   // ---- تب «نسیه» گزارشات فروش (بخش ۷) ----
   handle(IPC.saleCreditList, (p) => salesService.creditList(p ?? {}))

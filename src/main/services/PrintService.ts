@@ -11,6 +11,8 @@ import { printHtml, listPrinters, pdfFromHtml, isPrintOutcomeUnknown } from '../
 import { receiptPageSpec, type ReceiptProfile } from '@shared/printSpec'
 // نشست ۲۲۲ · فاز ۳ — resolver مشترک چاپگر (نام فقط در main اعتبارسنجی می‌شود)
 import { resolvePrintTargetName } from '../print/target'
+// نشست ۳۱۷ — مشخصات چاپ اعتبار (کاغذ + layout) از یک نقطه‌ی واحد (گارد ایستا در سوت s317)
+import { creditRenderSpec, creditPerPageWith } from '../print/creditSpec'
 // نشست ۲۲۲ · فاز ۵ — انتخاب موتور چاپ (Chromium یا خام/RAW) در یک نقطه
 import { printMaybeRaw } from '../print/raw/route'
 import {
@@ -39,7 +41,6 @@ import {
   CreditSource,
   CreditStatus,
   creditCopyPlan,
-  creditPaperSize,
   creditPdfAuditOnly,
   creditPdfMarkPlan,
   creditPdfRenderPlan,
@@ -53,7 +54,6 @@ import {
   applyCreditPrintCap,
   CREDIT_PRINT_MAX_DOCS,
   cleanCreditIds,
-  creditBatchPerPage,
   creditPrintPlan
 } from '@shared/creditPrint'
 import { audit } from './AuditService'
@@ -881,7 +881,7 @@ export const printService = {
     const tpl = { ...(await settingsService.receiptTemplate()), ...(override ?? {}) }
     const settings = await readCreditSettings()
     const data = await this.creditDocDataFor(id, tpl)
-    return creditDocHtml(data, tpl, creditPaperSize(settings.paper, settings.customWidthMm, settings.customHeightMm))
+    return creditDocHtml(data, tpl, creditRenderSpec(settings))
   },
 
   /**
@@ -924,7 +924,7 @@ export const printService = {
     }
     const tpl = await settingsService.receiptTemplate()
     const settings = await readCreditSettings()
-    const paper = creditPaperSize(settings.paper, settings.customWidthMm, settings.customHeightMm)
+    const paper = creditRenderSpec(settings)
     const data = await this.creditDocDataFor(id, tpl)
     /**
      * بند ۷ (جلسه ۳۱) — §۱۳: هر کاغذ *دوباره* رندر می‌شود.
@@ -1074,10 +1074,11 @@ export const printService = {
   }> {
     const tpl = await settingsService.receiptTemplate()
     const settings = await readCreditSettings()
-    const paper = creditPaperSize(settings.paper, settings.customWidthMm, settings.customHeightMm)
+    const paper = creditRenderSpec(settings)
     const { docs, ids, total, capped } = await this.creditBatchDocs(input)
     // رسید حرارتی (ارتفاع آزاد) در هر صفحه فقط یک سند می‌گیرد — §۲۱: ورودی کلمپ می‌شود
-    const perPage = creditBatchPerPage(paper, input?.perPage)
+    // نشست ۳۱۷ — با فونت درشت‌تر، creditEffectivePerPage تعداد صفحه‌جا را کم می‌کند
+    const perPage = creditPerPageWith(paper, input?.perPage)
     return { html: creditBatchHtml(docs, tpl, paper, perPage), ids, total, capped, perPage }
   },
 
@@ -1172,7 +1173,7 @@ export const printService = {
     userId?: number | null
   }): Promise<{ saved: boolean; file: string | null; count: number; total: number; capped: boolean }> {
     const settings = await readCreditSettings()
-    const paper = creditPaperSize(settings.paper, settings.customWidthMm, settings.customHeightMm)
+    const paper = creditRenderSpec(settings)
     const plan = creditPrintPlan(input, paper)
     const single = plan.mode === 'single'
     /**
