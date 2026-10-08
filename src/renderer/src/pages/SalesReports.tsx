@@ -9,6 +9,7 @@ import { pageOfOutput, readAllReportPages, type ReadAllPagedResult } from '../li
 import ReportFilterBar, { channelsLabel, makeFilters, toServiceFilter, type ReportFilters } from '../components/ReportFilterBar'
 import ManagerGate from '../components/ManagerGate'
 import AccountingBlocks, { type DrillTarget } from '../components/AccountingBlocks'
+import BridgeDiagnosticsModal from '../components/BridgeDiagnosticsModal'
 import ReportExtraTables from '../components/ReportExtraTables'
 /**
  * جلسه ۱۸ — بدنه‌ی سه تب تازه. هر سه، کامپوننت‌های *مستقل*اند تا این فایل
@@ -693,6 +694,8 @@ export default function SalesReports() {
   const [summaryOn, setSummaryOn] = useState<SummaryPartKey[]>([...ALL_SUMMARY_PARTS])
   /** پنجره‌ی «پرداختی‌ها / اقساط» برای ثبت پرداختی نسیه‌ی یک فاکتور */
   const [paymentsFor, setPaymentsFor] = useState<number | null>(null)
+  /** نشست ۳۱۸ — نمای تشخیص پل تطبیق؛ باز-بسته شدن آن هیچ‌وقت گزارش را بازنمی‌خواند. */
+  const [bridgeDiagOpen, setBridgeDiagOpen] = useState(false)
   const [methods, setMethods] = useState<{ id: number; label: string; kind?: string | null }[]>([])
   /**
    * قفل مستقل تب نسیه: تا باز نشده، حتی *خوانده* هم نمی‌شود (نه فقط پنهان
@@ -2427,6 +2430,20 @@ export default function SalesReports() {
               کل {faDigits(report.page!.totalCount)} ردیف حساب شده‌اند، نه روی همین صفحه.
             </div>
           )}
+          {/** نشست ۳۱۸ — تک‌دکمه‌ی ورود «نمای تشخیص پل»: فقط روی وضعیت
+               report.accounting.bridge.balanced === false (نه متن‌خوانی از هشدارها). */}
+          {report.accounting?.bridge && report.accounting.bridge.balanced === false && (
+            <div className="mt-2 flex items-center gap-2 rounded border-2 border-rose-400 bg-rose-50 px-3 py-2 text-sm text-rose-900">
+              <span>پل تطبیق بسته نیست — {money(Math.abs(report.accounting.bridge.unexplained))} ریال بدون توضیح مانده است.</span>
+              <button
+                className="btn border-rose-500 text-rose-800 hover:bg-rose-100"
+                onClick={() => setBridgeDiagOpen(true)}
+                title="نمایش راهنمای ردیف‌به‌ردیف (فقط خواندنی؛ باز کردنش رمز می‌خواهد)"
+              >
+                نمای تشخیص پل…
+              </button>
+            </div>
+          )}
           <AccountingBlocks
             statements={report.accounting ?? null}
             warnings={report.warnings ?? []}
@@ -2549,6 +2566,13 @@ export default function SalesReports() {
       )}
 
       {/* ---------- ثبت پرداختی نسیه (همان پنجره‌ی پرداختی‌ها / اقساط) ---------- */}
+      {/* نشست ۳۱۸ — نمای تشخیص پل تطبیق؛ scope همان فیلتر فعلی صفحه است. */}
+      <BridgeDiagnosticsModal
+        open={bridgeDiagOpen}
+        onClosed={() => setBridgeDiagOpen(false)}
+        scope={toServiceFilter(filters)}
+        pageUnexplained={report?.accounting?.bridge ? report.accounting.bridge.unexplained : null}
+      />
       <InvoicePaymentsModal
         open={paymentsFor != null}
         invoiceId={paymentsFor}
