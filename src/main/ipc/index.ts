@@ -1,5 +1,6 @@
 import { ipcMain } from 'electron'
 import { cardTransferService } from '../services/CardTransferService'
+import { bridgeDiagnosticsService } from '../services/bridgeDiagnosticsService'
 import { pendingRestockService } from '../services/PendingRestockService'
 import { stockCountService } from '../services/StockCountService'
 import { staffReportService } from '../services/StaffReportService'
@@ -720,6 +721,13 @@ export function registerIpcHandlers(): void {
   handle(IPC.saleCreditList, (p) => salesService.creditList(p ?? {}))
   handle(IPC.saleReportSummary, (p) => salesService.summary(p ?? {}))
   handle(IPC.saleReportRows, (p) => salesService.reportRows(p ?? {}))
+  // نشست ۳۱۸ — نمای تشخیص پل تطبیق (طرح برنده «کامیلا»، فاز ۲-۴)
+  // open همیشه رمز تازه می‌خواهد (strict)؛ بقیه با نشست باز همان پنل. actor از main.
+  handle(IPC.saleReportBridgeDiagOpen, (p) => bridgeDiagnosticsService.open((p as any)?.scope ?? {}, (p as any)?.password))
+  handle(IPC.saleReportBridgeDiagSources, (p) =>
+    bridgeDiagnosticsService.sources((p as any)?.scope ?? {}, (p as any)?.rowKey, (p as any)?.skip, (p as any)?.take))
+  handle(IPC.saleReportBridgeDiagNotes, (p) => bridgeDiagnosticsService.notes((p as any)?.scope ?? {}))
+  handle(IPC.saleReportBridgeDiagNoteAdd, (p) => bridgeDiagnosticsService.noteAdd((p as any)?.scope ?? {}, (p as any)?.text))
   handle(IPC.saleReportByShift, (p) => salesService.reportByShift(p ?? {}))
   handle(IPC.saleReportItems, (p) => salesService.reportItems(p ?? {}))
   // ---- افزوده‌های جلسه ۱۵ ----

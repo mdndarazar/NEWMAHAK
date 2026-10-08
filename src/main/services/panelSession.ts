@@ -107,3 +107,28 @@ export async function assertPanelUnlocked(panel: string, action: string): Promis
 
 /** کلید پنلی که کانال‌های اعتبار خرید زیر آن قفل می‌شوند. */
 export const CREDIT_READ_PANEL = PANEL_KEYS.creditManagement
+
+/**
+ * ===========================================================================
+ * نشست ۳۱۸ · طرح برنده (کامیلا) — فاز ۲ — نمای تشخیص پل تطبیق.
+ *
+ * unlike `assertPanelUnlocked` که «با خاموش بودن قفل» هم رد می‌شود، این نسخه
+ * *همیشه* رمز تازه می‌خواهد (همان `assertPanelPasswordStrict`) و بعد نشست را
+ * ثبت می‌کند، تا کانال‌های بعدیِ همان نما (`sources` / `notes`) بدون رمز
+ * کار کنند. منظور از «انحصاری» این است: باز کردن نما هر بار رمز می‌خواهد،
+ * حتی اگر قفل پنل خاموش باشد (بخش خواندنیِ حساس).
+ *
+ * ⚠️ به هیچ تابع موجود دست نخورده؛ TTL همان ttl این ماژول است (قابل‌کم‌شونده
+ *    در تست با `applyPanelSessionTtlMs`).
+ * ===========================================================================
+ */
+export async function assertPanelUnlockedStrict(
+  panel: string,
+  password: string | null | undefined,
+  action: string
+): Promise<'MANAGER' | 'PANEL'> {
+  const { assertPanelPasswordStrict } = await import('./AuthService')
+  const scope = await assertPanelPasswordStrict(panel, password, action)
+  notePanelUnlocked(panel, scope)
+  return scope
+}

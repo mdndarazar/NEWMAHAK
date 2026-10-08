@@ -3141,3 +3141,89 @@ export interface SaleReportLimits {
  * ===========================================================================
  */
 export type { PendingRestockItem, PendingRestockSummary } from './pendingRestock'
+
+
+/**
+ * ===========================================================================
+ * نشست ۳۱۸-۱ · نمای تشخیص پل تطبیق (طرح برنده «کامیلا») — DTOهای IPC.
+ *
+ *   • نشان (BridgeDiagFlag) فقط خواص نمایشی است؛ همیشه «TENTATIVE» و هرگز در
+ *     حسابِ گزارش اثر ندارد. منطق ساختنش در src/shared/bridgeDiagnostics.ts است.
+ *   • BridgeDiagRow ≈ SaleBridgeRow + flags و hasMoreSources — هیچ فیلد عددی
+ *     گزارش را بازنویسی نمی‌کند (amount/sign/explainedTotal/unexplained همان‌اند).
+ *   • BridgeDiagView خروجی سرویس «sale:report:bridgeDiag:open» است؛ یادداشت‌ها
+ *     (فاز ۴) به‌صورت append-only از AuditLog می‌آیند.
+ * ===========================================================================
+ */
+
+export interface BridgeDiagFlag {
+  code:
+    | 'sign'               // جهت علامت unexplained — راهنمای کلی بالای نما
+    | 'largest'            // جزو بزرگ‌ترین ردیف‌های غیرصفر — پیشنهاد نقطه‌ی شروع
+    | 'equals-unexplained' // مبلغ ردیف دقیقاً برابر |باقیمانده‌ی بی‌توضیح| است
+    | 'date'               // تاریخ سند بیرون از بازه است / تاریخی ثبت نشده
+  text: string
+  certainty: 'TENTATIVE'
+}
+
+/** ردیف پل + نشان‌های تشخیصی (بدون هیچ تغییر عددی نسبت به گزارش پایه). */
+export interface BridgeDiagRow extends SaleBridgeRow {
+  flags: BridgeDiagFlag[]
+}
+
+/** یادداشت مدیر درباره‌ی نابرابری پل — append-only، متن خالص (فاز ۴). */
+export interface BridgeDiagNote {
+  id: number
+  createdAtIso: string
+  actorLabel: string
+  text: string
+}
+
+/** خروجی کامل نمای تشخیصی پل برای یک scope. */
+export interface BridgeDiagView {
+  period: SaleReportPeriod
+  /** لحظه‌ی محاسبه‌ی همین نما (برای بنر staleness در مودال). */
+  computedAtIso: string
+  bridge: {
+    target: number
+    explainedTotal: number
+    unexplained: number
+    balanced: boolean
+  }
+  /** راهنمای کلی بالای نما (جهت علامت و غیره). */
+  guide: BridgeDiagFlag[]
+  rows: BridgeDiagRow[]
+  notes: BridgeDiagNote[]
+}
+
+/** منابع یک ردیف پل در نمای تشخیص + نشان تاریخِ بیرون‌بازه. */
+export interface BridgeDiagRowSources {
+  rowKey: string
+  rowLabel: string
+  sources: Array<SaleBridgeSource & { flags: BridgeDiagFlag[] }>
+  totalCount: number | null
+}
+
+export interface BridgeDiagOpenResponse {
+  ok: boolean
+  view?: BridgeDiagView
+  message?: string
+}
+
+export interface BridgeDiagSourcesResponse {
+  ok: boolean
+  result?: BridgeDiagRowSources
+  message?: string
+}
+
+export interface BridgeDiagNotesResponse {
+  ok: boolean
+  notes?: BridgeDiagNote[]
+  message?: string
+}
+
+export interface BridgeDiagNoteAddResponse {
+  ok: boolean
+  note?: BridgeDiagNote
+  message?: string
+}

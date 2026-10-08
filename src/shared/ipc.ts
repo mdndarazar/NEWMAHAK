@@ -183,6 +183,14 @@ export const IPC = {
   saleReportRows: 'sale:report:rows',
   /** همان گزارش، ولی تفکیک‌شده به شیفت‌های هر روز */
   saleReportByShift: 'sale:report:byShift',
+  /**
+   * نشست ۳۱۸ — نمای تشخیص پل تطبیق (طرح برنده «کامیلا»).
+   * open همیشه رمز تازه می‌خواهد؛ بقیه با نشستِ بازِ همان پنل کار می‌کنند.
+   */
+  saleReportBridgeDiagOpen: 'sale:report:bridgeDiag:open',
+  saleReportBridgeDiagSources: 'sale:report:bridgeDiag:sources',
+  saleReportBridgeDiagNotes: 'sale:report:bridgeDiag:notes',
+  saleReportBridgeDiagNoteAdd: 'sale:report:bridgeDiag:noteAdd',
   /** ردیف‌های «جزئیات فروش» (سطر کالا به کالا) */
   saleReportItems: 'sale:report:items',
   /**

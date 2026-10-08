@@ -63,6 +63,8 @@ export const PANEL_KEYS = {
   pos: 'pos',
   /** گزارشات فروش */
   salesReports: 'sales-reports',
+  /** نشست ۳۱۸ — نمای تشخیص پل تطبیق (مودال داخل گزارشات فروش) */
+  bridgeDiagnostics: 'bridge-diagnostics',
   /** تب «نسیه» داخل گزارشات فروش (فهرست بدهکاران و ثبت پرداختی) */
   salesCredit: 'sales-credit',
   /** برگشت از فروش (و تعویض کالا) */
@@ -254,6 +256,13 @@ export const LOCKED_PANELS: readonly PanelDef[] = [
     hint: 'ثبت شمارش فیزیکی قفسه، گزارش مغایرت نیازمند بررسی و یادآوری انبارگردانی.'
   },
   { key: PANEL_KEYS.salesReports, title: 'گزارشات فروش', hint: 'سرجمع و جزئیات فروش، برگشت‌ها و تعویض‌ها — مثلاً برای حسابدار.' },
+  {
+    key: PANEL_KEYS.bridgeDiagnostics,
+    title: 'نمای تشخیص پل تطبیق',
+    hint:
+      'نمای تحلیلی «پل تطبیق» گزارشات فروش (ردیف منبع مغایرت و یادداشت مدیر). ' +
+      'باز کردنش همیشه رمز می‌خواهد و چیزی را تغییر نمی‌دهد.'
+  },
   {
     key: PANEL_KEYS.managementReports,
     title: 'گزارش مدیریت',
