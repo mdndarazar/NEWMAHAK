@@ -8,6 +8,8 @@ import {
 } from '@shared/receipt'
 // بند ۷ (جلسه ۳۱) — تصمیم نمایشی لوگوی سند اعتبار (بخش ۱۰)
 import { creditDocLogo } from '@shared/creditUi'
+// نشست ۳۱۷ — طرح چاپ اعتبار: اگر layout غیرتاریخی باشد CSS با آن ساخته می‌شود
+import type { CreditPrintLayout } from '@shared/creditPrint'
 // نشست ۲۲۲ · فاز ۱ طرح چاپ — اندازه‌ی کاغذ فاکتور (میکرون/میلی‌متر) و پروفایل چاپ
 import { receiptPageSpec, type PageSpec, type ReceiptProfile } from '@shared/printSpec'
 // نشست ۲۲۲ · فاز ۲ طرح چاپ — چیدمان «ردیفی» لیبل روی رول (بخش ۸.۲)
@@ -967,6 +969,8 @@ export interface CreditDocData {
   reprint: boolean
   /** نشست ۱۷۳ · S173-D5 — اعتبار باطل‌شده ⇒ نوار صریح «باطل شده — غیرقابل استفاده» بالای برگه */
   voided?: boolean
+  /** نشست ۳۱۷ — چاپ آزمایشی/پیش‌نمایش ⇒ نوار «نمونه» تا با سند واقعی اشتباه نشود */
+  sample?: boolean
   printCount: number
   linkedReceiptNo?: number | null
   /**
@@ -981,7 +985,18 @@ export interface CreditDocData {
   footer?: string | null
 }
 
-const creditCss = (widthMm: number, heightMm: number | null): string => `
+/**
+ * نشست ۳۱۷ · طرح کلاد (برنده) — دو شاخه:
+ *   ۱) layout ندارد/تاریخی است ⇒ رشته‌ی تاریخی **بایت‌به‌بایت** (صفر رگرسیون
+ *      برای همه‌ی فروشگاه‌های بدون تغییر تنظیمات — golden در سوت s317).
+ *   ۲) layout غیرتاریخی ⇒ همان کلاس‌ها ولی از layout حساب می‌شود؛ padding
+ *      جایگزین حاشیه‌ی تاریخی است (نه علاوه‌ بر آن) و `box-sizing: border-box`
+ *      جلوی بیرون‌زدگی box-content تاریخی از عرض کاغذ را می‌گیرد.
+ */
+export const creditCss = (widthMm: number, heightMm: number | null, layout?: CreditPrintLayout): string => {
+  /** نشست ۳۱۷ — layout غیرتاریخی ⇒ CSS حساب‌شده؛ تاریخی/غایب ⇒ لیتوال تاریخی. */
+  if (layout && !layout.isLegacy) return creditCssFromLayout(widthMm, heightMm, layout)
+  return `
   @page { size: ${heightMm ? `${widthMm}mm ${heightMm}mm` : `${widthMm}mm auto`}; margin: 0; }
   body { font-family: Vazirmatn, Tahoma, sans-serif; width:${widthMm}mm; margin:0; padding:5mm 4mm; font-size:11px; }
   .doc { border:1px solid #111; border-radius:3mm; padding:3mm; page-break-inside:avoid; }
@@ -999,6 +1014,33 @@ const creditCss = (widthMm: number, heightMm: number | null): string => `
   .logo img { max-width:100%; object-fit:contain }
   .muted { color:#444 }
 `
+}
+
+/**
+ * نشست ۳۱۷ — شاخه‌ی تازه: همان کلاس‌ها، ولی مقادیر از layout می‌آیند. padding
+ * جایگزین حاشیه‌ی تاریخی است (نه علاوه بر آن) و `box-sizing: border-box` جلوی
+ * بیرون‌زدگی content-box تاریخی از عرض کاغذ را می‌گیرد.
+ */
+function creditCssFromLayout(widthMm: number, heightMm: number | null, l: CreditPrintLayout): string {
+  return `
+  @page { size: ${heightMm ? `${widthMm}mm ${heightMm}mm` : `${widthMm}mm auto`}; margin: 0; }
+  body { font-family: Vazirmatn, Tahoma, sans-serif; width:${widthMm}mm; margin:0; padding:${l.marginYMm}mm ${l.marginXMm}mm; font-size:${l.fontPx}px; box-sizing:border-box; }
+  .doc { border:1px solid #111; border-radius:3mm; padding:3mm; page-break-inside:avoid; }
+  .doc + .doc { margin-top:4mm; }
+  h1 { font-size:${l.px.h1}px; text-align:center; margin:0 0 1mm }
+  .kind { text-align:center; font-size:${l.px.kind}px; font-weight:700; margin-bottom:2mm }
+  .row { display:flex; justify-content:space-between; gap:3mm; margin:0.6mm 0 }
+  .amount { text-align:center; font-size:${l.px.amount}px; font-weight:800; margin:2mm 0 1mm }
+  .code { text-align:center; font-size:${l.px.code}px; font-weight:800; letter-spacing:${l.letterSpacingPx}px; direction:ltr }
+  .bc { text-align:center; margin:1.5mm 0 }
+  .bc img { max-width:100%; }
+  .rules { font-size:${l.px.rules}px; border-top:1px dashed #666; margin-top:2mm; padding-top:1.5mm; line-height:1.5 }
+  .reprint { text-align:center; font-size:${l.px.reprint}px; font-weight:800; border:1px dashed #111; padding:0.8mm; margin-bottom:1.5mm }
+  .logo { text-align:center; margin:0 0 1mm }
+  .logo img { max-width:100%; object-fit:contain }
+  .muted { color:#444 }
+`
+}
 
 /** بدنه‌ی یک سند اعتبار (بدون <html>) — تا چاپ گروهی بتواند N تا را کنار هم بچیند. */
 function creditDocBody(d: CreditDocData, t: ReceiptTemplate): string {
@@ -1010,6 +1052,8 @@ function creditDocBody(d: CreditDocData, t: ReceiptTemplate): string {
    */
   if (d.voided)
     parts.push('<div class="reprint">باطل شده — غیرقابل استفاده · این برگه هیچ ارزش خریدی ندارد</div>')
+  /** نشست ۳۱۷ — نوار «نمونه» (مثل نوار باطل؛ عمداً بالای همه‌ی محتوا) */
+  if (d.sample) parts.push('<div class="reprint">نمونه — این برگه هیچ ارزش خریدی ندارد</div>')
   if (d.reprint)
     parts.push(`<div class="reprint">نسخه‌ی مجدد (چاپ ${faDigits(d.printCount)})</div>`)
   /**
@@ -1086,11 +1130,12 @@ function creditDocBody(d: CreditDocData, t: ReceiptTemplate): string {
 export function creditDocHtml(
   d: CreditDocData,
   template?: Partial<ReceiptTemplate>,
-  paper: { widthMm: number; heightMm: number | null } = { widthMm: 105, heightMm: 148 }
+  /** نشست ۳۱۷ — layout اختیاری: غایب/تاریخی ⇒ خروجی بایت‌به‌بایت قدیمی */
+  paper: { widthMm: number; heightMm: number | null; layout?: CreditPrintLayout } = { widthMm: 105, heightMm: 148 }
 ): string {
   const t: ReceiptTemplate = { ...DEFAULT_RECEIPT_TEMPLATE, ...(template ?? {}) }
   return `<!doctype html>
-<html dir="rtl" lang="fa"><head><meta charset="utf-8"><style>${creditCss(paper.widthMm, paper.heightMm)}</style></head>
+<html dir="rtl" lang="fa"><head><meta charset="utf-8"><style>${creditCss(paper.widthMm, paper.heightMm, paper.layout)}</style></head>
 <body>${creditDocBody(d, t)}</body></html>`
 }
 
@@ -1104,7 +1149,7 @@ export function creditDocHtml(
 export function creditBatchHtml(
   docs: CreditDocData[],
   template?: Partial<ReceiptTemplate>,
-  paper: { widthMm: number; heightMm: number | null } = { widthMm: 210, heightMm: 297 },
+  paper: { widthMm: number; heightMm: number | null; layout?: CreditPrintLayout } = { widthMm: 210, heightMm: 297 },
   perPage = 4
 ): string {
   const t: ReceiptTemplate = { ...DEFAULT_RECEIPT_TEMPLATE, ...(template ?? {}) }
@@ -1119,6 +1164,6 @@ export function creditBatchHtml(
   }
   const empty = '<div class="doc"><div class="kind">هیچ اعتباری برای چاپ در این دسته نبود.</div></div>'
   return `<!doctype html>
-<html dir="rtl" lang="fa"><head><meta charset="utf-8"><style>${creditCss(paper.widthMm, paper.heightMm)}</style></head>
+<html dir="rtl" lang="fa"><head><meta charset="utf-8"><style>${creditCss(paper.widthMm, paper.heightMm, paper.layout)}</style></head>
 <body>${pages.join('') || empty}</body></html>`
 }
