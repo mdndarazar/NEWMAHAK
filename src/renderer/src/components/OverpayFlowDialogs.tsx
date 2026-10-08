@@ -36,15 +36,30 @@ export type OverpayCreditPrintProblem = { kind: 'unknown' | 'failed' | 'warning'
 
 let overpayCreditPrintInFlight = false
 
-/** چاپ کد اعتبار از همان کانال چاپ اسناد اعتبار؛ خطا/هشدار ⇒ پیام فارسی (سند صادرشده دست نمی‌خورد). */
-export async function printOverpayCredit(credit: { id?: number | null } | null | undefined): Promise<OverpayCreditPrintProblem> {
+/**
+ * چاپ کد اعتبار از همان کانال چاپ اسناد اعتبار؛ خطا/هشدار ⇒ پیام فارسی (سند صادرشده دست نمی‌خورد).
+ *
+ * نشست ۳۱۶ · خواسته‌ی مالک — «چاپ دوباره» پاروله می‌گیرد: `opts.reprint: true`
+ * یعنی این چاپ *نخستِ لحظه‌ی صدور* نیست و سرور قبل از چاپ با
+ * `assertPanelPasswordStrict(creditManagement, …)` تأیید می‌کند (رمز مدیر یا
+ * رمز دوم/سومِ همین ماژول). چاپِ نخستِ خودکار بعد از صدور مثل قبل بدون رمز
+ * انجام می‌شود (مشتری برگه‌اش را همان‌جا می‌گیرد).
+ */
+export async function printOverpayCredit(
+  credit: { id?: number | null } | null | undefined,
+  opts?: { reprint?: boolean; password?: string | null }
+): Promise<OverpayCreditPrintProblem> {
   const req = creditPrintOpRequest('print', { id: credit?.id ?? 0, copies: 1 })
   if (!req) return { kind: 'failed', msg: 'شناسه‌ی اعتبار برای چاپ در دسترس نیست؛ از «مدیریت اعتبار خرید» چاپ کنید.' }
   if (overpayCreditPrintInFlight)
     return { kind: 'failed', msg: 'چاپ کد اعتبار در حال انجام است؛ تا پایان دیالوگ چاپ صبر کنید.' }
   overpayCreditPrintInFlight = true
   try {
-    const res = (await call(CH[req.channel as keyof typeof CH], req.payload)) as { warnings?: string[] } | null | undefined
+    const res = (await call(CH[req.channel as keyof typeof CH], {
+      ...req.payload,
+      reprint: opts?.reprint === true ? true : undefined,
+      password: opts?.password ?? undefined
+    })) as { warnings?: string[] } | null | undefined
     const warnings = Array.isArray(res?.warnings) ? res.warnings.filter(Boolean) : []
     if (warnings.length) return { kind: 'warning', msg: warnings.join('\n') }
     return null
@@ -79,7 +94,8 @@ export default function OverpayFlowDialogs({
   onPassword?: (password: string) => void
   issuedCredit: (OverpayCreditLike & { id?: number }) | null
   onCloseIssued: () => void
-  onReprint: () => void
+  /** نشست ۳۱۶ — چاپ دوباره فقط با رمز (مدیر / رمز دوم / رمز سومِ ماژول اعتبار؛ سمت سرور سنجیده می‌شود) */
+  onReprint: (password: string) => void
   /** چاپ خودکار/دوباره‌ی همین کد در جریان است؛ برای جلوگیری از چند دیالوگ پشت‌سرهم. */
   creditPrinting?: boolean
   /** پیام چاپ همین کد داخل همین modal، تا پشت overlay پنهان نشود. */
@@ -89,6 +105,14 @@ export default function OverpayFlowDialogs({
   useEffect(() => {
     if (flow?.step !== 'password') setPw('')
   }, [flow?.step])
+
+  /** نشست ۳۱۶ — مرحله‌ی رمز برای «چاپ دوباره»؛ با هر کد/بستنِ پنجره ریست می‌شود */
+  const [reprintAsk, setReprintAsk] = useState(false)
+  const [reprintPw, setReprintPw] = useState('')
+  useEffect(() => {
+    setReprintAsk(false)
+    setReprintPw('')
+  }, [issuedCredit?.id])
 
   const answer = (a: 'yes' | 'no' | 'cancel') => {
     if (!flow) return
@@ -196,15 +220,34 @@ export default function OverpayFlowDialogs({
         }}
         footer={
           <>
-            <button className="btn" onClick={onReprint} disabled={busy || creditPrinting || creditPrintProblem?.kind === 'warning'}>
-              {creditPrinting
-                ? 'در حال چاپ…'
-                : creditPrintProblem?.kind === 'warning'
-                  ? 'چاپ انجام شده؛ دوباره چاپ نکنید'
-                  : creditPrintProblem?.kind === 'unknown'
-                    ? 'فقط اگر برگه‌ای بیرون نیامده: چاپ دوباره'
-                    : 'چاپ دوباره‌ی کد'}
-            </button>
+            {!reprintAsk ? (
+              <button
+                className="btn"
+                /**
+                 * نشست ۳۱۶ — چاپ دوباره آزاد نیست: مثل «پول چاپ کردن» است؛ پس اول
+                 * رمز می‌خواهد و سپس سرور قبل از چاپ می‌سنجد. چاپِ نخستِ صدور
+                 * (خودکار، همین‌جا نیست) همچنان بدون رمز انجام می‌شود.
+                 */
+                onClick={() => setReprintAsk(true)}
+                disabled={busy || creditPrinting || creditPrintProblem?.kind === 'warning'}
+              >
+                {creditPrinting
+                  ? 'در حال چاپ…'
+                  : creditPrintProblem?.kind === 'warning'
+                    ? 'چاپ انجام شده؛ دوباره چاپ نکنید'
+                    : creditPrintProblem?.kind === 'unknown'
+                      ? 'فقط اگر برگه‌ای بیرون نیامده: چاپ دوباره (با رمز)'
+                      : 'چاپ دوباره‌ی کد (با رمز)'}
+              </button>
+            ) : (
+              <button
+                className="btn btn-primary"
+                onClick={() => reprintPw.trim() && onReprint(reprintPw.trim())}
+                disabled={busy || creditPrinting || !reprintPw.trim()}
+              >
+                {creditPrinting ? 'در حال چاپ…' : 'چاپ با تأیید رمز'}
+              </button>
+            )}
             <button className="btn btn-primary" onClick={onCloseIssued} disabled={creditPrinting}>
               {creditPrinting ? 'تا پایان چاپ صبر کنید…' : 'بستن'}
             </button>
@@ -229,6 +272,29 @@ export default function OverpayFlowDialogs({
               }`}
             >
               {creditPrintProblem.msg}
+            </div>
+          )}
+          {reprintAsk && (
+            <div className="mt-3 rounded border-2 border-violet-300 bg-violet-50 px-3 py-2 text-right space-y-1.5">
+              <div className="font-bold text-violet-900 leading-6">
+                چاپ دوباره‌ی سند اعتبار فقط با تأیید مدیر انجام می‌شود.
+              </div>
+              <div className="kbd leading-5">
+                رمز مدیر، یا رمز دوم/رمز سومِ همین ماژول (مدیریت اعتبار خرید) — سمت سرور سنجیده می‌شود و ذخیره نمی‌ماند.
+                اگر چاپِ نخست ناموفق بوده، به مدیر خبر دهید تا خودش از «مدیریت اعتبار خرید» صادر/چاپ کند.
+              </div>
+              <input
+                type="password"
+                className="inp w-full text-left dir-ltr"
+                autoFocus
+                value={reprintPw}
+                placeholder="رمز مدیر / رمز دوم / رمز سوم"
+                onChange={(e) => setReprintPw(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && reprintPw.trim()) onReprint(reprintPw.trim())
+                  if (e.key === 'Escape') setReprintAsk(false)
+                }}
+              />
             </div>
           )}
         </div>

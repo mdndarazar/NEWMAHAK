@@ -2378,6 +2378,12 @@ async function issueOverpayCreditTx(
      * SQLite تک‌نویسنده همان بن‌بست شناخته‌شده است.
      */
     managerApproved?: boolean
+    /**
+     * نشست ۳۱۶ — وقتی اعتبار از مسیر «برگشت» صادر می‌شود، شناسه‌ی سند برگشت
+     * این‌جا سوار می‌شود تا (۱) رسید برگشت آن را ببیند و (۲) ابطال سند برگشت
+     * اعتبار را هم خودکار باطل کند (تا امروز تصویرِ دوم سوراخ پول می‌ساخت).
+     */
+    returnId?: number | null
   }
 ): Promise<OverpayCreditResult> {
   const amount = Math.round(Number(input.amount))
@@ -2421,6 +2427,8 @@ async function issueOverpayCreditTx(
     amount,
     source: CreditSource.OVERPAY,
     sourceInvoiceId: inv.id,
+    // نشست ۳۱۶ — لینک به سند برگشت وقتی اعتبار از آن مسیر صادر شده
+    returnId: input.returnId ?? null,
     customerId: inv.customerId ?? null,
     customerName: (inv as any).customer?.name ?? null,
     days: exchangeCreditDays({
@@ -3567,7 +3575,9 @@ async function runReturn(
           invoiceId: invoice.id,
           amount: creditAmt,
           userId: input.userId ?? null,
-          managerApproved: opts.overpayManagerApproved
+          managerApproved: opts.overpayManagerApproved,
+          // نشست ۳۱۶ — لینک به سند برگشت: رسید برگشت اعتبار را ببیند و void سند، اعتبار را هم باطل کند
+          returnId: ret.id
         })
     }
     /** نشست ۱۶۴ · Y22 · بند ۴-۵۲ — چک در جریان: صفر شدن بدهی ⇒ void خودکار؛ جزئی ⇒ علامت بازبینی */

@@ -278,12 +278,16 @@ export default function SalesInvoice() {
     window.setTimeout(() => setMsg((cur) => (cur === m ? null : cur)), 8000)
   }
 
-  const printIssuedOverpayCredit = async (credit: (OverpayCreditLike & { id?: number }) | null) => {
+  const printIssuedOverpayCredit = async (credit: (OverpayCreditLike & { id?: number }) | null, opts?: { reprintPassword?: string }) => {
     if (overpayCreditPrinting) return
     setOverpayCreditPrinting(true)
     setOverpayCreditPrintProblem(null)
     try {
-      const problem = await printOverpayCredit(credit)
+      // نشست ۳۱۶ — چاپِ اولِ صدور بدون رمز؛ چاپ دوباره ⇒ reprint:true + رمز (سرور strict می‌سنجد)
+      const problem = await printOverpayCredit(
+        credit,
+        opts?.reprintPassword ? { reprint: true, password: opts.reprintPassword } : undefined
+      )
       if (problem) {
         if (issuedCreditOpenRef.current) setOverpayCreditPrintProblem(problem)
         else setErr(problem.msg)
@@ -1945,7 +1949,7 @@ export default function SalesInvoice() {
           setIssuedCredit(null)
           setOverpayCreditPrintProblem(null)
         }}
-        onReprint={() => void printIssuedOverpayCredit(issuedCredit)}
+        onReprint={(pw) => void printIssuedOverpayCredit(issuedCredit, { reprintPassword: pw })}
         creditPrinting={overpayCreditPrinting}
         creditPrintProblem={overpayCreditPrintProblem}
       />

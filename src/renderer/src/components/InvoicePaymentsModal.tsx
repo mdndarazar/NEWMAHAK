@@ -256,12 +256,16 @@ export default function InvoicePaymentsModal({
   const selectedMethod = useMemo(() => methods.find((m) => m.id === methodId) ?? null, [methods, methodId])
 
   /** چاپ کد اعتبار از همان کانال چاپ اسناد اعتبار (بدون ساخت مسیر چاپ جدید) */
-  const printIssuedCredit = async (credit: { id?: number } | null) => {
+  const printIssuedCredit = async (credit: { id?: number } | null, opts?: { reprintPassword?: string }) => {
     if (creditPrinting) return
     setCreditPrinting(true)
     setCreditPrintProblem(null)
     try {
-      const problem = await printOverpayCredit(credit)
+      // نشست ۳۱۶ — چاپِ اولِ صدور بدون رمز؛ چاپ دوباره ⇒ reprint:true + رمز (سرور strict می‌سنجد)
+      const problem = await printOverpayCredit(
+        credit,
+        opts?.reprintPassword ? { reprint: true, password: opts.reprintPassword } : undefined
+      )
       if (problem) {
         if (issuedCreditOpenRef.current) setCreditPrintProblem(problem)
         else {
@@ -1012,7 +1016,7 @@ export default function InvoicePaymentsModal({
               setIssuedCredit(null)
               setCreditPrintProblem(null)
             }}
-            onReprint={() => void printIssuedCredit(issuedCredit)}
+            onReprint={(pw) => void printIssuedCredit(issuedCredit, { reprintPassword: pw })}
             creditPrinting={creditPrinting}
             creditPrintProblem={creditPrintProblem}
           />

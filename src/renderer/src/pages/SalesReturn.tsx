@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
+// نشست ۳۱۶ — جداکننده‌ی هزارگانِ زنده در ورودی «مبلغ بازپرداخت» (state همچنان رقمِ خام)
+import { digitsOnly, groupThousands } from '../lib/moneyInput'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
 import { isUnknownPrintMessage } from '../lib/printErrors'
@@ -269,12 +271,16 @@ export default function SalesReturn() {
     window.setTimeout(() => setMsg((c) => (c === m ? null : c)), 10000)
   }
 
-  const printIssuedOverpayCredit = async (credit: any | null) => {
+  const printIssuedOverpayCredit = async (credit: any | null, opts?: { reprintPassword?: string }) => {
     if (overpayCreditPrinting) return
     setOverpayCreditPrinting(true)
     setOverpayCreditPrintProblem(null)
     try {
-      const problem = await printOverpayCredit(credit)
+      // نشست ۳۱۶ — چاپِ اولِ صدور بدون رمز؛ چاپ دوباره ⇒ reprint:true + رمز (سرور strict می‌سنجد)
+      const problem = await printOverpayCredit(
+        credit,
+        opts?.reprintPassword ? { reprint: true, password: opts.reprintPassword } : undefined
+      )
       if (problem) {
         if (issuedOverpayCreditOpenRef.current) setOverpayCreditPrintProblem(problem)
         else setErr(problem.msg)
@@ -1513,9 +1519,15 @@ export default function SalesReturn() {
                     <input
                       className="inp w-44"
                       dir="ltr"
-                      value={refundAmount}
-                      onChange={(e) => setRefundAmount(e.target.value)}
-                      placeholder={String(totals.amount)}
+                      /**
+                       * نشست ۳۱۶ — نمایش سه‌رقم‌سه‌رقم هنگام تایپ؛ state خامِ
+                       * رقمی می‌ماند تا Number(...) سمت ارسال (:۵۰۶) نیاز به
+                       * تغییر نداشته باشد.
+                       */
+                      value={groupThousands(refundAmount)}
+                      onChange={(e) => setRefundAmount(digitsOnly(e.target.value))}
+                      placeholder={groupThousands(String(totals.amount))}
+                      inputMode="numeric"
                     />
                   </label>
                   {refundMethod === 'CARD' && (
@@ -1775,7 +1787,7 @@ export default function SalesReturn() {
           setIssuedOverpayCredit(null)
           setOverpayCreditPrintProblem(null)
         }}
-        onReprint={() => void printIssuedOverpayCredit(issuedOverpayCredit)}
+        onReprint={(pw) => void printIssuedOverpayCredit(issuedOverpayCredit, { reprintPassword: pw })}
         creditPrinting={overpayCreditPrinting}
         creditPrintProblem={overpayCreditPrintProblem}
       />

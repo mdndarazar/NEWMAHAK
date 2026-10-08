@@ -8,8 +8,6 @@ import {
 } from '@shared/receipt'
 // بند ۷ (جلسه ۳۱) — تصمیم نمایشی لوگوی سند اعتبار (بخش ۱۰)
 import { creditDocLogo } from '@shared/creditUi'
-// جلسه ۵۳ · مرحله ۴ — تیتر بلوک «مبدأ کسر» روی رسید (یک‌جا با ستون جدول و اکسل)
-import { STOCK_PICK_TEXT } from '@shared/stockSource'
 // نشست ۲۲۲ · فاز ۱ طرح چاپ — اندازه‌ی کاغذ فاکتور (میکرون/میلی‌متر) و پروفایل چاپ
 import { receiptPageSpec, type PageSpec, type ReceiptProfile } from '@shared/printSpec'
 // نشست ۲۲۲ · فاز ۲ طرح چاپ — چیدمان «ردیفی» لیبل روی رول (بخش ۸.۲)
@@ -104,23 +102,6 @@ export interface ReceiptItem {
 }
 
 /**
- * جلسه ۵۳ · مرحله ۴ — «مبدأ کسر» یک فاکتور ثبت‌شده، آماده‌ی چاپ.
- *
- * هر سه فیلد از `StockAllocationService.summaryOf(invoiceId)` می‌آیند (همان
- * `summarizePlan` سرور)، پس رسید چاپی و ستون فهرست/گزارش هیچ‌وقت دو چیز متفاوت
- * نمی‌گویند. هیچ عددی اینجا حساب نمی‌شود و این بلوک **هیچ اثری روی مبالغ رسید
- * ندارد** — فقط متن است.
- */
-export interface ReceiptStockSource {
-  /** «انبار مرکزی: شلوار مردانه ۲ (بعد از کسر ۲−)» — خروجی `summaryTextLines` */
-  lines: string[]
-  /** «فروشگاه ۳ · انبار شعبه ۲ ⚠» — خروجی `summaryShortLine` */
-  short: string
-  /** جایی موجودی منفی شد؟ (علامت روشن پایین بلوک) */
-  hasNegative: boolean
-}
-
-/**
  * داده‌ی رسید فروش. همه‌ی فیلدها اختیاری‌اند جز اقلام و شماره، چون نمایش هر
  * فیلد با تنظیمات (ReceiptTemplate) روشن/خاموش می‌شود.
  */
@@ -153,11 +134,9 @@ export interface ReceiptData {
   /** تصویر بارکد Code128 کد فاکتور (dataURL) — در ipc ساخته می‌شود */
   returnBarcodeDataUrl?: string | null
   /**
-   * جلسه ۵۳ · مرحله ۴ — «مبدأ کسر» (اختیاری). فقط فاکتورهایی که دفتر
-   * `SaleItemStockAllocation` دارند پرش می‌کنند؛ برای بقیه `null`/undefined
-   * می‌ماند و رسید **مو‌به‌مو مثل قبل** چاپ می‌شود (بی هیچ خط اضافه).
+   * نشست ۳۱۶ — فیلد «مبدأ کسر» (جلسه ۵۳) حذف شد: اطلاعات انبار روی رسید
+   * مشتری چاپ نمی‌شود؛ فقط در ستون فهرست/گزارش داخلی می‌ماند.
    */
-  stockSource?: ReceiptStockSource | null
   footer?: string
 }
 
@@ -279,29 +258,11 @@ export function receiptHtml(d: ReceiptData, template?: Partial<ReceiptTemplate>,
       : ''
 
   /**
-   * ---------- جلسه ۵۳ · مرحله ۴ — بلوک کوچک «مبدأ کسر» ----------
-   * شرط عمداً «دفتر دارد و خطی دارد» است: فاکتورهای قدیمیِ بی‌دفتر و فروش تکیِ
-   * بی‌برنامه ⇒ رشته‌ی خالی ⇒ رسید **مو‌به‌مو مثل قبل** (هیچ خط، هیچ خط‌چین و
-   * هیچ فاصله‌ی اضافه‌ای ساخته نمی‌شود). هیچ تنظیم تازه‌ای هم لازم نیست، چون این
-   * بلوک فقط وقتی وجود دارد که واقعاً مبدأ غیرپیش‌فرضی ثبت شده باشد.
-   * هیچ عددِ مالی‌ای اینجا نیست — فقط نام انبار و تعداد هر قلم.
+   * نشست ۳۱۶ · خواسته‌ی مالک — بلوک «مبدأ کسر» (جلسه ۵۳) از رسید مشتری حذف شد:
+   * «مشتری نیازی ندارد ببیند کالا از کدام انبار کسر شد یا موجودی منفی شده است.»
+   * داده‌ی مبدأ فقط برای فهرست/گزارش داخلی باقی می‌ماند؛ این بلوک عمداً خالی
+   * است تا حتی فاکتور دارای دفتر هم رسیدی بدون اطلاعات انبار بگیرد.
    */
-  const srcLines = d.stockSource?.lines?.filter((l) => l && l.trim()) ?? []
-  let stockBlock = ''
-  if (srcLines.length) {
-    const srcRows = srcLines.map((l) => '<div>' + escapeHtml(faDigits(l)) + '</div>').join('')
-    const srcNeg = d.stockSource?.hasNegative
-      ? '<div class="kbd">' + escapeHtml(STOCK_PICK_TEXT.receiptNegativeNote) + '</div>'
-      : ''
-    stockBlock =
-      '<div class="line"></div>' +
-      '<div class="src" style="margin:2px 0;line-height:1.5"><b>' +
-      escapeHtml(STOCK_PICK_TEXT.receiptTitle) +
-      ':</b>' +
-      srcRows +
-      srcNeg +
-      '</div>'
-  }
 
   const codeBlock =
     t.showReturnDeadline && t.showReturnCode && d.returnCode
@@ -352,8 +313,6 @@ export function receiptHtml(d: ReceiptData, template?: Partial<ReceiptTemplate>,
       '<div class="line"></div>' +
       sums.join('') +
       pays +
-      // جلسه ۵۳ — «مبدأ کسر» بین جمع‌ها و کد فاکتور. بی دفتر ⇒ رشته‌ی خالی.
-      stockBlock +
       codeBlock +
       '<div class="line"></div>' +
       footers.join(''),
@@ -772,10 +731,13 @@ export interface ReturnReceiptData {
   restocked: boolean
   restockedQty: number
   hasRemovedItems?: boolean
-  storeCreditCode?: string | null
-  storeCreditAmount?: number
-  storeCreditExpiresJalali?: string | null
-  storeCreditBarcodeDataUrl?: string | null
+  /**
+   * نشست ۳۱۶ · خواسته‌ی مالک — رسید برگشت «سند حسابداری شیفت» است و نباید
+   * *اصلاً* بارکد/کد اعتبار داخلش باشد. پس دیگر فیلدهای code/barcode نیست؛
+   * فقط فهرست مبلغیِ اعتبارهای صادرشده از این برگشت می‌آید تا بگوید «چقدر به‌صورت
+   * اعتبار مانده». سند اعتبارِ خودمشتری (با کد/بارکد) از کانال خودش چاپ می‌شود.
+   */
+  storeCredits?: { label: string; amount: number; expiresJalali?: string | null; status?: string | null }[]
   note?: string
   footer?: string
 }
@@ -853,25 +815,26 @@ export function returnReceiptHtml(d: ReturnReceiptData, template?: Partial<Recei
   if (d.hasRemovedItems)
     sums.push('<div class="c kbd">بعضی اقلام این برگشت، کالای حذف‌شده از انبار بودند.</div>')
 
+  /**
+   * نشست ۳۱۶ — جای بلوک کد/بارکد اعتبار: فقط سطرهای مبلغیِ اعتبار + تذکر
+   * «کد/بارکد روی این رسید چاپ نمی‌شود» (سند اعتبار جداگانه صادر و چاپ می‌گردد).
+   * وضعیت باطل‌شده هم دیده می‌شود تا سند باطل پولِ زنده به نظر نرسد.
+   */
+  const creditList = (d.storeCredits ?? []).filter((c) => (c.amount ?? 0) > 0)
   const creditBlock =
-    d.storeCreditCode && (d.storeCreditAmount ?? 0) > 0
-      ? `<div class="line"></div>
-         <div class="c sec">بارکد اعتبار خرید بعدی</div>
-         <div class="c code"><b>${escapeHtml(d.storeCreditCode)}</b></div>
-         ${
-           d.storeCreditBarcodeDataUrl
-             ? `<div class="c"><img class="bc" src="${d.storeCreditBarcodeDataUrl}" alt="${escapeHtml(
-                 d.storeCreditCode
-               )}" /></div>`
-             : ''
-         }
-         <div class="row"><span>مبلغ اعتبار</span><span>${money(d.storeCreditAmount ?? 0)}</span></div>
-         ${
-           d.storeCreditExpiresJalali
-             ? `<div class="c kbd">اعتبار تا ${faDigits(d.storeCreditExpiresJalali)}</div>`
-             : ''
-         }
-         <div class="c kbd">این بارکد یک‌بارمصرف است؛ در خرید بعدی آن را به فروشنده نشان دهید.</div>`
+    creditList.length > 0
+      ? '<div class="line"></div>' +
+        '<div class="c sec">اعتبارهای صادرشده از این برگشت (بدون کد/بارکد)</div>' +
+        creditList
+          .map(
+            (c) =>
+              `<div class="row"><span>${escapeHtml(c.label)}` +
+              (c.status === 'CANCELED' ? ' (باطل‌شده)' : '') +
+              `</span><span>${money(c.amount)}</span></div>` +
+              (c.expiresJalali ? `<div class="c kbd">اعتبار تا ${faDigits(c.expiresJalali)}</div>` : '')
+          )
+          .join('') +
+        '<div class="c kbd">کد/بارکد اعتبار روی این رسید چاپ نمی‌شود؛ سند اعتبار جداگانه صادر و چاپ می‌گردد.</div>'
       : ''
 
   const footers: string[] = []
@@ -1006,6 +969,14 @@ export interface CreditDocData {
   voided?: boolean
   printCount: number
   linkedReceiptNo?: number | null
+  /**
+   * نشست ۳۱۶ · خواسته‌ی مالک — این برگه «تنها مدرک مشتری برای خرید بعدی» است؛
+   * پس داستانِ کاملِ صدورش را خودش می‌گوید: بابت برگشتِ کدام فاکتور، کدام
+   * اقلام برگشتند، چقدر نقد/کارت تسویه شد و این اعتبار دقیقاً از کجا آمد؛ یا
+   * برای تعویض: مبلغ کالای برگشتی/جایگزین و مابه‌التفاوت و نحوه‌ی تسویه‌اش.
+   * سطرها از main آماده می‌آیند (متن فارسیِ آماده با ارقام فارسی).
+   */
+  issueLines?: string[]
   note?: string | null
   footer?: string | null
 }
@@ -1079,6 +1050,12 @@ function creditDocBody(d: CreditDocData, t: ReceiptTemplate): string {
   }
   if (d.note) rows.push(row('توضیح', escapeHtml(d.note)))
   parts.push(rows.join(''))
+
+  /** نشست ۳۱۶ — جعبه‌ی «جزئیات صدور»؛ تنها مدرک مشتری است، پس کامل می‌گوید چرا پیدا شده. */
+  if (d.issueLines && d.issueLines.length)
+    parts.push(
+      `<div class="rules"><b>جزئیات صدور:</b><br>${d.issueLines.map((l) => escapeHtml(l)).join('<br>')}</div>`
+    )
 
   if (d.showRules && d.rulesText) parts.push(`<div class="rules">${escapeHtml(d.rulesText)}</div>`)
 
