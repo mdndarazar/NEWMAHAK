@@ -3,9 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
+import { isUnknownPrintMessage } from '../lib/printErrors'
 import { useBarcodeScanner, useFieldScanDetector } from '../hooks/useBarcodeScanner'
 import ConfirmDialog from '../components/ConfirmDialog'
-import OverpayFlowDialogs, { printOverpayCredit } from '../components/OverpayFlowDialogs'
+import OverpayFlowDialogs, { printOverpayCredit, type OverpayCreditPrintProblem } from '../components/OverpayFlowDialogs'
 import {
   isOverpayWarning,
   needsManagerPassword,
@@ -169,6 +170,8 @@ export default function SalesReturn() {
   const [allowRemoved, setAllowRemoved] = useState(false)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const [printing, setPrinting] = useState(false)
+  const printingRef = useRef(false)
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [confirmForce, setConfirmForce] = useState<string | null>(null)
@@ -193,6 +196,9 @@ export default function SalesReturn() {
   const [overpayFlow, setOverpayFlow] = useState<OverpayFlowState | null>(null)
   const [overpayReq, setOverpayReq] = useState<OverpayRequest>({})
   const [issuedOverpayCredit, setIssuedOverpayCredit] = useState<any | null>(null)
+  const issuedOverpayCreditOpenRef = useRef(false)
+  const [overpayCreditPrinting, setOverpayCreditPrinting] = useState(false)
+  const [overpayCreditPrintProblem, setOverpayCreditPrintProblem] = useState<OverpayCreditPrintProblem>(null)
   /**
    * بند ۱۲ — تسویه‌ی مابه‌التفاوت *منفی* تعویض؛ بدون پیش‌فرض ضمنی.
    * جلسه ۱۷ · بند ۱ — گزینه‌ی چهارم «کارت‌به‌کارت توسط مدیر» هم اضافه شد و
@@ -261,6 +267,21 @@ export default function SalesReturn() {
     setMsg(m)
     setErr(null)
     window.setTimeout(() => setMsg((c) => (c === m ? null : c)), 10000)
+  }
+
+  const printIssuedOverpayCredit = async (credit: any | null) => {
+    if (overpayCreditPrinting) return
+    setOverpayCreditPrinting(true)
+    setOverpayCreditPrintProblem(null)
+    try {
+      const problem = await printOverpayCredit(credit)
+      if (problem) {
+        if (issuedOverpayCreditOpenRef.current) setOverpayCreditPrintProblem(problem)
+        else setErr(problem.msg)
+      }
+    } finally {
+      setOverpayCreditPrinting(false)
+    }
   }
 
   /** پیدا کردن فاکتور با کد (تایپ‌شده یا اسکن‌شده). */
@@ -513,9 +534,9 @@ export default function SalesReturn() {
                 : '')
         )
         if (res.overpayCredit?.code) {
+          issuedOverpayCreditOpenRef.current = true
           setIssuedOverpayCredit(res.overpayCredit)
-          const problem = await printOverpayCredit(res.overpayCredit)
-          if (problem) setErr(problem)
+          await printIssuedOverpayCredit(res.overpayCredit)
         }
         await lookupCode(lookup.returnCode)
         await loadHistory()
@@ -670,25 +691,71 @@ export default function SalesReturn() {
    * قالب تنظیمات رسید تبعیت می‌کند.
    */
   const printReturn = useCallback(async (returnId: number) => {
+    if (printingRef.current) return
+    printingRef.current = true
+    setPrinting(true)
     try {
       /** فاز ۳ — مسیر مشترک چاپ؛ انصراف = لغو قطعی و بی‌صدا. */
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printReturn, { returnId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printReturn, { returnId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('رسید برگشت از فروش برای چاپ فرستاده شد')
     } catch (e: any) {
-      setErr(`چاپ رسید برگشت انجام نشد: ${e.message}`)
+      setErr(
+        isUnknownPrintMessage(e)
+          ? `معلوم نیست رسید برگشت چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
+          : `چاپ رسید برگشت انجام نشد: ${e.message}`
+      )
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   /** چاپ «سند تعویض» (قالب exchangeReceiptHtml سمت main). */
   const printExchange = useCallback(async (returnId: number) => {
+    if (printingRef.current) return
+    printingRef.current = true
+    setPrinting(true)
     try {
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printExchange, { returnId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printExchange, { returnId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('سند تعویض برای چاپ فرستاده شد')
     } catch (e: any) {
-      setErr(`چاپ سند تعویض انجام نشد: ${e.message}`)
+      setErr(
+        isUnknownPrintMessage(e)
+          ? `معلوم نیست سند تعویض چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
+          : `چاپ سند تعویض انجام نشد: ${e.message}`
+      )
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const printSourceInvoice = useCallback(async (invoiceId: number) => {
+    if (printingRef.current) return
+    printingRef.current = true
+    setPrinting(true)
+    try {
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printInvoice, { invoiceId, deviceName, silent: opts?.silent })
+      )
+      if (res !== 'CANCELLED') flash('رسید فاکتور برای چاپ فرستاده شد')
+    } catch (e: any) {
+      setErr(
+        isUnknownPrintMessage(e)
+          ? `معلوم نیست رسید فاکتور چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
+          : e.message
+      )
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -882,8 +949,8 @@ export default function SalesReturn() {
               {money(retResult.cardTransfer.amount)} ریال · در انتظار پرداخت مدیر
             </span>
           )}
-          <button className="btn btn-primary" onClick={() => void printReturn(retResult.id)}>
-            چاپ رسید برگشت
+          <button className="btn btn-primary" onClick={() => void printReturn(retResult.id)} disabled={printing}>
+            {printing ? 'در حال چاپ…' : 'چاپ رسید برگشت'}
           </button>
           <button className="btn ms-auto" onClick={() => setRetResult(null)}>
             بستن
@@ -941,8 +1008,8 @@ export default function SalesReturn() {
                 : ''}
             </span>
           )}
-          <button className="btn btn-primary" onClick={() => void printExchange(exResult.returnId)}>
-            چاپ سند تعویض
+          <button className="btn btn-primary" onClick={() => void printExchange(exResult.returnId)} disabled={printing}>
+            {printing ? 'در حال چاپ…' : 'چاپ سند تعویض'}
           </button>
           <button className="btn ms-auto" onClick={() => setExResult(null)}>
             بستن
@@ -1545,14 +1612,10 @@ export default function SalesReturn() {
             )}
             <button
               className="btn"
-              onClick={() =>
-                void printWith('INVOICE', (deviceName) =>
-                  call(CH.printInvoice, { invoiceId: lookup.invoiceId, deviceName })
-                ).catch((e: any) => setErr(e.message))
-              }
-              disabled={busy}
+              onClick={() => void printSourceInvoice(lookup.invoiceId)}
+              disabled={busy || printing}
             >
-              چاپ رسید فاکتور
+              {printing ? 'در حال چاپ…' : 'چاپ رسید فاکتور'}
             </button>
             <div className="kbd">
               {exchangeMode
@@ -1657,7 +1720,7 @@ export default function SalesReturn() {
                     <button
                       className="text-brand"
                       onClick={() => void printReturn(r.id)}
-                      disabled={rowBusy}
+                      disabled={rowBusy || printing}
                       title="چاپ رسید مستقل همین برگشت (بند ۱۳)"
                     >
                       چاپ
@@ -1707,12 +1770,14 @@ export default function SalesReturn() {
         onFlow={setOverpayFlow}
         onSubmit={(req) => void doSubmit(false, req)}
         issuedCredit={issuedOverpayCredit}
-        onCloseIssued={() => setIssuedOverpayCredit(null)}
-        onReprint={() =>
-          void printOverpayCredit(issuedOverpayCredit).then((problem) => {
-            if (problem) setErr(problem)
-          })
-        }
+        onCloseIssued={() => {
+          issuedOverpayCreditOpenRef.current = false
+          setIssuedOverpayCredit(null)
+          setOverpayCreditPrintProblem(null)
+        }}
+        onReprint={() => void printIssuedOverpayCredit(issuedOverpayCredit)}
+        creditPrinting={overpayCreditPrinting}
+        creditPrintProblem={overpayCreditPrintProblem}
       />
 
       {/* ---------------- ویرایش یک برگشت ثبت‌شده ---------------- */}

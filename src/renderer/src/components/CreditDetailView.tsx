@@ -114,6 +114,7 @@ export default function CreditDetailView({
   onOp,
   onBack,
   onPrint,
+  printing = false,
   onPreview,
   onPdf,
   onExport,
@@ -123,6 +124,7 @@ export default function CreditDetailView({
   onOp: (op: CreditOp) => void
   onBack: () => void
   onPrint: (copies: number) => void
+  printing?: boolean
   onPreview: () => void
   onPdf: () => void
   onExport: (kind: CreditExportKind) => void
@@ -138,14 +140,14 @@ export default function CreditDetailView({
         <button className="btn" onClick={onBack}>
           ← بازگشت
         </button>
-        <button className="btn btn-primary" onClick={() => onPrint(1)}>
-          چاپ سند
+        <button className="btn btn-primary" onClick={() => onPrint(1)} disabled={printing}>
+          {printing ? 'در حال چاپ…' : 'چاپ سند'}
         </button>
         <button className="btn" onClick={onPreview}>
           پیش‌نمایش / چاپ PDF
         </button>
-        <button className="btn" onClick={onPdf}>
-          ذخیره‌ی PDF
+        <button className="btn" onClick={onPdf} disabled={printing}>
+          {printing ? 'در حال آماده‌سازی…' : 'ذخیره‌ی PDF'}
         </button>
         {/* جلسه ۳۴ — «چاپ بعدی نسخه‌ی مجدد است» تا دیروز یک مقایسه‌ی دستی با عددِ
             آستانه بود، درست همان چیزی که بخش ۹.۲ یکی‌اش کرده بود. حالا از

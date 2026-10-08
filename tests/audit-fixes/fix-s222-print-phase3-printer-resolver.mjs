@@ -236,6 +236,15 @@ console.log('\n— ۴) printWith: جریان پرسش/بی‌پرس (بخش ۶.�
     [{ deviceName: undefined, opts: { silent: false } }]
   ])
 
+  reset()
+  printed.length = 0
+  const r5c = await flow.printWith('INVOICE', async () => {
+    const e = new Error('چاپ لغو شد و هیچ برگه‌ای چاپ نشد.')
+    e.printCancelled = true
+    throw e
+  })
+  check('لغو دیالوگ ویندوز ⇒ CANCELLED و بدون خطای UI', r5c, 'CANCELLED')
+
   // ۶) پروفایل لیبل و عمده (نام ذخیره‌شده‌ی درست)
   const flagsLabel = await flow.printProfileFlags('LABEL')
   check('پرچم‌های لیبل از تنظیمات لیبل می‌آید', flagsLabel.savedName, 'TSC TE200')
@@ -244,10 +253,17 @@ console.log('\n— ۴) printWith: جریان پرسش/بی‌پرس (بخش ۶.�
     receipt: { ...settings.receipt, wholesaleSeparate: true, wholesalePrinterName: 'Axiom-W', printerName: 'Axiom' }
   }
   const flagsW = await flow.printProfileFlags('WHOLESALE')
-  check('عمده (با کاغذ جدا) ⇒ چاپگر عمده', flagsW.savedName, 'Axiom-W')
+  check('عمده (با کاغذ جدا) ⇒ چاپگر عمده و ذخیره در پروفایل عمده', [flagsW.savedName, flagsW.defaultProfile], ['Axiom-W', 'WHOLESALE'])
   settings = { ...settings, receipt: { ...settings.receipt, wholesaleSeparate: false } }
   const flagsW2 = await flow.printProfileFlags('WHOLESALE')
-  check('عمده بدون کاغذ جدا ⇒ همان چاپگر فروش تکی', flagsW2.savedName, 'Axiom')
+  check('عمده بدون کاغذ جدا ⇒ همان چاپگر فروش تکی و ذخیره در پروفایل INVOICE', [flagsW2.savedName, flagsW2.defaultProfile], ['Axiom', 'INVOICE'])
+
+  const printErrors = await import(new URL('../../src/renderer/src/lib/printErrors.ts', import.meta.url).href)
+  check('unknown/cancel کد صریح را می‌شناسند و timeout PDF را unknown چاپ حساب نمی‌کنند', [
+    printErrors.isUnknownPrintMessage({ code: 'PRINT_OUTCOME_UNKNOWN', message: 'x' }),
+    printErrors.isPrintCancelledError({ code: 'PRINT_CANCELLED', message: 'x' }),
+    printErrors.isUnknownPrintMessage('ساخت PDF طی 30 ثانیه نتیجه نداد؛ هیچ فایلی ذخیره نشد. ممکن است برنامه گیر کرده باشد؛ دوباره تلاش کنید.')
+  ], [true, true, false])
 
   flow.setPrinterPickerOpener(null)
   delete globalThis.window
@@ -276,11 +292,12 @@ console.log('\n— ۵) ساختاری: سیم‌کشی main و renderer')
 
   const svc = readSrc('src/main/services/PrintService.ts')
   /**
-   * ⚠️ عدد در فاز ۶ عمداً از ۵ به ۷ رفت: طبق بند فاز ۶ طرح، دو مسیر **اعتبار**
-   * (تکی و دسته‌ای) هم فقط «نام چاپگر» را از همین resolver می‌گیرند —
-   * ۱ تعریف + ۶ استفاده: فاکتور، تعویض، برگشت، بدهی، اعتبار تکی، اعتبار دسته‌ای.
+   * اعتبار خرید عمداً به چاپگر رسید گره نمی‌خورد: اگر renderer نامی نفرستد،
+   * `resolvePrintTargetName({ savedName: '' })` چاپگر پیش‌فرض واقعی ویندوز را
+   * استفاده می‌کند؛ پس `receiptTargetDevice` فقط برای مسیرهای رسید/سند بدهی است:
+   * ۱ تعریف + ۴ استفاده: فاکتور، تعویض، برگشت، بدهی.
    */
-  check('شش مسیر رسید/سند/اعتبار از receiptTargetDevice استفاده می‌کنند', (svc.match(/receiptTargetDevice\(/g) || []).length, 7)
+  check('چهار مسیر رسید/سند بدهی از receiptTargetDevice استفاده می‌کنند', (svc.match(/receiptTargetDevice\(/g) || []).length, 5)
   check(
     'دیگر هیچ مسیری نام چاپگر را خام از renderer نمی‌گیرد (فاز ۶ جایگزینی را کامل کرد)',
     (svc.match(/deviceName: input\.deviceName \|\| tpl\.printerName \|\| undefined/g) || []).length,
@@ -300,7 +317,15 @@ console.log('\n— ۵) ساختاری: سیم‌کشی main و renderer')
   )
 
   const flow = readSrc('src/renderer/src/lib/printFlow.ts')
-  check('ذخیره‌ی پیش‌فرض داخل printWith بعد از doPrint است', /await doPrint\(choice\.deviceName\)[\s\S]{0,400}?printSetDefault/.test(flow), true)
+  check('ذخیره‌ی پیش‌فرض داخل printWith بعد از چاپ موفق است', /const printed = await runPrint\(choice\.deviceName\)[\s\S]{0,500}?printSetDefault/.test(flow), true)
+  const modal = readSrc('src/renderer/src/components/Modal.tsx')
+  const confirmDialog = readSrc('src/renderer/src/components/ConfirmDialog.tsx')
+  check('ConfirmDialog هم از stack مشترک استفاده می‌کند و Enter روی انصراف را به بله تبدیل نمی‌کند', [
+    /export function useTopmostModalKey/.test(modal),
+    /useTopmostModalKey\(open/.test(confirmDialog),
+    /active instanceof HTMLButtonElement && active !== confirmButtonRef\.current/.test(confirmDialog),
+    /autoFocus/.test(confirmDialog)
+  ], [true, true, true, true])
   check('انصراف پیش از هر چاپی برمی‌گردد (نام خالی هم انصراف است)', /if \(!choice \|\| !choice\.deviceName\) return 'CANCELLED'/.test(flow), true)
 
   const callSites = {

@@ -84,6 +84,8 @@ function PrinterCard({
   savedMethod,
   testMethod,
   onTestMethodChange,
+  onSample,
+  sampleLabel,
   extra
 }: {
   title: string
@@ -109,6 +111,13 @@ function PrinterCard({
   savedMethod?: 'CHROMIUM' | 'RAW'
   testMethod?: 'CHROMIUM' | 'RAW'
   onTestMethodChange?: (m: 'CHROMIUM' | 'RAW') => void
+  /**
+   * فقط کارت‌های تکی/عمده: «چاپ فاکتور نمونه» (فاکتور واقعی با داده‌ی نمونه).
+   * وقتی هست، دکمه‌ی `onTest` همان برگه‌ی کالیبراسیون است با نام «فنی»؛ کارت
+   * لیبل این را نمی‌گیرد و دقیقاً مثل قبل می‌ماند.
+   */
+  onSample?: (profile: 'INVOICE' | 'WHOLESALE' | 'LABEL', name: string) => void
+  sampleLabel?: string
   extra?: React.ReactNode
 }) {
   return (
@@ -147,6 +156,16 @@ function PrinterCard({
         </div>
       )}
       <div className="flex items-center gap-2 flex-wrap">
+        {onSample && (
+          <button className="btn btn-primary" disabled={busy || testBusy} onClick={() => onSample(profile, value)}>
+            {sampleLabel ?? 'چاپ فاکتور نمونه'}
+          </button>
+        )}
+        {onSample && (
+          <button className="btn" disabled={busy || testBusy} onClick={() => onPreview(profile)}>
+            پیش‌نمایش
+          </button>
+        )}
         <select
           className="inp"
           style={{ width: '11rem' }}
@@ -157,18 +176,27 @@ function PrinterCard({
           <option value="RAW">آزمایش با «دقیق (RAW)»</option>
         </select>
         <button
-          className="btn btn-primary"
+          className={onSample ? 'btn' : 'btn btn-primary'}
           disabled={busy || testBusy}
           onClick={() => onTest(profile, value, testMethod ?? savedMethod ?? 'CHROMIUM')}
         >
-          چاپ آزمایشی
+          {onSample ? 'برگه‌ی کالیبراسیون (فنی)' : 'چاپ آزمایشی'}
         </button>
-        <button className="btn" disabled={busy || testBusy} onClick={() => onPreview(profile)}>
-          پیش‌نمایش
-        </button>
+        {!onSample && (
+          <button className="btn" disabled={busy || testBusy} onClick={() => onPreview(profile)}>
+            پیش‌نمایش
+          </button>
+        )}
         <span className="kbd leading-6">
           برگه‌ی آزمایشی با تنظیمات <b>ذخیره‌شده</b> چاپ می‌شود؛ اگر تغییری داده‌اید اول «ذخیره» را بزنید.
         </span>
+        {onSample && (
+          <span className="kbd leading-6">
+            «{sampleLabel ?? 'چاپ فاکتور نمونه'}» همان فاکتور واقعی را با داده‌ی نمونه و روش ذخیره‌شده (
+            {savedMethod === 'RAW' ? 'دقیق (RAW)' : 'Chromium'}) چاپ می‌کند؛ انتخابگر روش کنار «برگه‌ی کالیبراسیون
+            (فنی)» فقط روی همان برگه‌ی اندازه‌گیری اثر دارد.
+          </span>
+        )}
         {testMethod === 'RAW' && (
           <span className="kbd leading-6">
             آزمایش «دقیق (RAW)» با همان اندازه و همان دستور دستگاه انجام می‌شود؛ اگر برگه درست آمد،
@@ -258,6 +286,35 @@ export function PrinterCards({
     }
   }
 
+  /**
+   * «چاپ فاکتور نمونه» (فقط تکی/عمده): فاکتور واقعی با داده‌ی نمونه‌ی همان
+   * پیش‌نمایش، از کانال جدا — نه `printTestPage` (برگه‌ی کالیبراسیون).
+   */
+  const runSample = async (profile: 'INVOICE' | 'WHOLESALE' | 'LABEL', name: string) => {
+    if (profile === 'LABEL') return
+    setTestBusy(profile)
+    setTestMsgs((m) => ({ ...m, [profile]: undefined }))
+    try {
+      const r = await call<{ deviceName: string; pageSizeLabel: string; engine: 'CHROMIUM' | 'RAW' }>(
+        CH.printSampleInvoice,
+        { profile, deviceName: name || undefined }
+      )
+      setTestMsgs((m) => ({
+        ...m,
+        [profile]: {
+          ok: true,
+          text:
+            `فاکتور ${profile === 'WHOLESALE' ? 'عمده‌ی' : 'تکیِ'} نمونه روی «${r.deviceName}» با اندازه‌ی ${r.pageSizeLabel} ` +
+            `و روش ${r.engine === 'RAW' ? 'دقیق (RAW)' : 'Chromium'} چاپ شد (همان مسیر فاکتور واقعی).`
+        }
+      }))
+    } catch (e: any) {
+      setTestMsgs((m) => ({ ...m, [profile]: { ok: false, text: e?.message ?? 'چاپ فاکتور نمونه انجام نشد.' } }))
+    } finally {
+      setTestBusy(null)
+    }
+  }
+
   const openPreview = async (profile: 'INVOICE' | 'WHOLESALE' | 'LABEL') => {
     try {
       if (profile === 'LABEL') {
@@ -266,9 +323,18 @@ export function PrinterCards({
         setPreview({ title: 'پیش‌نمایش لیبل (نسبی)', html, widthMm: d.rowWidthMm, heightMm: d.rowHeightMm })
         return
       }
-      const html = await call<string>(CH.printPreviewHtml, { template: receipt })
-      const sp = receiptPageSpec(receipt, profile === 'WHOLESALE' ? 'WHOLESALE' : 'RETAIL')
-      setPreview({ title: 'پیش‌نمایش فاکتور (نسبی)', html, widthMm: sp.widthMm, heightMm: sp.heightMm })
+      const wholesale = profile === 'WHOLESALE'
+      const html = await call<string>(
+        CH.printPreviewHtml,
+        wholesale ? { template: receipt, profile: 'WHOLESALE' } : { template: receipt }
+      )
+      const sp = receiptPageSpec(receipt, wholesale ? 'WHOLESALE' : 'RETAIL')
+      setPreview({
+        title: wholesale ? 'پیش‌نمایش فاکتور عمده (نسبی)' : 'پیش‌نمایش فاکتور (نسبی)',
+        html,
+        widthMm: sp.widthMm,
+        heightMm: sp.heightMm
+      })
     } catch (e: any) {
       setTestMsgs((m) => ({ ...m, [profile]: { ok: false, text: e?.message ?? 'ساخت پیش‌نمایش انجام نشد.' } }))
     }
@@ -355,6 +421,8 @@ export function PrinterCards({
           savedMethod={savedMethodOf('INVOICE')}
           testMethod={testMethods.INVOICE ?? savedMethodOf('INVOICE')}
           onTestMethodChange={(m) => setTestMethods((x) => ({ ...x, INVOICE: m }))}
+          onSample={runSample}
+          sampleLabel="چاپ فاکتور نمونه"
         />
         <PrinterCard
           title="فاکتور عمده"
@@ -376,6 +444,8 @@ export function PrinterCards({
           savedMethod={savedMethodOf('WHOLESALE')}
           testMethod={testMethods.WHOLESALE ?? savedMethodOf('WHOLESALE')}
           onTestMethodChange={(m) => setTestMethods((x) => ({ ...x, WHOLESALE: m }))}
+          onSample={runSample}
+          sampleLabel="چاپ فاکتور عمده‌ی نمونه"
         />
         <PrinterCard
           title="لیبل (برچسب کالا)"
@@ -661,6 +731,34 @@ export function PrintAdvanced({
               ذخیره‌کردنش اول یک «چاپ آزمایشی» با همین روش بگیرید تا روی این دستگاه تأیید شود.
             </div>
           </label>
+          <label className="block">
+            <div className="mb-1">دقت فاکتور RAW (dpi)</div>
+            <select className="inp" value={receipt.rawDpi} onChange={(e) => setR({ rawDpi: Number(e.target.value) as 203 | 300 })}>
+              <option value={203}>۲۰۳</option>
+              <option value={300}>۳۰۰</option>
+            </select>
+          </label>
+          <label className="block">
+            <div className="mb-1">برش فاکتور RAW</div>
+            <select
+              className="inp"
+              value={receipt.cutMode}
+              onChange={(e) => setR({ cutMode: e.target.value as ReceiptTemplate['cutMode'] })}
+            >
+              <option value="FULL">کامل</option>
+              <option value="PARTIAL">نیم‌برش</option>
+              <option value="NONE">بدون برش</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-2 mt-5">
+            <input
+              type="checkbox"
+              className="w-4 h-4"
+              checked={receipt.rawInvert}
+              onChange={(e) => setR({ rawInvert: e.target.checked })}
+            />
+            معکوس‌کردن سفید/مشکی در RAW
+          </label>
         </div>
         <div className="font-bold pt-2 border-t">فاکتور عمده</div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -773,8 +871,8 @@ export function PrintAdvanced({
               <option value="RAW">دقیق (RAW)</option>
             </select>
             <div className="kbd leading-6">
-              «دقیق (RAW)» روی لیبل‌زن با دستور TSPL چاپ می‌شود (هر ردیف یک کار) و مستقل از درایور
-              است؛ برای ذخیره‌کردنش اول یک «چاپ آزمایشی» با همین روش بگیرید.
+              «دقیق (RAW)» روی لیبل‌زن با دستور TSPL چاپ می‌شود و مستقل از درایور است؛ برای
+              ذخیره‌کردنش اول یک «چاپ آزمایشی» با همین روش بگیرید.
             </div>
           </label>
           <label className="block">
@@ -813,6 +911,15 @@ export function PrintAdvanced({
             <input
               type="checkbox"
               className="w-4 h-4"
+              checked={label.rawInvert}
+              onChange={(e) => setL({ rawInvert: e.target.checked })}
+            />
+            معکوس‌کردن سفید/مشکی در RAW
+          </label>
+          <label className="flex items-center gap-2 mt-5">
+            <input
+              type="checkbox"
+              className="w-4 h-4"
               checked={label.useSystemDialog}
               onChange={(e) => setL({ useSystemDialog: e.target.checked })}
             />
@@ -820,8 +927,8 @@ export function PrintAdvanced({
           </label>
         </div>
         <div className="kbd">
-          روش RAW فعلاً کار نمی‌کند (فاز ۵) و انتخاب آن فقط تنظیمات را نگه می‌دارد؛ تا آن زمان چاپ از مسیر
-          Chromium انجام می‌شود. مقادیر سنسور/چگالی/سرعت/جهت هم فقط در همان مسیر RAW استفاده می‌شوند.
+          روش RAW فقط بعد از چاپ آزمایشی موفق در همین اجرای برنامه قابل ذخیره است. مقادیر سنسور، چگالی، سرعت، جهت،
+          offset مثبت (TSPL REFERENCE) و معکوس‌کردن سفید/مشکی فقط در همان مسیر RAW استفاده می‌شوند.
         </div>
       </div>
     </details>

@@ -319,6 +319,8 @@ export interface ReceiptTemplate {
   printMethod: 'CHROMIUM' | 'RAW'
   /** DPI چاپگر برای مسیر RAW (۲۰۳ یا ۳۰۰) */
   rawDpi: number
+  /** معکوس‌کردن قطبیت بیت‌های تصویر در مسیر RAW (برای دستگاه‌هایی که سفید/مشکی را برعکس می‌گیرند) */
+  rawInvert: boolean
   /** برش بعد از هر کار در مسیر RAW (ESC/POS) */
   cutMode: 'FULL' | 'PARTIAL' | 'NONE'
   /** در حالت «بپرس»، دیالوگ خود ویندوز به‌جای پنجره‌ی انتخاب برنامه */
@@ -415,6 +417,7 @@ export const DEFAULT_RECEIPT_TEMPLATE: ReceiptTemplate = {
   heightSafetyMm: 3,
   printMethod: 'CHROMIUM',
   rawDpi: 203,
+  rawInvert: false,
   cutMode: 'FULL',
   useSystemDialog: false,
   wholesaleSeparate: false,
@@ -681,6 +684,8 @@ export interface LabelTemplate extends LabelDesign {
   speed: number
   /** جهت چاپ (RAW) */
   direction: number
+  /** معکوس‌کردن قطبیت بیت‌های تصویر در مسیر RAW (برای دستگاه‌هایی که سفید/مشکی را برعکس می‌گیرند) */
+  rawInvert: boolean
   /** پنجره‌ی چاپ ویندوز باز شود؟ (مثل فاکتور) */
   useSystemDialog: boolean
   /** لوگوی فروشگاه به‌صورت dataURL (آپلود از پنل تنظیمات) — مشترک همه‌ی قالب‌ها */
@@ -734,6 +739,7 @@ export const DEFAULT_LABEL_TEMPLATE: LabelTemplate = {
   density: 8,
   speed: 4,
   direction: 0,
+  rawInvert: false,
   useSystemDialog: false,
   logoDataUrl: '',
   activeTemplate: 'CLASSIC',
@@ -993,6 +999,12 @@ export interface ShiftConfig {
   templates: ShiftTemplate[]
   /** بند ۷ — فرمت نمایش ساعت در فرم تنظیمات شیفت (فقط نمایشی) */
   clockFormat: ShiftClockFormat
+  /**
+   * نشست ۳۱۰ — سقف اضافه‌کاری شیفت شب به دقیقه؛ ۰ = خاموش (پیش‌فرض).
+   * کارمند همان نشستِ بازِ دیروز می‌تواند تا «پایان بازه + این سقف» اعلام کند؛
+   * حداکثر مقدار مجاز ۲۴۰ دقیقه (سقف پیشنهادی ۱۲۰). تغییرش رمز مدیر می‌خواهد.
+   */
+  overtimeMaxMinutes: number
 }
 
 export const DEFAULT_SHIFT_TEMPLATES: ShiftTemplate[] = [
@@ -1006,8 +1018,13 @@ export const DEFAULT_SHIFT_CONFIG: ShiftConfig = {
   byTime: false,
   templates: DEFAULT_SHIFT_TEMPLATES.map((t) => ({ ...t })),
   // پیش‌فرض = همان چیزی که تا امروز بود: ۱۲ساعته با AM/PM
-  clockFormat: '12'
+  clockFormat: '12',
+  // نشست ۳۱۰ — پیش‌فرض صفر یعنی اضافه‌کاری خاموش است (حالت جدید opt-in)
+  overtimeMaxMinutes: 0
 }
+
+/** نشست ۳۱۰ — سقف مطلق اضافه‌کاری که تنظیمات می‌تواند بگیرد (دقیقه). */
+export const SHIFT_OVERTIME_ABSOLUTE_MAX = 240
 
 /** '۸:۵' / '8:5' / '0800' → 'HH:mm' (ورودی خراب = مقدار پیش‌فرض داده‌شده). */
 export function normalizeTime(raw: unknown, fallback = '00:00'): string {
@@ -1223,6 +1240,7 @@ export const parseReceiptTemplate = (raw: unknown): ReceiptTemplate => {
     // فقط دو مقدار مجاز؛ هر چیز دیگر ⇒ رفتار امروز (موتور Chromium)
     printMethod: merged.printMethod === 'RAW' ? 'RAW' : 'CHROMIUM',
     rawDpi: Number(merged.rawDpi) === 300 ? 300 : 203,
+    rawInvert: merged.rawInvert === true,
     cutMode: merged.cutMode === 'PARTIAL' || merged.cutMode === 'NONE' ? merged.cutMode : 'FULL',
     useSystemDialog: merged.useSystemDialog === true,
     askEachTime: merged.askEachTime === true,
@@ -1326,6 +1344,7 @@ export const parseLabelTemplate = (raw: unknown): LabelTemplate => {
     density: numIn(flat.density, LABEL_ROLL_LIMITS.minDensity, LABEL_ROLL_LIMITS.maxDensity, DEFAULT_LABEL_TEMPLATE.density),
     speed: numIn(flat.speed, LABEL_ROLL_LIMITS.minSpeed, LABEL_ROLL_LIMITS.maxSpeed, DEFAULT_LABEL_TEMPLATE.speed),
     direction: Number(flat.direction) === 1 ? 1 : 0,
+    rawInvert: Boolean(flat.rawInvert),
     useSystemDialog: Boolean(flat.useSystemDialog),
     logoDataUrl: String(flat.logoDataUrl ?? ''),
     activeTemplate,
@@ -1390,7 +1409,12 @@ export const parseShiftConfig = (raw: unknown): ShiftConfig => {
     templates,
     names: templates.map((t) => t.name),
     // بند ۷: هر مقدار ناشناخته ⇒ '12' (رفتار قبلی)، پس تنظیم قدیمی هم امن است
-    clockFormat: String(obj.clockFormat ?? '') === '24' ? '24' : '12'
+    clockFormat: String(obj.clockFormat ?? '') === '24' ? '24' : '12',
+    // نشست ۳۱۰: نامشخص/خراب ⇒ ۰ (خاموش) — همیشه عدد صحیح در محدوده‌ی ۰..۲۴۰
+    overtimeMaxMinutes: Math.min(
+      240,
+      Math.max(0, Math.trunc(Number(obj.overtimeMaxMinutes)) || 0)
+    )
   }
 }
 

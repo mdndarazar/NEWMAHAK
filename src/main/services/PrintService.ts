@@ -132,6 +132,14 @@ async function receiptTargetDevice(input: {
   return deviceName
 }
 
+function printMarkWarning(scope: string): string {
+  return `چاپ انجام شد، اما ثبت شمارنده/سابقه‌ی چاپ ${scope} کامل نشد؛ برای بررسی Audit Log و جلوگیری از نسخه‌ی تکراری با مدیر هماهنگ کنید.`
+}
+
+function logCreditMarkFailure(scope: string, err: unknown): void {
+  console.error(`[print-credit] ${scope} markPrinted failed`, err)
+}
+
 export const printService = {
   /** داده‌ی رسید یک فاکتور ثبت‌شده، مستقیم از دیتابیس. */
   async receiptDataFor(invoiceId: number): Promise<ReceiptData> {
@@ -294,8 +302,20 @@ export const printService = {
     /** فاز ۳ — نام چاپگر از resolver (بدون fallback)؛ صفحه‌ی عمده نام خودش را دارد. */
     const deviceName = await receiptTargetDevice({ requestedDeviceName: input.deviceName, tpl, profile })
     const copies = Math.min(Math.max(Math.round(input.copies ?? tpl.copies ?? 1), 1), 5)
-    for (let i = 0; i < copies; i++) {
-      await printMaybeRaw({ method: tpl.printMethod, html, deviceName, silent: input.silent ?? true, pageSize })
+    const singleDialogJob = input.silent === false && tpl.printMethod !== 'RAW' && copies > 1
+    const jobs = singleDialogJob ? 1 : copies
+    for (let i = 0; i < jobs; i++) {
+      await printMaybeRaw({
+        method: tpl.printMethod,
+        html,
+        deviceName,
+        silent: input.silent ?? true,
+        copies: singleDialogJob ? copies : 1,
+        pageSize,
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
+      })
     }
     return { copies }
   },
@@ -401,13 +421,19 @@ export const printService = {
     /** فاز ۳ — نام چاپگر از resolver (بدون fallback خودکار). */
     const deviceName = await receiptTargetDevice({ requestedDeviceName: input.deviceName, tpl, profile: 'RETAIL' })
     const copies = Math.min(Math.max(Math.round(input.copies ?? tpl.copies ?? 1), 1), 5)
-    for (let i = 0; i < copies; i++) {
+    const singleDialogJob = input.silent === false && tpl.printMethod !== 'RAW' && copies > 1
+    const jobs = singleDialogJob ? 1 : copies
+    for (let i = 0; i < jobs; i++) {
       await printMaybeRaw({
         method: tpl.printMethod,
         html,
         deviceName,
         silent: input.silent ?? true,
-        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+        copies: singleDialogJob ? copies : 1,
+        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
       })
     }
     return { copies, returnId }
@@ -511,13 +537,19 @@ export const printService = {
     /** فاز ۳ — نام چاپگر از resolver (بدون fallback خودکار). */
     const deviceName = await receiptTargetDevice({ requestedDeviceName: input.deviceName, tpl, profile: 'RETAIL' })
     const copies = Math.min(Math.max(Math.round(input.copies ?? tpl.copies ?? 1), 1), 5)
-    for (let i = 0; i < copies; i++) {
+    const singleDialogJob = input.silent === false && tpl.printMethod !== 'RAW' && copies > 1
+    const jobs = singleDialogJob ? 1 : copies
+    for (let i = 0; i < jobs; i++) {
       await printMaybeRaw({
         method: tpl.printMethod,
         html,
         deviceName,
         silent: input.silent ?? true,
-        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+        copies: singleDialogJob ? copies : 1,
+        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
       })
     }
     return { copies, returnId }
@@ -599,7 +631,7 @@ export const printService = {
     return debtPaymentReceiptHtml({ ...data, reprint: opts?.reprint === true }, tpl)
   },
 
-  async printDebtPayment(input: { paymentId?: number; reprint?: boolean; deviceName?: string }) {
+  async printDebtPayment(input: { paymentId?: number; reprint?: boolean; silent?: boolean; deviceName?: string }) {
     const paymentId = Number(input?.paymentId ?? 0)
     if (!paymentId) throw new BusinessError('پرداختی برای چاپ فیش مشخص نشده است.')
     const tpl = await settingsService.receiptTemplate()
@@ -612,15 +644,22 @@ export const printService = {
       method: tpl.printMethod,
       html,
       deviceName,
-      silent: true,
-      pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+      silent: input.silent ?? true,
+      pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+      rawDpi: tpl.rawDpi,
+      rawInvert: tpl.rawInvert,
+      cutMode: tpl.cutMode
     })
     return { paymentId }
   },
 
-  /** نمونه‌ی رسید برای پیش‌نمایش زنده‌ی پنل تنظیمات (بدون نیاز به فاکتور واقعی). */
-  sampleData(tpl: ReceiptTemplate): ReceiptData {
-    return {
+  /**
+   * نمونه‌ی رسید برای پیش‌نمایش زنده‌ی پنل تنظیمات (بدون نیاز به فاکتور واقعی).
+   * پروفایل `WHOLESALE` همان نمونه است به‌اضافه‌ی پرداخت جزئی، تا سطرهای «مبلغ
+   * پرداختی» و «مانده حساب» فاکتور عمده هم دیده/چاپ شوند. غایب ⇒ همان نمونه‌ی قبلی.
+   */
+  sampleData(tpl: ReceiptTemplate, profile: ReceiptProfile = 'RETAIL'): ReceiptData {
+    const base: ReceiptData = {
       receiptNo: 1024,
       dateJalali: jalaliToday(),
       time: toClock(new Date()),
@@ -645,6 +684,13 @@ export const printService = {
       returnCode: 'K7M4QP',
       returnCodeExpiresJalali: jalaliToday()
     }
+    if (profile !== 'WHOLESALE') return base
+    return {
+      ...base,
+      customerName: 'مشتری عمده‌ی نمونه',
+      payments: [{ label: 'نقدی', amount: 10000000 }],
+      paidTotal: 10000000
+    }
   },
 
   /**
@@ -653,12 +699,19 @@ export const printService = {
    * قبل از ذخیره ببیند.
    */
   async previewHtml(
-    input: { template?: Partial<ReceiptTemplate>; invoiceId?: number | null; paidTotal?: number | null } = {}
+    input: {
+      template?: Partial<ReceiptTemplate>
+      invoiceId?: number | null
+      paidTotal?: number | null
+      /** پروفایل نمونه (کارت «فاکتور عمده»)؛ غایب ⇒ `RETAIL` مثل قبل. */
+      profile?: 'RETAIL' | 'WHOLESALE'
+    } = {}
   ) {
     const tpl = { ...(await settingsService.receiptTemplate()), ...(input.template ?? {}) }
     if (input.invoiceId) return this.invoiceHtml(input.invoiceId, input.template, input.paidTotal ?? null)
-    const data = await this.withBarcode(this.sampleData(tpl), tpl)
-    return receiptHtml(data, tpl)
+    const profile: ReceiptProfile = input.profile === 'WHOLESALE' ? 'WHOLESALE' : 'RETAIL'
+    const data = await this.withBarcode(this.sampleData(tpl, profile), tpl)
+    return receiptHtml(data, tpl, profile)
   },
 
   /**
@@ -783,37 +836,57 @@ export const printService = {
      */
     const plan = creditCopyPlan(data.printCount - 1, input.copies)
     /**
-     * نشست ۲۲۲ · فاز ۶ (بخش ۱۰) — فقط نام چاپگر: از resolver مشترک و با فهرست
-     * زنده (بدون fallback خودکار). سیاست دیالوگ (`silent`) و شمارنده‌ی چاپ
-     * (`markPrinted`) **دست‌نخورده** است.
+     * چاپ اعتبار کاغذ A6/A5/A4 خودش را دارد و نباید به چاپگر حرارتی رسید گره
+     * بخورد. نام صریح renderer همچنان اعتبارسنجی می‌شود؛ اگر نامی نیامده باشد
+     * رفتار امن/قدیمی یعنی چاپگر پیش‌فرض ویندوز انتخاب می‌شود (بدون fallback به
+     * چاپگر اول).
      */
-    const deviceName = await receiptTargetDevice({
+    const { deviceName } = await resolvePrintTargetName({
       requestedDeviceName: input.deviceName,
-      tpl,
-      profile: 'RETAIL'
+      savedName: ''
     })
-    for (const copy of plan) {
-      const html = creditDocHtml({ ...data, printCount: copy.printCount, reprint: copy.reprint }, tpl, paper)
-      try {
-        await printHtml(html, {
-          silent: input.silent ?? false,
-          deviceName
-        })
-      } catch (err) {
-        /**
-         * ممیزی AUDIT-S129-01 — نتیجه‌ی نامعلوم (پنجره بسته/crash یا مهلت) یعنی شاید کاغذ
-         * بیرون آمده باشد. احتیاطاً شمرده می‌شود تا کاغذ بعدی «نسخه‌ی مجدد» بخورد، نه
-         * «اصل» دوم؛ Audit صریحاً «نتیجه‌ی نامعلوم» را می‌گوید. لغو/رد قطعی شمرده نمی‌شود.
-         */
-        if (isPrintOutcomeUnknown(err) && creditShouldMarkPrinted(input.markPrinted))
-          await storeCreditService.markPrinted({ id, userId: input.userId ?? null, uncertain: true })
-        throw err
+    const docs = plan.map((copy) => ({ ...data, printCount: copy.printCount, reprint: copy.reprint }))
+    const html = docs.length === 1 ? creditDocHtml(docs[0], tpl, paper) : creditBatchHtml(docs, tpl, paper, 1)
+    const warnings: string[] = []
+    try {
+      await printHtml(html, {
+        silent: input.silent ?? false,
+        deviceName
+      })
+    } catch (err) {
+      /**
+       * ممیزی AUDIT-S129-01 — نتیجه‌ی نامعلوم (پنجره بسته/crash یا مهلت) یعنی شاید کاغذ
+       * بیرون آمده باشد. برای job چندصفحه‌ای همه‌ی نسخه‌های داخل همان job را
+       * احتیاطاً uncertain می‌شماریم؛ لغو/رد قطعی شمرده نمی‌شود.
+       *
+       * اگر خودِ ثبت شمارنده خطا بدهد نباید خطای اصلیِ outcome نامعلوم را بپوشاند؛
+       * renderer باید همچنان `PRINT_OUTCOME_UNKNOWN` را ببیند.
+       */
+      if (isPrintOutcomeUnknown(err) && creditShouldMarkPrinted(input.markPrinted)) {
+        for (let i = 0; i < plan.length; i++) {
+          try {
+            await storeCreditService.markPrinted({ id, userId: input.userId ?? null, uncertain: true })
+          } catch (markErr) {
+            logCreditMarkFailure('single unknown', markErr)
+          }
+        }
       }
-      // بعدِ *هر* کاغذ، تا شمارنده و AuditLog تعداد واقعی کاغذها را بدانند.
-      // «پیش‌فرض روشن» یک قاعده است (بخش ۹.۳ · §۲۴)، نه یک `!== false`ِ محلی.
-      if (creditShouldMarkPrinted(input.markPrinted)) await storeCreditService.markPrinted({ id, userId: input.userId ?? null })
+      throw err
     }
-    return { copies: plan.length, id }
+    // بعد از موفقیت job، به تعداد صفحه‌های واقعی شمارنده و AuditLog بالا می‌رود.
+    if (creditShouldMarkPrinted(input.markPrinted)) {
+      let markFailed = false
+      for (let i = 0; i < plan.length; i++) {
+        try {
+          await storeCreditService.markPrinted({ id, userId: input.userId ?? null })
+        } catch (markErr) {
+          markFailed = true
+          logCreditMarkFailure('single success', markErr)
+        }
+      }
+      if (markFailed) warnings.push(printMarkWarning('اعتبار'))
+    }
+    return { copies: plan.length, id, markFailed: warnings.length > 0, warnings }
   },
 
   /**
@@ -919,36 +992,50 @@ export const printService = {
   }) {
     const tpl = await settingsService.receiptTemplate()
     const { html, ids, total, capped } = await this.creditBatchRender(input)
-    /** فاز ۶ — فقط نام چاپگر از resolver؛ `silent` و شمارنده‌ی دسته دست‌نخورده. */
-    const deviceName = await receiptTargetDevice({
+    /**
+     * چاپ گروهی اعتبار هم مثل چاپ تکی اعتبار به چاپگر رسید وابسته نیست؛ نام صریح
+     * renderer معتبر می‌شود و در نبود آن چاپگر پیش‌فرض ویندوز استفاده می‌شود.
+     */
+    const { deviceName } = await resolvePrintTargetName({
       requestedDeviceName: input.deviceName,
-      tpl,
-      profile: 'RETAIL'
+      savedName: ''
     })
+    const warnings: string[] = []
     try {
       await printHtml(html, { silent: input.silent ?? false, deviceName })
     } catch (err) {
       // ممیزی AUDIT-S129-01 — همان قاعده‌ی چاپ تکی: نتیجه‌ی نامعلوم احتیاطاً شمرده می‌شود
-      if (isPrintOutcomeUnknown(err) && creditShouldMarkPrinted(input.markPrinted))
-        await storeCreditService.markPrintedMany({
-          ids,
-          userId: input.userId ?? null,
-          batchId: input.batchId ?? null,
-          channel: 'PRINT',
-          uncertain: true
-        })
+      if (isPrintOutcomeUnknown(err) && creditShouldMarkPrinted(input.markPrinted)) {
+        try {
+          await storeCreditService.markPrintedMany({
+            ids,
+            userId: input.userId ?? null,
+            batchId: input.batchId ?? null,
+            channel: 'PRINT',
+            uncertain: true
+          })
+        } catch (markErr) {
+          logCreditMarkFailure('batch unknown', markErr)
+        }
+      }
       throw err
     }
-    const marked = creditShouldMarkPrinted(input.markPrinted)
-      ? await storeCreditService.markPrintedMany({
+    let marked = { ...CREDIT_MARK_PRINTED_NONE }
+    if (creditShouldMarkPrinted(input.markPrinted)) {
+      try {
+        marked = await storeCreditService.markPrintedMany({
           ids,
           userId: input.userId ?? null,
           batchId: input.batchId ?? null,
           channel: 'PRINT'
         })
-      : { ...CREDIT_MARK_PRINTED_NONE }
+      } catch (markErr) {
+        logCreditMarkFailure('batch success', markErr)
+        warnings.push(printMarkWarning('اعتبارهای گروهی'))
+      }
+    }
     /** بخش ۹.۳ — شکلِ خروجی (و رسیدنِ `capped` تا خودِ UI) یک تصمیم مشترک است. */
-    return creditPrintBatchResult({ ids, total, capped, marked })
+    return { ...creditPrintBatchResult({ ids, total, capped, marked }), markFailed: warnings.length > 0, warnings }
   },
 
   /**

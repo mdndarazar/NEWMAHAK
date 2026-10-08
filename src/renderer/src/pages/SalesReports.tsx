@@ -1,8 +1,9 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
+import { isPrintCancelledError } from '../lib/printErrors'
 import { exportTable } from '../lib/exportCsv'
 import { pageOfOutput, readAllReportPages, type ReadAllPagedResult } from '../lib/reportOutput'
 import ReportFilterBar, { channelsLabel, makeFilters, toServiceFilter, type ReportFilters } from '../components/ReportFilterBar'
@@ -637,6 +638,8 @@ export default function SalesReports() {
   const [loadedReportKey, setLoadedReportKey] = useState<string | null>(null)
   const [byShift, setByShift] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [printBusy, setPrintBusy] = useState(false)
+  const printBusyRef = useRef(false)
   /** خروجی پیش‌فرض کل فیلتر اجراشده است؛ صفحه‌ی جاری فقط با تیک صریح صادر می‌شود. */
   const [outputScope, setOutputScope] = useState<OutputScope>('all')
   const [err, setErr] = useState<string | null>(null)
@@ -1239,6 +1242,9 @@ export default function SalesReports() {
   ]
 
   const printA4 = async () => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       const output = await prepareOutputSnapshot()
       if (tab === 'summary') {
@@ -1455,11 +1461,17 @@ export default function SalesReports() {
       }
       flash('گزارش برای چاپ A4 فرستاده شد')
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
   const printThermal = async () => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       await call(CH.printThermalSummary, {
         title: 'سرجمع فروش',
@@ -1492,7 +1504,10 @@ export default function SalesReports() {
       })
       flash('گزارش حرارتی چاپ شد')
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
@@ -1825,24 +1840,40 @@ export default function SalesReports() {
 
   /** چاپ «سند تعویض» یک ردیف تب تعویض کالا (کانال print:exchange). */
   const printExchangeDoc = async (returnId: number) => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       /** فاز ۳ — چاپ سند تعویض از مسیر مشترک (پروفایل رسید/فاکتور). */
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printExchange, { returnId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printExchange, { returnId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('سند تعویض برای چاپ فرستاده شد')
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
   const reprint = async (invoiceId: number) => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       /** فاز ۳ — از مسیر مشترک چاپ؛ انصراف ⇒ لغو قطعی و بی‌صدا. */
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printInvoice, { invoiceId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printInvoice, { invoiceId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('رسید فاکتور دوباره چاپ شد')
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
@@ -2579,11 +2610,11 @@ export default function SalesReports() {
         <span className="text-xs text-slate-500">
           {outputScope === 'all' ? 'پیش‌فرض: کل خروجی فیلترشده' : 'خروجی محدود به صفحه‌ی جاری است'}
         </span>
-        <button className="btn" onClick={() => void printThermal()} disabled={busy || outputDirty || tab !== 'summary' || !report.rows.length}>
-          چاپ حرارتی
+        <button className="btn" onClick={() => void printThermal()} disabled={busy || printBusy || outputDirty || tab !== 'summary' || !report.rows.length}>
+          {printBusy ? 'در حال چاپ…' : 'چاپ حرارتی'}
         </button>
-        <button className="btn" onClick={() => void printA4()} disabled={busy || outputDirty}>
-          چاپ A4
+        <button className="btn" onClick={() => void printA4()} disabled={busy || printBusy || outputDirty}>
+          {printBusy ? 'در حال چاپ…' : 'چاپ A4'}
         </button>
         <button className="btn" onClick={() => void exportCsvNow()} disabled={busy || outputDirty}>
           خروجی اکسل

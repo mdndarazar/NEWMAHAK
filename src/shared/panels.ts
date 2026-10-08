@@ -170,6 +170,8 @@ export const PANEL_KEYS = {
   creditBulkIssue: 'credit-bulk-issue',
   /** ابطال / تعلیق / فعال‌سازی مجدد / تغییر مبلغ‌-تاریخ‌-دفعات یک اعتبار (§۸ و §۱۱) */
   creditVoid: 'credit-void',
+  /** همگام‌سازی موجودی سایت WooCommerce با انبار فروشگاه (فقط موجودی). */
+  wooSync: 'woo-sync',
   /** صفحهٔ جدا «گزارش مدیریت» — نمودار و مانده؛ گزارشات فروش را لمس نمی‌کند */
   managementReports: 'management-reports',
   /** تب «سود و تورم» داخل گزارش مدیریت — قفل جدا از خودِ صفحه */
@@ -256,6 +258,12 @@ export const LOCKED_PANELS: readonly PanelDef[] = [
     key: PANEL_KEYS.managementReports,
     title: 'گزارش مدیریت',
     hint: 'نمودار روند، مقایسهٔ فروشنده، کالای مانده و کم‌فروش — جدا از گزارشات فروش. رمز دومش را به صاحب مغازه بدهید.'
+  },
+  {
+    key: PANEL_KEYS.wooSync,
+    title: 'همگام‌سازی موجودی سایت',
+    hint:
+      'اتصال WooCommerce فقط برای stock_quantity. این قفل اجازه‌ی اتصال/قطع و اعمال موجودی سایت را می‌دهد؛ قیمت، سفارش، مشتری و گزارش فروش سایت وارد برنامه نمی‌شود.'
   },
   {
     key: PANEL_KEYS.managementProfit,

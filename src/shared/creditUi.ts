@@ -2293,6 +2293,8 @@ export interface CreditPrintOutcome {
   capped?: boolean
   marked?: number
   reprints?: number
+  markFailed?: boolean
+  warnings?: string[]
 }
 
 /**
@@ -2306,15 +2308,17 @@ export function creditPrintFlash(op: CreditPrintOp, res: CreditPrintOutcome | nu
   const total = Math.max(0, Math.round(Number(r.total) || 0))
   const reprints = Math.max(0, Math.round(Number(r.reprints) || 0))
   const capNote = r.capped === true ? `\n⚠️ از ${fa(total)} سند فقط ${fa(count)} سند در این فایل آمد (سقف هر فایل). بقیه را با انتخاب دستی در چند نوبت بگیرید.` : ''
+  const warningNote = Array.isArray(r.warnings) && r.warnings.length ? `\n⚠️ ${r.warnings.filter(Boolean).join('\n⚠️ ')}` : ''
   if (op === 'print') {
     const copies = Math.max(1, Math.round(Number(r.copies) || 1))
-    return `سند اعتبار به چاپگر رفت (${fa(copies)} نسخه). چاپ‌های بعدی برچسب «نسخه‌ی مجدد» می‌گیرند.`
+    return `سند اعتبار به چاپگر رفت (${fa(copies)} نسخه). چاپ‌های بعدی برچسب «نسخه‌ی مجدد» می‌گیرند.${warningNote}`
   }
   if (op === 'batch') {
     return (
       `چاپ دسته‌ای به‌صورت یک سند چندصفحه‌ای به چاپگر رفت: ${fa(count)} سند` +
       (reprints ? ` · ${fa(reprints)} مورد نسخه‌ی مجدد` : '') +
-      capNote
+      capNote +
+      warningNote
     )
   }
   if (r.saved !== true) return 'ذخیره‌ی PDF لغو شد؛ هیچ فایلی ساخته نشد و شمارنده‌ی چاپ هم دست نخورد.'

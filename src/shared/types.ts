@@ -1356,6 +1356,19 @@ export interface ShiftSuggestion {
   templates: { number: number; name: string; startTime: string; endTime: string; windowLabel: string }[]
 }
 
+/**
+ * نشستِ بازِ روزِ دیگر (جامانده) که از دید openShift پنهان می‌ماند؛ بستنش در
+ * openSession دلیل و رمز مدیر می‌خواهد و مودال باید از قبل فیلدهایش را نشان دهد.
+ */
+export interface ShiftStaleOpen {
+  id: number
+  name: string
+  sessionLabel: string
+  dayJalali: string
+  userId: number | null
+  userName: string | null
+}
+
 /** داده‌ی فرم «باز کردن نشست / تعویض کارمند». */
 export interface ShiftSessionForm {
   suggestion: ShiftSuggestion
@@ -1363,7 +1376,34 @@ export interface ShiftSessionForm {
   /** آخرین کارمند نشست قبلی — فقط پیش‌فرضِ highlight‌شده، بدون تأیید خودکار */
   defaultStaffId: number | null
   current: ShiftInfo | null
+  /** نشست جامانده‌ی روزِ دیگر (در صورت وجود) — بستنش در مودال دلیل + رمز مدیر می‌خواهد */
+  staleOpen: ShiftStaleOpen | null
+  /** چرا ثبت فاکتور/پرداخت الان ممکن نیست (در صورت وجود مانع) — OVERTIME_ELIGIBLE از فاز اضافه‌کاری */
+  blockReason: 'NONE' | 'STAFF_PENDING' | 'STALE_OPEN' | 'OVERTIME_ELIGIBLE'
+  /**
+   * نشست ۳۱۰ — چون blockReason === OVERTIME_ELIGIBLE: پیش‌نمایش کارت اعلام
+   * اضافه‌کاری (ساعت پایان مجاز = پایان بازه + سقف تنظیمی، با ارقام فارسی).
+   * سرور همه‌ی گیت‌ها را پوشیده ساخته است؛ modal فقط دلیل می‌گیرد و اعلام می‌کند.
+   */
+  overtimePreview: { untilLabel: string; capMinutes: number } | null
   guide: string
+}
+
+/**
+ * وضعیت زنده‌ی نشست برای UI (کانال shift:status) — خواندنیِ خالص؛ برخلاف
+ * shift:current هیچ خطایی پرتاب نمی‌کند و هیچ نشست AUTOای نمی‌سازد.
+ */
+export type ShiftGateState = 'OK' | 'STAFF_PENDING' | 'STALE' | 'NONE'
+export interface ShiftStatusInfo {
+  state: ShiftGateState
+  shift?: ShiftInfo | null
+  stale?: ShiftStaleOpen | null
+  /**
+   * نشست ۳۱۰ — وقتی state === 'STALE' ولی نشست بازِ دیروز واجد اضافه‌کاری است:
+   * ساعت پایان مجاز (ارقام فارسی) تا پیام خطا/چیپ بتوانند جایگزین اعلام اضافه‌کاری
+   * را هم نشان دهند. در بقیه‌ی حالت‌ها null/غایب است.
+   */
+  overtimeUntilLabel?: string | null
 }
 
 /** یک ردیف «انبار مرکزی» (مورد ۵) — کاملاً مستقل از موجودی فروشگاه. */

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
+import { isPrintCancelledError } from '../lib/printErrors'
 import ManagerGate from '../components/ManagerGate'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -147,6 +148,8 @@ export default function CreditManagement() {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [busy, setBusy] = useState(false)
+  const [printing, setPrinting] = useState(false)
+  const printingRef = useRef(false)
   /**
    * نشست ۱۵۴ (S151-b) — گیت main ذخیره‌ی تنظیمات اعتبار: رمز همراه همان درخواست
    * فرستاده می‌شود و سرور می‌سنجد. تا وضعیت قفل خوانده نشده، رمز لازم فرض می‌شود (fail-closed).
@@ -161,6 +164,12 @@ export default function CreditManagement() {
   /** نشست ۱۴۳ · بند ۴-۲۹ — رمز مدیر صدور دستی/گروهی؛ main خودش می‌سنجد. */
   const [issueManagerPw, setIssueManagerPw] = useState('')
   const [opDraft, setOpDraft] = useState<OpDraft | null>(null)
+  const opDraftRef = useRef<OpDraft | null>(null)
+  opDraftRef.current = opDraft
+  const detailRef = useRef<CreditDetail | null>(null)
+  detailRef.current = detail
+  const [opBusy, setOpBusy] = useState(false)
+  const opBusyRef = useRef(false)
   const [issue, setIssue] = useState<IssueDraft>(EMPTY_ISSUE_DRAFT)
   const [bulk, setBulk] = useState<BulkDraft>(EMPTY_BULK_DRAFT)
   const [party, setParty] = useState<Party | null>(null)
@@ -307,18 +316,27 @@ export default function CreditManagement() {
   }
 
   const submitOp = async () => {
-    if (!opDraft || !detail) return
-    const result = buildOpPayload(opDraft, detail.credit)
+    if (opBusyRef.current) return
+    const draft = opDraftRef.current
+    const currentDetail = detailRef.current
+    if (!draft || !currentDetail) return
+    const result = buildOpPayload(draft, currentDetail.credit)
     if (!result.ok || !result.payload) return setErr(result.error ?? 'فرم کامل نیست.')
+    opBusyRef.current = true
+    setOpBusy(true)
     try {
-      const res = await call<any>(CH[CREDIT_OP_CHANNEL[opDraft.op] as keyof typeof CH], result.payload)
+      const res = await call<any>(CH[CREDIT_OP_CHANNEL[draft.op] as keyof typeof CH], result.payload)
       setOpDraft(null)
       setOpParty(null)
+      setConfirm(null)
       /* هشدارهای سرویس تا جلسه ۲۷ دیده نمی‌شدند. */
       flash('عملیات انجام شد و در تاریخچه ثبت شد.' + (res?.warnings?.length ? `\n${res.warnings.join('\n')}` : ''))
-      await openDetail(detail.credit.id)
+      await openDetail(currentDetail.credit.id)
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      opBusyRef.current = false
+      setOpBusy(false)
     }
   }
 
@@ -346,33 +364,48 @@ export default function CreditManagement() {
    * دستی نوشته می‌شدند و بندهای ۱۷/۲۲/۲۳ هارنس ۲۵ فقط رشته‌هایشان را می‌دیدند.
    */
   const printOne = async (id: number, copies = 1) => {
+    if (printingRef.current) return
     const req = creditPrintOpRequest('print', { id, copies })
     if (!req) return
+    printingRef.current = true
+    setPrinting(true)
     try {
       const res = await call<CreditPrintOutcome>(CH[req.channel as keyof typeof CH], req.payload)
       flash(creditPrintFlash('print', { ...(res ?? {}), copies: res?.copies ?? copies }, faDigits))
       if (detail?.credit.id === id) await openDetail(id)
       else void load()
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
     }
   }
 
   const printBatch = async (target: CreditPrintTarget) => {
+    if (printingRef.current) return
     const req = creditPrintOpRequest('batch', target)
     if (!req) return
+    printingRef.current = true
+    setPrinting(true)
     try {
       const res = await call<CreditPrintOutcome>(CH[req.channel as keyof typeof CH], req.payload)
       flash(creditPrintFlash('batch', res, faDigits))
       void load()
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
     }
   }
 
   const savePdf = async (target: CreditPrintTarget) => {
+    if (printingRef.current) return
     const req = creditPrintOpRequest('pdf', target)
     if (!req) return
+    printingRef.current = true
+    setPrinting(true)
     try {
       const res = await call<CreditPrintOutcome>(CH[req.channel as keyof typeof CH], req.payload)
       flash(creditPrintFlash('pdf', res, faDigits))
@@ -380,7 +413,10 @@ export default function CreditManagement() {
       if (id && detail?.credit.id === id) await openDetail(id)
       else void load()
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
     }
   }
 
@@ -563,11 +599,11 @@ export default function CreditManagement() {
               <button className="btn" onClick={() => void doExport('list', rows)}>
                 خروجی اکسل
               </button>
-              <button className="btn" disabled={!selected.length} onClick={() => void printBatch({ ids: selected })}>
-                چاپ گروهی انتخاب‌شده‌ها
+              <button className="btn" disabled={!selected.length || printing} onClick={() => void printBatch({ ids: selected })}>
+                {printing ? 'در حال چاپ…' : 'چاپ گروهی انتخاب‌شده‌ها'}
               </button>
-              <button className="btn" disabled={!selected.length} onClick={() => void savePdf({ ids: selected })}>
-                PDF انتخاب‌شده‌ها
+              <button className="btn" disabled={!selected.length || printing} onClick={() => void savePdf({ ids: selected })}>
+                {printing ? 'در حال آماده‌سازی…' : 'PDF انتخاب‌شده‌ها'}
               </button>
               {!!selected.length && (
                 <button className="btn" onClick={() => setSelected([])}>
@@ -627,8 +663,8 @@ export default function CreditManagement() {
                         <button className="text-brand font-bold" onClick={() => void openDetail(r.id)}>
                           جزئیات
                         </button>
-                        <button className="text-brand" title="چاپ سند" onClick={() => void printOne(r.id)}>
-                          چاپ
+                        <button className="text-brand" title="چاپ سند" onClick={() => void printOne(r.id)} disabled={printing}>
+                          {printing ? 'در حال چاپ…' : 'چاپ'}
                         </button>
                         <button className="text-brand" title="پیش‌نمایش و PDF" onClick={() => void openPreview(r.id)}>
                           پیش‌نمایش
@@ -657,6 +693,7 @@ export default function CreditManagement() {
             }}
             onBack={() => setView('list')}
             onPrint={(copies: number) => void printOne(detail.credit.id, copies)}
+            printing={printing}
             onPreview={() => void openPreview(detail.credit.id)}
             onPdf={() => void savePdf({ id: detail.credit.id })}
             onPage={(kind, skip) => void openDetailPage(kind, skip)}
@@ -844,11 +881,12 @@ export default function CreditManagement() {
                           className="text-brand font-bold"
                           title="یک سند PDF/چاپی چندصفحه‌ای برای کل دسته"
                           onClick={() => void printBatch({ batchId: b.id })}
+                          disabled={printing}
                         >
-                          چاپ دسته‌ای
+                          {printing ? 'در حال چاپ…' : 'چاپ دسته‌ای'}
                         </button>
-                        <button className="text-brand" onClick={() => void savePdf({ batchId: b.id })}>
-                          PDF دسته
+                        <button className="text-brand" onClick={() => void savePdf({ batchId: b.id })} disabled={printing}>
+                          {printing ? 'در حال آماده‌سازی…' : 'PDF دسته'}
                         </button>
                       </div>
                     </Cell>
@@ -935,15 +973,17 @@ export default function CreditManagement() {
         {/* §۲۰ — عملیات مدیریتی (ابطال/تعلیق/حذف/تغییرها) گیت رمز اختصاصی خودش را دارد. */}
         <Modal
           open={!!opDraft}
-          onClose={() => setOpDraft(null)}
+          onClose={() => {
+            if (!opBusy) setOpDraft(null)
+          }}
           title={opDraft ? CREDIT_OP_TITLES[opDraft.op] : 'عملیات'}
           footer={
             <>
-              <button className="btn" onClick={() => setOpDraft(null)}>
+              <button className="btn" onClick={() => setOpDraft(null)} disabled={opBusy}>
                 انصراف
               </button>
-              <button className="btn btn-primary" onClick={() => setConfirm(() => () => void submitOp())}>
-                ثبت عملیات
+              <button className="btn btn-primary" onClick={() => setConfirm(() => () => void submitOp())} disabled={opBusy}>
+                {opBusy ? 'در حال ثبت…' : 'ثبت عملیات'}
               </button>
             </>
           }
@@ -964,11 +1004,11 @@ export default function CreditManagement() {
               <button className="btn" onClick={closePreview}>
                 بستن
               </button>
-              <button className="btn" onClick={() => previewId && void printOne(previewId)}>
-                چاپ سند
+              <button className="btn" onClick={() => previewId && void printOne(previewId)} disabled={printing}>
+                {printing ? 'در حال چاپ…' : 'چاپ سند'}
               </button>
-              <button className="btn btn-primary" onClick={() => previewId && void savePdf({ id: previewId })}>
-                ذخیره‌ی PDF
+              <button className="btn btn-primary" onClick={() => previewId && void savePdf({ id: previewId })} disabled={printing}>
+                {printing ? 'در حال آماده‌سازی…' : 'ذخیره‌ی PDF'}
               </button>
             </>
           }
@@ -984,10 +1024,14 @@ export default function CreditManagement() {
         <ConfirmDialog
           open={!!confirm}
           message="این تغییر در سوابق اعتبار و Audit Log ثبت می‌شود. ادامه می‌دهید؟"
-          onCancel={() => setConfirm(null)}
+          busy={opBusy}
+          onCancel={() => {
+            if (!opBusy) setConfirm(null)
+          }}
           onConfirm={() => {
-            confirm?.()
+            const fn = confirm
             setConfirm(null)
+            fn?.()
           }}
         />
       </div>

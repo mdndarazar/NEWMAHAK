@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import Modal from './Modal'
 import ConfirmDialog from './ConfirmDialog'
 import { call, CH } from '../lib/api'
+import { isPrintCancelledError, isUnknownPrintMessage } from '../lib/printErrors'
 import { faDigits, money } from '@shared/jalali'
 import { creditPrintOpRequest } from '@shared/creditUi'
 import {
@@ -31,15 +32,29 @@ import {
  * ===========================================================================
  */
 
-/** چاپ کد اعتبار از همان کانال چاپ اسناد اعتبار؛ خطا ⇒ متن فارسی (سند صادرشده دست نمی‌خورد). */
-export async function printOverpayCredit(credit: { id?: number | null } | null | undefined): Promise<string | null> {
+export type OverpayCreditPrintProblem = { kind: 'unknown' | 'failed' | 'warning'; msg: string } | null
+
+let overpayCreditPrintInFlight = false
+
+/** چاپ کد اعتبار از همان کانال چاپ اسناد اعتبار؛ خطا/هشدار ⇒ پیام فارسی (سند صادرشده دست نمی‌خورد). */
+export async function printOverpayCredit(credit: { id?: number | null } | null | undefined): Promise<OverpayCreditPrintProblem> {
   const req = creditPrintOpRequest('print', { id: credit?.id ?? 0, copies: 1 })
-  if (!req) return 'شناسه‌ی اعتبار برای چاپ در دسترس نیست؛ از «مدیریت اعتبار خرید» چاپ کنید.'
+  if (!req) return { kind: 'failed', msg: 'شناسه‌ی اعتبار برای چاپ در دسترس نیست؛ از «مدیریت اعتبار خرید» چاپ کنید.' }
+  if (overpayCreditPrintInFlight)
+    return { kind: 'failed', msg: 'چاپ کد اعتبار در حال انجام است؛ تا پایان دیالوگ چاپ صبر کنید.' }
+  overpayCreditPrintInFlight = true
   try {
-    await call(CH[req.channel as keyof typeof CH], req.payload)
+    const res = (await call(CH[req.channel as keyof typeof CH], req.payload)) as { warnings?: string[] } | null | undefined
+    const warnings = Array.isArray(res?.warnings) ? res.warnings.filter(Boolean) : []
+    if (warnings.length) return { kind: 'warning', msg: warnings.join('\n') }
     return null
   } catch (e: any) {
-    return `کد اعتبار صادر شده ولی چاپ نشد: ${e.message} · از «چاپ دوباره‌ی کد» استفاده کنید.`
+    if (isPrintCancelledError(e)) return null
+    if (isUnknownPrintMessage(e))
+      return { kind: 'unknown', msg: `کد اعتبار صادر شد، اما معلوم نیست چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.` }
+    return { kind: 'failed', msg: `کد اعتبار صادر شده ولی چاپ نشد: ${e.message} · از «چاپ دوباره‌ی کد» استفاده کنید.` }
+  } finally {
+    overpayCreditPrintInFlight = false
   }
 }
 
@@ -51,7 +66,9 @@ export default function OverpayFlowDialogs({
   onPassword,
   issuedCredit,
   onCloseIssued,
-  onReprint
+  onReprint,
+  creditPrinting = false,
+  creditPrintProblem = null
 }: {
   flow: OverpayFlowState | null
   busy: boolean
@@ -63,6 +80,10 @@ export default function OverpayFlowDialogs({
   issuedCredit: (OverpayCreditLike & { id?: number }) | null
   onCloseIssued: () => void
   onReprint: () => void
+  /** چاپ خودکار/دوباره‌ی همین کد در جریان است؛ برای جلوگیری از چند دیالوگ پشت‌سرهم. */
+  creditPrinting?: boolean
+  /** پیام چاپ همین کد داخل همین modal، تا پشت overlay پنهان نشود. */
+  creditPrintProblem?: OverpayCreditPrintProblem
 }) {
   const [pw, setPw] = useState('')
   useEffect(() => {
@@ -170,14 +191,22 @@ export default function OverpayFlowDialogs({
         open={!!issuedCredit}
         title="کد اعتبار خرید صادر شد"
         width="max-w-md"
-        onClose={onCloseIssued}
+        onClose={() => {
+          if (!creditPrinting) onCloseIssued()
+        }}
         footer={
           <>
-            <button className="btn" onClick={onReprint}>
-              چاپ دوباره‌ی کد
+            <button className="btn" onClick={onReprint} disabled={busy || creditPrinting || creditPrintProblem?.kind === 'warning'}>
+              {creditPrinting
+                ? 'در حال چاپ…'
+                : creditPrintProblem?.kind === 'warning'
+                  ? 'چاپ انجام شده؛ دوباره چاپ نکنید'
+                  : creditPrintProblem?.kind === 'unknown'
+                    ? 'فقط اگر برگه‌ای بیرون نیامده: چاپ دوباره'
+                    : 'چاپ دوباره‌ی کد'}
             </button>
-            <button className="btn btn-primary" onClick={onCloseIssued}>
-              بستن
+            <button className="btn btn-primary" onClick={onCloseIssued} disabled={creditPrinting}>
+              {creditPrinting ? 'تا پایان چاپ صبر کنید…' : 'بستن'}
             </button>
           </>
         }
@@ -191,6 +220,17 @@ export default function OverpayFlowDialogs({
             {issuedCredit?.expiresAtJalali ? `مهلت تا ${faDigits(issuedCredit.expiresAtJalali)}` : 'بدون انقضا'}
           </div>
           <div className="font-bold text-rose-700">{OVERPAY_NOT_CASHABLE}</div>
+          {creditPrintProblem && (
+            <div
+              className={`mt-3 rounded border px-3 py-2 text-sm leading-7 ${
+                creditPrintProblem.kind === 'unknown' || creditPrintProblem.kind === 'warning'
+                  ? 'border-amber-300 bg-amber-50 text-amber-900'
+                  : 'border-rose-300 bg-rose-50 text-rose-800'
+              }`}
+            >
+              {creditPrintProblem.msg}
+            </div>
+          )}
         </div>
       </Modal>
     </>

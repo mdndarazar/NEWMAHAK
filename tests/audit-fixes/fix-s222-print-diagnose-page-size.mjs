@@ -300,6 +300,15 @@ console.log('\n— ۶) برگه‌ی آزمایش‌گر چاپ (HTML)')
 }
 
 console.log('\n— ۷) اجرای آزمایش‌ها (runPrintDiagnose)')
+/**
+ * بازبینی — حالت‌های الف/ب/ج/ه نام چاپگر را با `resolvePrintTargetName` در
+ * main تأیید می‌کنند و mock پیش‌فرض هیچ چاپگری ندارد، پس `pickPrinter` با
+ * «هیچ چاپگری نصب نیست» کرش می‌کرد. بعد از هر reset یک چاپگرِ پیش‌فرض به
+ * نام Axiom می‌گذاریم: حالت ب همین نام را صریحاً می‌خواهد و حالت‌های
+ * الف/ج/ه از پیش‌فرض ویندوز استفاده می‌کنند.
+ */
+const DIAG_PRINTER = { name: 'Axiom', displayName: 'Axiom', isDefault: true, status: 0 }
+const resetWithDiagPrinter = () => { mock.reset(); mock.state.printers.push({ ...DIAG_PRINTER }) }
 {
   mock.reset()
   const res = await diagnose.runPrintDiagnose({ mode: 'D', widthMm: 80, heightMm: 140 })
@@ -330,19 +339,19 @@ console.log('\n— ۷) اجرای آزمایش‌ها (runPrintDiagnose)')
   check('countPdfPages روی PDF بی‌صفحه ⇒ صفر', diagnose.countPdfPages(pdf('%PDF-1.4\n%%EOF')), 0)
 }
 {
-  mock.reset()
+  resetWithDiagPrinter()
   await diagnose.runPrintDiagnose({ mode: 'A', silent: true })
   check('حالت الف: بدون pageSize به چاپگر', 'pageSize' in optionsOf(), false)
   check('حالت الف: اندازه‌گیری هم لازم نیست', mock.state.executeJavaScriptCalls.length, 0)
 }
 {
-  mock.reset()
+  resetWithDiagPrinter()
   mock.state.executeJavaScriptOutcome = 400
   await diagnose.runPrintDiagnose({ mode: 'B', widthMm: 80, heightMm: 140, silent: true, deviceName: 'Axiom' })
   check('حالت ب: pageSize دقیق', optionsOf().pageSize, { width: 80000, height: 140000 })
   check('حالت ب: روی همان چاپگر انتخاب‌شده', optionsOf().deviceName, 'Axiom')
 
-  mock.reset()
+  resetWithDiagPrinter()
   mock.state.executeJavaScriptOutcome = 400
   const c = await diagnose.runPrintDiagnose({ mode: 'C', widthMm: 80, heightMm: 140, silent: true })
   const expectedC = Math.round((Math.ceil(spec.mmFromCssPx(400) * 10) / 10 + 3) * 1000)
@@ -353,7 +362,7 @@ console.log('\n— ۷) اجرای آزمایش‌ها (runPrintDiagnose)')
   check('حالت ج: عدد واقعی اندازه‌گیری‌شده در نتیجه برمی‌گردد', c.measuredHeightMm, Math.round((expectedC / 1000) * 10) / 10)
   check('حالت ج: برچسب نتیجه همان عدد واقعی را نشان می‌دهد', `${c.measuredHeightMm ?? ''}`.length > 0 && c.pageSizeLabel.includes('ارتفاع اندازه‌گیری‌شده'), true)
 
-  mock.reset()
+  resetWithDiagPrinter()
   await diagnose.runPrintDiagnose({ mode: 'E', widthMm: 102, heightMm: 30, columns: 2, silent: true })
   check('حالت ه: عرض ردیف دوستونه', optionsOf().pageSize, { width: 102000, height: 30000 })
 }

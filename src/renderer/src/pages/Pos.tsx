@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
+import { isUnknownPrintMessage } from '../lib/printErrors'
 import { useBarcodeScanner } from '../hooks/useBarcodeScanner'
 import { useHotkeys } from '../hooks/useHotkeys'
 import { broadcastSettingsChanged, useSettings } from '../hooks/useSettings'
@@ -88,7 +89,8 @@ interface LastInvoice {
   returnCode: string | null
   grandTotal: number
   methodLabel: string
-  printed: boolean
+  /** true = چاپ قطعی، false = چاپ نشده، UNKNOWN = نتیجه نامعلوم و نباید کاربر را به چاپ دوباره هل بدهیم. */
+  printed: boolean | 'UNKNOWN'
   /** مهلت برگشت همین فاکتور (عادی یا «مشتری راه دور») */
   returnCodeDays?: number
   /** بخش ۶: «بارکد اعتبار» مصرف‌شده روی همین فاکتور (پول نقد نیست) */
@@ -215,7 +217,18 @@ export default function Pos() {
   const [last, setLast] = useState<LastInvoice | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  /**
+   * بنر قابل‌اقدام «نشست لازم است» — با کد SESSION_REQUIRED از main می‌آید و
+   * برخلاف خطاهای عادی سبد (lines) دست‌نخورده می‌ماند؛ بعد از ریکاوری نشست،
+   * کاربر همان فاکتور را دوباره ثبت می‌کند (بدون retry خودکار). ready فقط بعد
+   * از رویداد mahak:shift-changed و درصورتی‌که بنر باز بوده روشن می‌شود.
+   */
+  const [sessionBlock, setSessionBlock] = useState<string | null>(null)
+  const [sessionReady, setSessionReady] = useState(false)
+  const sessionBlockedRef = useRef(false)
   const [busy, setBusy] = useState(false)
+  const [printing, setPrinting] = useState(false)
+  const printingRef = useRef(false)
   const [modalOpen, setModalOpen] = useState(false)
   /**
    * ---------------- بخش ۶: «بارکد اعتبار خرید بعدی» ----------------
@@ -721,16 +734,30 @@ export default function Pos() {
         return setErr(
           'چاپ فاکتور در این پنل خاموش است، پس هیچ فاکتوری چاپ نمی‌شود. برای چاپ، چک‌باکس «چاپ فاکتور» را روشن کنید.'
         )
+      if (printingRef.current) return
+      printingRef.current = true
+      setPrinting(true)
       try {
         /**
          * فاز ۳ — از مسیر مشترک `printWith` (انصراف = لغو قطعی و بی‌صدا).
          */
-        const res = await printWith('INVOICE', (deviceName) => call(CH.printInvoice, { invoiceId, deviceName }))
+        const res = await printWith('INVOICE', (deviceName, opts) =>
+          call(CH.printInvoice, { invoiceId, deviceName, silent: opts?.silent })
+        )
         if (res === 'CANCELLED') return
         setLast((p) => (p && p.id === invoiceId ? { ...p, printed: true } : p))
         notify('رسید فاکتور چاپ شد')
       } catch (e: any) {
-        setErr(`چاپ انجام نشد: ${e.message}`)
+        const unknown = isUnknownPrintMessage(e)
+        if (unknown) setLast((p) => (p && p.id === invoiceId ? { ...p, printed: 'UNKNOWN' } : p))
+        setErr(
+          unknown
+            ? `معلوم نیست رسید چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
+            : `چاپ انجام نشد: ${e.message}`
+        )
+      } finally {
+        printingRef.current = false
+        setPrinting(false)
       }
     },
     [printEnabled]
@@ -818,6 +845,21 @@ export default function Pos() {
     return { plan: answer.plan, password: answer.password }
   }, [lines, autoCentral, stockPickUnlocked, askStockChain])
 
+  /**
+   * رویداد «mahak:shift-changed» از چیپ نشست — اگر بنر SESSION_REQUIRED باز
+   * بود جمع می‌شود و پیام «دوباره ثبت کنید» می‌آید؛ هیچ retry خودکاری نیست.
+   */
+  useEffect(() => {
+    const onChanged = () => {
+      if (!sessionBlockedRef.current) return
+      sessionBlockedRef.current = false
+      setSessionBlock(null)
+      setSessionReady(true)
+    }
+    window.addEventListener('mahak:shift-changed', onChanged)
+    return () => window.removeEventListener('mahak:shift-changed', onChanged)
+  }, [])
+
   const settle = useCallback(
     async (methodKey: string) => {
       if (busy) return
@@ -839,6 +881,9 @@ export default function Pos() {
       }
       setBusy(true)
       setErr(null)
+      setSessionBlock(null)
+      setSessionReady(false)
+      sessionBlockedRef.current = false
       try {
         /**
          * بخش ۷ — مبلغی که *همین حالا* دریافت می‌شود:
@@ -965,22 +1010,32 @@ export default function Pos() {
          * می‌شود و در گزارشات فروش می‌آید.
          */
         let printNote = ''
-        let printed = false
+        let printed: LastInvoice['printed'] = false
         if (!printEnabled) printNote = ' (چاپ فاکتور خاموش است؛ فاکتور ثبت شد و در گزارشات فروش هست)'
         else if (settings.receipt.autoPrint) {
+          printingRef.current = true
+          setPrinting(true)
           try {
             /**
              * فاز ۳ — چاپ خودکار هم از `printWith` می‌گذرد: اگر «هر بار بپرس»
              * روشن باشد پنجره‌ی انتخاب چاپگر می‌آید (خواست مالک) و انصراف یعنی
              * هیچ چاپی انجام نمی‌شود — بدون خطا و بدون خراب‌کردن فاکتور.
              */
-            const res = await printWith('INVOICE', (deviceName) =>
-              call(CH.printInvoice, { invoiceId: inv.id, deviceName })
+            const res = await printWith('INVOICE', (deviceName, opts) =>
+              call(CH.printInvoice, { invoiceId: inv.id, deviceName, silent: opts?.silent })
             )
             if (res === 'DONE') printed = true
             else printNote = ' (چاپ انجام نشد؛ فاکتور ثبت شد و در گزارشات فروش هست)'
-          } catch {
-            printNote = ' (چاپ خودکار انجام نشد؛ با دکمه‌ی «چاپ فاکتور» دوباره تلاش کنید)'
+          } catch (e: any) {
+            const raw = String(e?.message ?? e)
+            const unknown = isUnknownPrintMessage(e)
+            if (unknown) printed = 'UNKNOWN'
+            printNote = unknown
+              ? ' (معلوم نیست فاکتور چاپ شده باشد؛ قبل از چاپ دوباره خروجی چاپگر را نگاه کنید)'
+              : ` (چاپ خودکار انجام نشد: ${raw})`
+          } finally {
+            printingRef.current = false
+            setPrinting(false)
           }
         }
 
@@ -1039,8 +1094,18 @@ export default function Pos() {
           .then(setShift)
           .catch(() => {})
       } catch (e: any) {
-        // پیام‌ها از main فارسی می‌آیند (مثلاً «موجودی کافی نیست…»)
-        setErr(e.message)
+        /**
+         * SESSION_REQUIRED: عمداً setErr نشه — بنر جداگانه‌ی قابل‌اقدام + سبد
+         * دست‌نخورده می‌ماند (setLines([]) فقط بعد از موفقیت) تا کاربر همان
+         * فاکتور را بعد از ریکاوری نشست دوباره ثبت کند.
+         */
+        if (e?.code === 'SESSION_REQUIRED') {
+          sessionBlockedRef.current = true
+          setSessionBlock(e.message)
+        } else {
+          // پیام‌ها از main فارسی می‌آیند (مثلاً «موجودی کافی نیست…»)
+          setErr(e.message)
+        }
       } finally {
         setBusy(false)
       }
@@ -1094,7 +1159,7 @@ export default function Pos() {
       [settle, clearCart, printInvoice, last]
     ),
     // جلسه ۵۲: تا پنجره‌ی «از کدام انبار کسر شود؟» باز است، F3/F8 دوباره ثبت نزنند
-    !modalOpen && stockChain == null
+    !modalOpen && stockChain == null && !printing
   )
 
   /**
@@ -1505,8 +1570,8 @@ export default function Pos() {
               </span>
             )}
             {printEnabled ? (
-              <button className="btn btn-primary" onClick={() => void printInvoice(last.id)}>
-                چاپ فاکتور <span className="keycap">F6</span>
+              <button className="btn btn-primary" onClick={() => void printInvoice(last.id)} disabled={printing}>
+                {printing ? 'در حال چاپ…' : 'چاپ فاکتور'} <span className="keycap">F6</span>
               </button>
             ) : (
               <span className="kbd">چاپ فاکتور خاموش است</span>
@@ -1515,8 +1580,14 @@ export default function Pos() {
               برگشت از فروش با همین کد
             </button>
             <span className="kbd">
-              {!printEnabled ? 'چاپ خاموش' : last.printed ? 'رسید چاپ شد' : 'رسید هنوز چاپ نشده است'} · مهلت برگشت این
-              فاکتور{' '}
+              {!printEnabled
+                ? 'چاپ خاموش'
+                : last.printed === 'UNKNOWN'
+                  ? 'معلوم نیست رسید چاپ شده؛ اول خروجی چاپگر را ببینید'
+                  : last.printed
+                    ? 'رسید چاپ شد'
+                    : 'رسید هنوز چاپ نشده است'}{' '}
+              · مهلت برگشت این فاکتور{' '}
               {faDigits(last.returnCodeDays ?? settings.sale.returnCodeDays)} روز است
             </span>
             <button className="btn ms-auto" onClick={() => setLast(null)}>
@@ -1557,6 +1628,25 @@ export default function Pos() {
           </div>
         )}
 
+        {sessionBlock && (
+          <div className="rounded px-3 py-2 border-2 border-red-500 bg-red-50 text-red-900 flex items-center gap-2 justify-between whitespace-pre-line">
+            <span>{sessionBlock}</span>
+            <button
+              className="btn shrink-0 border-2 border-red-700 font-bold"
+              onClick={() => window.dispatchEvent(new Event('mahak:open-shift-modal'))}
+            >
+              حل مسئله‌ی نشست — باز کردن نشست
+            </button>
+          </div>
+        )}
+        {sessionReady && (
+          <div className="rounded px-3 py-2 border bg-emerald-50 border-emerald-400 text-emerald-800 flex items-center gap-2 justify-between">
+            <span>نشست آماده است؛ همان فاکتور را دوباره ثبت کنید.</span>
+            <button className="btn" onClick={() => setSessionReady(false)} title="بستن">
+              ✕
+            </button>
+          </div>
+        )}
         {(msg || err) && (
           <div
             className={`rounded px-3 py-2 border whitespace-pre-line ${
@@ -1948,8 +2038,8 @@ export default function Pos() {
         </div>
 
         {last && printEnabled && (
-          <button className="btn" onClick={() => void printInvoice(last.id)}>
-            چاپ فاکتور آخر <span className="keycap">F6</span>
+          <button className="btn" onClick={() => void printInvoice(last.id)} disabled={printing}>
+            {printing ? 'در حال چاپ…' : 'چاپ فاکتور آخر'} <span className="keycap">F6</span>
           </button>
         )}
 
@@ -1974,7 +2064,16 @@ export default function Pos() {
         open={stockChain != null}
         preview={stockChain?.preview ?? null}
         primaryKey={STORE_PICK_KEY}
-        busy={busy}
+        /**
+         * ⚠️ `busy` مودال عمداً با `stockChain` وام‌دار شده است: `settle` *قبل* از
+         * باز شدن این پنجره `setBusy(true)` می‌کند تا دکمه‌ی ثبتِ دوباره قفل شود و
+         * تا جواب کاربر در انتظار می‌ماند — پس در کل بازه‌ی باز بودن پنجره
+         * `busy=true` است. اگر همین مقدار خام به مودال داده شود، دکمه‌های «تأیید»
+         * و «لغو» خودِ پنجره هم غیرفعال می‌شوند و کاربر حبس می‌شود. برای قفلِ
+         * تکثیرِ کاربر روی تأیید، خودِ `decide` کافی است (پس از یک کلیک پنجره
+         * بسته می‌شود و وعده فقط یک‌بار تحویل می‌شود).
+         */
+        busy={busy && stockChain == null}
         confirmLabel="تأیید و ثبت فیش"
         passwordRequired={stockPickLockOn}
         passwordHint={
