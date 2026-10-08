@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
 import PasswordField from './PasswordField'
+// نشست ۳۱۷ — کارت چاپ سند اعتبار (فونت/حاشیه/پیش‌نمایش/چاپ آزمایشی)
+import CreditPrintCard from './CreditPrintCard'
 import JalaliDateInput from './JalaliDateInput'
 import { CheckField, HolderFields, NumberField, ScopePicker, SelectField, TextField } from './CreditPickers'
 import type { Party } from './PartyPicker'
@@ -451,6 +453,9 @@ export function SettingsForm({
           <textarea className="inp h-20" value={settings.rulesText} onChange={(e) => set({ rulesText: e.target.value })} />
         </label>
       </Section>
+
+      {/* نشست ۳۱۷ — کارت چاپ سند اعتبار (فونت/حاشیه/پیش‌نمایش/چاپ آزمایشی) */}
+      <CreditPrintCard settings={settings} set={set} />
 
       <Section title="یادآوری (§۱۴)" hint="هیچ ارسال واقعی‌ای انجام نمی‌شود؛ پیام آماده و در لاگ ثبت می‌شود.">
         <CheckField label="یادآوری فعال باشد" checked={settings.reminder.enabled} onChange={(v) => setReminder({ enabled: v })} />
