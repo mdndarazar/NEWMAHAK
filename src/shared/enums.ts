@@ -600,6 +600,8 @@ export const AuditAction = {
   CONSOLIDATE: 'CONSOLIDATE',
   SHIFT_OPEN: 'SHIFT_OPEN',
   SHIFT_CLOSE: 'SHIFT_CLOSE',
+  /** نشست ۳۱۰ — اعلام اضافه‌کاری شیفت شب (دائم در حسابرسی، با دلیل و سقف) */
+  SHIFT_OVERTIME: 'SHIFT_OVERTIME',
   SETTINGS_UPDATE: 'SETTINGS_UPDATE',
   /** برداشت خودکار کمبود موجودی از «انبار مرکزی» در لحظه‌ی فروش */
   CENTRAL_WITHDRAW: 'CENTRAL_WITHDRAW',

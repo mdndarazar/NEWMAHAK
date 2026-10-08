@@ -363,6 +363,11 @@ model Shift {
   user                       User?     @relation(fields: [userId], references: [id])
   openedAt                   DateTime  @default(now())
   closedAt                   DateTime?
+  /// نشست ۳۱۰ · اضافه‌کاری شیفت شب — اعلام صریح سروری، فقط یک‌بار و تا سقف تنظیمی.
+  /// داده‌ی قدیمی NULL می‌ماند (بدون backfill)؛ NULL یعنی «اعلام نشده».
+  overtimeDeclaredAt         DateTime?
+  overtimeUntil              DateTime?
+  overtimeReason             String?
   note                       String?
 
   saleInvoices SaleInvoice[]

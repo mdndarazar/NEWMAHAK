@@ -999,6 +999,12 @@ export interface ShiftConfig {
   templates: ShiftTemplate[]
   /** بند ۷ — فرمت نمایش ساعت در فرم تنظیمات شیفت (فقط نمایشی) */
   clockFormat: ShiftClockFormat
+  /**
+   * نشست ۳۱۰ — سقف اضافه‌کاری شیفت شب به دقیقه؛ ۰ = خاموش (پیش‌فرض).
+   * کارمند همان نشستِ بازِ دیروز می‌تواند تا «پایان بازه + این سقف» اعلام کند؛
+   * حداکثر مقدار مجاز ۲۴۰ دقیقه (سقف پیشنهادی ۱۲۰). تغییرش رمز مدیر می‌خواهد.
+   */
+  overtimeMaxMinutes: number
 }
 
 export const DEFAULT_SHIFT_TEMPLATES: ShiftTemplate[] = [
@@ -1012,8 +1018,13 @@ export const DEFAULT_SHIFT_CONFIG: ShiftConfig = {
   byTime: false,
   templates: DEFAULT_SHIFT_TEMPLATES.map((t) => ({ ...t })),
   // پیش‌فرض = همان چیزی که تا امروز بود: ۱۲ساعته با AM/PM
-  clockFormat: '12'
+  clockFormat: '12',
+  // نشست ۳۱۰ — پیش‌فرض صفر یعنی اضافه‌کاری خاموش است (حالت جدید opt-in)
+  overtimeMaxMinutes: 0
 }
+
+/** نشست ۳۱۰ — سقف مطلق اضافه‌کاری که تنظیمات می‌تواند بگیرد (دقیقه). */
+export const SHIFT_OVERTIME_ABSOLUTE_MAX = 240
 
 /** '۸:۵' / '8:5' / '0800' → 'HH:mm' (ورودی خراب = مقدار پیش‌فرض داده‌شده). */
 export function normalizeTime(raw: unknown, fallback = '00:00'): string {
@@ -1398,7 +1409,12 @@ export const parseShiftConfig = (raw: unknown): ShiftConfig => {
     templates,
     names: templates.map((t) => t.name),
     // بند ۷: هر مقدار ناشناخته ⇒ '12' (رفتار قبلی)، پس تنظیم قدیمی هم امن است
-    clockFormat: String(obj.clockFormat ?? '') === '24' ? '24' : '12'
+    clockFormat: String(obj.clockFormat ?? '') === '24' ? '24' : '12',
+    // نشست ۳۱۰: نامشخص/خراب ⇒ ۰ (خاموش) — همیشه عدد صحیح در محدوده‌ی ۰..۲۴۰
+    overtimeMaxMinutes: Math.min(
+      240,
+      Math.max(0, Math.trunc(Number(obj.overtimeMaxMinutes)) || 0)
+    )
   }
 }
 

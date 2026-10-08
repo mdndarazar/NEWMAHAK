@@ -1380,6 +1380,12 @@ export interface ShiftSessionForm {
   staleOpen: ShiftStaleOpen | null
   /** چرا ثبت فاکتور/پرداخت الان ممکن نیست (در صورت وجود مانع) — OVERTIME_ELIGIBLE از فاز اضافه‌کاری */
   blockReason: 'NONE' | 'STAFF_PENDING' | 'STALE_OPEN' | 'OVERTIME_ELIGIBLE'
+  /**
+   * نشست ۳۱۰ — چون blockReason === OVERTIME_ELIGIBLE: پیش‌نمایش کارت اعلام
+   * اضافه‌کاری (ساعت پایان مجاز = پایان بازه + سقف تنظیمی، با ارقام فارسی).
+   * سرور همه‌ی گیت‌ها را پوشیده ساخته است؛ modal فقط دلیل می‌گیرد و اعلام می‌کند.
+   */
+  overtimePreview: { untilLabel: string; capMinutes: number } | null
   guide: string
 }
 
@@ -1392,6 +1398,12 @@ export interface ShiftStatusInfo {
   state: ShiftGateState
   shift?: ShiftInfo | null
   stale?: ShiftStaleOpen | null
+  /**
+   * نشست ۳۱۰ — وقتی state === 'STALE' ولی نشست بازِ دیروز واجد اضافه‌کاری است:
+   * ساعت پایان مجاز (ارقام فارسی) تا پیام خطا/چیپ بتوانند جایگزین اعلام اضافه‌کاری
+   * را هم نشان دهند. در بقیه‌ی حالت‌ها null/غایب است.
+   */
+  overtimeUntilLabel?: string | null
 }
 
 /** یک ردیف «انبار مرکزی» (مورد ۵) — کاملاً مستقل از موجودی فروشگاه. */

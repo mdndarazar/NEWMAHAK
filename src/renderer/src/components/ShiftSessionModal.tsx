@@ -106,6 +106,8 @@ export default function ShiftSessionModal({
   const [form, setForm] = useState<ShiftSessionForm | null>(null)
   const [name, setName] = useState('')
   const [reason, setReason] = useState('')
+  /** نشست ۳۱۰ · فاز ۲ — دلیل کارت «اعلام اضافه‌کاری» (با قانون ≥۳ حرفِ سرور) */
+  const [overtimeReason, setOvertimeReason] = useState('')
   const [staffId, setStaffId] = useState<number | null>(null)
   const [note, setNote] = useState('')
   const [managerPassword, setManagerPassword] = useState('')
@@ -162,6 +164,12 @@ export default function ShiftSessionModal({
    * مقدار از سرور می‌آید تا شرط UI مو‌به‌مو با قاعده‌ی سرور یکی باشد.
    */
   const staleOpen = mode !== 'staff' ? (form?.staleOpen ?? null) : null
+  /**
+   * نشست ۳۱۰ · فاز ۲ — کارت «اعلام اضافه‌کاری»: سرور همه‌ی گیت‌ها را در
+   * blockReason/overtimePreview پوشیده ساخته؛ این کارت فقط دلیل می‌گیرد و
+   * خودِ declareOvertime باز هم همه‌ی گیت‌ها را سروری بازبینی می‌کند.
+   */
+  const overtimePreview = mode !== 'staff' && form?.blockReason === 'OVERTIME_ELIGIBLE' ? (form.overtimePreview ?? null) : null
   const otherStaffOpen =
     mode !== 'staff' && !!form?.current?.userId && !!staffId && form.current.userId !== staffId
   const requiresManagerHandover = mode !== 'staff' && !!staffId && (otherStaffOpen || !!staleOpen)
@@ -212,6 +220,27 @@ export default function ShiftSessionModal({
     } catch (e: any) {
       // ممیزی A80-01: کلیدِ ردشده برای «درخواست متفاوت» دیگر قابل retry نیست؛ تلاش بعدی کلید تازه می‌سازد.
       if (/درخواست متفاوت/.test(String(e?.message ?? ''))) openRequestKey.current = null
+      setErr(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * نشست ۳۱۰ · فاز ۲ — اعلام اضافه‌کاری از خودِ مودال (بدون رمز مدیر، با دلیل
+   * اجباری): بعد از موفق، جریان عادی به‌روزرسانی همان مسیر قبلی است (چیپ
+   * reload می‌کند و رویداد mahak:shift-changed بنر POS را جمع می‌کند).
+   */
+  const submitOvertime = async () => {
+    if (overtimeReason.trim().length < 3)
+      return setErr('برای اعلام اضافه‌کاری، دلیل کوتاه و روشن بنویسید (حداقل ۳ حرف)؛ این اعلام در حسابرسی می‌ماند.')
+    setBusy(true)
+    setErr(null)
+    try {
+      await call(CH.shiftOvertimeDeclare, { reason: overtimeReason.trim() })
+      onDone?.(null)
+      onClose()
+    } catch (e: any) {
       setErr(e.message)
     } finally {
       setBusy(false)
@@ -382,6 +411,38 @@ export default function ShiftSessionModal({
               <div className="kbd">یادداشت این نشست (اختیاری)</div>
               <input className="inp" value={note} onChange={(e) => setNote(e.target.value)} />
             </label>
+          )}
+
+          {overtimePreview && (
+            <div className="rounded border-2 border-emerald-500 bg-emerald-50 p-3 space-y-2">
+              <div className="font-bold text-emerald-800">⏱ اضافه‌کاری شیفت شب</div>
+              <div className="leading-6">
+                نشست «{staleOpen?.sessionLabel}» از {faDigits(staleOpen?.dayJalali ?? '')} هنوز باز است و از پایان
+                بازه‌اش گذشته‌اید. اگر هنوز مشغولید، <b>کارمند همان نشست</b> می‌تواند تا ساعت{' '}
+                <b>{overtimePreview.untilLabel}</b> اضافه‌کاری اعلام کند و فروش ادامه یابد (سقف:{' '}
+                {faDigits(overtimePreview.capMinutes)} دقیقه). این اعلام <b>فقط یک‌بار</b> ممکن است و با دلیلِ شما
+                برای همیشه در حسابرسی می‌ماند. اگر کارِ این نشست تمام شده، همان «تعویض اجباری» پایین همین فرم آن را
+                با دلیل و رمز مدیر می‌بندد.
+              </div>
+              <label className="block">
+                <div className="kbd">
+                  <b className="text-emerald-800">دلیل اجباری اضافه‌کاری:</b>
+                </div>
+                <input
+                  className={`inp ${overtimeReason.trim().length < 3 ? 'bg-rose-50 border-rose-500' : ''}`}
+                  value={overtimeReason}
+                  onChange={(e) => setOvertimeReason(e.target.value)}
+                  placeholder="مثلاً: مشتری آخر شب دیر رسید؛ حسابش باید از پول امروز جدا بماند"
+                />
+              </label>
+              <button
+                className="btn btn-primary !bg-emerald-700 !border-emerald-800"
+                onClick={() => void submitOvertime()}
+                disabled={busy || overtimeReason.trim().length < 3}
+              >
+                {busy ? 'در حال اعلام…' : `اعلام اضافه‌کاری تا ${overtimePreview.untilLabel}`}
+              </button>
+            </div>
           )}
 
           {requiresManagerHandover && (

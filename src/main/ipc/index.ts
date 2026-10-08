@@ -176,8 +176,13 @@ async function withSessionActor<T extends Record<string, any> | null | undefined
     st.state === 'STALE' && st.stale
       ? `نشست «${st.stale.sessionLabel}» از روز ${faDigits(st.stale.dayJalali)}` +
         (st.stale.userName ? ` (کارمند: ${st.stale.userName})` : '') +
-        ` هنوز باز و پولش شمرده نشده است. برای اینکه پول آن روز با فروش امروز قاطی نشود،` +
-        ` باید همان نشست بسته و نشست تازه باز شود؛ روی «نشست صندوق» (یا دکمه‌ی همین پیام) بزنید، سپس ${operation} را دوباره انجام دهید.`
+        ` هنوز باز و پولش شمرده نشده است. ` +
+        // نشست ۳۱۰ · فاز ۲ — اگر اضافه‌کاری ممکن است، همان جایگزین اول معرفی می‌شود
+        (st.overtimeUntilLabel
+          ? `اگر هنوز مشغولید، کارمند همین نشست می‌تواند تا ساعت ${st.overtimeUntilLabel} «اضافه‌کاری» اعلام کند و ${operation} ادامه یابد؛` +
+            ' وگرنه برای شروع روز تازه باید نشست جامانده بسته شود.'
+          : `برای اینکه پول آن روز با فروش امروز قاطی نشود، باید همان نشست بسته و نشست تازه باز شود؛`) +
+        ` روی «نشست صندوق» (یا دکمه‌ی همین پیام) بزنید، سپس ${operation} را دوباره انجام دهید.`
       : st.state === 'STAFF_PENDING'
         ? `نشست باز است ولی هنوز معلوم نیست پشت صندوق کیست؛ چون هر فاکتور باید به یک نفر نسبت داده شود،` +
           ` برای ${operation} اول از روی «نشست صندوق» کارمند را انتخاب و تأیید کنید.`
@@ -791,6 +796,11 @@ export function registerIpcHandlers(): void {
   /** وضعیت نشست برای UI: بدون خطا و بدون ساخت AUTO — مخصوص چیپ/بنر هشدار */
   handle(IPC.shiftStatus, () => shiftService.status())
   /**
+   * نشست ۳۱۰ · فاز ۲ — actor حسابرسی داخل سرویس از ردیفِ بازِ سرور (userId همان
+   * نشست) خوانده می‌شود؛ payload رندرر هیچ اختیار هویت‌سازی ندارد، پس فقط دلیل پاس می‌شود.
+   */
+  handle(IPC.shiftOvertimeDeclare, async (p) => shiftService.declareOvertime({ reason: p?.reason ?? null }))
+  /**
    * نشست ۱۶۰ · Y9 (S160-D2) — مسیر قدیمی shift:open هم مثل کانال رسمی shiftSessionOpen:
    * actor فقط از نشست باز main؛ بدون نشست ⇒ null و openSession کارمند انتخاب‌شده (staffId) را
    * actor می‌گذارد. userId رندرر دیگر در Audit SHIFT_OPEN نمی‌نشیند (بند ۴-۳۰).
@@ -1064,6 +1074,7 @@ export function registerIpcHandlers(): void {
   /** سوییچ «تعیین شیفت بر اساس ساعت» — ذخیره‌ی فوری، مستقل از فرم تنظیمات (مورد ۱) */
   // نشست ۱۵۷ (Y13، S157-D3) — actor از نشست باز، نه userId رندرر؛ گیت رمز مدیر در سرویس
   handle(IPC.settingsShiftByTime, async (p) => settingsService.setShiftByTime(await withOptionalSessionActor(p ?? { byTime: false })))
+  handle(IPC.settingsShiftOvertimeMax, async (p) => settingsService.setShiftOvertimeMax(await withOptionalSessionActor(p ?? { minutes: 0 })))
   /** بند ۹ — «تاریخ و ساعت رسمی»: افست دستی + بررسی ساعت سیستم (بدون اینترنت) */
   handle(IPC.settingsOfficialTime, () => settingsService.officialTime())
   handle(IPC.settingsOfficialTimeSet, async (p) => settingsService.saveOfficialTime(await withOptionalSessionActor(p ?? {})))

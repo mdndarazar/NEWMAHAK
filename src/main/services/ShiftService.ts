@@ -10,6 +10,7 @@ import {
   jalaliStartOfDay,
   jalaliEndOfDay,
   jalaliAddDays,
+  fromJalaliDate,
   faDigits, toClock,
   toLatinDigits,
   isValidJalaliDate
@@ -198,6 +199,55 @@ async function staleSummaryOf(client: Client, row: ShiftRowLite | null): Promise
   }
 }
 
+/** ساختار مینیمال ردیف نشست برای محاسبه‌ی اضافه‌کاری (فاز ۲ نشست ۳۱۰). */
+type ShiftOvertimeRow = ShiftRowLite & { overtimeUntil?: Date | null }
+
+/**
+ * پایان مطلقِ بازه‌ی یک نشست در روز dayJalali. شیفت شبانه (پایان ≤ شروع) روزِ
+ * بعد تمام می‌شود — دقیقاً همان قاعده‌ای که `dayForTemplate` برای تعلق روزی
+ * استفاده می‌کند؛ پس محاسبه‌های «خارج از بازه» و «سقف اضافه‌کاری» یک پایه‌ی
+ * زمانی واحد با باز شدن/نسبت‌دادن فاکتور دارند.
+ */
+function shiftWindowEndDate(template: ShiftTemplate, dayJalali: string): Date {
+  const toMin = (v: unknown) => {
+    const [h, m] = String(v ?? '00:00').split(':')
+    return (Number(h) || 0) * 60 + (Number(m) || 0)
+  }
+  const startMin = toMin(template.startTime)
+  const endMin = toMin(template.endTime)
+  const end = new Date(fromJalaliDate(dayJalali).getTime() + endMin * 60_000)
+  if (endMin <= startMin) return new Date(end.getTime() + 86_400_000)
+  return end
+}
+
+/**
+ * آیا اعلام اضافه‌کاری برای «نشست بازِ دیروز» این لحظه ممکن است؟ خروجی فقط
+ * محاسبه‌ی سخت‌گیرانه‌ی زمانی است (بدون نوشتن): ساعت پایان مجاز و سقف.
+ * گیت‌های باقی (دلیل، کارمند تعیین‌شده، یک‌بارگی) خودِ `declareOvertime` می‌سنجد.
+ */
+function overtimeEligibility(
+  row: ShiftOvertimeRow | null,
+  cfg: ShiftConfig,
+  now: Date
+): { until: Date; windowEnd: Date; capMinutes: number } | null {
+  if (!row || row.overtimeUntil != null) return null
+  if (!row.dayJalali || row.dayJalali !== jalaliAddDays(jalaliToday(), -1)) return null
+  const cap = cfg.overtimeMaxMinutes
+  if (!cfg.byTime || !(cap > 0)) return null
+  const found = findShiftTemplate(cfg, row.name)
+  if (!found) return null
+  const windowEnd = shiftWindowEndDate(found.template, row.dayJalali)
+  if (now <= windowEnd) return null
+  const until = new Date(windowEnd.getTime() + cap * 60_000)
+  if (now >= until) return null
+  return { until, windowEnd, capMinutes: cap }
+}
+
+/** برچسب فارسی «HH:mm» یک تاریخ برای نمایش در کارت/پیام اضافه‌کاری. */
+function overtimeClockLabel(d: Date): string {
+  return faDigits(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`)
+}
+
 export const shiftService = {
   // =========================================================================
   // ۱) خواندن وضعیت
@@ -253,6 +303,12 @@ export const shiftService = {
         const found = findShiftTemplate(cfg, open.name)
         const now = await this.officialNow(client)
         if (found && isWithinTemplate(found.template, now)) return open
+        /**
+         * نشست ۳۱۰ · فاز ۲ — اضافه‌کاری اعلام‌شده: نشست دیروز تا overtimeUntil
+         * «جاری» می‌ماند؛ فروش‌ها به کارمند همان نشست نسبت داده می‌شوند. بعد از
+         * آن، همان رفتار قبلی برمی‌گردد (جامانده ⇒ بستن با دلیل + رمز مدیر).
+         */
+        if (open.overtimeUntil && now <= new Date(open.overtimeUntil)) return open
       }
     } catch (e) {
       console.error('[shift] openShift overnight check failed', e)
@@ -366,8 +422,21 @@ export const shiftService = {
      * نشست جامانده‌ی روزِ دیگر: openShift آن را پنهان می‌کند (current=null) ولی
      * openSession بستنش را با دلیل + رمز مدیر می‌خواهد. خلاصه از همان قاعده‌ی
      * سرور (staleOvernight) ساخته می‌شود تا UI قبل از submit بفهمد.
+     * نشست ۳۱۲: stale فقط وقتی که openShift همان ردیف را «جاری» نکند —
+     * وگرنه در شیفت شبانه‌ی داخل‌بازه یا پنجره‌ی اضافه‌کاری، یک ردیف هم‌زمان
+     * هم current و هم staleOpen می‌شد (تناقض فرم).
      */
-    const stale = await staleSummaryOf(prisma, anyOpen)
+    const stale = open == null ? await staleSummaryOf(prisma, anyOpen) : null
+    /**
+     * نشست ۳۱۰ · فاز ۲ — ورود کارت «اعلام اضافه‌کاری» به فرم: فقط روی همان ردیف
+     * جامانده و فقط وقتی همه‌ی گیت‌های زمانی برقرار باشند؛ modal صرفاً دلیل
+     * می‌گیرد، خودِ اعلام دوباره همه‌ی گیت‌ها را سروری بازبینی می‌کند.
+     */
+    const ot =
+      stale && anyOpen != null
+        ? overtimeEligibility(anyOpen, await shiftSettings(prisma), await this.officialNow(prisma))
+        : null
+    const overtimePreview = ot ? { untilLabel: overtimeClockLabel(ot.until), capMinutes: ot.capMinutes } : null
     const lastWithStaff = await prisma.shift.findFirst({
       where: { userId: { not: null } },
       orderBy: { id: 'desc' },
@@ -385,7 +454,14 @@ export const shiftService = {
       defaultStaffId: lastWithStaff?.user?.isActive ? lastWithStaff.userId ?? null : null,
       current: currentInfo,
       staleOpen: stale,
-      blockReason: stale ? 'STALE_OPEN' : currentInfo && currentInfo.userId == null ? 'STAFF_PENDING' : 'NONE',
+      blockReason: overtimePreview
+        ? 'OVERTIME_ELIGIBLE'
+        : stale
+          ? 'STALE_OPEN'
+          : currentInfo && currentInfo.userId == null
+            ? 'STAFF_PENDING'
+            : 'NONE',
+      overtimePreview,
       /** بند ۴ — راهنمای همیشه‌قابل‌مشاهده‌ی همین فرم (متن از سرور، یک‌جا) */
       guide:
         'هر بار که صندوق دست‌به‌دست می‌شود (حتی موقت)، حتماً همین‌جا یک نشست جدید ثبت کنید؛ ' +
@@ -612,8 +688,16 @@ export const shiftService = {
     if (open) {
       return { state: open.userId == null ? 'STAFF_PENDING' : 'OK', shift: await this.info(open.id) }
     }
-    const stale = await staleSummaryOf(prisma, await this.anyOpenShift(prisma))
-    if (stale) return { state: 'STALE', stale }
+    const anyOpen = await this.anyOpenShift(prisma)
+    const stale = await staleSummaryOf(prisma, anyOpen)
+    if (stale) {
+      /**
+       * نشست ۳۱۰ · فاز ۲ — اگر اضافه‌کاری ممکن است، ساعت پایان مجازش هم برمی‌آید
+       * تا پیام SESSION_REQUIRED و چیپ گزینه‌ی «اعلام اضافه‌کاری» را نشان دهند.
+       */
+      const ot = overtimeEligibility(anyOpen, await shiftSettings(prisma), await this.officialNow(prisma))
+      return { state: 'STALE', stale, overtimeUntilLabel: ot ? overtimeClockLabel(ot.until) : null }
+    }
     return { state: 'NONE' }
   },
 
@@ -825,6 +909,88 @@ export const shiftService = {
       if (persisted) return this.info(persisted.id)
     }
     return this.info(created.id)
+  },
+
+  /**
+   * -------------------------------------------------------------------------
+   * نشست ۳۱۰ · مرحله ۲ — اعلام اضافه‌کاری برای نشستِ بازِ دیروز (شیفت شب).
+   *
+   * گیت‌ها (همه‌ی سروری؛ **بدون رمز مدیر**، چون هر فاکتور به کارمند همان نشست
+   * نسبت داده می‌شود و خودِ نشستِ باز بدون تغییر می‌ماند):
+   *   ۱) دلیل ≥ ۳ نویسه (در حسابرسی و روی ردیف، دائم)؛
+   *   ۲) «تعیین شیفت بر اساس ساعت» روشن؛  ۳) `overtimeMaxMinutes > 0`؛
+   *   ۴) نشست باز مالِ فقط «دیروز» باشد (dayJalali = دیروز)؛
+   *   ۵) کارمند همان نشست تعیین‌شده باشد (userId پر) — actor حسابرسی همین
+   *      ردیفِ سرور است و از payload رندرر خوانده نمی‌شود؛
+   *   ۶) قالب زمان‌بندی متناسب با نام نشست پیدا شود؛
+   *   ۷) ساعت رسمی خارج از بازه باشد (هنوز داخل بودن = اضافه‌کاری بی‌معنا)؛
+   *   ۸) ساعت رسمی قبل از «پایان بازه + سقف»؛
+   *   ۹) فقط یک‌بار: `updateMany` اتمیک با شرط `overtimeUntil IS NULL`؛
+   *      اعلامِ دوم (هم‌زمان یا تکراری) با خطای فارسی رد می‌شود.
+   *   پس از اتمام سقف، رفتار مرحله‌ی ۱ برمی‌گردد: جامانده ⇒ بستن با دلیل + رمز مدیر.
+   */
+  async declareOvertime(input: { reason?: string | null } = {}): Promise<{ until: string; untilLabel: string }> {
+    const reason = String(input?.reason ?? '').trim()
+    if (reason.length < 3)
+      throw new BusinessError(
+        'برای اعلام اضافه‌کاری، دلیل کوتاه و روشن بنویسید (حداقل ۳ حرف)؛ این اعلام همراه دلیل در حسابرسی می‌ماند.'
+      )
+    const cfg = await shiftSettings(prisma)
+    if (!cfg.byTime || !cfg.templates.length)
+      throw new BusinessError(
+        'اضافه‌کاری فقط وقتی معنا دارد که «تعیین شیفت بر اساس ساعت» روشن باشد؛ ابتدا آن را از تنظیمات روشن کنید.'
+      )
+    const cap = cfg.overtimeMaxMinutes
+    if (!(cap > 0))
+      throw new BusinessError(
+        'اضافه‌کاری غیرفعال است؛ مدیر باید «سقف اضافه‌کاری شیفت» را در تنظیمات مشخص کند (تغییر این مقدار رمز مدیر می‌خواهد).'
+      )
+    const open = await this.anyOpenShift(prisma)
+    if (!open || !open.dayJalali || open.dayJalali !== jalaliAddDays(jalaliToday(), -1))
+      throw new BusinessError('اضافه‌کاری فقط برای نشستِ بازِ دیروز (شیفت شبانه) ممکن است؛ چنین نشستی باز نیست.')
+    if (open.userId == null)
+      throw new BusinessError('کارمند این نشست هنوز تعیین نشده است؛ تا کارمندِ همان نشست مشخص نشود، اضافه‌کاری اعلام نمی‌شود.')
+    const found = findShiftTemplate(cfg, open.name)
+    if (!found)
+      throw new BusinessError(`قالب زمان‌بندی‌ای با نام «${open.name}» در تنظیمات نیست؛ نشست با یک بازه‌ی تعریف‌شده جوری نیست.`)
+    const now = await this.officialNow(prisma)
+    const windowEnd = shiftWindowEndDate(found.template, open.dayJalali)
+    if (now <= windowEnd)
+      throw new BusinessError('هنوز داخل بازه‌ی همین شیفت هستید؛ اضافه‌کاری وقتی لازم است که از پایان بازه گذشته باشید.')
+    const until = new Date(windowEnd.getTime() + cap * 60_000)
+    if (now >= until)
+      throw new BusinessError(
+        `فرصت اضافه‌کاری (سقف ${faDigits(cap)} دقیقه) تمام شده است؛ نشست را با دلیل و رمز مدیر ببندید تا روز تازه شروع شود.`
+      )
+    const untilIso = until.toISOString()
+    const untilLabel = overtimeClockLabel(until)
+    await prisma.$transaction(async (tx) => {
+      const set = await tx.shift.updateMany({
+        where: { id: open.id, closedAt: null, overtimeUntil: null },
+        data: { overtimeDeclaredAt: now, overtimeUntil: until, overtimeReason: reason }
+      })
+      if (set.count !== 1)
+        throw new BusinessError('اضافه‌کاری همین نشست قبلاً اعلام شده یا نشست هم‌زمان تغییر کرده است؛ اعلام فقط یک‌بار ممکن است.')
+      await auditOrThrow(tx, {
+        action: AuditAction.SHIFT_OVERTIME,
+        entity: 'Shift',
+        entityId: open.id,
+        /** actor = کارمندِ همان نشستِ باز — از ردیفِ سرور (گیت ۵)، نه payload رندرر */
+        userId: open.userId,
+        before: JSON.stringify({ overtimeUntil: null }),
+        after: JSON.stringify({
+          session: sessionLabelOf(open.name, open.sessionSeq),
+          dayJalali: open.dayJalali,
+          overtimeUntil: untilIso,
+          capMinutes: cap,
+          reason
+        }),
+        note:
+          `اعلام اضافه‌کاری برای نشست «${sessionLabelOf(open.name, open.sessionSeq)}» (${faDigits(open.dayJalali)}) ` +
+          `تا ساعت ${untilLabel} · سقف ${faDigits(cap)} دقیقه · دلیل: ${reason}`
+      })
+    })
+    return { until: untilIso, untilLabel }
   },
 
   /**

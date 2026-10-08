@@ -275,6 +275,8 @@ export const IPC = {
   shiftCurrent: 'shift:current',
   /** وضعیت نشست برای UI: بدون خطا، بدون ساختن نشست AUTO (برخلاف shift:current) */
   shiftStatus: 'shift:status',
+  /** نشست ۳۱۰ · فاز ۲ — اعلام اضافه‌کاری نشستِ بازِ دیروز (گیت‌های سروری، فقط یک‌بار) */
+  shiftOvertimeDeclare: 'shift:overtime:declare',
   shiftOpen: 'shift:open',
   shiftClose: 'shift:close',
   shiftList: 'shift:list',
@@ -495,6 +497,8 @@ export const IPC = {
    * فرم بماند (مورد ۱).
    */
   settingsShiftByTime: 'settings:shift:byTime',
+  /** نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت (۰=خاموش؛ تغییر با رمز مدیر) */
+  settingsShiftOvertimeMax: 'settings:shift:overtimeMax',
   /**
    * جلسه ۱۹ · بند ۹ — «تاریخ و ساعت رسمی»: خواندن، ذخیره‌ی افست دستی، و دکمه‌ی
    * «بررسی ساعت سیستم» (بدون نیاز به اینترنت).

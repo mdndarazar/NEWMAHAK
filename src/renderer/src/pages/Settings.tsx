@@ -240,6 +240,8 @@ export default function Settings() {
   // نشست ۱۵۷ (Y13) — رمز مدیر برای دو کانال فوری: افست ساعت رسمی و سوییچ «شیفت بر اساس ساعت»
   const [timePw, setTimePw] = useState('')
   const [byTimePw, setByTimePw] = useState('')
+  /** نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت؛ ذخیره‌ی فوری با همان فیلد رمز مدیر */
+  const [overtimeCap, setOvertimeCap] = useState('0')
   const [custDelPw, setCustDelPw] = useState('')
   /** نشست ۱۶۵ (S165-D4) — رمز پنل تنظیمات برای ثبت/ویرایش کارمند (سمت main هم سنجیده می‌شود) */
   const [staffPw, setStaffPw] = useState('')
@@ -430,7 +432,9 @@ export default function Settings() {
       labelPrinterAtLoad.current = loadedLabel.printerName
       setReceipt(loadedReceipt)
       setSale({ ...DEFAULT_SALE_DEFAULTS, ...b.sale })
-      setShift(parseShiftConfig(b.shift))
+      const loadedShift = parseShiftConfig(b.shift)
+      setShift(loadedShift)
+      setOvertimeCap(String(loadedShift.overtimeMaxMinutes ?? 0))
       setLabel(loadedLabel)
       setSecurity(parseSecurityConfig(b.security))
       // مقدار خراب یا نبودِ کلید ⇒ پیش‌فرض FREE (رفتار نسخه‌های قبل)، بدون کرش
@@ -779,6 +783,31 @@ export default function Settings() {
     } catch (e: any) {
       setShift((p) => ({ ...p, byTime: previous })) // برگشت به حالت قبل
       setErr(`ذخیره‌ی سوییچ شیفت انجام نشد: ${e.message}`)
+    } finally {
+      setByTimePw('')
+    }
+  }
+
+  /**
+   * نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری هم *فوری* ذخیره می‌شود (مثل خودِ سوییچ):
+   * رمز مدیر همان فیلد byTimePw است و خودِ سرویس باز هم رمز را و محدوده‌ی
+   * ۰..۲۴۰ را سروری بازبینی می‌کند.
+   */
+  const saveOvertimeMax = async () => {
+    const mins = Math.trunc(Number(toLatinDigits(overtimeCap).replace(/[^0-9-]/g, '')))
+    if (!Number.isFinite(mins) || mins < 0 || mins > 240) {
+      return setErr('سقف اضافه‌کاری باید عددی صحیح بین ۰ تا ۲۴۰ دقیقه باشد (۰ یعنی خاموش).')
+    }
+    try {
+      const next = await call<ShiftConfig>(CH.settingsShiftOvertimeMax, { minutes: mins, managerPassword: byTimePw })
+      setShift(next)
+      flash(
+        mins > 0
+          ? `ذخیره شد · اضافه‌کاری شیفت شب تا ${faDigits(mins)} دقیقه بعد از پایان بازه فعال است.`
+          : 'ذخیره شد · اضافه‌کاری خاموش است؛ نشستِ بازِ دیروز بیرون از بازه همیشه باید بسته شود.'
+      )
+    } catch (e: any) {
+      setErr(`ذخیره‌ی سقف اضافه‌کاری انجام نشد: ${e.message}`)
     } finally {
       setByTimePw('')
     }
@@ -3382,6 +3411,33 @@ export default function Settings() {
                       خوانده می‌شود و ساعت‌ها بی‌اثرند.
                     </>
                   )}
+                </div>
+              </div>
+
+              {/* ---------- نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت شب ---------- */}
+              <div className="rounded p-2 border bg-slate-50 space-y-1">
+                <div className="font-bold">سقف اضافه‌کاری شیفت شب</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="flex items-center gap-2">
+                    <span className="kbd">سقف (دقیقه، ۰ تا ۲۴۰؛ ۰ = خاموش):</span>
+                    <input
+                      className="inp w-24"
+                      type="text"
+                      inputMode="numeric"
+                      value={overtimeCap}
+                      onChange={(e) => setOvertimeCap(e.target.value)}
+                    />
+                  </label>
+                  <button className="btn" disabled={!byTimePw.trim()} onClick={() => void saveOvertimeMax()}>
+                    ذخیره‌ی فوری (با رمز مدیر بالا)
+                  </button>
+                </div>
+                <div className="kbd leading-6">
+                  خاموش (پیش‌فرض ۰): نشستِ بازِ دیروز که از بازه‌اش گذشته باشد، همیشه باید با دلیل و رمز مدیر بسته
+                  شود. روشن: کارمند همان نشست از مودال «نشست صندوق» می‌تواند <b>فقط یک‌بار</b> و تا «پایان بازه +
+                  این سقف» اضافه‌کاری اعلام کند — با دلیلِ اجباری که برای همیشه در حسابرسی می‌ماند (رمز مدیر لازم
+                  نیست، چون فاکتورها به کارمند همان نشست نسبت داده می‌شوند). این گزینه فقط وقتی اثر دارد که «تعیین
+                  شیفت بر اساس ساعت» روشن باشد.
                 </div>
               </div>
 
