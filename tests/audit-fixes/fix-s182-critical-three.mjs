@@ -50,7 +50,8 @@ ok('saleUpdate از withSessionActor استفاده می‌کند',
 {
   // و خودِ withSessionActor واقعاً throw می‌کند (نه اینکه فقط نام مشابه باشد)
   const body = IPC.slice(IPC.indexOf('async function withSessionActor'), IPC.indexOf('async function withOptionalSessionActor'))
-  ok('withSessionActor در نبودِ نشست خطا می‌دهد', /if \(actorId == null\)[\s\S]*throw new Error/.test(body))
+  // نشست ۳۰۷: قرارداد تقویت شد — BusinessError با code=SESSION_REQUIRED و پیام وضعیت‌محور (قفل runtime در s307)
+  ok("withSessionActor در نبودِ نشست خطا می‌دهد", /actorId != null[\s\S]*throw new BusinessError\(message, 'SESSION_REQUIRED'\)/.test(body))
 }
 {
   // برگشت و تعویض نباید عقب‌گرد کرده باشند

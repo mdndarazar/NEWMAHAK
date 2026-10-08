@@ -273,6 +273,8 @@ export const IPC = {
 
   // شیفت (جلسه ۱۹: هر رکورد شیفت = یک «نشست»)
   shiftCurrent: 'shift:current',
+  /** وضعیت نشست برای UI: بدون خطا، بدون ساختن نشست AUTO (برخلاف shift:current) */
+  shiftStatus: 'shift:status',
   shiftOpen: 'shift:open',
   shiftClose: 'shift:close',
   shiftList: 'shift:list',

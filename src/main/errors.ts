@@ -16,9 +16,15 @@
 /** خطای منطق کسب‌وکار: عیناً به کاربر نشان داده می‌شود. */
 export class BusinessError extends Error {
   readonly isBusinessError = true
-  constructor(message: string) {
+  /**
+   * کد ساختاریافته‌ی اختیاری (مثل SESSION_REQUIRED) تا renderer به‌جای حدس از
+   * روی متن فارسی، رفتار UI را روی کد سوار کند؛ handle آن را عبور می‌دهد.
+   */
+  readonly code?: string
+  constructor(message: string, code?: string) {
     super(message)
     this.name = 'BusinessError'
+    this.code = code
   }
 }
 

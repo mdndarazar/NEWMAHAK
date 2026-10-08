@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 import { faDigits, money } from '@shared/jalali'
-import type { ShiftInfo, ShiftSessionForm } from '@shared/types'
+import type { ShiftInfo, ShiftSessionForm, ShiftStatusInfo } from '@shared/types'
 import { useTopmostModalKey } from './Modal'
 
 /**
@@ -59,6 +59,32 @@ export function useCurrentShift(everyMs = 30_000): { shift: ShiftInfo | null; re
   }, [reload, everyMs])
 
   return { shift, reload }
+}
+
+/**
+ * وضعیت زنده‌ی نشست (کانال shift:status) — خواندنیِ خالص: برخلاف shift:current
+ * نه خطا پرتاب می‌کند نه نشست AUTO می‌سازد؛ در حالت «نشست جامانده» که
+ * useCurrentShift ساکت می‌ماند، این هوک دقیقاً دلیل همین سکوت را برمی‌گرداند.
+ */
+export function useShiftGate(everyMs = 30_000): { gate: ShiftStatusInfo | null; reload: () => Promise<void> } {
+  const [gate, setGate] = useState<ShiftStatusInfo | null>(null)
+
+  const reload = useCallback(async () => {
+    try {
+      setGate(await call<ShiftStatusInfo>(CH.shiftStatus, {}))
+    } catch {
+      /* خرابی موقت IPC نباید چیپ را بخواباند؛ آخرین وضعیت شناخته‌شده می‌ماند */
+    }
+  }, [])
+
+  useEffect(() => {
+    void reload()
+    if (!everyMs) return
+    const t = window.setInterval(() => void reload(), everyMs)
+    return () => window.clearInterval(t)
+  }, [reload, everyMs])
+
+  return { gate, reload }
 }
 
 export default function ShiftSessionModal({
@@ -450,6 +476,13 @@ export default function ShiftSessionModal({
  */
 export function ShiftSessionChip() {
   const { shift, reload } = useCurrentShift(30_000)
+  /**
+   * وضعیت بدون‌خطای نشست — «نشست جامانده» در shift:current خطا می‌شود و
+   * useCurrentShift آن را قورت می‌دهد (چیپ ساکت می‌ماند)؛ shift:status همان
+   * دلیل سکوت را برمی‌گرداند تا چیپ با برچسب واضح قرمز شود.
+   */
+  const { gate, reload: reloadGate } = useShiftGate(30_000)
+  const stale = gate?.state === 'STALE' ? gate.stale ?? null : null
   const [form, setForm] = useState<{ open: boolean; mode: SessionMode }>({ open: false, mode: 'handover' })
   /** «فعلاً ببند» فقط تا تازه‌سازی بعدی؛ هشدار خودش برمی‌گردد تا تعیین تکلیف شود. */
   const [snoozed, setSnoozed] = useState(false)
@@ -471,26 +504,48 @@ export function ShiftSessionChip() {
     return () => window.clearTimeout(t)
   }, [snoozed])
 
+  /**
+   * رویداد سراسری «باز کردن مودال نشست» — بنر SESSION_REQUIRED در صفحه‌های
+   * فروش (POS/فاکتور عمده) ریکاوری را بدون خروج از صفحه و از دست رفتن سبد
+   * همین‌جا شروع می‌کند؛ حالت از روی وضعیت فعلی نشست خودش تعیین می‌شود.
+   */
+  useEffect(() => {
+    const onOpen = () =>
+      setForm((f) =>
+        f.open ? f : { open: true, mode: pending || gate?.state === 'STAFF_PENDING' ? 'staff' : 'handover' }
+      )
+    window.addEventListener('mahak:open-shift-modal', onOpen)
+    return () => window.removeEventListener('mahak:open-shift-modal', onOpen)
+  }, [pending, gate?.state])
+
   return (
     <>
       <button
         className={`text-xs px-2 py-1 rounded whitespace-nowrap font-bold ${
-          pending
-            ? 'bg-rose-500 hover:bg-rose-600'
-            : multiDay
-              ? 'bg-amber-500 hover:bg-amber-600'
-              : 'bg-white/20 hover:bg-white/30'
+          stale
+            ? 'bg-red-600 hover:bg-red-700'
+            : pending
+              ? 'bg-rose-500 hover:bg-rose-600'
+              : multiDay
+                ? 'bg-amber-500 hover:bg-amber-600'
+                : 'bg-white/20 hover:bg-white/30'
         }`}
         onClick={() => setForm({ open: true, mode: pending ? 'staff' : 'handover' })}
-        title="نشست جاری صندوق · تعویض کارمند یا ثبت نشست جدید"
+        title={
+          stale
+            ? 'نشست روز قبل هنوز باز و پولش شمرده نشده است — برای بستن آن و شروع نشست امروز کلیک کنید'
+            : 'نشست جاری صندوق · تعویض کارمند یا ثبت نشست جدید'
+        }
       >
-        {shift
-          ? pending
-            ? `⚠ کارمند نشست تعیین نشده — ${shift.sessionLabel ?? shift.name}`
-            : multiDay
-              ? `⚠ نشست چندروزه — ${shift.sessionLabel ?? shift.name}`
-            : `${shift.sessionLabel ?? shift.name} · ${shift.userName ?? 'بدون کارمند'}`
-          : 'نشست صندوق'}
+        {stale
+          ? `⚠ نشست جامانده — ${faDigits(stale.dayJalali)} · ${stale.sessionLabel}`
+          : shift
+            ? pending
+              ? `⚠ کارمند نشست تعیین نشده — ${shift.sessionLabel ?? shift.name}`
+              : multiDay
+                ? `⚠ نشست چندروزه — ${shift.sessionLabel ?? shift.name}`
+              : `${shift.sessionLabel ?? shift.name} · ${shift.userName ?? 'بدون کارمند'}`
+            : 'نشست صندوق'}
       </button>
 
       {/* پنجره‌ی اجباری «کارمند این نشست کیست؟» */}
@@ -505,6 +560,9 @@ export function ShiftSessionChip() {
         onDone={() => {
           setSnoozed(false)
           void reload()
+          void reloadGate()
+          /** صفحه‌های فروش با بنر SESSION_REQUIRED، با این رویداد بنر را جمع و پیام «دوباره ثبت کنید» را می‌آورند */
+          window.dispatchEvent(new Event('mahak:shift-changed'))
         }}
       />
     </>

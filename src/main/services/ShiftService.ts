@@ -31,7 +31,7 @@ import {
   type ShiftTemplate
 } from '@shared/receipt'
 import { AuditAction } from '@shared/enums'
-import type { PagedRows, ShiftInfo, ShiftSessionForm, ShiftSuggestion } from '@shared/types'
+import type { PagedRows, ShiftInfo, ShiftSessionForm, ShiftStatusInfo, ShiftStaleOpen, ShiftSuggestion } from '@shared/types'
 import { shapeSaleRow, sumTotals } from './reportShape'
 import { PANEL_KEYS } from '@shared/panels'
 
@@ -168,6 +168,34 @@ function dayForTemplate(t: ShiftTemplate | null, at: Date): string {
   const now = at.getHours() * 60 + at.getMinutes()
   if (overnight && now < toMin(slotEnd)) return jalaliAddDays(today, -1)
   return today
+}
+
+/** ساختار مینیمال ردیف نشست برای خلاصه‌ی stale (ساختاری؛ اضافه‌فیلدها اشکالی ندارند). */
+type ShiftRowLite = { id: number; name: string; sessionSeq: number; dayJalali: string | null; userId: number | null }
+
+/**
+ * خلاصه‌ی «نشست جامانده» (تک‌منبع برای sessionForm و status): فقط وقتی ردیفِ
+ * باز، dayJalali پر و مخالف امروز باشد — دقیقاً همان قاعده‌ی staleOvernight در
+ * openSession؛ ردیف‌های قدیمیِ بدون dayJalali مثل سرور stale حساب نمی‌شوند.
+ */
+async function staleSummaryOf(client: Client, row: ShiftRowLite | null): Promise<ShiftStaleOpen | null> {
+  if (!row || !row.dayJalali || row.dayJalali === jalaliToday()) return null
+  let userName: string | null = null
+  if (row.userId != null) {
+    const su = await client.user.findUnique({
+      where: { id: row.userId },
+      select: { displayName: true, username: true }
+    })
+    userName = su?.displayName || su?.username || null
+  }
+  return {
+    id: row.id,
+    name: row.name,
+    sessionLabel: sessionLabelOf(row.name, row.sessionSeq),
+    dayJalali: row.dayJalali,
+    userId: row.userId,
+    userName
+  }
 }
 
 export const shiftService = {
@@ -333,23 +361,13 @@ export const shiftService = {
   async sessionForm(): Promise<ShiftSessionForm> {
     const suggestion = await this.suggest(prisma)
     const open = await this.openShift(prisma)
+    const anyOpen = await this.anyOpenShift(prisma)
     /**
      * نشست جامانده‌ی روزِ دیگر: openShift آن را پنهان می‌کند (current=null) ولی
-     * openSession بستنش را با دلیل + رمز مدیر می‌خواهد. مودال باید *قبل* از
-     * submit فیلدهایش را نشان دهد؛ شرط دقیقاً همان staleOvernight سرور است
-     * (dayJalali پر و مخالف امروز) — ردیف‌های قدیمیِ بدون dayJalali مثل سرور
-     * stale حساب نمی‌شوند.
+     * openSession بستنش را با دلیل + رمز مدیر می‌خواهد. خلاصه از همان قاعده‌ی
+     * سرور (staleOvernight) ساخته می‌شود تا UI قبل از submit بفهمد.
      */
-    const anyOpen = await this.anyOpenShift(prisma)
-    const staleRaw = anyOpen && anyOpen.dayJalali && anyOpen.dayJalali !== jalaliToday() ? anyOpen : null
-    let staleUserName: string | null = null
-    if (staleRaw?.userId != null) {
-      const su = await prisma.user.findUnique({
-        where: { id: staleRaw.userId },
-        select: { displayName: true, username: true }
-      })
-      staleUserName = su?.displayName || su?.username || null
-    }
+    const stale = await staleSummaryOf(prisma, anyOpen)
     const lastWithStaff = await prisma.shift.findFirst({
       where: { userId: { not: null } },
       orderBy: { id: 'desc' },
@@ -360,21 +378,14 @@ export const shiftService = {
       select: { id: true, displayName: true, username: true, role: true },
       orderBy: { id: 'asc' }
     })
+    const currentInfo = open ? await this.info(open.id) : null
     return {
       suggestion,
       staff: staff.map((u) => ({ id: u.id, name: u.displayName || u.username, role: u.role })),
       defaultStaffId: lastWithStaff?.user?.isActive ? lastWithStaff.userId ?? null : null,
-      current: open ? await this.info(open.id) : null,
-      staleOpen: staleRaw
-        ? {
-            id: staleRaw.id,
-            name: staleRaw.name,
-            sessionLabel: sessionLabelOf(staleRaw.name, staleRaw.sessionSeq),
-            dayJalali: staleRaw.dayJalali!,
-            userId: staleRaw.userId,
-            userName: staleUserName
-          }
-        : null,
+      current: currentInfo,
+      staleOpen: stale,
+      blockReason: stale ? 'STALE_OPEN' : currentInfo && currentInfo.userId == null ? 'STAFF_PENDING' : 'NONE',
       /** بند ۴ — راهنمای همیشه‌قابل‌مشاهده‌ی همین فرم (متن از سرور، یک‌جا) */
       guide:
         'هر بار که صندوق دست‌به‌دست می‌شود (حتی موقت)، حتماً همین‌جا یک نشست جدید ثبت کنید؛ ' +
@@ -589,6 +600,21 @@ export const shiftService = {
       console.error('[shift] ensureCurrent failed', e)
       return null
     }
+  },
+
+  /**
+   * وضعیت زنده‌ی نشست برای UI (کانال shift:status) — خواندنیِ خالص: برخلاف
+   * current() نه خطای «نشست جامانده» پرتاب می‌کند و نه نشست AUTO می‌سازد؛ تا
+   * چیپ و صفحه‌ها در همان حالت به‌جای سکوت، هشدار/راهنمای روشن نشان دهند.
+   */
+  async status(): Promise<ShiftStatusInfo> {
+    const open = await this.openShift(prisma)
+    if (open) {
+      return { state: open.userId == null ? 'STAFF_PENDING' : 'OK', shift: await this.info(open.id) }
+    }
+    const stale = await staleSummaryOf(prisma, await this.anyOpenShift(prisma))
+    if (stale) return { state: 'STALE', stale }
+    return { state: 'NONE' }
   },
 
   /**

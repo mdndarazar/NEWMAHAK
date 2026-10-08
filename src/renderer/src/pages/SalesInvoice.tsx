@@ -212,6 +212,13 @@ export default function SalesInvoice() {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  /**
+   * بنر SESSION_REQUIRED — مثل POS: برخلاف خطاهای عادی فرم/اقلام دست‌نخورده
+   * می‌مانند تا بعد از ریکاوری نشست همان فاکتور دوباره ثبت شود (بدون retry خودکار).
+   */
+  const [sessionBlock, setSessionBlock] = useState<string | null>(null)
+  const [sessionReady, setSessionReady] = useState(false)
+  const sessionBlockedRef = useRef(false)
   /** هشدار زرد موجودی برگشتی از main بعد از ثبت/ویرایش فاکتور (مورد ۳ و ۷) */
   const [warn, setWarn] = useState<string | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
@@ -233,6 +240,18 @@ export default function SalesInvoice() {
    * معمول `preview` دوباره اجرا می‌شود.
    */
   const overpayPlanRef = useRef<StockAllocationPlan | null>(null)
+
+  /** رویداد mahak:shift-changed — بنر SESSION_REQUIRED جمع می‌شود + راهنمای ثبت دوباره */
+  useEffect(() => {
+    const onChanged = () => {
+      if (!sessionBlockedRef.current) return
+      sessionBlockedRef.current = false
+      setSessionBlock(null)
+      setSessionReady(true)
+    }
+    window.addEventListener('mahak:shift-changed', onChanged)
+    return () => window.removeEventListener('mahak:shift-changed', onChanged)
+  }, [])
   /** آخرین فاکتوری که در همین نشست ثبت/ویرایش شد (برای دکمه‌ی «چاپ فاکتور») */
   const [lastSaved, setLastSaved] = useState<{ id: number; receiptNo: number; paid: number } | null>(null)
   const [printing, setPrinting] = useState(false)
@@ -647,6 +666,9 @@ export default function SalesInvoice() {
     if (!isValidJalaliDate(dateJalali)) return setErr('تاریخ فاکتور معتبر نیست')
     setBusy(true)
     setOverpayFlow(null)
+    setSessionBlock(null)
+    setSessionReady(false)
+    sessionBlockedRef.current = false
     try {
       /** پایه‌ی payload — `autoCentralWithdraw` و `stockPlan` در هر تلاش تعیین می‌شوند. */
       const base = {
@@ -810,11 +832,16 @@ export default function SalesInvoice() {
     } catch (e: any) {
       const message = String(e?.message ?? '')
       /**
-       * نشست ۶۳ · بند ۴-۳۵ مرحله ۱ — هشدار قابل‌تأیید سرور ⇒ شروع فلو. در ثبت
-       * جدید، سؤال مرحله ۲ فقط برای پول واقعی (روش انتخابی فرم)؛ در ویرایش،
-       * پرداخت‌ها همان ردیف‌های ثبت‌شده‌اند و سرور پشتوانه‌ی واقعی را می‌سنجد.
+       * SESSION_REQUIRED: بنر جداگانه‌ی قابل‌اقدام؛ فرم/اقلام دست‌نخورده می‌ماند
+       * تا بعد از ریکاوری نشست (رویداد mahak:open-shift-modal) همان فاکتور دوباره
+       * ثبت شود. این حالت قبل از پارس هشدار اضافه‌دریافت می‌آید چون withSessionActor
+       * بیرون‌ترین دروازه‌ی ثبت است.
        */
-      if (isOverpayWarning(message))
+      if (e?.code === 'SESSION_REQUIRED') {
+        overpayPlanRef.current = null
+        sessionBlockedRef.current = true
+        setSessionBlock(message)
+      } else if (isOverpayWarning(message))
         setOverpayFlow(
           overpayFlowStart(message, {
             entryKind: 'CASH',
@@ -1861,6 +1888,25 @@ export default function SalesInvoice() {
             </table>
           </div>
 
+          {sessionBlock && (
+            <div className="border-2 border-red-500 bg-red-50 text-red-900 rounded px-3 py-2 flex items-center gap-2 justify-between whitespace-pre-line">
+              <span>{sessionBlock}</span>
+              <button
+                className="btn shrink-0 border-2 border-red-700 font-bold"
+                onClick={() => window.dispatchEvent(new Event('mahak:open-shift-modal'))}
+              >
+                حل مسئله‌ی نشست — باز کردن نشست
+              </button>
+            </div>
+          )}
+          {sessionReady && (
+            <div className="bg-emerald-50 border border-emerald-400 text-emerald-800 rounded px-3 py-2 flex items-center gap-2 justify-between">
+              <span>نشست آماده است؛ همان فاکتور را دوباره ثبت کنید.</span>
+              <button className="btn" onClick={() => setSessionReady(false)} title="بستن">
+                ✕
+              </button>
+            </div>
+          )}
           {err && <div className="bg-amber-100 border border-amber-300 rounded px-3 py-2">{err}</div>}
           <div className="kbd">
             «ویرایش» فرم را با اطلاعات همان فاکتور پر می‌کند؛ با ذخیره، شماره فیش حفظ می‌شود و فقط اختلاف اقلام روی

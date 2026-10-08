@@ -217,6 +217,15 @@ export default function Pos() {
   const [last, setLast] = useState<LastInvoice | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  /**
+   * بنر قابل‌اقدام «نشست لازم است» — با کد SESSION_REQUIRED از main می‌آید و
+   * برخلاف خطاهای عادی سبد (lines) دست‌نخورده می‌ماند؛ بعد از ریکاوری نشست،
+   * کاربر همان فاکتور را دوباره ثبت می‌کند (بدون retry خودکار). ready فقط بعد
+   * از رویداد mahak:shift-changed و درصورتی‌که بنر باز بوده روشن می‌شود.
+   */
+  const [sessionBlock, setSessionBlock] = useState<string | null>(null)
+  const [sessionReady, setSessionReady] = useState(false)
+  const sessionBlockedRef = useRef(false)
   const [busy, setBusy] = useState(false)
   const [printing, setPrinting] = useState(false)
   const printingRef = useRef(false)
@@ -836,6 +845,21 @@ export default function Pos() {
     return { plan: answer.plan, password: answer.password }
   }, [lines, autoCentral, stockPickUnlocked, askStockChain])
 
+  /**
+   * رویداد «mahak:shift-changed» از چیپ نشست — اگر بنر SESSION_REQUIRED باز
+   * بود جمع می‌شود و پیام «دوباره ثبت کنید» می‌آید؛ هیچ retry خودکاری نیست.
+   */
+  useEffect(() => {
+    const onChanged = () => {
+      if (!sessionBlockedRef.current) return
+      sessionBlockedRef.current = false
+      setSessionBlock(null)
+      setSessionReady(true)
+    }
+    window.addEventListener('mahak:shift-changed', onChanged)
+    return () => window.removeEventListener('mahak:shift-changed', onChanged)
+  }, [])
+
   const settle = useCallback(
     async (methodKey: string) => {
       if (busy) return
@@ -857,6 +881,9 @@ export default function Pos() {
       }
       setBusy(true)
       setErr(null)
+      setSessionBlock(null)
+      setSessionReady(false)
+      sessionBlockedRef.current = false
       try {
         /**
          * بخش ۷ — مبلغی که *همین حالا* دریافت می‌شود:
@@ -1067,8 +1094,18 @@ export default function Pos() {
           .then(setShift)
           .catch(() => {})
       } catch (e: any) {
-        // پیام‌ها از main فارسی می‌آیند (مثلاً «موجودی کافی نیست…»)
-        setErr(e.message)
+        /**
+         * SESSION_REQUIRED: عمداً setErr نشه — بنر جداگانه‌ی قابل‌اقدام + سبد
+         * دست‌نخورده می‌ماند (setLines([]) فقط بعد از موفقیت) تا کاربر همان
+         * فاکتور را بعد از ریکاوری نشست دوباره ثبت کند.
+         */
+        if (e?.code === 'SESSION_REQUIRED') {
+          sessionBlockedRef.current = true
+          setSessionBlock(e.message)
+        } else {
+          // پیام‌ها از main فارسی می‌آیند (مثلاً «موجودی کافی نیست…»)
+          setErr(e.message)
+        }
       } finally {
         setBusy(false)
       }
@@ -1591,6 +1628,25 @@ export default function Pos() {
           </div>
         )}
 
+        {sessionBlock && (
+          <div className="rounded px-3 py-2 border-2 border-red-500 bg-red-50 text-red-900 flex items-center gap-2 justify-between whitespace-pre-line">
+            <span>{sessionBlock}</span>
+            <button
+              className="btn shrink-0 border-2 border-red-700 font-bold"
+              onClick={() => window.dispatchEvent(new Event('mahak:open-shift-modal'))}
+            >
+              حل مسئله‌ی نشست — باز کردن نشست
+            </button>
+          </div>
+        )}
+        {sessionReady && (
+          <div className="rounded px-3 py-2 border bg-emerald-50 border-emerald-400 text-emerald-800 flex items-center gap-2 justify-between">
+            <span>نشست آماده است؛ همان فاکتور را دوباره ثبت کنید.</span>
+            <button className="btn" onClick={() => setSessionReady(false)} title="بستن">
+              ✕
+            </button>
+          </div>
+        )}
         {(msg || err) && (
           <div
             className={`rounded px-3 py-2 border whitespace-pre-line ${

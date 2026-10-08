@@ -52,6 +52,7 @@ import { toUserMessage } from '../errors'
 import { auditOrThrow } from '../services/AuditService'
 import { AuditAction } from '@shared/enums'
 import { SETTING_KEYS } from '@shared/receipt'
+import { faDigits } from '@shared/jalali'
 import { stripBigInts } from '@shared/money'
 import {
   assertPanelUnlocked,
@@ -93,7 +94,15 @@ function handle<T>(channel: string, fn: (payload: any) => Promise<T> | T) {
        */
       return { ok: true, data: stripBigInts(await fn(payload), channel) }
     } catch (err: any) {
-      const code = err?.printCancelled === true ? 'PRINT_CANCELLED' : err?.printOutcomeUnknown === true ? 'PRINT_OUTCOME_UNKNOWN' : undefined
+      // کدهای ساختاریافته‌ی کسب‌وکاری (مثل SESSION_REQUIRED) برای رفتار UI به رندرر عبور می‌کنند
+      const code =
+        err?.printCancelled === true
+          ? 'PRINT_CANCELLED'
+          : err?.printOutcomeUnknown === true
+            ? 'PRINT_OUTCOME_UNKNOWN'
+            : err?.isBusinessError === true && typeof err?.code === 'string'
+              ? err.code
+              : undefined
       if (!code) console.error(`[ipc:${channel}]`, err)
       return { ok: false, error: toUserMessage(err), ...(code ? { code } : {}) }
     }
@@ -147,21 +156,36 @@ async function canReadProductPurchasePrice(): Promise<boolean> {
  * `withUser` برای سازگاری با مسیرهای قدیمی عمداً userId ارسالی را نگه می‌دارد،
  * اما این رفتار برای پرداخت، ابطال پرداخت و پاس‌کردن چک یک شکاف امنیتی است:
  * renderer می‌توانست نام کارمند دیگری را داخل Audit بنویسد. این مسیر فقط actor
- * نشست باز را می‌پذیرد و نبود نشست را به خطای قابل‌فهم تبدیل می‌کند.
+ * نشست باز را می‌پذیرد و نبود نشست را به خطای قابل‌فهم تبدیل می‌کند — وضعیت‌محور
+ * (سه حالت: نشست نداریم / کارمند نامعلوم / نشست جامانده) و با کد
+ * SESSION_REQUIRED تا رندرر همان‌جا ریکاوریِ بدون خروج از صفحه را پیشنهاد دهد.
  */
 async function withSessionActor<T extends Record<string, any> | null | undefined>(
   payload: T,
   operation = 'ثبت یا تغییر پرداخت'
 ): Promise<any> {
   const actorId = await shiftService.currentStaffId()
-  if (actorId == null) {
-    const message =
-      operation === 'ثبت یا تغییر پرداخت'
-        ? 'برای ثبت یا تغییر پرداخت، ابتدا یک نشست بازِ کارمند لازم است.'
-        : `برای ${operation}، ابتدا یک نشست بازِ کارمند لازم است.`
-    throw new Error(message)
-  }
-  return { ...(payload ?? {}), userId: actorId }
+  if (actorId != null) return { ...(payload ?? {}), userId: actorId }
+  /**
+   * پیام وضعیت‌محور + کد SESSION_REQUIRED (برای بنر قابل‌اقدام در رندرر):
+   * سه حالت ممکن هرکدام راهنمای متفاوت می‌خواهند — نشست نداریم، کارمند
+   * نامعلوم (staffPending)، یا نشست جامانده‌ی روز دیگر که پولش شمرده نشده.
+   */
+  const st = await shiftService.status()
+  const message =
+    st.state === 'STALE' && st.stale
+      ? `نشست «${st.stale.sessionLabel}» از روز ${faDigits(st.stale.dayJalali)}` +
+        (st.stale.userName ? ` (کارمند: ${st.stale.userName})` : '') +
+        ` هنوز باز و پولش شمرده نشده است. برای اینکه پول آن روز با فروش امروز قاطی نشود،` +
+        ` باید همان نشست بسته و نشست تازه باز شود؛ روی «نشست صندوق» (یا دکمه‌ی همین پیام) بزنید، سپس ${operation} را دوباره انجام دهید.`
+      : st.state === 'STAFF_PENDING'
+        ? `نشست باز است ولی هنوز معلوم نیست پشت صندوق کیست؛ چون هر فاکتور باید به یک نفر نسبت داده شود،` +
+          ` برای ${operation} اول از روی «نشست صندوق» کارمند را انتخاب و تأیید کنید.`
+        : operation === 'ثبت یا تغییر پرداخت'
+          ? // عبارت تحت‌اللفظی سازگار با قفل ساختاری s67
+            'برای ثبت یا تغییر پرداخت، ابتدا یک نشست بازِ کارمند لازم است؛ روی «نشست صندوق» بزنید و نشست را باز کنید.'
+          : `برای ${operation}، ابتدا یک نشست بازِ کارمند لازم است؛ روی «نشست صندوق» بزنید و نشست را باز کنید.`
+  throw new BusinessError(message, 'SESSION_REQUIRED')
 }
 
 /**
@@ -764,6 +788,8 @@ export function registerIpcHandlers(): void {
 
   // ---- شیفت (جلسه ۱۹: هر رکورد = یک «نشست») ----
   handle(IPC.shiftCurrent, (p) => shiftService.current(p?.userId ?? null))
+  /** وضعیت نشست برای UI: بدون خطا و بدون ساخت AUTO — مخصوص چیپ/بنر هشدار */
+  handle(IPC.shiftStatus, () => shiftService.status())
   /**
    * نشست ۱۶۰ · Y9 (S160-D2) — مسیر قدیمی shift:open هم مثل کانال رسمی shiftSessionOpen:
    * actor فقط از نشست باز main؛ بدون نشست ⇒ null و openSession کارمند انتخاب‌شده (staffId) را

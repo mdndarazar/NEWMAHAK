@@ -1378,7 +1378,20 @@ export interface ShiftSessionForm {
   current: ShiftInfo | null
   /** نشست جامانده‌ی روزِ دیگر (در صورت وجود) — بستنش در مودال دلیل + رمز مدیر می‌خواهد */
   staleOpen: ShiftStaleOpen | null
+  /** چرا ثبت فاکتور/پرداخت الان ممکن نیست (در صورت وجود مانع) — OVERTIME_ELIGIBLE از فاز اضافه‌کاری */
+  blockReason: 'NONE' | 'STAFF_PENDING' | 'STALE_OPEN' | 'OVERTIME_ELIGIBLE'
   guide: string
+}
+
+/**
+ * وضعیت زنده‌ی نشست برای UI (کانال shift:status) — خواندنیِ خالص؛ برخلاف
+ * shift:current هیچ خطایی پرتاب نمی‌کند و هیچ نشست AUTOای نمی‌سازد.
+ */
+export type ShiftGateState = 'OK' | 'STAFF_PENDING' | 'STALE' | 'NONE'
+export interface ShiftStatusInfo {
+  state: ShiftGateState
+  shift?: ShiftInfo | null
+  stale?: ShiftStaleOpen | null
 }
 
 /** یک ردیف «انبار مرکزی» (مورد ۵) — کاملاً مستقل از موجودی فروشگاه. */
