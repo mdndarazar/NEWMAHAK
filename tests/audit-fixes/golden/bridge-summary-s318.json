@@ -1,0 +1,381 @@
+{
+  "fixtures": {
+    "closed": {
+      "bridge": {
+        "balanced": true,
+        "explainedTotal": 100000,
+        "rows": [
+          {
+            "amount": 100000,
+            "key": "realCash",
+            "label": "وجه واقعی این بازه",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "managerAccountReceived",
+            "label": "دریافتی به حساب مدیر",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "destinationUnknownReceived",
+            "label": "دریافتی با مقصد نامشخص (داده‌ی قدیمی)",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "storeCreditIssued",
+            "label": "اعتبار خرید صادرشده",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorCreditSettlements",
+            "label": "وصول نسیه‌ی بازه‌های قبل",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorClearedCheques",
+            "label": "پاس‌شدن چک‌های بازه‌های قبل",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorManagerAccountReceived",
+            "label": "دریافتی حساب مدیر بابت فاکتورهای بازه‌های قبل",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorDestinationUnknownReceived",
+            "label": "دریافتی با مقصد نامشخص بابت فاکتورهای بازه‌های قبل",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "storeCreditUsed",
+            "label": "مصرف اعتبار خرید",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "uncollectedCredit",
+            "label": "نسیه‌ی وصول‌نشده‌ی این بازه",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "cashRefunds",
+            "label": "بازپرداخت نقدی برگشت (خروج از کشو)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "cardRefunds",
+            "label": "بازپرداخت کارتی برگشت (کارت‌خوان)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "cardToCardRefunds",
+            "label": "بازپرداخت کارت‌به‌کارت برگشت (تعهد مدیر)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "exchangeCashRefunds",
+            "label": "بازپرداخت نقدی مابه‌التفاوت تعویض (خروج از کشو)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "exchangeCardRefunds",
+            "label": "بازپرداخت کارتی مابه‌التفاوت تعویض",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "exchangeCardToCardRefunds",
+            "label": "بازپرداخت کارت‌به‌کارت مابه‌التفاوت تعویض (تعهد مدیر)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorDebtReturns",
+            "label": "برگشتِ این بازه روی فاکتورهای بازه‌های قبل (کاهش بدهی/بدون پول)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "overpayReceived",
+            "label": "دریافت پول اضافه (بیشتر از بدهی)",
+            "sign": -1
+          }
+        ],
+        "target": 100000,
+        "unexplained": 0
+      },
+      "period": {
+        "fromJalali": "1405/06/01",
+        "source": "explicit",
+        "toJalali": "1405/06/01"
+      },
+      "warnings": []
+    },
+    "overpay": {
+      "bridge": {
+        "balanced": false,
+        "explainedTotal": 150000,
+        "rows": [
+          {
+            "amount": 150000,
+            "key": "realCash",
+            "label": "وجه واقعی این بازه",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "managerAccountReceived",
+            "label": "دریافتی به حساب مدیر",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "destinationUnknownReceived",
+            "label": "دریافتی با مقصد نامشخص (داده‌ی قدیمی)",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "storeCreditIssued",
+            "label": "اعتبار خرید صادرشده",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorCreditSettlements",
+            "label": "وصول نسیه‌ی بازه‌های قبل",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorClearedCheques",
+            "label": "پاس‌شدن چک‌های بازه‌های قبل",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorManagerAccountReceived",
+            "label": "دریافتی حساب مدیر بابت فاکتورهای بازه‌های قبل",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorDestinationUnknownReceived",
+            "label": "دریافتی با مقصد نامشخص بابت فاکتورهای بازه‌های قبل",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "storeCreditUsed",
+            "label": "مصرف اعتبار خرید",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "uncollectedCredit",
+            "label": "نسیه‌ی وصول‌نشده‌ی این بازه",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "cashRefunds",
+            "label": "بازپرداخت نقدی برگشت (خروج از کشو)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "cardRefunds",
+            "label": "بازپرداخت کارتی برگشت (کارت‌خوان)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "cardToCardRefunds",
+            "label": "بازپرداخت کارت‌به‌کارت برگشت (تعهد مدیر)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "exchangeCashRefunds",
+            "label": "بازپرداخت نقدی مابه‌التفاوت تعویض (خروج از کشو)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "exchangeCardRefunds",
+            "label": "بازپرداخت کارتی مابه‌التفاوت تعویض",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "exchangeCardToCardRefunds",
+            "label": "بازپرداخت کارت‌به‌کارت مابه‌التفاوت تعویض (تعهد مدیر)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorDebtReturns",
+            "label": "برگشتِ این بازه روی فاکتورهای بازه‌های قبل (کاهش بدهی/بدون پول)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "overpayReceived",
+            "label": "دریافت پول اضافه (بیشتر از بدهی)",
+            "sign": -1
+          }
+        ],
+        "target": 100000,
+        "unexplained": -50000
+      },
+      "period": {
+        "fromJalali": "1405/06/10",
+        "source": "explicit",
+        "toJalali": "1405/06/10"
+      },
+      "warnings": [
+        "پل تطبیق بسته نشد: 50000 ریال بدون توضیح مانده است. روی ردیف‌های پل کلیک کنید تا اسناد سازنده‌ی هر عدد باز شود."
+      ]
+    },
+    "posInvoice": {
+      "bridge": {
+        "balanced": false,
+        "explainedTotal": 0,
+        "rows": [
+          {
+            "amount": 0,
+            "key": "realCash",
+            "label": "وجه واقعی این بازه",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "managerAccountReceived",
+            "label": "دریافتی به حساب مدیر",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "destinationUnknownReceived",
+            "label": "دریافتی با مقصد نامشخص (داده‌ی قدیمی)",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "storeCreditIssued",
+            "label": "اعتبار خرید صادرشده",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorCreditSettlements",
+            "label": "وصول نسیه‌ی بازه‌های قبل",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorClearedCheques",
+            "label": "پاس‌شدن چک‌های بازه‌های قبل",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorManagerAccountReceived",
+            "label": "دریافتی حساب مدیر بابت فاکتورهای بازه‌های قبل",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorDestinationUnknownReceived",
+            "label": "دریافتی با مقصد نامشخص بابت فاکتورهای بازه‌های قبل",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "storeCreditUsed",
+            "label": "مصرف اعتبار خرید",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "uncollectedCredit",
+            "label": "نسیه‌ی وصول‌نشده‌ی این بازه",
+            "sign": 1
+          },
+          {
+            "amount": 0,
+            "key": "cashRefunds",
+            "label": "بازپرداخت نقدی برگشت (خروج از کشو)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "cardRefunds",
+            "label": "بازپرداخت کارتی برگشت (کارت‌خوان)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "cardToCardRefunds",
+            "label": "بازپرداخت کارت‌به‌کارت برگشت (تعهد مدیر)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "exchangeCashRefunds",
+            "label": "بازپرداخت نقدی مابه‌التفاوت تعویض (خروج از کشو)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "exchangeCardRefunds",
+            "label": "بازپرداخت کارتی مابه‌التفاوت تعویض",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "exchangeCardToCardRefunds",
+            "label": "بازپرداخت کارت‌به‌کارت مابه‌التفاوت تعویض (تعهد مدیر)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "priorDebtReturns",
+            "label": "برگشتِ این بازه روی فاکتورهای بازه‌های قبل (کاهش بدهی/بدون پول)",
+            "sign": -1
+          },
+          {
+            "amount": 0,
+            "key": "overpayReceived",
+            "label": "دریافت پول اضافه (بیشتر از بدهی)",
+            "sign": -1
+          }
+        ],
+        "target": 100000,
+        "unexplained": 100000
+      },
+      "period": {
+        "fromJalali": "1405/06/05",
+        "source": "explicit",
+        "toJalali": "1405/06/05"
+      },
+      "warnings": [
+        "پل تطبیق بسته نشد: 100000 ریال بدون توضیح مانده است. روی ردیف‌های پل کلیک کنید تا اسناد سازنده‌ی هر عدد باز شود."
+      ]
+    }
+  },
+  "note": "نشست ۳۱۸ · فاز ۰ — خروجی reportRows (period + bridge + warnings) روی سه فیکسچر روز-ثابت: پل بسته / unexplained>0 / unexplained<0."
+}
