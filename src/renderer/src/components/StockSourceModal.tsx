@@ -4,6 +4,7 @@ import { faDigits } from '@shared/jalali'
 import {
   STOCK_PICK_TEXT,
   STOCK_SOURCE_TEXT,
+  StockSourceKind,
   buildSingleSourcePlan,
   optionKey,
   pendingQuestionText,
@@ -116,6 +117,19 @@ export default function StockSourceModal({
     [chain.lines]
   )
 
+  /**
+   * بند امنیتیِ دقیق: رمز مدیر فقط وقتی لازم است که برنامه‌ی نهایی حداقل یک
+   * مبدأ *غیر از انبار فروشگاه* داشته باشد (همان چیزی که راهنمای داخل کادر هم
+   * می‌گوید و سرور هم با `assertPanelPassword` می‌سنجد). برای برنامه‌ی «همه از
+   * انبار فروشگاه — با منفی شدن» هیچ رمزی لازم نیست: رضایت فروشنده همان دکمه‌ی
+   * تأیید است. قبلاً `passwordRequired && !password` این مسیر فروشگاهی را هم
+   * قفل می‌کرد و دکمه‌ی تأیید بدون رمز کار نمی‌کرد.
+   */
+  const hasForeignSource = useMemo(
+    () => (chain.plan?.lines ?? []).some((l) => l.entries.some((e) => e.kind !== StockSourceKind.STORE)),
+    [chain.plan]
+  )
+
   const push = (variantId: number, d: StockLineDecision) =>
     setDecisions((prev) => ({ ...prev, [variantId]: [...(prev[variantId] ?? []), d] }))
   const undo = (variantId: number) =>
@@ -139,12 +153,12 @@ export default function StockSourceModal({
           </button>
           <button
             className="btn btn-primary"
-            disabled={busy || !chain.complete || !chain.plan || (passwordRequired && !password.trim())}
-            onClick={() => chain.plan && onConfirm(chain.plan, passwordRequired ? password.trim() : null)}
+            disabled={busy || !chain.complete || !chain.plan || (passwordRequired && hasForeignSource && !password.trim())}
+            onClick={() => chain.plan && onConfirm(chain.plan, passwordRequired && hasForeignSource ? password.trim() : null)}
             title={
               !chain.complete
                 ? 'اول به سؤال همه‌ی قلم‌های کسری‌دار جواب بدهید'
-                : passwordRequired && !password.trim()
+                : passwordRequired && hasForeignSource && !password.trim()
                   ? 'برای کسر از انبار دیگر، رمز مدیر یا رمز دوم همین گزینه لازم است'
                   : 'فاکتور با همین مبدأها ثبت می‌شود'
             }
@@ -265,8 +279,11 @@ export default function StockSourceModal({
         * می‌سنجد، پس این کادر «قفل رندرری» نیست: بی رمز معتبر، سرور رد می‌کند و
         * هیچ موجودی‌ای عوض نمی‌شود. اگر مدیر قفل همین گزینه را خاموش کرده باشد،
         * میزبان `passwordRequired={false}` می‌دهد و این کادر اصلاً ساخته نمی‌شود.
+        * نکته‌ی دوم: کادر فقط وقتی دیده می‌شود که برنامه‌ی نهایی واقعاً مبدأی
+        * «غیر از انبار فروشگاه» داشته باشد (`hasForeignSource`) — برای مسیر
+        * «همه از انبار فروشگاه + منفی» رمزی لازم نیست و این کادر دیده نمی‌شود.
         */}
-      {passwordRequired && chain.complete && (
+      {passwordRequired && hasForeignSource && chain.complete && (
         <div className="rounded px-3 py-2 border-2 bg-violet-50 border-violet-400 space-y-1">
           <label className="block font-bold">{passwordLabel}</label>
           <input

@@ -2064,7 +2064,16 @@ export default function Pos() {
         open={stockChain != null}
         preview={stockChain?.preview ?? null}
         primaryKey={STORE_PICK_KEY}
-        busy={busy}
+        /**
+         * ⚠️ `busy` مودال عمداً با `stockChain` وام‌دار شده است: `settle` *قبل* از
+         * باز شدن این پنجره `setBusy(true)` می‌کند تا دکمه‌ی ثبتِ دوباره قفل شود و
+         * تا جواب کاربر در انتظار می‌ماند — پس در کل بازه‌ی باز بودن پنجره
+         * `busy=true` است. اگر همین مقدار خام به مودال داده شود، دکمه‌های «تأیید»
+         * و «لغو» خودِ پنجره هم غیرفعال می‌شوند و کاربر حبس می‌شود. برای قفلِ
+         * تکثیرِ کاربر روی تأیید، خودِ `decide` کافی است (پس از یک کلیک پنجره
+         * بسته می‌شود و وعده فقط یک‌بار تحویل می‌شود).
+         */
+        busy={busy && stockChain == null}
         confirmLabel="تأیید و ثبت فیش"
         passwordRequired={stockPickLockOn}
         passwordHint={
