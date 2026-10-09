@@ -16,12 +16,17 @@ for (const [name, fixture] of Object.entries(goldenData.fixtures)) {
   const officialRealCash = realCashRow ? realCashRow.amount : 0
 
   const res = buildNetToDrawer(bridge, officialRealCash)
-  assert.equal(res.gap, 0, `در فیکسچر ${name} باید gap برابر با 0 باشد`)
-  assert.equal(res.end, officialRealCash, `در فیکسچر ${name} باید end با official برابر باشد`)
-
-  const manualSum = res.start + res.lines.reduce((s, l) => s + l.sign * l.amount, 0) - res.unexplained
+  const manualSum = res.start + res.lines.reduce((s, l) => s + l.sign * l.amount, 0)
   assert.equal(res.end, manualSum, `در فیکسچر ${name} فرمول زنجیره باید با end بخواند`)
-  console.log(`  ✓ فیکسچر «${name}»: Invariant تراز کامل و gap = 0`)
+
+  if (bridge.balanced) {
+    assert.equal(res.gap, 0, `در فیکسچر متوازن ${name} باید gap برابر با 0 باشد`)
+    assert.equal(res.end, officialRealCash, `در فیکسچر متوازن ${name} باید end با official برابر باشد`)
+    console.log(`  ✓ فیکسچر متوازن «${name}»: Invariant تراز کامل و gap = 0`)
+  } else {
+    assert.equal(res.gap, -bridge.unexplained, `در فیکسچر نامتوازن ${name} مقدار gap باید دقیقاً برابر با -unexplained باشد`)
+    console.log(`  ✓ فیکسچر نامتوازن «${name}»: مغایرت پل با gap = ${res.gap} دقیقاً شناسایی شد`)
+  }
 }
 
 console.log('\n--- ۲. آزمون پوشش کامل ۱۸ ردیف پل تطبیق ---')

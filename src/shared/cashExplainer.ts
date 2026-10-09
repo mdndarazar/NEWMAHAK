@@ -112,7 +112,8 @@ export function buildNetToDrawer(bridge: SaleBridgeBlock | undefined | null, off
   const start = Number(bridge.target ?? 0)
   const netFromLines = lines.reduce((s, l) => s + l.sign * l.amount, 0)
   const unexplained = Number(bridge.unexplained ?? 0)
-  const end = start + netFromLines - unexplained
+  // جمع مستقیم گام‌ها باید دقیقاً برابر با موجودی مورد انتظار در کشو و کارت‌خوان باشد
+  const end = start + netFromLines
   const gap = officialRealCash - end
 
   return {

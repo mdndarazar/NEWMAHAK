@@ -2884,8 +2884,8 @@ function SaleSummaryBlock({
           cardTotal={cardTotal}
           refundCashTotal={refundCashTotal}
           refundCardTotal={refundCardTotal}
-          hasDiscrepancy={split.hasDiscrepancy || netToDrawer.gap !== 0}
-          discrepancy={split.discrepancy !== 0 ? split.discrepancy : netToDrawer.gap}
+          hasDiscrepancy={split.hasDiscrepancy}
+          discrepancy={split.discrepancy}
           onOpenExplainer={() => setExplainerOpen(true)}
           onOpenBridgeDiag={onOpenBridgeDiag}
           nonCash={nonCash}
