@@ -26,8 +26,9 @@ for (const [name, fixture] of Object.entries(goldenData.fixtures)) {
 
 console.log('\n--- ۲. آزمون پوشش کامل ۱۸ ردیف پل تطبیق ---')
 
-const allGroupedKeys = new Set(GROUPS.flatMap((g) => g.keys))
-allGroupedKeys.add('realCash')
+import { REFUND_KEYS } from '../../src/shared/cashExplainer.ts'
+
+const allGroupedKeys = new Set([...GROUPS.flatMap((g) => g.keys), 'realCash', ...REFUND_KEYS])
 
 const standard18Keys = [
   'realCash',

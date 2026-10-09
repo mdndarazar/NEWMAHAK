@@ -38,19 +38,16 @@ export const GROUPS: { key: string; label: string; keys: string[] }[] = [
       'priorManagerAccountReceived',
       'priorDestinationUnknownReceived'
     ]
-  },
-  {
-    key: 'paidBack',
-    label: 'پولی که پس دادیم (نقد/کارت)',
-    keys: [
-      'cashRefunds',
-      'cardRefunds',
-      'cardToCardRefunds',
-      'exchangeCashRefunds',
-      'exchangeCardRefunds',
-      'exchangeCardToCardRefunds'
-    ]
   }
+]
+
+export const REFUND_KEYS = [
+  'cashRefunds',
+  'cardRefunds',
+  'cardToCardRefunds',
+  'exchangeCashRefunds',
+  'exchangeCardRefunds',
+  'exchangeCardToCardRefunds'
 ]
 
 /**
@@ -72,7 +69,8 @@ export function buildNetToDrawer(bridge: SaleBridgeBlock | undefined | null, off
 
   // جهت حرکت: از خالص (target) به سمت پول واقعی دخل ⇒ هر ردیف پل با «−sign» اعمال می‌شود
   const byKey = new Map(bridge.rows.map((r) => [r.key, r]))
-  const used = new Set<string>(['realCash'])
+  // ردیف realCash و ردیف‌های بازپرداخت (refunds) قبلاً در خالص کسر شده‌اند و در officialRealCash هم کسر هستند
+  const used = new Set<string>(['realCash', ...REFUND_KEYS])
   const lines: ExplainerLine[] = []
   let zeroGroupCount = 0
 
@@ -151,7 +149,7 @@ export function splitDrawerPos(
     drawer,
     pos,
     other,
-    hasDiscrepancy: discrepancy !== 0,
+    hasDiscrepancy: Math.abs(discrepancy) > 1,
     discrepancy
   }
 }
