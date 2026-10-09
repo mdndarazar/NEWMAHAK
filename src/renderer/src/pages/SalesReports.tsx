@@ -57,6 +57,10 @@ import {
 } from '../components/ResizableColumns'
 import { faDigits, money, isValidJalaliDate } from '@shared/jalali'
 import { physicalMoneyInDrawerAndCard, returnCreditAmountOf } from '@shared/accounting'
+import { buildNetToDrawer, splitDrawerPos } from '@shared/cashExplainer'
+import { DrawerVsPosSplit } from '../components/cash/DrawerVsPosSplit'
+import { NetToDrawerCard } from '../components/cash/NetToDrawerCard'
+import { NonCashDrawer } from '../components/cash/NonCashDrawer'
 import {
   creditOutstandingOf,
   fraudOutputRows,
@@ -696,6 +700,7 @@ export default function SalesReports() {
   const [paymentsFor, setPaymentsFor] = useState<number | null>(null)
   /** نشست ۳۱۸ — نمای تشخیص پل تطبیق؛ باز-بسته شدن آن هیچ‌وقت گزارش را بازنمی‌خواند. */
   const [bridgeDiagOpen, setBridgeDiagOpen] = useState(false)
+  const openBridgeDiag = useCallback(() => setBridgeDiagOpen(true), [])
   const [methods, setMethods] = useState<{ id: number; label: string; kind?: string | null }[]>([])
   /**
    * قفل مستقل تب نسیه: تا باز نشده، حتی *خوانده* هم نمی‌شود (نه فقط پنهان
@@ -2437,7 +2442,7 @@ export default function SalesReports() {
               <span>پل تطبیق بسته نیست — {money(Math.abs(report.accounting.bridge.unexplained))} ریال بدون توضیح مانده است.</span>
               <button
                 className="btn border-rose-500 text-rose-800 hover:bg-rose-100"
-                onClick={() => setBridgeDiagOpen(true)}
+                onClick={openBridgeDiag}
                 title="نمایش راهنمای ردیف‌به‌ردیف (فقط خواندنی؛ باز کردنش رمز می‌خواهد)"
               >
                 نمای تشخیص پل…
@@ -2562,6 +2567,12 @@ export default function SalesReports() {
           invoiceCount={t.count}
           range={`از ${appliedFilters.fromJalali} تا ${appliedFilters.toJalali}`}
           channels={appliedFilters.channels}
+          bridge={report.accounting?.bridge}
+          appliedFiltersPayload={toServiceFilter(appliedFilters)}
+          onOpenInvoice={(id) => setPaymentsFor(id)}
+          onOpenBridgeDiag={openBridgeDiag}
+          refundCashTotal={t.refundCashTotal}
+          refundCardTotal={t.refundCardTotal}
         />
       )}
 
@@ -2701,7 +2712,13 @@ function SaleSummaryBlock({
   priorCreditStoryHidden = 0,
   invoiceCount,
   range,
-  channels
+  channels,
+  bridge,
+  appliedFiltersPayload,
+  onOpenInvoice,
+  onOpenBridgeDiag,
+  refundCashTotal = 0,
+  refundCardTotal = 0
 }: {
   parts: SummaryPart[]
   active: SummaryPartKey[]
@@ -2722,12 +2739,71 @@ function SaleSummaryBlock({
   invoiceCount: number
   range: string
   channels: string[]
+  bridge?: SaleBridgeBlock | null
+  appliedFiltersPayload?: any
+  onOpenInvoice?: (id: number) => void
+  onOpenBridgeDiag?: () => void
+  refundCashTotal?: number
+  refundCardTotal?: number
 }) {
   const [creditStoriesOpen, setCreditStoriesOpen] = useState(false)
   const [priorCreditStoriesOpen, setPriorCreditStoriesOpen] = useState(false)
+  const [explainerOpen, setExplainerOpen] = useState(false)
+  const [nonCashOpen, setNonCashOpen] = useState(false)
+  const [nonCashLoading, setNonCashLoading] = useState(false)
+  const [exchangeRows, setExchangeRows] = useState<ExchangeReportRow[]>([])
+  const [creditSources, setCreditSources] = useState<SaleBridgeSource[]>([])
+  const [loadedPayloadKey, setLoadedPayloadKey] = useState<string | null>(null)
+
   const priorCreditTotal = parts.find((p) => p.key === 'priorCredit')?.value ?? 0
   const allOn = active.length === parts.length
   const hidden = parts.filter((p) => !active.includes(p.key))
+
+  // تفکیک درشت کشو و کارت‌خوان
+  const split = useMemo(() => {
+    return splitDrawerPos({ cashTotal, refundCashTotal, refundCardTotal }, cardTotal, realCash)
+  }, [cashTotal, refundCashTotal, refundCardTotal, cardTotal, realCash])
+
+  // ساخت زنجیره تراز ریاضی خالص به دخل
+  const netToDrawer = useMemo(() => {
+    return buildNetToDrawer(bridge, realCash)
+  }, [bridge, realCash])
+
+  // بارگذاری داده‌های ریز اقلام غیرنقدی (Lazy loading بر مبنای appliedFilters)
+  const currentPayloadKey = JSON.stringify(appliedFiltersPayload ?? {})
+  useEffect(() => {
+    if (!nonCashOpen) return
+    if (loadedPayloadKey === currentPayloadKey) return
+
+    let cancelled = false
+    setNonCashLoading(true)
+
+    Promise.all([
+      call<ExchangeReportResult>(CH.saleExchangeList, appliedFiltersPayload ?? {}).catch(() => ({ rows: [] } as any)),
+      call<SaleReportResult>(CH.saleReportRows, {
+        ...(appliedFiltersPayload ?? {}),
+        withDrillDown: true,
+        bridgeSourceKey: 'storeCreditUsed',
+        bridgeSourceSkip: 0,
+        bridgeSourceTake: 200
+      }).catch(() => ({ accounting: { bridge: { rows: [] } } } as any))
+    ])
+      .then(([exRes, reportRes]) => {
+        if (cancelled) return
+        setExchangeRows(exRes?.rows ?? [])
+        const bridgeRow = reportRes?.accounting?.bridge?.rows?.find((r) => r.key === 'storeCreditUsed')
+        setCreditSources(bridgeRow?.sources ?? [])
+        setLoadedPayloadKey(currentPayloadKey)
+      })
+      .finally(() => {
+        if (!cancelled) setNonCashLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [nonCashOpen, currentPayloadKey, loadedPayloadKey, appliedFiltersPayload])
+
   return (
     <div className="bg-white rounded shadow border-2 border-brand/40">
       <div className="p-2 border-b bg-brand/10 font-bold flex items-center gap-2 flex-wrap">
@@ -2796,35 +2872,64 @@ function SaleSummaryBlock({
       </div>
 
       {/**
-        * ---------- کنترل کارت‌خوان (هدف اصلی بند ۷) ----------
-        * این خط عمداً با تیک‌های بالا عوض نمی‌شود: یک واقعیت فیزیکی است، نه یک
-        * سناریو. «پول واقعی این بازه» = نقدی + کارت + سایرِ دریافت‌شده −
-        * بازپرداخت نقد/کارت واقعی. وصول نسیه‌ی دوره‌ی قبل داخل همان نقد/کارت است
-        * (نشست ۲۰۳)؛ جداگانه ردیف برچسب‌دار دارد، دوباره جمع نمی‌شود.
-        *
-        * نشست ۱۸۷: ارزش کالای برگشتی و اعتبار صادرشده خروج نقد نیستند؛ اگر کم
-        * می‌شدند، فروشنده‌ای که نقد داده و در سیستم اعتبار زده کسری‌اش با گزارش
-        * یکی می‌شد.
+        * ---------- کنترل کارت‌خوان (هدف اصلی بند ۷ + لایه شفاف‌ساز جدید) ----------
         */}
-      <div className="p-2 border-t bg-sky-50 leading-7">
-        <b>کنترل کارت‌خوان و صندوق:</b> نقدی <b dir="ltr">{money(cashTotal)}</b> · کارت{' '}
-        <b dir="ltr">{money(cardTotal)}</b> · اعتباری/سایر <b dir="ltr">{money(creditCardTotal)}</b> ⇒{' '}
-        <b dir="ltr">{money(realCash)}</b> ریال پولی است که باید واقعاً در صندوق و کارت‌خوان باشد.
+      <div className="p-2 border-t">
+        <DrawerVsPosSplit
+          drawer={split.drawer}
+          pos={split.pos}
+          other={split.other}
+          realCash={realCash}
+          cashTotal={cashTotal}
+          cardTotal={cardTotal}
+          refundCashTotal={refundCashTotal}
+          refundCardTotal={refundCardTotal}
+          hasDiscrepancy={split.hasDiscrepancy || netToDrawer.gap !== 0}
+          discrepancy={split.discrepancy !== 0 ? split.discrepancy : netToDrawer.gap}
+          onOpenExplainer={() => setExplainerOpen(true)}
+          onOpenBridgeDiag={onOpenBridgeDiag}
+          nonCash={nonCash}
+          nonCashOpen={nonCashOpen}
+          onToggleNonCash={() => setNonCashOpen((prev) => !prev)}
+        />
+
+        {/* پاپ‌اور زنجیره ریاضی چطور رسیدیم */}
+        <NetToDrawerCard
+          open={explainerOpen}
+          onClose={() => setExplainerOpen(false)}
+          result={netToDrawer}
+          summaryNet={net}
+          isBalanced={bridge?.balanced ?? true}
+          onOpenBridgeDiag={onOpenBridgeDiag}
+        />
+
+        {/* آکاردئون ریز تسویه‌های غیرنقدی */}
+        <NonCashDrawer
+          open={nonCashOpen}
+          onToggle={() => setNonCashOpen((prev) => !prev)}
+          expectedNonCash={nonCash}
+          exchangeRows={exchangeRows}
+          creditSources={creditSources}
+          loading={nonCashLoading}
+          onOpenInvoice={(id) => onOpenInvoice && onOpenInvoice(id)}
+          creditUsedStories={creditUsedStories}
+        />
+
         {creditRefundTotal > 0 && (
-          <div className="kbd text-amber-900 font-bold">
+          <div className="kbd text-amber-900 font-bold mt-2">
             {money(creditRefundTotal)} ریال بابت برگشت/تعویض بارکد اعتبار خرید صادر شده — این مبلغ از صندوق بیرون
             نرفته و بدهی فروشگاه به مشتری است. اگر فروشنده نقد هم داده، کشو باید به همین اندازه کسری نشان بدهد.
           </div>
         )}
         {creditUsedTotal > 0 && (
-          <div className="kbd text-amber-900 font-bold">
+          <div className="kbd text-amber-900 font-bold mt-1">
             {money(creditUsedTotal)} ریال فروش این بازه با بارکد اعتبار خرید تسویه شده — پولی وارد صندوق نشده.
             بستن صندوق نباید کسری نشان بدهد؛ کالا رفته و بدهی قبلی ما به مشتری تسویه شده است.
             {creditUsedStories.length > 0 && (
               <div className="mt-1">
                 <button
                   type="button"
-                  className="btn"
+                  className="btn btn-xs"
                   onClick={() => setCreditStoriesOpen((open) => !open)}
                   title={creditStoriesOpen ? 'جمع شدن فهرست بارکدها' : 'باز شدن همهٔ بارکدهای اعتبار مصرف‌شده'}
                 >
@@ -2850,12 +2955,12 @@ function SaleSummaryBlock({
           </div>
         )}
         {priorCreditStories.length > 0 && (
-          <div className="kbd text-amber-900 font-bold">
+          <div className="kbd text-amber-900 font-bold mt-1">
             {money(priorCreditTotal)} ریال وصول نسیهٔ فاکتورهای بازه‌های قبل در این بازه آمده — فروش این بازه نیست.
             <div className="mt-1">
               <button
                 type="button"
-                className="btn"
+                className="btn btn-xs"
                 onClick={() => setPriorCreditStoriesOpen((open) => !open)}
                 title={priorCreditStoriesOpen ? 'جمع شدن فهرست وصول نسیه' : 'باز شدن همهٔ وصول‌های نسیه'}
               >
@@ -2880,12 +2985,12 @@ function SaleSummaryBlock({
           </div>
         )}
         {nonCash > 0 && (
-          <div className="kbd text-amber-800">
+          <div className="kbd text-amber-800 mt-1">
             {money(nonCash)} ریال از فاکتورهای «تسویه‌شده»ی این بازه پول نقد نبوده است (ارزش کالای برگشتی در تعویض +
             بارکد اعتبار خرید مصرف‌شده)، پس دنبالش در کارت‌خوان نگردید.
           </div>
         )}
-        <div className="kbd">
+        <div className="kbd mt-1">
           اگر «کارت» این گزارش با جمع پایان‌روز دستگاه کارت‌خوان نخواند، تب «نسیه» و ستون «اضافه دریافتی» را هم ببینید:
           بیشترِ اختلاف‌ها یا نسیه‌ای است که نقدی ثبت شده، یا تخفیفی که بعد از پرداخت خورده است.
         </div>
