@@ -728,6 +728,8 @@ export function registerIpcHandlers(): void {
     bridgeDiagnosticsService.sources((p as any)?.scope ?? {}, (p as any)?.rowKey, (p as any)?.skip, (p as any)?.take))
   handle(IPC.saleReportBridgeDiagNotes, (p) => bridgeDiagnosticsService.notes((p as any)?.scope ?? {}))
   handle(IPC.saleReportBridgeDiagNoteAdd, (p) => bridgeDiagnosticsService.noteAdd((p as any)?.scope ?? {}, (p as any)?.text))
+  handle(IPC.saleReportBridgeDiagDoc, (p) =>
+    bridgeDiagnosticsService.documentDetail((p as any)?.scope ?? {}, (p as any)?.ref, (p as any)?.rowKey))
   handle(IPC.saleReportByShift, (p) => salesService.reportByShift(p ?? {}))
   handle(IPC.saleReportItems, (p) => salesService.reportItems(p ?? {}))
   // ---- افزوده‌های جلسه ۱۵ ----

@@ -11,12 +11,17 @@ import type {
   BridgeDiagOpenResponse,
   BridgeDiagSourcesResponse,
   BridgeDiagNotesResponse,
-  BridgeDiagNoteAddResponse
+  BridgeDiagNoteAddResponse,
+  BridgeSuspect,
+  BridgeDocDetailResponse,
+  BridgeDocDetail,
+  BridgeRootCause
 } from '@shared/types'
 
 /**
  * ===========================================================================
  * نشست ۳۱۸ · طرح برنده (کامیلا) — فاز ۳ — «نمای تشخیص پل تطبیق» (فقط بخوانی).
+ * نشست ۳۱۹ — کارت هوشمند مظنونین اصلی، شناسنامه جامع سند و تحلیل آموزشی ۱-کلیکی.
  *
  * قوانین سختِ این فایل (از طرح + قرارداد اجرا):
  *   ۱) **هیچ محاسبه‌ی عددی** این‌جا رخ نمی‌دهد: جدول، جمع‌ها و علامت unexplained
@@ -80,6 +85,11 @@ export default function BridgeDiagnosticsModal({
   const [noteDraft, setNoteDraft] = useState('')
   const [noteBusy, setNoteBusy] = useState(false)
 
+  // نشست ۳۱۹ — اسناد مظنون و کش جزئیات آنها
+  const [docDetails, setDocDetails] = useState<Record<string, { detail: BridgeDocDetail; rootCause?: BridgeRootCause }>>({})
+  const [activeDocKey, setActiveDocKey] = useState<string | null>(null)
+  const [docBusy, setDocBusy] = useState<string | null>(null)
+
   // رمز هیچ‌وقت بین دو باز شدن نمی‌ماند (هر باز کردن = رمز تازه).
   useEffect(() => {
     if (open) {
@@ -89,8 +99,30 @@ export default function BridgeDiagnosticsModal({
       setExpandedRow(null)
       setRowSources({})
       setNoteDraft('')
+      setDocDetails({})
+      setActiveDocKey(null)
     }
   }, [open])
+
+  const loadDocDetail = async (ref: { kind: string; id: number }, rowKey?: string) => {
+    const key = `${ref.kind}_${ref.id}`
+    setActiveDocKey(key)
+    if (docDetails[key]) return
+    setDocBusy(key)
+    try {
+      const res = await call<BridgeDocDetailResponse>(CH.saleReportBridgeDiagDoc, { scope, ref, rowKey })
+      if (res?.ok && res.detail) {
+        setDocDetails((prev) => ({
+          ...prev,
+          [key]: { detail: res.detail!, rootCause: res.rootCause }
+        }))
+      }
+    } catch (e: any) {
+      setErr(String(e?.message ?? e))
+    } finally {
+      setDocBusy(null)
+    }
+  }
 
   const openView = async () => {
     if (busy) return
@@ -101,6 +133,12 @@ export default function BridgeDiagnosticsModal({
       if (!res?.ok || !res.view) throw new Error(res?.message ?? 'پاسخ نامعتبر از سرور.')
       setView(res.view)
       setPassword('') // رمز سریع پاک می‌شود؛ فقط به همان یک فراخوانی رفت.
+
+      // اگر مظنون اول سند دارد، خودکار بازش کن تا ۱-کلیکی باشد
+      const top = res.view.suspects?.[0]
+      if (top?.documents?.[0]) {
+        void loadDocDetail(top.documents[0], top.rowKey)
+      }
     } catch (e: any) {
       setErr(String(e?.message ?? e))
     } finally {
@@ -213,6 +251,77 @@ export default function BridgeDiagnosticsModal({
             </span>
           </div>
 
+          {/* ===================================================================
+              نشست ۳۱۹ — بخش مظنونین اصلی و کارت ریشه‌یابی ۱-کلیکی (Hero Card)
+             =================================================================== */}
+          {!!view.suspects?.length && !view.bridge.balanced && (
+            <div className="rounded-lg border-2 border-amber-400 bg-amber-50/70 p-3 space-y-3 shadow-sm">
+              <div className="flex items-center justify-between border-b border-amber-200 pb-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-base font-extrabold text-amber-950">🔍 مظنونین اصلی عدم تطبیق (شناسایی هوشمند ۱-کلیکی)</span>
+                  <span className="text-xs text-amber-800 bg-amber-200 px-2 py-0.5 rounded-full font-bold">
+                    {faDigits(view.suspects.length)} مورد
+                  </span>
+                </div>
+                <span className="text-xs text-amber-800">(قطعی نیست — فقط راهنماست)</span>
+              </div>
+
+              <div className="space-y-2">
+                {view.suspects.map((suspect: BridgeSuspect) => (
+                  <div key={suspect.rank} className="rounded border border-amber-300 bg-white p-2.5 space-y-2 shadow-xs">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-amber-500 text-white text-xs font-bold flex items-center justify-center">
+                          {faDigits(suspect.rank)}
+                        </span>
+                        <span className="font-bold text-sm text-slate-800">{suspect.rowLabel}</span>
+                        {suspect.reasons.map((r, i) => (
+                          <span key={i} className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 font-medium">
+                            {r === 'ROW_EQUALS_UNEXPLAINED' || r === 'SOURCE_EQUALS_UNEXPLAINED'
+                              ? 'هم‌مبلغ باقیمانده'
+                              : r === 'SOURCE_OUT_OF_PERIOD'
+                                ? 'خارج از بازه'
+                                : r === 'CASH_OUT_ON_CREDIT'
+                                  ? 'نقد روی نسیه'
+                                  : 'از بزرگ‌ترین‌ها'}
+                          </span>
+                        ))}
+                      </div>
+
+                      {!!suspect.documents?.length && (
+                        <div className="flex items-center gap-1.5">
+                          {suspect.documents.map((doc, dIdx) => {
+                            const dKey = `${doc.kind}_${doc.id}`
+                            const isDocActive = activeDocKey === dKey
+                            return (
+                              <button
+                                key={dIdx}
+                                className={`btn text-xs px-2 py-1 ${isDocActive ? 'btn-primary' : 'bg-slate-100 text-slate-800'}`}
+                                onClick={() => void loadDocDetail(doc, suspect.rowKey)}
+                              >
+                                {docBusy === dKey ? 'در حال خواندن…' : `شناسنامه سند #${faDigits(doc.receiptNo || doc.id)} (${money(doc.amount)})`}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* شناسنامه کامل سند مظنون و جعبه ریشه‌یابی آموزشی */}
+                    {activeDocKey && docDetails[activeDocKey] && (
+                      <div className="mt-2 pt-2 border-t border-slate-200 space-y-3">
+                        <DocDetailView data={docDetails[activeDocKey].detail} />
+                        {docDetails[activeDocKey].rootCause && (
+                          <RootCauseBox cause={docDetails[activeDocKey].rootCause!} />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {!!view.guide.length && (
             <div className="rounded border border-amber-300 bg-amber-50 p-2 space-y-1">
               {view.guide.map((g, i) => (
@@ -298,6 +407,85 @@ export default function BridgeDiagnosticsModal({
         </div>
       )}
     </Modal>
+  )
+}
+
+function DocDetailView({ data }: { data: BridgeDocDetail }) {
+  return (
+    <div className="bg-slate-50 rounded border p-2.5 space-y-2 text-xs">
+      <div className="flex items-center justify-between flex-wrap gap-2 border-b pb-1.5 font-bold">
+        <div className="flex items-center gap-2">
+          <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-900 border border-blue-300">
+            {data.docType === 'EXCHANGE' ? 'سند تعویض' : data.docType === 'SIMPLE_RETURN' ? 'سند برگشت' : 'فاکتور'} #{faDigits(data.docNo)}
+          </span>
+          {data.parent && (
+            <span className="text-slate-700">
+              مربوط به فاکتور اصلی #{faDigits(data.parent.receiptNo)} ({faDigits(data.parent.dateJalali)})
+            </span>
+          )}
+        </div>
+        <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300">
+          روش تسویه: {data.settlement.methodLabel} ({money(data.settlement.amount)} ریال)
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-slate-700">
+        <div>تاریخ و زمان: <b className="text-slate-900">{faDigits(data.at.dateJalali)} {faDigits(data.at.time)}</b></div>
+        <div>ثبت‌کننده: <b className="text-slate-900">{data.actor.name}</b></div>
+        <div>شیفت: <b className="text-slate-900">{data.shift.name ?? '—'}</b></div>
+        <div>مشتری: <b className="text-slate-900">{data.customer.name}</b></div>
+      </div>
+
+      {!!data.items.length && (
+        <div className="mt-1">
+          <div className="font-bold text-slate-800 mb-1">اقلام سند:</div>
+          <div className="rounded border bg-white overflow-hidden">
+            <table className="w-full text-right text-[11px]">
+              <thead className="bg-slate-100">
+                <tr>
+                  <th className="p-1">نام کالا</th>
+                  <th className="p-1 w-16 text-center">تعداد</th>
+                  <th className="p-1 w-24 text-left">مبلغ واحد</th>
+                  <th className="p-1 w-24 text-left">جمع</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.items.map((it, idx) => (
+                  <tr key={idx} className="border-t">
+                    <td className="p-1">{it.name}</td>
+                    <td className="p-1 text-center font-bold">{faDigits(it.qty)}</td>
+                    <td className="p-1 text-left kbd">{money(it.unitPrice)}</td>
+                    <td className="p-1 text-left kbd font-bold">{money(it.lineTotal)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RootCauseBox({ cause }: { cause: BridgeRootCause }) {
+  return (
+    <div className="rounded border border-indigo-200 bg-indigo-50/60 p-2.5 space-y-2 text-xs text-indigo-950">
+      <div className="font-bold flex items-center gap-1.5 text-indigo-900 border-b border-indigo-200 pb-1">
+        <span>💡 تحلیل ریشه و راهنمای آموزشی مغایرت:</span>
+      </div>
+
+      <div className="space-y-1 leading-5">
+        <div>
+          <b className="text-indigo-900">📝 روایت رویداد:</b> {cause.narrative}
+        </div>
+        <div>
+          <b className="text-indigo-900">🧮 علت حسابداری مغایرت:</b> {cause.accountingRoot}
+        </div>
+        <div className="bg-white/80 rounded p-1.5 border border-indigo-200 mt-1">
+          <b className="text-indigo-900">🎓 راهنمای دفعات بعد برای پرسنل:</b> {cause.lesson}
+        </div>
+      </div>
+    </div>
   )
 }
 

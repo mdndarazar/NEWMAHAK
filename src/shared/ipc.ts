@@ -191,6 +191,7 @@ export const IPC = {
   saleReportBridgeDiagSources: 'sale:report:bridgeDiag:sources',
   saleReportBridgeDiagNotes: 'sale:report:bridgeDiag:notes',
   saleReportBridgeDiagNoteAdd: 'sale:report:bridgeDiag:noteAdd',
+  saleReportBridgeDiagDoc: 'sale:report:bridgeDiag:doc',
   /** ردیف‌های «جزئیات فروش» (سطر کالا به کالا) */
   saleReportItems: 'sale:report:items',
   /**

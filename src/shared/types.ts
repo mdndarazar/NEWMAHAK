@@ -541,6 +541,14 @@ export interface ReturnSaleInput {
   confirmOverpay?: boolean
   /** صدور کد اعتبار OVERPAY از همان اضافه‌دریافتِ ساخته‌شده با این برگشت */
   overpayAsCredit?: boolean
+  /** نشست ۳۱۹ — تأیید و رمز مدیر برای بازپرداخت با کارت‌خوان (کارت) */
+  cardPosOverride?: CardPosOverrideInput | null
+}
+
+export interface CardPosOverrideInput {
+  managerPassword: string
+  reason: string
+  acknowledgedNoReverse: true
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +624,30 @@ export interface ReturnLookup {
   items: ReturnLookupItem[]
   /** هشدارهای سطح فاکتور (مثلاً «۲ قلم از انبار حذف شده‌اند») */
   warnings: string[]
+  /** نشست ۳۱۹ — پروفایل تسویه‌ی فاکتور مرجع (فقط‌خواندنی) */
+  settlementProfile?: InvoiceSettlementProfile
+}
+
+/** ترکیب پرداختی فاکتور مرجع، از دید «پول واقعی» (F1). همه ریال، همه از سرور. */
+export interface InvoiceSettlementProfile {
+  /** کد قاعده‌ی غالب برای هدایت */
+  kind: 'CREDIT_ONLY' | 'PAID_CASHLIKE' | 'MIXED' | 'STORE_CREDIT_FUNDED' | 'EXCHANGE_DOC'
+  /** پول نقد/کارت/کارت‌به‌کارتِ واقعی فاکتور (همان cashLikeReceivedOf) */
+  cashLikeReceived: number
+  /** سقف فعلی خروج پول برای برگشت ساده (همان cashLikeRefundableOf بعد از بازپرداخت‌های قبلی) */
+  cashLikeRefundableNow: number
+  /** بدهی باقی‌مانده‌ی فعلی فاکتور (settlement.ts) */
+  remainingDebt: number
+  /** مصرف‌های کد اعتبار روی این فاکتور (برگشت‌نخورده) */
+  creditRedemptions: Array<{
+    creditId: number
+    code: string // ماسک‌شده برای نمایش: ****-1234
+    amount: number
+    creditStatus: string // ACTIVE | USED | EXPIRED | CANCELED
+  }>
+  /** آیا این فاکتور سند تعویض است؟ (زنجیره‌ی sourceInvoiceId) */
+  isExchangeDoc: boolean
+  sourceReceiptNo: number | null
 }
 
 // ---------------------------------------------------------------------------
@@ -1769,6 +1801,8 @@ export interface ExchangeSaleInput {
   managerPassword?: string | null
   /** جلسه ۱۵ (بند ۱۷) — دلیل اجباری وقتی سند در دوره‌ی بسته‌شده ثبت می‌شود */
   overrideReason?: string | null
+  /** نشست ۳۱۹ — تأیید و رمز مدیر برای بازپرداخت با کارت‌خوان (کارت) */
+  cardPosOverride?: CardPosOverrideInput | null
 }
 
 /** «بارکد اعتبار خرید بعدی» آماده‌ی نمایش/چاپ. */
@@ -3194,6 +3228,73 @@ export interface BridgeDiagView {
   guide: BridgeDiagFlag[]
   rows: BridgeDiagRow[]
   notes: BridgeDiagNote[]
+  /** نشست ۳۱۹ — مظنونین اصلی پل تطبیق (حداکثر ۳ مظنون) */
+  suspects?: BridgeSuspect[]
+}
+
+export type SuspectReason =
+  | 'ROW_EQUALS_UNEXPLAINED' // ردیف = |باقیمانده|
+  | 'SOURCE_EQUALS_UNEXPLAINED' // یک سند تکی = |باقیمانده| (قوی‌تر از ردیف)
+  | 'SOURCE_OUT_OF_PERIOD' // flagSourceDate
+  | 'CASH_OUT_ON_CREDIT' // سند خروج پول روی فاکتور با cashLike=0 (از documentDetail)
+  | 'LARGEST_ROW'
+
+export interface BridgeSuspect {
+  rank: number // ۱ = قوی‌ترین
+  rowKey: string
+  rowLabel: string
+  reasons: SuspectReason[]
+  /** اسناد مظنون همین ردیف (اگر سند مشخص است)، با ارجاع برای documentDetail */
+  documents: Array<{
+    kind: SaleBridgeSource['kind']
+    id: number
+    amount: number
+    dateJalali: string | null
+    receiptNo: number | null
+  }>
+  certainty: 'TENTATIVE'
+}
+
+/** شناسنامه‌ی کامل سند — فقط خواندنی */
+export interface BridgeDocDetail {
+  ref: { kind: SaleBridgeSource['kind']; id: number }
+  docType: 'SIMPLE_RETURN' | 'EXCHANGE' | 'CREDIT_PAYMENT' | 'STORE_CREDIT' | 'OVERPAY' | 'CASH_MOVEMENT' | 'INVOICE'
+  docNo: string
+  parent: {
+    invoiceId: number
+    receiptNo: number
+    dateJalali: string
+    settlementKind: InvoiceSettlementProfile['kind']
+  } | null
+  at: { dateJalali: string; time: string }
+  actor: { userId: number | null; name: string }
+  shift: { id: number | null; name: string | null }
+  customer: { id: number | null; name: string }
+  items: Array<{ name: string; code: string; qty: number; unitPrice: number; lineTotal: number }>
+  settlement: {
+    method: 'CASH' | 'CARD' | 'CARD_TO_CARD' | 'STORE_CREDIT' | 'NONE' | 'DEBT_CUT' | 'MIXED'
+    methodLabel: string
+    amount: number
+    reference: string | null
+    cardTransferStatus?: 'PENDING' | 'PAID' | 'CANCELED' | null
+    storeCreditCodeMasked?: string | null
+  }
+  voided: boolean
+}
+
+export interface BridgeRootCause {
+  narrative: string // «چه ثبت شده»
+  accountingRoot: string // «چرا پل را باز کرد»
+  lesson: string // «دفعه‌ی بعد کدام گزینه»
+  lessonMethod?: string
+  ruleId: string // برای تست و آمار آموزشی
+}
+
+export interface BridgeDocDetailResponse {
+  ok: boolean
+  message?: string
+  detail?: BridgeDocDetail
+  rootCause?: BridgeRootCause
 }
 
 /** منابع یک ردیف پل در نمای تشخیص + نشان تاریخِ بیرون‌بازه. */

@@ -121,6 +121,7 @@ import type {
   ReturnLookup,
   ReturnLookupItem,
   ReturnItemStock,
+  InvoiceSettlementProfile,
   InvoicePaymentRow,
   InvoicePaymentsView,
   AddInvoicePaymentInput,
@@ -5387,6 +5388,76 @@ export const salesService = {
     const expiresAt = invoice.returnCodeExpiresAt ?? returnCodeExpiry(issuedAt, 7)
     const daysLeft = Math.max(0, Math.ceil((expiresAt.getTime() - now.getTime()) / DAY_MS))
 
+    // نشست ۳۱۹ — پروفایل تسویه‌ی فاکتور مرجع (فقط‌خواندنی)
+    const paidNow = toNumberRial(invoice.paidTotal)
+    const grandNow = toNumberRial(invoice.grandTotal)
+    const cashLike = await cashLikeReceivedOf(prisma, invoice.id, paidNow)
+    const prevAdj = adjustmentsOrEmpty(await debtAdjustmentsByInvoice(prisma, [invoice.id]), invoice.id)
+    const previouslyRefunded = Math.max(0, Math.round(prevAdj.refundFromReceived ?? 0))
+    const cashLikeRefundableNow = await cashLikeRefundableOf(prisma, invoice, previouslyRefunded)
+    const remResult = await invoiceRemaining(prisma, invoice.id, grandNow, paidNow)
+    const remainingDebt = remResult.remaining
+
+    const rawRedemptions = await prisma.storeCreditRedemption.findMany({
+      where: { invoiceId: invoice.id, reversedAt: null },
+      select: { creditId: true, code: true, amount: true }
+    })
+    let credits: Array<{ id: number; status: string }> = []
+    if (rawRedemptions.length > 0) {
+      credits = await prisma.storeCredit.findMany({
+        where: { id: { in: rawRedemptions.map((r) => r.creditId) } },
+        select: { id: true, status: true }
+      })
+    }
+    const creditStatusMap = new Map(credits.map((c) => [c.id, String(c.status)]))
+
+    const maskCredit = (c: string) => {
+      const s = String(c ?? '').trim()
+      if (!s) return '—'
+      if (s.length <= 4) return '****'
+      return '****-' + s.slice(-4)
+    }
+
+    const creditRedemptions = rawRedemptions.map((r) => ({
+      creditId: r.creditId,
+      code: maskCredit(r.code),
+      amount: toNumberRial(r.amount),
+      creditStatus: creditStatusMap.get(r.creditId) ?? 'USED'
+    }))
+
+    const isExchangeDoc = invoice.sourceInvoiceId != null || invoice.orderType === OrderType.EXCHANGE
+    let sourceReceiptNo: number | null = null
+    if (invoice.sourceInvoiceId != null) {
+      const parent = await prisma.saleInvoice.findUnique({
+        where: { id: invoice.sourceInvoiceId },
+        select: { receiptNo: true }
+      })
+      sourceReceiptNo = parent?.receiptNo ?? null
+    }
+
+    let profileKind: InvoiceSettlementProfile['kind'] = 'PAID_CASHLIKE'
+    if (isExchangeDoc) {
+      profileKind = 'EXCHANGE_DOC'
+    } else if (creditRedemptions.length > 0) {
+      profileKind = 'STORE_CREDIT_FUNDED'
+    } else if (cashLike === 0) {
+      profileKind = 'CREDIT_ONLY'
+    } else if (remainingDebt > 0 && cashLike > 0) {
+      profileKind = 'MIXED'
+    } else {
+      profileKind = 'PAID_CASHLIKE'
+    }
+
+    const settlementProfile: InvoiceSettlementProfile = {
+      kind: profileKind,
+      cashLikeReceived: cashLike,
+      cashLikeRefundableNow,
+      remainingDebt,
+      creditRedemptions,
+      isExchangeDoc,
+      sourceReceiptNo
+    }
+
     return {
       invoiceId: invoice.id,
       receiptNo: invoice.receiptNo,
@@ -5416,7 +5487,8 @@ export const salesService = {
       deductInventory: invoice.deductInventory,
       returnedTotal: returnedTotalOf(invoice),
       items,
-      warnings: [...new Set(warnings)]
+      warnings: [...new Set(warnings)],
+      settlementProfile
     }
   },
 
@@ -5443,6 +5515,17 @@ export const salesService = {
       // نشست ۱۸۳ — رمز دوم/سوم پنل «برگشت از فروش» هم پذیرفته می‌شود
     // نشست ۱۸۴ — پول واقعی از کشو خارج می‌شود؛ «همیشه رمز» حتی با قفل خاموش.
     await assertPanelPasswordStrict(PANEL_KEYS.salesReturn, input.managerPassword, 'بازپرداخت مبلغ کاملِ بدون کسر تخفیف')
+    }
+    // نشست ۳۱۹ — گیت قفل کارت‌خوان: بازپرداخت با کارت‌خوان نیاز به تأیید مدیر دارد
+    if (input.refundMethod === RefundMethod.CARD) {
+      const o = input.cardPosOverride
+      if (!o || !o.acknowledgedNoReverse || !String(o.reason ?? '').trim()) {
+        throw new BusinessError(
+          'بازپرداخت با کارت‌خوان قفل است: دستگاه‌های پوز بانکی امکان واریز برگشت وجه به کارت را ندارند.\n' +
+            'از «کارت‌به‌کارت (تعهد مدیر)» استفاده کنید یا مدیر با ثبت رمز و دلیل آن را تأیید کند.'
+        )
+      }
+      await assertManagerPassword(o.managerPassword, 'بازپرداخت کارتی (کارت‌خوان) برگشت')
     }
     // نشست ۶۳ (S63-2) — رمز مدیر دوره‌ی بسته قبل از تراکنش
     const periodApproved = await periodLockService.preverify({
@@ -5607,6 +5690,18 @@ export const salesService = {
       throw new BusinessError(
         'روش بازپرداخت مابه‌التفاوت نامعتبر است (نقد / کارت / اعتبار خرید / کارت‌به‌کارت توسط مدیر).'
       )
+
+    // نشست ۳۱۹ — گیت قفل کارت‌خوان برای تعویض
+    if (refundMode === 'CARD') {
+      const o = input.cardPosOverride
+      if (!o || !o.acknowledgedNoReverse || !String(o.reason ?? '').trim()) {
+        throw new BusinessError(
+          'بازپرداخت با کارت‌خوان قفل است: دستگاه‌های پوز بانکی امکان واریز برگشت وجه به کارت را ندارند.\n' +
+            'از «کارت‌به‌کارت (تعهد مدیر)» استفاده کنید یا مدیر با ثبت رمز و دلیل آن را تأیید کند.'
+        )
+      }
+      await assertManagerPassword(o.managerPassword, 'بازپرداخت کارتی (کارت‌خوان) تعویض')
+    }
 
     /**
      * ---------------- بند ۱۸ — قیمت دستیِ کالای جایگزین ----------------

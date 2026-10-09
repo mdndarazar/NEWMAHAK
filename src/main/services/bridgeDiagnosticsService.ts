@@ -33,8 +33,13 @@ import type {
   BridgeDiagRowSources,
   BridgeDiagSourcesResponse,
   BridgeDiagNotesResponse,
-  BridgeDiagNoteAddResponse
+  BridgeDiagNoteAddResponse,
+  BridgeSuspect,
+  BridgeDocDetail,
+  BridgeDocDetailResponse
 } from '@shared/types'
+import { pickSuspects } from '@shared/bridgeSuspects'
+import { explainRootCause } from '@shared/bridgeRootCause'
 import { PANEL_KEYS } from '@shared/panels'
 import {
   assertPanelUnlocked,
@@ -179,6 +184,28 @@ export const bridgeDiagnosticsService = {
     const { rows, bridge, guide, period } = await loadBridge(scope)
     const pkey = periodKey(period)
     const notes = await loadNotes(pkey)
+
+    // نشست ۳۱۹ — شناسایی مظنونین اصلی پل تطبیق (حداکثر ۳ مظنون)
+    let suspects: BridgeSuspect[] = []
+    if (!bridge.balanced && Math.abs(bridge.unexplained) > 0) {
+      const preloadedSources: Record<string, any[]> = {}
+      for (const r of rows) {
+        if (r.flags.some((f) => f.code === 'equals-unexplained' || f.code === 'date' || f.code === 'largest')) {
+          if (Array.isArray(r.sources) && r.sources.length > 0) {
+            preloadedSources[r.key] = r.sources.map((s: any) => {
+              const flags: BridgeDiagFlag[] = []
+              if (!r.key.startsWith('prior') && period?.fromJalali) {
+                const f = flagSourceDate(s, { fromJalali: period.fromJalali, toJalali: period.toJalali ?? '?' })
+                if (f) flags.push(f)
+              }
+              return { ...s, flags }
+            })
+          }
+        }
+      }
+      suspects = pickSuspects(rows, bridge, preloadedSources)
+    }
+
     const view: BridgeDiagView = {
       period: {
         fromJalali: period?.fromJalali ?? null,
@@ -189,7 +216,8 @@ export const bridgeDiagnosticsService = {
       bridge,
       guide,
       rows,
-      notes
+      notes,
+      suspects
     }
     return { ok: true, view }
   },
@@ -278,6 +306,173 @@ export const bridgeDiagnosticsService = {
         text: raw
       }
     }
+  },
+
+  /**
+   * نشست ۳۱۹ — شناسنامه جامع و باجزئیات سند مظنون (فقط‌خواندنی، ضد IDOR).
+   */
+  async documentDetail(
+    rawScope: Record<string, unknown> | null | undefined,
+    ref: { kind: string; id: number } | null | undefined,
+    rowKey?: string
+  ): Promise<BridgeDocDetailResponse> {
+    const scope = cleanScope(rawScope)
+    await assertPanelUnlocked(PANEL, 'دیدن شناسنامه‌ی سند مظنون')
+
+    if (!ref?.id) throw new BusinessError('سندی مشخص نشده است.')
+    const id = Number(ref.id)
+    const kind = String(ref.kind ?? 'RETURN').toUpperCase()
+
+    let docDetail: BridgeDocDetail | null = null
+
+    if (kind === 'RETURN' || kind === 'EXCHANGE') {
+      const ret = await prisma.saleReturn.findFirst({
+        where: { id },
+        include: {
+          items: true,
+          invoice: {
+            include: {
+              customer: true,
+              user: true,
+              shift: true
+            }
+          }
+        }
+      })
+      if (!ret) throw new BusinessError('سند مورد نظر یافت نشد.')
+
+      const actorUser = ret.userId ? await prisma.user.findUnique({ where: { id: ret.userId } }) : null
+      const shiftRecord = ret.shiftId ? await prisma.shift.findUnique({ where: { id: ret.shiftId } }) : null
+
+      const variantIds = ret.items.map((i) => i.variantId)
+      const variants = variantIds.length
+        ? await prisma.productVariant.findMany({
+            where: { id: { in: variantIds } },
+            include: { product: true }
+          })
+        : []
+      const vMap = new Map(variants.map((v) => [v.id, v]))
+
+      const items = ret.items.map((it) => {
+        const v = vMap.get(it.variantId)
+        return {
+          name: v?.product?.name ? `${v.product.name} ${v.size || ''}`.trim() : `کالای #${it.variantId}`,
+          code: v?.code ?? '—',
+          qty: it.qty,
+          unitPrice: Math.round(Number(it.unitPrice || 0)),
+          lineTotal: Math.round(Number(it.lineTotal || 0))
+        }
+      })
+
+      let cardTransferStatus: 'PENDING' | 'PAID' | 'CANCELED' | null = null
+      const cardReq = await (prisma as any).cardTransferRequest?.findFirst({
+        where: { returnId: ret.id },
+        select: { status: true }
+      })
+      if (cardReq) cardTransferStatus = cardReq.status
+
+      const method = (ret.refundMethod || (ret.kind === 'EXCHANGE' ? ret.exchangeSettlement : 'NONE') || 'NONE').toUpperCase() as any
+      const methodLabels: Record<string, string> = {
+        CASH: 'بازپرداخت نقدی',
+        CARD: 'بازپرداخت کارتی (پوز)',
+        CARD_TO_CARD: 'کارت‌به‌کارت توسط مدیر',
+        STORE_CREDIT: 'اعتبار خرید (کیف پول)',
+        NONE: 'بدون بازپرداخت (کاهش بدهی)'
+      }
+
+      let parentSettlementKind: any = 'PAID_CASHLIKE'
+      if (ret.invoice) {
+        if (Number(ret.invoice.paidTotal || 0) === 0) parentSettlementKind = 'CREDIT_ONLY'
+      }
+
+      docDetail = {
+        ref: { kind: ret.kind === 'EXCHANGE' ? 'EXCHANGE' : 'RETURN', id: ret.id },
+        docType: ret.kind === 'EXCHANGE' ? 'EXCHANGE' : 'SIMPLE_RETURN',
+        docNo: String(ret.id),
+        parent: ret.invoice
+          ? {
+              invoiceId: ret.invoice.id,
+              receiptNo: ret.invoice.receiptNo,
+              dateJalali: ret.invoice.issuedAtJalali || '—',
+              settlementKind: parentSettlementKind
+            }
+          : null,
+        at: {
+          dateJalali: ret.returnedAtJalali || '—',
+          time: ret.returnedAtTime || '—'
+        },
+        actor: {
+          userId: ret.userId ?? null,
+          name: actorUser?.displayName ?? (ret.userId ? `کاربر #${ret.userId}` : 'نامشخص')
+        },
+        shift: {
+          id: ret.shiftId ?? null,
+          name: shiftRecord?.name ?? null
+        },
+        customer: {
+          id: ret.invoice?.customer?.id ?? null,
+          name: ret.invoice?.customer?.name ?? 'مشتری عمومی'
+        },
+        items,
+        settlement: {
+          method,
+          methodLabel: methodLabels[method] || method,
+          amount: Math.round(Number(ret.refundAmount || ret.total || 0)),
+          reference: ret.refundReference ?? null,
+          cardTransferStatus,
+          storeCreditCodeMasked: ret.storeCreditCode ? `****-${ret.storeCreditCode.slice(-4)}` : null
+        },
+        voided: ret.voidedAt != null
+      }
+    } else {
+      const inv = await prisma.saleInvoice.findFirst({
+        where: { id },
+        include: { items: true, customer: true, user: true, shift: true }
+      })
+      if (!inv) throw new BusinessError('فاکتور مورد نظر یافت نشد.')
+
+      docDetail = {
+        ref: { kind: 'INVOICE', id: inv.id },
+        docType: 'INVOICE',
+        docNo: String(inv.receiptNo),
+        parent: null,
+        at: {
+          dateJalali: inv.issuedAtJalali || '—',
+          time: '—'
+        },
+        actor: {
+          userId: inv.userId ?? null,
+          name: inv.user?.displayName ?? 'نامشخص'
+        },
+        shift: {
+          id: inv.shiftId ?? null,
+          name: inv.shift?.name ?? null
+        },
+        customer: {
+          id: inv.customer?.id ?? null,
+          name: inv.customer?.name ?? 'مشتری عمومی'
+        },
+        items: [],
+        settlement: {
+          method: 'NONE',
+          methodLabel: 'فروش',
+          amount: Math.round(Number(inv.grandTotal || 0)),
+          reference: null
+        },
+        voided: inv.voidedAt != null
+      }
+    }
+
+    const res: any = await salesService.reportRows({ ...(scope as any), withDrillDown: false })
+    const period = res?.accounting?.period ?? { fromJalali: '?', toJalali: '?' }
+
+    const rootCause = explainRootCause(docDetail, {
+      rowKey: rowKey || 'cashRefunds',
+      reasons: ['ROW_EQUALS_UNEXPLAINED'],
+      period: { fromJalali: period.fromJalali ?? '?', toJalali: period.toJalali ?? '?' }
+    })
+
+    return { ok: true, detail: docDetail, rootCause }
   },
 
   /** کمک‌رسان تست: TTL فعلی نشست — برای چک «منقضی شد» در تست. */

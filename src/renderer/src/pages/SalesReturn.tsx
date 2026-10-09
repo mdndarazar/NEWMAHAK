@@ -24,7 +24,11 @@ import VariantSearchBox, { type VariantSearchBoxHandle } from '../components/Var
 import { useCharges } from '../hooks/useCharges'
 import { faDigits, money, jalaliToday, isValidJalaliDate } from '@shared/jalali'
 import { returnValueOf, isReturnableStatus } from '@shared/returnValue'
-import type { ExchangeSaleResult, ReturnLookup, ReturnLookupItem } from '@shared/types'
+import type { ExchangeSaleResult, ReturnLookup, ReturnLookupItem, CardPosOverrideInput } from '@shared/types'
+import InvoiceFinanceBadge from '../components/returns/InvoiceFinanceBadge'
+import SmartSettlementPanel from '../components/returns/SmartSettlementPanel'
+import CardPosOverrideDialog from '../components/returns/CardPosOverrideDialog'
+import { useReturnGuidance } from '../hooks/useReturnGuidance'
 
 /**
  * ===================== برگشت از فروش و تعویض کالا =====================
@@ -220,6 +224,10 @@ export default function SalesReturn() {
   const [lockNeeded, setLockNeeded] = useState(false)
   const [lockPw, setLockPw] = useState('')
   const [lockReason, setLockReason] = useState('')
+  /** نشست ۳۱۹ — تأیید مدیر برای بازپرداخت کارتی (کارت‌خوان) */
+  const [cardPosDialog, setCardPosDialog] = useState(false)
+  const [cardPosOverride, setCardPosOverride] = useState<CardPosOverrideInput | null>(null)
+  const guidance = useReturnGuidance(lookup, qty)
   // ---- بخش ۶: تعویض کالا ----
   /** حالت تعویض روشن است؟ (خاموش = همان برگشت ساده‌ی همیشگی، دست‌نخورده) */
   const [exchangeMode, setExchangeMode] = useState(false)
@@ -513,6 +521,7 @@ export default function SalesReturn() {
           managerFullRefund: managerFullRefund || undefined,
           refundReference: refundReference.trim() || undefined,
           refundNote: refundNote.trim() || undefined,
+          cardPosOverride: refundMethod === 'CARD' ? cardPosOverride : undefined,
           // ---- بند ۱۷: فقط وقتی دوره بسته است و کاربر رمز/دلیل داده ----
           ...req,
           managerPassword: req.managerPassword || (managerFullRefund ? fullRefundPw : lockPw).trim() || undefined,
@@ -637,6 +646,7 @@ export default function SalesReturn() {
             autoCentralWithdraw: repAutoCentral || undefined,
             // ---- بند ۱۲: تسویه‌ی مابه‌التفاوت منفی (انتخاب انحصاری کاربر) ----
             refundMode: exTotals.diff < 0 ? exRefundMode : undefined,
+            cardPosOverride: exRefundMode === 'CARD' ? cardPosOverride : undefined,
             // ---- بند ۱۸: رمز مدیر، فقط وقتی قیمت دستی باز شده باشد ----
             managerPassword: (priceOverrideOn ? managerPw.trim() : lockPw.trim()) || undefined,
             overrideReason: lockReason.trim() || undefined
@@ -1026,31 +1036,37 @@ export default function SalesReturn() {
       {lookup && (
         <>
           {/* ---------------- اطلاعات فاکتور ---------------- */}
-          <div className="bg-white rounded shadow p-3 grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-2">
-            <Info label="شماره فیش" value={faDigits(lookup.receiptNo)} strong />
-            <Info label="کد فاکتور" value={lookup.returnCode} ltr strong />
-            <Info label="تاریخ / ساعت" value={`${faDigits(lookup.issuedAtJalali)} · ${faDigits(lookup.issuedTime)}`} />
-            <Info label="خریدار" value={lookup.customerName} />
-            <Info label="شیفت" value={lookup.shiftName ?? '—'} />
-            <Info label="وضعیت" value={lookup.statusLabel} />
-            <Info
-              label="اعتبار کد"
-              value={
-                lookup.expired
-                  ? 'منقضی شده'
-                  : `${faDigits(lookup.daysLeft)} روز مانده (تا ${faDigits(lookup.expiresAtJalali)})`
-              }
-            />
-            <Info label="جمع مبلغ کالا" value={money(lookup.goodsTotal)} />
-            <Info label="تخفیف" value={money(lookup.discountTotal)} />
-            <Info label="حق سرویس" value={money(lookup.serviceCharge)} />
-            <Info label="عوارض و مالیات" value={money(lookup.taxTotal)} />
-            <Info label="جمع کل" value={money(lookup.grandTotal)} strong />
-            <Info label="نحوه پرداخت" value={lookup.paymentLabels || '—'} />
-            <Info
-              label="برگشت‌های قبلی"
-              value={lookup.returnedTotal ? money(lookup.returnedTotal) + ' ریال' : 'ندارد'}
-            />
+          <div className="bg-white rounded shadow p-3 space-y-2">
+            <div className="flex items-center justify-between flex-wrap gap-2 pb-1 border-b">
+              <span className="font-bold text-sm">مشخصات فاکتور #{faDigits(lookup.receiptNo)}</span>
+              <InvoiceFinanceBadge profile={lookup.settlementProfile} />
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-2">
+              <Info label="شماره فیش" value={faDigits(lookup.receiptNo)} strong />
+              <Info label="کد فاکتور" value={lookup.returnCode} ltr strong />
+              <Info label="تاریخ / ساعت" value={`${faDigits(lookup.issuedAtJalali)} · ${faDigits(lookup.issuedTime)}`} />
+              <Info label="خریدار" value={lookup.customerName} />
+              <Info label="شیفت" value={lookup.shiftName ?? '—'} />
+              <Info label="وضعیت" value={lookup.statusLabel} />
+              <Info
+                label="اعتبار کد"
+                value={
+                  lookup.expired
+                    ? 'منقضی شده'
+                    : `${faDigits(lookup.daysLeft)} روز مانده (تا ${faDigits(lookup.expiresAtJalali)})`
+                }
+              />
+              <Info label="جمع مبلغ کالا" value={money(lookup.goodsTotal)} />
+              <Info label="تخفیف" value={money(lookup.discountTotal)} />
+              <Info label="حق سرویس" value={money(lookup.serviceCharge)} />
+              <Info label="عوارض و مالیات" value={money(lookup.taxTotal)} />
+              <Info label="جمع کل" value={money(lookup.grandTotal)} strong />
+              <Info label="نحوه پرداخت" value={lookup.paymentLabels || '—'} />
+              <Info
+                label="برگشت‌های قبلی"
+                value={lookup.returnedTotal ? money(lookup.returnedTotal) + ' ریال' : 'ندارد'}
+              />
+            </div>
           </div>
 
           {!lookup.deductInventory && (
@@ -1490,28 +1506,15 @@ export default function SalesReturn() {
                   مبلغ بیشتر نمی‌شود.
                 </span>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2">
-                {REFUND_CHOICES.map((c) => (
-                  <label
-                    key={c.value}
-                    className={`flex items-start gap-2 p-2 rounded border-2 cursor-pointer ${
-                      refundMethod === c.value ? 'bg-emerald-50 border-emerald-500' : 'border-slate-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      className="w-4 h-4 mt-1"
-                      name="refundMethod"
-                      checked={refundMethod === c.value}
-                      onChange={() => setRefundMethod(c.value)}
-                    />
-                    <span>
-                      <b>{c.title}</b>
-                      <div className="kbd leading-5">{c.hint}</div>
-                    </span>
-                  </label>
-                ))}
-              </div>
+              <SmartSettlementPanel
+                guidance={guidance}
+                selectedMethod={refundMethod}
+                onSelectMethod={(m) => {
+                  setRefundMethod(m)
+                  if (m !== 'CARD') setCardPosOverride(null)
+                }}
+                onCardPosLocked={() => setCardPosDialog(true)}
+              />
               {refundMethod && refundMethod !== 'NONE' && (
                 <div className="flex flex-wrap gap-2 items-end">
                   <label>
@@ -1870,6 +1873,17 @@ export default function SalesReturn() {
         busy={busy}
         onConfirm={() => void doExchange(true)}
         onCancel={() => setConfirmExchange(null)}
+      />
+
+      {/* نشست ۳۱۹ — تأیید مدیر برای بازپرداخت کارتی (کارت‌خوان) */}
+      <CardPosOverrideDialog
+        open={cardPosDialog}
+        onClose={() => setCardPosDialog(false)}
+        onConfirm={(override) => {
+          setCardPosOverride(override)
+          setRefundMethod('CARD')
+          setCardPosDialog(false)
+        }}
       />
     </div>
   )
