@@ -396,10 +396,8 @@ export const printService = {
     const row = await salesService.exchangeGet({ id: returnId })
     const sale = await settingsService.saleDefaults()
 
-    // انقضای بارکد اعتبار در ExchangeReportRow نیست؛ از خود رکورد خوانده می‌شود.
-    const credit = row.storeCreditCode
-      ? await prisma.storeCredit.findFirst({ where: { returnId }, orderBy: { id: 'desc' } })
-      : null
+    // گزارش ExchangeReportRow عمداً کد ندارد؛ چاپ از رکورد اصلی در main می‌خواند.
+    const credit = await prisma.storeCredit.findFirst({ where: { returnId }, orderBy: { id: 'desc' } })
 
     let storeCreditBarcodeDataUrl: string | null = null
     if (credit?.code && tpl.showReturnBarcode) {
@@ -445,7 +443,7 @@ export const printService = {
       diff: row.diff,
       settlementLabel: row.settlementLabel,
       cashReceived: row.cashReceived,
-      storeCreditCode: row.storeCreditCode,
+      storeCreditCode: credit?.code ?? null,
       storeCreditAmount: row.storeCreditAmount,
       storeCreditStatusLabel: row.storeCreditStatusLabel,
       storeCreditExpiresJalali: credit?.expiresAtJalali ?? null,

@@ -394,7 +394,7 @@ export default function ShiftDetailModal({
                     <th>مابه‌التفاوت</th>
                     <th>نحوه‌ی تسویه</th>
                     <th>نقد دریافتی</th>
-                    <th>بارکد اعتبار</th>
+                    <th>شناسهٔ امن اعتبار</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -417,7 +417,7 @@ export default function ShiftDetailModal({
                       <td>{r.settlementLabel}</td>
                       <td>{money(r.cashReceived)}</td>
                       <td dir="ltr">
-                        {r.storeCreditCode ? `${r.storeCreditCode} · ${money(r.storeCreditAmount)}` : '—'}
+                        {r.storeCreditReference ? `${r.storeCreditReference} · ${money(r.storeCreditAmount)}` : '—'}
                       </td>
                     </tr>
                   ))}

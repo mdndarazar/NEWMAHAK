@@ -70,7 +70,7 @@ eq('بازپرداخت نقد مبلغ اعتبار صفر', returnCreditAmountO
 console.log('\n۱) قرارداد UI — دیده می‌شود، به فروش کل اضافه نمی‌شود')
 truthy('کنترل صندوق از physicalMoneyInDrawerAndCard است', /physicalMoneyInDrawerAndCard\(/.test(reports))
 truthy('فرمول قدیمی (received − returnedTotal) حذف شده', !/receivedTotal \+ t\.priorSettlementTotal - t\.returnedTotal/.test(reports))
-truthy('تب برگشت ستون بارکد اعتبار دارد', /'بارکد اعتبار'/.test(reports) && /'مبلغ اعتبار'/.test(reports))
+truthy('تب برگشت شناسهٔ امن اعتبار دارد', /'شناسهٔ امن اعتبار'/.test(reports) && /'مبلغ اعتبار'/.test(reports))
 truthy('چاپ و Excel برگشت از RETURN_HEADERS است', /title: `گزارش برگشت از فروش — \$\{meta\}`,[\s\S]{0,260}headers: RETURN_HEADERS/.test(reports))
 truthy('هشدار دزدی نقد+اعتبار روی خط کنترل هست', /اگر فروشنده نقد هم داده، کشو باید به همین اندازه کسری نشان بدهد/.test(reports))
 truthy('زیر خالص می‌گوید صندوق جدا از فروش کالاست', /خالص فروش کالا است، موجودی صندوق نیست/.test(reports))
@@ -131,7 +131,8 @@ if (rCredit?.totals) {
 const listCredit = await safe('فهرست برگشت بعد از اعتبار', () => salesService.returnList({ fromJalali: today, toJalali: today }))
 const listRows = Array.isArray(listCredit) ? listCredit : (listCredit?.rows ?? [])
 const creditRow = listRows[0]
-truthy('فهرست برگشت بارکد اعتبار دارد', !!creditRow?.storeCreditCode)
+truthy('فهرست برگشت شناسهٔ امن اعتبار دارد', !!creditRow?.storeCreditReference)
+truthy('فهرست برگشت کد قابل‌مصرف ندارد', !Object.hasOwn(creditRow ?? {}, 'storeCreditCode'))
 eq('مبلغ اعتبار ردیف برگشت ۱M', returnCreditAmountOf(creditRow ?? {}), 1_000_000)
 eq('خروج نقد ردیف برگشت صفر', creditRow?.cashRefundAmount ?? 0, 0)
 
@@ -154,7 +155,9 @@ if (rBoth?.totals) {
 }
 
 console.log('\n۴) ماه بعد: خرج بارکد — کشو عوض نمی‌شود، کسری نیست')
-const code = creditRow?.storeCreditCode
+// دریافت مستقیم رکورد اصلی فقط برای آماده‌سازیِ مصرف بعدی این آزمون است؛
+// در قرارداد گزارش، کد قابل‌مصرف عمداً وجود ندارد.
+const code = creditRet ? seed.one('SELECT storeCreditCode FROM "SaleReturn" WHERE id = ?', creditRet.id)?.storeCreditCode : null
 const redeemSale = code
   ? await safe('فروش ۱M فقط با بارکد اعتبار', () => salesService.create({
       userId, shiftId,
@@ -171,11 +174,12 @@ if (rRedeem?.totals) {
   eq('پول فیزیکی کشو بعد از خرج بارکد همان ۱M است (کسری نیست)', physicalOf(t), 1_000_000)
   eq('مصرف اعتبار داخل دریافتی نقد نیست', t.receivedTotal, 2_000_000)
   const stories = rRedeem.accounting?.storeCredits?.usedStories ?? []
-  const story = stories.find((s) => s.code === code) ?? stories[0]
-  truthy('جملهٔ کنترل برای بارکد مصرف‌شده هست', !!story?.text)
-  truthy('جمله تاریخ صدور را دارد', !!story?.issuedAtJalali && story.issuedAtJalali !== '—' && /در تاریخ/.test(String(story?.text ?? '')))
-  truthy('جمله می‌گوید بابت برگشت از فروش بوده', /برگشت از فروش/.test(String(story?.text ?? '')))
-  truthy('جمله می‌گوید خرج شد', /خرج شد/.test(String(story?.text ?? '')))
+  const story = stories[0]
+  truthy('جملهٔ کنترل امن برای اعتبار مصرف‌شده هست', !!story?.safeText)
+  truthy('جمله تاریخ صدور را دارد', !!story?.issuedAtJalali && story.issuedAtJalali !== '—' && /در تاریخ/.test(String(story?.safeText ?? '')))
+  truthy('جمله می‌گوید بابت برگشت از فروش بوده', /برگشت از فروش/.test(String(story?.safeText ?? '')))
+  truthy('جمله می‌گوید مصرف شد', /مصرف شد/.test(String(story?.safeText ?? '')))
+  truthy('داستان کنترل کد قابل‌مصرف ندارد', !Object.hasOwn(story ?? {}, 'code') && !Object.hasOwn(story ?? {}, 'text'))
   eq('علت صدور RETURN است نه تعویض', story?.reason, 'RETURN')
 }
 

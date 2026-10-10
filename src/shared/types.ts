@@ -2262,8 +2262,8 @@ export interface ExchangeReportRow {
   settlementLabel: string
   /** مابه‌التفاوتی که نقد/کارت دریافت شد */
   cashReceived: number
-  /** بارکد اعتبار صادرشده روی همین تعویض */
-  storeCreditCode: string | null
+  /** شناسهٔ امن اعتبارِ صادرشده روی همین تعویض؛ کد قابل‌مصرف در گزارش نیست. */
+  storeCreditReference: string | null
   storeCreditAmount: number
   storeCreditStatus: string | null
   storeCreditStatusLabel: string | null
@@ -2326,8 +2326,8 @@ export interface ReturnListRow {
   invoiceUserName: string
   /** کاربری که برگشت را ثبت کرد (چه کسی برگرداند) */
   returnUserName: string
-  /** بارکد اعتبار صادرشده برای این برگشت (اگر صادر شد) */
-  storeCreditCode: string | null
+  /** شناسهٔ امن اعتبارِ صادرشده برای این برگشت (اگر صادر شد)؛ کد قابل‌مصرف نیست. */
+  storeCreditReference: string | null
   /** مابه‌التفاوت تعویض و نحوه‌ی تسویه‌اش */
   exchangeDiff: number
   exchangeSettlement: string | null

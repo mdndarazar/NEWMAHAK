@@ -271,7 +271,7 @@ const RETURN_HEADERS = [
   // ---- بند ۱۰ و ۱۱ (جلسه ۱۶): ستون‌هایی که تفکیک کسری واقعی را ممکن می‌کنند ----
   'نحوه‌ی تسویه',
   'پول واقعاً خارج‌شده از کشو',
-  'بارکد اعتبار',
+  'شناسهٔ امن اعتبار',
   'مبلغ اعتبار',
   'برگشت به انبار',
   /**
@@ -329,7 +329,7 @@ const EXCHANGE_HEADERS = [
   'مابه‌التفاوت',
   'نحوه‌ی تسویه',
   'دریافت نقد/کارت',
-  'بارکد اعتبار',
+  'شناسهٔ امن اعتبار',
   'مبلغ اعتبار',
   'وضعیت اعتبار'
 ]
@@ -1454,7 +1454,7 @@ export default function SalesReports() {
             money(r.total),
             r.refundMethodLabel ?? '—',
             money(r.cashRefundAmount ?? 0),
-            r.storeCreditCode ?? '—',
+            r.storeCreditReference ?? '—',
             money(returnCreditAmountOf(r)),
             faDigits(r.restockedQty),
             faDigits(r.pendingRestockQty ?? 0),
@@ -1740,7 +1740,7 @@ export default function SalesReports() {
             r.total,
             r.refundMethodLabel ?? '',
             r.cashRefundAmount ?? 0,
-            r.storeCreditCode ?? '',
+            r.storeCreditReference ?? '',
             returnCreditAmountOf(r),
             r.restockedQty,
             r.pendingRestockQty ?? 0,
@@ -2252,7 +2252,7 @@ export default function SalesReports() {
             </thead>
             <tbody>
               {returns.map((r) => (
-                <tr key={r.id} className={r.storeCreditCode || r.hasRemovedItems ? 'bg-amber-50' : ''}>
+                <tr key={r.id} className={r.storeCreditReference || r.hasRemovedItems ? 'bg-amber-50' : ''}>
                   <td className="font-bold">{faDigits(r.receiptNo ?? '—')}</td>
                   <td dir="ltr">{r.returnCode ?? '—'}</td>
                   <td>{faDigits(r.invoiceDateJalali)}</td>
@@ -2268,8 +2268,8 @@ export default function SalesReports() {
                     {r.isExchange && <div className="kbd text-sky-800 font-bold">سند تعویض</div>}
                   </td>
                   <td className={r.cashRefundAmount ? 'text-rose-700 font-bold' : ''}>{money(r.cashRefundAmount ?? 0)}</td>
-                  <td dir="ltr" className={r.storeCreditCode ? 'font-bold text-amber-900' : ''}>
-                    {r.storeCreditCode ?? '—'}
+                  <td dir="ltr" className={r.storeCreditReference ? 'font-bold text-amber-900' : ''}>
+                    {r.storeCreditReference ?? '—'}
                   </td>
                   <td className={returnCreditAmountOf(r) ? 'font-bold text-amber-900' : ''}>
                     {money(returnCreditAmountOf(r))}
@@ -3284,7 +3284,7 @@ function exchangeRowValues(
     r.diff,
     r.settlementLabel,
     r.cashReceived,
-    r.storeCreditCode ?? '',
+    r.storeCreditReference ?? '',
     r.storeCreditAmount,
     r.storeCreditStatusLabel ?? ''
   ]
@@ -3322,7 +3322,7 @@ function ExchangeTable({
       </thead>
       <tbody>
         {data.rows.map((r) => (
-          <tr key={r.returnId} className={r.storeCreditCode ? 'bg-amber-50' : ''}>
+          <tr key={r.returnId} className={r.storeCreditReference ? 'bg-amber-50' : ''}>
             <td className="font-bold">{faDigits(r.receiptNo)}</td>
             <td className="font-bold">{r.exchangeReceiptNo ? faDigits(r.exchangeReceiptNo) : '—'}</td>
             <td>{faDigits(r.dateJalali)}</td>
@@ -3358,7 +3358,7 @@ function ExchangeTable({
             <td>{r.settlementLabel}</td>
             <td>{money(r.cashReceived)}</td>
             <td dir="ltr" className="font-bold">
-              {r.storeCreditCode ?? '—'}
+              {r.storeCreditReference ?? '—'}
             </td>
             <td>{r.storeCreditAmount ? money(r.storeCreditAmount) : '—'}</td>
             <td>{r.storeCreditStatusLabel ?? '—'}</td>

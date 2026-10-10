@@ -6721,7 +6721,8 @@ export const salesService = {
           settlement,
           settlementLabel: EXCHANGE_SETTLEMENT_LABELS[settlement] ?? settlement,
           cashReceived,
-          storeCreditCode: creditRow?.code ?? r.storeCreditCode ?? null,
+          /** کد قابل‌مصرف فقط برای چاپ/مسیر مجوزدار است؛ گزارش شناسهٔ امن دارد. */
+          storeCreditReference: creditRow || r.storeCreditId ? `اعتبار #${creditRow?.id ?? r.storeCreditId}` : null,
           storeCreditAmount: creditRow?.amount ?? 0,
           storeCreditStatus: creditRow?.status ?? null,
           storeCreditStatusLabel: creditRow?.statusLabel ?? null,
@@ -7232,7 +7233,8 @@ export const salesService = {
       legacyAssumed: !r.refundMethod,
       invoiceUserName: r.invoice?.user?.displayName ?? 'مدیر',
       returnUserName: (r.userId != null ? umap.get(r.userId) : null) ?? 'مدیر',
-      storeCreditCode: r.storeCreditCode ?? null,
+      /** کد اعتبار از DTO گزارش برگشت حذف است؛ id فقط ردیابی غیرقابل‌مصرف است. */
+      storeCreditReference: r.storeCreditId ? `اعتبار #${r.storeCreditId}` : null,
       exchangeDiff: toNumberRial(r.exchangeDiff ?? 0),
       exchangeSettlement: r.exchangeSettlement ?? null,
       exchangeSettlementLabel: r.exchangeSettlement
