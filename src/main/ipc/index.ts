@@ -59,6 +59,7 @@ import { SETTING_KEYS } from '@shared/receipt'
 import { faDigits } from '@shared/jalali'
 import { stripBigInts } from '@shared/money'
 import {
+  assertManagerSession,
   assertPanelUnlocked,
   notePanelUnlocked,
   clearPanelSessions,
@@ -700,20 +701,21 @@ export function registerIpcHandlers(): void {
   })
   handle(IPC.creditSettingsGet, () => settingsService.creditSettings())
   handle(IPC.creditSettingsSet, async (p) => settingsService.saveCreditSettings(await withOptionalSessionActor(p ?? {})))
+  /** سند/PDF/پیش‌نمایش خودِ credential را دارد؛ فقط نشست واقعی مدیر مجاز است. */
   handle(IPC.printCredit, async (p) => {
-    await assertCreditRead('چاپ اعتبار خرید')
+    assertManagerSession('چاپ اعتبار خرید')
     return printService.printCredit(await withOptionalSessionActor(p ?? {}))
   })
   handle(IPC.printCreditBatch, async (p) => {
-    await assertCreditRead('چاپ دسته اعتبار خرید')
+    assertManagerSession('چاپ دسته اعتبار خرید')
     return printService.printCreditBatch(await withOptionalSessionActor(p ?? {}))
   })
   handle(IPC.creditPdf, async (p) => {
-    await assertCreditRead('خروجی PDF اعتبار خرید')
+    assertManagerSession('خروجی PDF اعتبار خرید')
     return printService.creditPdf(await withOptionalSessionActor(p ?? {}))
   })
   handle(IPC.creditPreviewHtml, async (p) => {
-    await assertCreditRead('پیش‌نمایش چاپی اعتبار خرید')
+    assertManagerSession('پیش‌نمایش چاپی اعتبار خرید')
     return printService.creditHtml(Number(p?.id ?? 0))
   })
   // نشست ۳۱۷ — پیش‌نمایش/چاپ آزمایشی سند نمونه (کارت «چاپ سند اعتبار»)

@@ -2042,21 +2042,25 @@ export interface StoreCreditRow {
 }
 
 /**
- * ردیف امنِ تب legacy «اعتبار خرید» در گزارش فروش.
+ * ردیف امن اعتبار برای گزارش، فهرست و جزئیات عادی.
  *
- * این گزارش در اختیار کاربر عادی هم قرار می‌گیرد، پس کد قابل‌مصرف عمداً از
- * قرارداد حذف است. `publicReference` فقط شناسهٔ غیرقابل‌مصرف گزارش برای چاپ و
- * خروجی است؛ نمایش خودِ کد مسیر جداگانهٔ manager-only دارد.
+ * این DTO هرگز credential قابل‌مصرف یا legacyCode را حمل نمی‌کند. `publicReference`
+ * فقط شناسهٔ غیرقابل‌مصرف برای ردیابی/چاپ/Excel است؛ افشای کد فقط از مسیر جدا و
+ * server-authorized مدیر انجام می‌شود.
  */
-export type StoreCreditReportRow = Omit<StoreCreditRow, 'code'> & {
+export type StoreCreditSafeRow = Omit<StoreCreditRow, 'code' | 'legacyCode'> & {
   publicReference: string
 }
+
+/** نام سازگارِ قرارداد امن تب legacy «اعتبار خرید» گزارش فروش. */
+export type StoreCreditReportRow = StoreCreditSafeRow
 
 /** یک ردیف «دفتر مصرف» (§۴ و §۱۶) — هر مصرف، مبلغ و فاکتور و کاربر خودش را دارد. */
 export interface CreditRedemptionRow {
   id: number
   creditId: number
-  code: string
+  /** شناسهٔ امن اعتبار؛ کد قابل‌مصرف در دفتر عادی نیست. */
+  publicReference: string
   amount: number
   remainderAfter: number
   seq: number
@@ -2095,7 +2099,8 @@ export interface CreditTimelineEvent {
 export interface CreditReminderLogRow {
   id: number
   creditId: number
-  code: string
+  /** شناسهٔ امن اعتبار؛ متن پیام هم نباید credential را نگه دارد. */
+  publicReference: string
   kind: string
   kindLabel: string
   status: string
@@ -2111,7 +2116,7 @@ export interface CreditReminderLogRow {
 
 /** یک نامزد یادآوری + دلیل فارسیِ «باید/نباید» (§۱۴). */
 export interface CreditReminderCandidateRow {
-  credit: StoreCreditRow
+  credit: StoreCreditSafeRow
   holderName: string | null
   phone: string | null
   should: boolean
@@ -2154,7 +2159,7 @@ export interface CreditBulkResult {
 
 /** صفحه‌ی جزئیات یک اعتبار (§۱۶). */
 export interface CreditDetail {
-  credit: StoreCreditRow
+  credit: StoreCreditSafeRow
   redemptions: CreditRedemptionRow[]
   reminders: CreditReminderLogRow[]
   /** صفحه‌ی واقعی لاگ یادآوری؛ آرایه‌ی reminders برای callerهای قدیمی حفظ شده است. */
@@ -2167,7 +2172,7 @@ export interface CreditDetail {
   issuedByName: string | null
   batch: CreditBatchRow | null
   /** اعتبار جدیدی که باقی‌مانده‌ی این اعتبار به آن رفت (مسیر یک‌بارمصرف) */
-  remainderCredit: { id: number; code: string; amount: number } | null
+  remainderCredit: { id: number; publicReference: string; amount: number } | null
 }
 
 /** داشبورد اعتبار خرید (§۱۵). */

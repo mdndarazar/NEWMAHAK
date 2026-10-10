@@ -99,7 +99,7 @@ import {
   dashboardCards,
   type CreditExportKind
 } from '@shared/creditUi'
-import type { CreditDashboard, StoreCreditRow } from '@shared/types'
+import type { CreditDashboard, StoreCreditSafeRow } from '@shared/types'
 import type {
   CreditInvoiceRow,
   CreditReportResult,
@@ -3674,7 +3674,7 @@ function CreditManagementReport({ fromJalali, toJalali }: { fromJalali: string; 
   const { canOpen } = useManagerSession()
   const open = canOpen(PANEL_KEYS.creditManagement)
   const [dashboard, setDashboard] = useState<CreditDashboard | null>(null)
-  const [rows, setRows] = useState<StoreCreditRow[]>([])
+  const [rows, setRows] = useState<StoreCreditSafeRow[]>([])
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
   const [source, setSource] = useState('')
@@ -3724,7 +3724,7 @@ function CreditManagementReport({ fromJalali, toJalali }: { fromJalali: string; 
       })
       const [d, list] = await Promise.all([
         call<CreditDashboard>(CH.creditDashboard, req.dashboard.payload),
-        call<PagedRows<StoreCreditRow>>(CH.creditList, req.list.payload)
+        call<PagedRows<StoreCreditSafeRow>>(CH.creditList, req.list.payload)
       ])
       setDashboard(d)
       setRows(list ?? [])
@@ -3827,7 +3827,8 @@ function CreditManagementReport({ fromJalali, toJalali }: { fromJalali: string; 
             <input
               className="inp"
               value={search}
-              placeholder="کد، مشتری، شرکت، تلفن"
+              placeholder="جست‌وجوی عادی در این گزارش غیرفعال است؛ کد اعتبار فقط در مسیر مصرف بررسی می‌شود"
+              disabled
               onChange={(e) => {
                 setCreditSkip(0)
                 setSearch(e.target.value)

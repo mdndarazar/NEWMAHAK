@@ -280,7 +280,7 @@ export function dashboardCards(d: DashboardLike | null): DashboardCard[] {
 // ---------------------------------------------------------------------------
 
 export const CREDIT_LIST_HEADERS = [
-  'کد',
+  'شناسهٔ امن اعتبار',
   'نوع',
   'وضعیت',
   'مبلغ',
@@ -308,10 +308,10 @@ export const CREDIT_LIST_HEADERS = [
   'توضیح'
 ]
 
-/** یک ردیف `StoreCreditRow` ⇒ یک ردیف اکسل. عمداً هیچ فیلدی حذف نشده. */
+/** یک ردیف امن اعتبار ⇒ یک ردیف اکسل؛ credential هرگز وارد خروجی نمی‌شود. */
 export function creditListRow(r: any): (string | number | null)[] {
   return [
-    String(r.code ?? ''),
+    String(r.publicReference ?? `اعتبار #${intOf(r.id)}`),
     String(r.sourceLabel ?? CREDIT_SOURCE_LABELS[String(r.source ?? '')] ?? ''),
     String(r.statusLabel ?? CREDIT_STATUS_LABELS[String(r.status ?? '')] ?? ''),
     intOf(r.amount),
@@ -385,7 +385,7 @@ export function timelineRow(e: any): (string | number | null)[] {
 }
 
 export const CREDIT_REMINDER_HEADERS = [
-  'کد',
+  'شناسهٔ امن اعتبار',
   'دارنده',
   'تلفن',
   'مبلغ',
@@ -403,7 +403,7 @@ export const CREDIT_REMINDER_HEADERS = [
 export function reminderCandidateRow(c: any): (string | number | null)[] {
   const r = c?.credit ?? {}
   return [
-    String(r.code ?? ''),
+    String(r.publicReference ?? `اعتبار #${intOf(r.id)}`),
     String(c.holderName ?? r.customerName ?? ''),
     String(c.phone ?? ''),
     intOf(r.amount),
@@ -419,13 +419,13 @@ export function reminderCandidateRow(c: any): (string | number | null)[] {
   ]
 }
 
-export const CREDIT_REMINDER_LOG_HEADERS = ['تاریخ', 'ساعت', 'کد', 'نوع پیام', 'وضعیت', 'تلفن', 'متن پیام', 'دلیل', 'کاربر']
+export const CREDIT_REMINDER_LOG_HEADERS = ['تاریخ', 'ساعت', 'شناسهٔ امن اعتبار', 'نوع پیام', 'وضعیت', 'تلفن', 'متن پیام', 'دلیل', 'کاربر']
 
 export function reminderLogRow(r: any): (string | number | null)[] {
   return [
     String(r.atJalali ?? ''),
     String(r.atTime ?? ''),
-    String(r.code ?? ''),
+    String(r.publicReference ?? `اعتبار #${intOf(r.creditId)}`),
     String(r.kindLabel ?? r.kind ?? ''),
     String(r.statusLabel ?? r.status ?? ''),
     String(r.phone ?? ''),
@@ -1246,7 +1246,7 @@ export function creditLinkFacts(detail: any): CreditFact[] {
     out.push({
       key: 'remainder',
       label: 'اعتبار باقی‌مانده',
-      value: `${String(detail.remainderCredit.code ?? '')} (${intOf(detail.remainderCredit.amount)} ریال)`
+      value: `${String(detail.remainderCredit.publicReference ?? `اعتبار #${intOf(detail.remainderCredit.id)}`)} (${intOf(detail.remainderCredit.amount)} ریال)`
     })
   if (detail?.batch)
     out.push({
@@ -1254,7 +1254,6 @@ export function creditLinkFacts(detail: any): CreditFact[] {
       label: 'دسته‌ی تولید گروهی',
       value: `#${intOf(detail.batch.id)} ${trimmed(detail.batch.title)}`.trim()
     })
-  if (c.legacyCode) out.push({ key: 'legacyCode', label: 'کد تاریخیِ قبل از یکتاسازی', value: trimmed(c.legacyCode) })
   if (c.settingsOverride === true)
     out.push({
       key: 'override',

@@ -118,7 +118,10 @@ export default function CreditDetailView({
   onPreview,
   onPdf,
   onExport,
-  onPage
+  onPage,
+  canRevealCode = false,
+  managerCode = null,
+  onRevealCode
 }: {
   detail: CreditDetail
   onOp: (op: CreditOp) => void
@@ -129,6 +132,9 @@ export default function CreditDetailView({
   onPdf: () => void
   onExport: (kind: CreditExportKind) => void
   onPage: (kind: 'timeline' | 'reminders', skip: number) => void
+  canRevealCode?: boolean
+  managerCode?: string | null
+  onRevealCode?: () => void
 }) {
   const c: any = detail.credit
   const printBadges = creditDetailPrintBadges(c.printCount, faDigits)
@@ -140,13 +146,18 @@ export default function CreditDetailView({
         <button className="btn" onClick={onBack}>
           ← بازگشت
         </button>
-        <button className="btn btn-primary" onClick={() => onPrint(1)} disabled={printing}>
+        <button
+          className="btn btn-primary"
+          onClick={() => onPrint(1)}
+          disabled={printing || !canRevealCode}
+          title={canRevealCode ? undefined : 'چاپ کد اعتبار فقط با نشست فعال مدیر مجاز است'}
+        >
           {printing ? 'در حال چاپ…' : 'چاپ سند'}
         </button>
-        <button className="btn" onClick={onPreview}>
+        <button className="btn" onClick={onPreview} disabled={!canRevealCode} title={canRevealCode ? undefined : 'فقط مدیر'}>
           پیش‌نمایش / چاپ PDF
         </button>
-        <button className="btn" onClick={onPdf} disabled={printing}>
+        <button className="btn" onClick={onPdf} disabled={printing || !canRevealCode} title={canRevealCode ? undefined : 'فقط مدیر'}>
           {printing ? 'در حال آماده‌سازی…' : 'ذخیره‌ی PDF'}
         </button>
         {/* جلسه ۳۴ — «چاپ بعدی نسخه‌ی مجدد است» تا دیروز یک مقایسه‌ی دستی با عددِ
@@ -161,9 +172,15 @@ export default function CreditDetailView({
 
       {/* ---- خلاصه‌ی مالی ---- */}
       <div className={`rounded border p-3 grid grid-cols-2 md:grid-cols-4 gap-2 ${TONE_CLASS[statusTone(c.status)] ?? 'bg-white'}`}>
-        <b dir="ltr" className="text-lg">
-          {c.code}
-        </b>
+        <b className="text-lg">{c.publicReference ?? `اعتبار #${faDigits(c.id)}`}</b>
+        {canRevealCode && (
+          <span className="flex items-center gap-1">
+            <button className="btn py-1" onClick={onRevealCode}>
+              {managerCode ? 'به‌روزرسانی کد مدیر' : 'نمایش کد (فقط مدیر)'}
+            </button>
+            {managerCode && <b dir="ltr" className="text-amber-900">{managerCode}</b>}
+          </span>
+        )}
         <span>وضعیت: {c.statusLabel}</span>
         <span>نوع: {c.sourceLabel}</span>
         <span>انقضا: {c.expiresAtJalali ? faDigits(c.expiresAtJalali) : 'بدون انقضا'}</span>

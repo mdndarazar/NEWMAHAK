@@ -497,12 +497,11 @@ export function shapeStoreCredit(row: any, receiptNos?: Map<number, number>): St
 }
 
 /**
- * شکلِ عمومیِ گزارش فروش: همه‌ی اعداد/وضعیت‌ها همان `StoreCreditRow` هستند، اما
- * کد قابل‌مصرف عمداً پیش از عبور از IPC حذف می‌شود. شناسهٔ گزارش فقط برای
- * ردیابی امن و بدون قابلیت مصرف در UI/print/export است.
+ * شکلِ عمومیِ گزارش، فهرست و جزئیات اعتبار. credential و legacyCode پیش از
+ * عبور از IPC حذف می‌شوند؛ شناسه فقط برای ردیابی امن و غیرقابل‌مصرف است.
  */
-function shapeStoreCreditReport(row: StoreCreditRow): StoreCreditReportRow {
-  const { code: _redeemableCode, ...safe } = row
+function shapeStoreCreditSafe(row: StoreCreditRow): StoreCreditReportRow {
+  const { code: _redeemableCode, legacyCode: _legacyCode, ...safe } = row
   return { ...safe, publicReference: `اعتبار #${safe.id}` }
 }
 
@@ -2503,11 +2502,35 @@ async function userNameMap(ids: (number | null | undefined)[]): Promise<Map<numb
   return new Map(users.map((u) => [u.id, u.displayName]))
 }
 
+/** هر متن معمولیِ خروجی را از credential همان اعتبار پاک می‌کند. */
+function redactCreditCodeText(value: unknown, code: unknown): string {
+  const text = String(value ?? '')
+  const credential = String(code ?? '').trim()
+  return credential ? text.split(credential).join('[کد اعتبار پنهان است]') : text
+}
+
+/** payloadهای AuditLog ممکن است snapshot اعتبار داشته باشند؛ کلیدهای حساس حذف می‌شوند. */
+function redactCreditAuditPayload(value: unknown, code: unknown): string | null {
+  if (value == null || value === '') return null
+  try {
+    const redact = (input: any): any => {
+      if (Array.isArray(input)) return input.map(redact)
+      if (!input || typeof input !== 'object') return input
+      return Object.fromEntries(Object.entries(input)
+        .filter(([key]) => !['code', 'legacyCode', 'storeCreditCode'].includes(key))
+        .map(([key, nested]) => [key, redact(nested)]))
+    }
+    return redactCreditCodeText(JSON.stringify(redact(JSON.parse(String(value)))), code)
+  } catch {
+    return '[جزئیات حساس اعتبار پنهان است]'
+  }
+}
+
 function shapeRedemption(r: any, userNames: Map<number, string>): CreditRedemptionRow {
   return {
     id: r.id,
     creditId: r.creditId,
-    code: r.code,
+    publicReference: `اعتبار #${r.creditId}`,
     amount: Math.round(asNum(r.amount)),
     remainderAfter: Math.round(asNum(r.remainderAfter)),
     seq: Math.round(asNum(r.seq)) || 1,
@@ -2521,8 +2544,8 @@ function shapeRedemption(r: any, userNames: Map<number, string>): CreditRedempti
     idempotencyKey: r.idempotencyKey ?? null,
     reversed: !!r.reversedAt,
     reversedAtJalali: r.reversedAt ? toJalaliDate(new Date(r.reversedAt)) : null,
-    reversedReason: r.reversedReason ?? null,
-    note: r.note ?? null
+    reversedReason: redactCreditCodeText(r.reversedReason, r.code) || null,
+    note: redactCreditCodeText(r.note, r.code) || null
   }
 }
 
@@ -2532,7 +2555,7 @@ function shapeReminderLog(r: any, userNames: Map<number, string>): CreditReminde
   return {
     id: r.id,
     creditId: r.creditId,
-    code: r.code,
+    publicReference: `اعتبار #${r.creditId}`,
     kind,
     kindLabel: kind === CreditReminderKind.NEAR_EXPIRY ? 'نزدیک به انقضا' : 'اعتبار مصرف‌نشده',
     status,
@@ -2545,8 +2568,8 @@ function shapeReminderLog(r: any, userNames: Map<number, string>): CreditReminde
             ? 'مشتری ارسال پیام را نمی‌خواهد'
             : 'آماده‌ی ارسال',
     phone: r.phone ?? null,
-    text: r.text ?? '',
-    reason: r.reason ?? null,
+    text: redactCreditCodeText(r.text, r.code),
+    reason: redactCreditCodeText(r.reason, r.code) || null,
     atJalali: r.atJalali || (r.plannedAt ? toJalaliDate(new Date(r.plannedAt)) : ''),
     atTime: r.atTime || (r.plannedAt ? toClock(new Date(r.plannedAt)) : ''),
     userId: r.userId ?? null,
@@ -2636,7 +2659,8 @@ export const storeCreditService = {
     const sourceSubKind = String(input.sourceSubKind ?? '')
     let creditId: number
 
-    if (sourceSubKind === 'STORE_CREDIT_ISSUANCE') {
+    if (sourceSubKind === 'STORE_CREDIT_ISSUANCE' || sourceSubKind === 'STORE_CREDIT') {
+      /** `STORE_CREDIT` فقط برای جزئیات امن پنل مدیریت است، نه DTO معمولی. */
       creditId = sourceId
     } else if (sourceSubKind === 'STORE_CREDIT_REDEMPTION') {
       const redemption = await prisma.storeCreditRedemption.findUnique({
@@ -2726,15 +2750,20 @@ export const storeCreditService = {
    * اعتبارهای لغوشده را نشان می‌داد. اینجا به `invoiceStatus` نگاشت می‌شود.
    */
   async reportList(filter: ListFilter = {}): Promise<PagedRows<StoreCreditReportRow>> {
-    const detailed = await this.list(await reportCreditListFilter(filter))
-    return attachCreditPage(detailed.map(shapeStoreCreditReport), detailed.page)
+    return this.list(await reportCreditListFilter(filter))
   },
 
-  async list(filter: ListFilter = {}): Promise<PagedRows<StoreCreditRow>> {
+  /**
+   * فهرست عادی مدیریت نیز credential ندارد. جست‌وجوی کد حذف است تا تعداد ردیف‌ها
+   * به oracle حدس‌زدن کد تبدیل نشود؛ POS فقط برای اعتبارسنجیِ کدی که کاربر دارد
+   * از lookup اختصاصی استفاده می‌کند.
+   */
+  async list(filter: ListFilter = {}): Promise<PagedRows<StoreCreditReportRow>> {
+    const { search: _credentialSearch, ...safeFilter } = filter ?? {}
     const where = await whereFromFilter({
-      ...filter,
-      fromJalali: filter.fromJalali ?? (filter.search || filter.batchId != null ? undefined : jalaliToday()),
-      toJalali: filter.toJalali
+      ...safeFilter,
+      fromJalali: safeFilter.fromJalali ?? (safeFilter.batchId != null ? undefined : jalaliToday()),
+      toJalali: safeFilter.toJalali
     })
     const page = creditPage(filter.take, filter.skip, 0)
     let rows: any[]
@@ -2778,7 +2807,7 @@ export const storeCreditService = {
       })
     }
     const map = await receiptNoMap(prisma, rows)
-    const shaped = rows.map((r) => shapeStoreCredit(r, map))
+    const shaped = rows.map((r) => shapeStoreCreditSafe(shapeStoreCredit(r, map)))
     return attachCreditPage(shaped, page)
   },
 
@@ -2808,20 +2837,14 @@ export const storeCreditService = {
    */
   async detail(input: {
     id?: number
-    code?: string
     timelineTake?: number
     timelineSkip?: number
     reminderTake?: number
     reminderSkip?: number
   }): Promise<CreditDetail> {
-    const id = Math.round(Number(input?.id) || 0)
-    const code = normalizeCreditCode(input?.code)
-    const row = id
-      ? await prisma.storeCredit.findUnique({ where: { id } })
-      : code
-        ? await prisma.storeCredit.findUnique({ where: { code } })
-        : null
-    if (!row) throw new BusinessError('این اعتبار پیدا نشد. فهرست را تازه کنید یا کد را دوباره وارد کنید.')
+    const id = assertCreditId(input?.id)
+    const row = await prisma.storeCredit.findUnique({ where: { id } })
+    if (!row) throw new BusinessError('این اعتبار پیدا نشد. فهرست را تازه کنید.')
 
     const timelinePage = creditPage(input.timelineTake ?? 500, input.timelineSkip, await prisma.auditLog.count({
       where: { entity: 'StoreCredit', entityId: row.id }
@@ -2864,9 +2887,9 @@ export const storeCreditService = {
         atTime: toClock(at),
         userId: l.userId ?? null,
         userName: l.userId != null ? (userNames.get(l.userId) ?? null) : null,
-        before: l.before ?? null,
-        after: l.after ?? null,
-        note: l.note ?? null
+        before: redactCreditAuditPayload(l.before, row.code),
+        after: redactCreditAuditPayload(l.after, row.code),
+        note: redactCreditCodeText(l.note, row.code) || null
       }
     })
 
@@ -2882,7 +2905,7 @@ export const storeCreditService = {
     )
 
     return {
-      credit: shapeStoreCredit(row, map),
+      credit: shapeStoreCreditSafe(shapeStoreCredit(row, map)),
       redemptions: redemptions.map((r) => shapeRedemption(r, userNames)),
       reminders: reminderRows,
       remindersPage,
@@ -2906,7 +2929,7 @@ export const storeCreditService = {
           }
         : null,
       remainderCredit: remainderCredit
-        ? { id: remainderCredit.id, code: remainderCredit.code, amount: Math.round(asNum(remainderCredit.amount)) }
+        ? { id: remainderCredit.id, publicReference: `اعتبار #${remainderCredit.id}`, amount: Math.round(asNum(remainderCredit.amount)) }
         : null
     }
   },
@@ -3325,7 +3348,7 @@ export const storeCreditService = {
         )
         if (filter.onlyDue && !decision.should) continue
         out.push({
-          credit: shapeStoreCredit(r),
+          credit: shapeStoreCreditSafe(shapeStoreCredit(r)),
           holderName: r.customerName ?? (r.customerId != null ? (nameOf.get(r.customerId) ?? null) : null),
           phone,
           should: decision.should,

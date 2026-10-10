@@ -12,6 +12,7 @@ import CreditDetailView from '../components/CreditDetailView'
 import { exportTable } from '../lib/exportCsv'
 import { PANEL_KEYS } from '@shared/panels'
 import { usePanelLock } from '../hooks/usePanelLocks'
+import { useManagerSession } from '../hooks/useManagerSession'
 import { faDigits, money, toLatinDigits } from '@shared/jalali'
 import {
   CREDIT_BATCH_HEADERS,
@@ -72,7 +73,7 @@ import type {
   CreditReminderCandidateRow,
   CreditReminderLogRow,
   SaleReportPage,
-  StoreCreditRow
+  StoreCreditSafeRow
 } from '@shared/types'
 
 /**
@@ -126,10 +127,13 @@ function Gate({ children, panel = PANEL_KEYS.creditManagement, title = 'مدیر
 
 export default function CreditManagement() {
   const nav = useNavigate()
+  const { isManager } = useManagerSession()
   const [view, setView] = useState<CreditView>('dashboard')
   const [dashboard, setDashboard] = useState<CreditDashboard | null>(null)
-  const [rows, setRows] = useState<StoreCreditRow[]>([])
+  const [rows, setRows] = useState<StoreCreditSafeRow[]>([])
   const [detail, setDetail] = useState<CreditDetail | null>(null)
+  /** فقط نتیجهٔ reveal جداگانهٔ مدیر؛ هرگز در list/detail/export ذخیره نمی‌شود. */
+  const [revealedCode, setRevealedCode] = useState<string | null>(null)
   const [reminders, setReminders] = useState<{ enabled: boolean; rows: CreditReminderCandidateRow[] }>({ enabled: true, rows: [] })
   const [reminderLogs, setReminderLogs] = useState<CreditReminderLogRow[]>([])
   const [onlyEligible, setOnlyEligible] = useState(true)
@@ -218,7 +222,7 @@ export default function CreditManagement() {
       if (seq !== loadReq.current) return
       if (view === 'dashboard') setDashboard((data as CreditDashboard) ?? null)
       else if (view === 'list' || view === 'detail') {
-        setRows((data as StoreCreditRow[]) ?? [])
+        setRows((data as StoreCreditSafeRow[]) ?? [])
         if (view === 'list') setListPage((data as any)?.page ?? null)
       }
       /* §۱۴ — پاکت `{ enabled, rows }` عمداً باز نمی‌شود: خودِ `enabled` هم دیده می‌شود. */
@@ -263,6 +267,7 @@ export default function CreditManagement() {
 
   const openDetail = async (id: number) => {
     try {
+      setRevealedCode(null)
       setDetail(await call<CreditDetail>(CH.creditDetail, { id }))
       setView('detail')
     } catch (e: any) {
@@ -277,6 +282,25 @@ export default function CreditManagement() {
     try {
       setDetail(await call<CreditDetail>(CH.creditDetail, { id: detail.credit.id, timelineSkip, reminderSkip }))
     } catch (e: any) {
+      setErr(e.message)
+    }
+  }
+
+  useEffect(() => {
+    if (!isManager) setRevealedCode(null)
+  }, [isManager])
+
+  const revealDetailCode = async () => {
+    if (!detail || !isManager) return
+    try {
+      const reveal = await call<{ creditId: number; code: string }>(CH.creditManagerCodeReveal, {
+        sourceId: detail.credit.id,
+        sourceSubKind: 'STORE_CREDIT'
+      })
+      setRevealedCode(reveal.code)
+      setErr(null)
+    } catch (e: any) {
+      setRevealedCode(null)
       setErr(e.message)
     }
   }
@@ -299,7 +323,7 @@ export default function CreditManagement() {
           ? `تولید گروهی: ${faDigits(res?.created ?? 0)} اعتبار از ${faDigits(res?.requested ?? 0)} درخواستی ساخته شد` +
               (res?.lengthGrown ? ` · طول کد به ${faDigits(res?.codeLength ?? 0)} افزایش یافت` : '') +
               (res?.warnings?.length ? `\n${res.warnings.join('\n')}` : '')
-          : `اعتبار ${res?.code} صادر شد`
+          : 'اعتبار جدید صادر شد؛ کد فقط از مسیر نمایش جداگانهٔ مدیر قابل مشاهده است.'
       )
       if (isBulk) {
         setBulk(EMPTY_BULK_DRAFT)
@@ -364,6 +388,7 @@ export default function CreditManagement() {
    * دستی نوشته می‌شدند و بندهای ۱۷/۲۲/۲۳ هارنس ۲۵ فقط رشته‌هایشان را می‌دیدند.
    */
   const printOne = async (id: number, copies = 1) => {
+    if (!isManager) return setErr('چاپ کد اعتبار فقط با نشست فعال مدیر مجاز است.')
     if (printingRef.current) return
     const req = creditPrintOpRequest('print', { id, copies })
     if (!req) return
@@ -383,6 +408,7 @@ export default function CreditManagement() {
   }
 
   const printBatch = async (target: CreditPrintTarget) => {
+    if (!isManager) return setErr('چاپ کد اعتبار فقط با نشست فعال مدیر مجاز است.')
     if (printingRef.current) return
     const req = creditPrintOpRequest('batch', target)
     if (!req) return
@@ -401,6 +427,7 @@ export default function CreditManagement() {
   }
 
   const savePdf = async (target: CreditPrintTarget) => {
+    if (!isManager) return setErr('PDF حاوی کد اعتبار فقط با نشست فعال مدیر مجاز است.')
     if (printingRef.current) return
     const req = creditPrintOpRequest('pdf', target)
     if (!req) return
@@ -421,6 +448,7 @@ export default function CreditManagement() {
   }
 
   const openPreview = async (id: number) => {
+    if (!isManager) return setErr('پیش‌نمایش حاوی کد اعتبار فقط با نشست فعال مدیر مجاز است.')
     try {
       const html = await call<string>(CH.creditPreviewHtml, { id })
       setPreviewId(id)
@@ -489,7 +517,8 @@ export default function CreditManagement() {
               className="inp"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="کد، شناسه اعتبار، مشتری، شرکت، تلفن، شناسه ملی، شماره فیش"
+              placeholder="جست‌وجوی کد در فهرست غیرفعال است؛ کد فقط در مسیر مصرف بررسی می‌شود"
+              disabled
             />
           </label>
           <label>
@@ -599,10 +628,10 @@ export default function CreditManagement() {
               <button className="btn" onClick={() => void doExport('list', rows)}>
                 خروجی اکسل
               </button>
-              <button className="btn" disabled={!selected.length || printing} onClick={() => void printBatch({ ids: selected })}>
+              <button className="btn" disabled={!selected.length || printing || !isManager} title={isManager ? undefined : 'فقط مدیر'} onClick={() => void printBatch({ ids: selected })}>
                 {printing ? 'در حال چاپ…' : 'چاپ گروهی انتخاب‌شده‌ها'}
               </button>
-              <button className="btn" disabled={!selected.length || printing} onClick={() => void savePdf({ ids: selected })}>
+              <button className="btn" disabled={!selected.length || printing || !isManager} title={isManager ? undefined : 'فقط مدیر'} onClick={() => void savePdf({ ids: selected })}>
                 {printing ? 'در حال آماده‌سازی…' : 'PDF انتخاب‌شده‌ها'}
               </button>
               {!!selected.length && (
@@ -663,10 +692,10 @@ export default function CreditManagement() {
                         <button className="text-brand font-bold" onClick={() => void openDetail(r.id)}>
                           جزئیات
                         </button>
-                        <button className="text-brand" title="چاپ سند" onClick={() => void printOne(r.id)} disabled={printing}>
+                        <button className="text-brand" title={isManager ? 'چاپ سند' : 'چاپ کد فقط برای مدیر'} onClick={() => void printOne(r.id)} disabled={printing || !isManager}>
                           {printing ? 'در حال چاپ…' : 'چاپ'}
                         </button>
-                        <button className="text-brand" title="پیش‌نمایش و PDF" onClick={() => void openPreview(r.id)}>
+                        <button className="text-brand" title={isManager ? 'پیش‌نمایش و PDF' : 'پیش‌نمایش کد فقط برای مدیر'} onClick={() => void openPreview(r.id)} disabled={!isManager}>
                           پیش‌نمایش
                         </button>
                       </div>
@@ -691,12 +720,18 @@ export default function CreditManagement() {
                   : null
               )
             }}
-            onBack={() => setView('list')}
+            onBack={() => {
+              setRevealedCode(null)
+              setView('list')
+            }}
             onPrint={(copies: number) => void printOne(detail.credit.id, copies)}
             printing={printing}
             onPreview={() => void openPreview(detail.credit.id)}
             onPdf={() => void savePdf({ id: detail.credit.id })}
             onPage={(kind, skip) => void openDetailPage(kind, skip)}
+            canRevealCode={isManager}
+            managerCode={revealedCode}
+            onRevealCode={() => void revealDetailCode()}
             onExport={(kind: CreditExportKind) =>
               void doExport(
                 kind,
@@ -881,11 +916,11 @@ export default function CreditManagement() {
                           className="text-brand font-bold"
                           title="یک سند PDF/چاپی چندصفحه‌ای برای کل دسته"
                           onClick={() => void printBatch({ batchId: b.id })}
-                          disabled={printing}
+                          disabled={printing || !isManager}
                         >
                           {printing ? 'در حال چاپ…' : 'چاپ دسته‌ای'}
                         </button>
-                        <button className="text-brand" onClick={() => void savePdf({ batchId: b.id })} disabled={printing}>
+                        <button className="text-brand" onClick={() => void savePdf({ batchId: b.id })} disabled={printing || !isManager} title={isManager ? undefined : 'فقط مدیر'}>
                           {printing ? 'در حال آماده‌سازی…' : 'PDF دسته'}
                         </button>
                       </div>
@@ -1004,10 +1039,10 @@ export default function CreditManagement() {
               <button className="btn" onClick={closePreview}>
                 بستن
               </button>
-              <button className="btn" onClick={() => previewId && void printOne(previewId)} disabled={printing}>
+              <button className="btn" onClick={() => previewId && void printOne(previewId)} disabled={printing || !isManager}>
                 {printing ? 'در حال چاپ…' : 'چاپ سند'}
               </button>
-              <button className="btn btn-primary" onClick={() => previewId && void savePdf({ id: previewId })} disabled={printing}>
+              <button className="btn btn-primary" onClick={() => previewId && void savePdf({ id: previewId })} disabled={printing || !isManager}>
                 {printing ? 'در حال آماده‌سازی…' : 'ذخیره‌ی PDF'}
               </button>
             </>
