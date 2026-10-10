@@ -1126,12 +1126,15 @@ export interface SaleChequeBlock {
 /** بلوک ۵ — اعتبار خرید (همیشه، حتی صفر). */
 /** یک مصرف اعتبار در بازه — جملهٔ خط کنترل صندوق (نشست ۱۸۷). */
 export interface StoreCreditUsageStory {
-  code: string
+  /**
+   * شرح امنِ مسیر اعتبار. کد قابل مصرف عمداً در قرارداد گزارش وجود ندارد؛
+   * نمایش محرمانهٔ مدیر، اگر لازم شد، باید از کانال جدا و مجوزدار بیاید.
+   */
+  safeText: string
   amount: number
   issuedAtJalali: string
   usedAtJalali: string
   reason: 'RETURN' | 'EXCHANGE' | 'OVERPAY' | 'MANUAL' | 'OTHER'
-  text: string
 }
 
 export interface SaleStoreCreditBlock {
@@ -1202,6 +1205,11 @@ export interface SaleBridgeRow {
 
 export interface SaleBridgeSource {
   kind: 'INVOICE' | 'RETURN' | 'PAYMENT' | 'STORE_CREDIT' | 'CASH_MOVEMENT'
+  /**
+   * نوع صریح سند اعتبار؛ Financial Inspector نباید از متن label (که برای
+   * مدیر و امنیت redacted شده) نوع منبع را حدس بزند.
+   */
+  subKind?: 'STORE_CREDIT_ISSUANCE' | 'STORE_CREDIT_REDEMPTION'
   id: number
   label: string
   amount: number

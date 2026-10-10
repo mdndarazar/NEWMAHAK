@@ -349,8 +349,14 @@ async function documentForSource(source: SaleBridgeSource): Promise<FinancialDoc
   }
 
   if (source.kind === 'STORE_CREDIT') {
-    /** label از همان source builder می‌آید و نوع id را بدون حدس مالی روشن می‌کند. */
-    const isRedemption = source.label.startsWith('مصرف اعتبار')
+    /**
+     * نوع id از metadata صریح source می‌آید، نه از label انسانی. label باید بدون
+     * کد اعتبار هم امن و قابل تغییر بماند؛ حدس‌زدن از متن، redaction را شکننده
+     * و بازکردن سند را ناامن می‌کرد.
+     */
+    if (source.subKind !== 'STORE_CREDIT_REDEMPTION' && source.subKind !== 'STORE_CREDIT_ISSUANCE')
+      throw new BusinessError('نوع سند اعتبار برای نمایش امن مشخص نیست.')
+    const isRedemption = source.subKind === 'STORE_CREDIT_REDEMPTION'
     if (isRedemption) {
       const redemption: any = await (prisma as any).storeCreditRedemption.findUnique({ where: { id: source.id } })
       if (!redemption) throw new BusinessError('مصرف اعتبار منبع دیگر وجود ندارد.')
@@ -366,7 +372,7 @@ async function documentForSource(source: SaleBridgeSource): Promise<FinancialDoc
         ...invoiceContext(invoice),
         actor: own.actor,
         shift: own.shift,
-        settlement: { method: 'STORE_CREDIT', methodLabel: `مصرف اعتبار «${redemption.code || '—'}»`, reference: redemption.code || null, status: redemption.reversedAt ? 'REVERSED' : 'ACTIVE' },
+        settlement: { method: 'STORE_CREDIT', methodLabel: 'مصرف اعتبار خرید', reference: null, status: redemption.reversedAt ? 'REVERSED' : 'ACTIVE' },
         note: redemption.note ?? null,
         voided: redemption.reversedAt != null
       }
@@ -385,7 +391,7 @@ async function documentForSource(source: SaleBridgeSource): Promise<FinancialDoc
       ...invoiceContext(invoice),
       actor: own.actor,
       shift: { id: null, name: null },
-      settlement: { method: 'STORE_CREDIT', methodLabel: 'اعتبار خرید', reference: credit.code || null, status: credit.status ?? null },
+      settlement: { method: 'STORE_CREDIT', methodLabel: 'اعتبار خرید', reference: null, status: credit.status ?? null },
       note: credit.note ?? null,
       voided: credit.voidedAt != null || credit.deletedAt != null
     }

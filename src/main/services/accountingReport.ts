@@ -993,16 +993,19 @@ async function storeCreditUsageStories(
     const issuedAtJalali = String(credit?.issuedAtJalali ?? '') || (credit?.issuedAt ? toJalaliDate(credit.issuedAt) : '—')
     const usedAtJalali = String(r.atJalali ?? '') || (r.at ? toJalaliDate(r.at) : '—')
     const amount = n(r.amount)
-    const code = String(r.code || credit?.code || '').trim() || '—'
+    /**
+     * کد اعتبار ممکن است پس از برگشت/ابطالِ فاکتور مصرف دوباره فعال شود؛ پس
+     * گزارش عمومی هرگز آن را حمل نمی‌کند. مشاهدهٔ محرمانهٔ مدیر باید از کانال
+     * مجوزدارِ جدا انجام شود، نه از متن داستان یا HTML این گزارش.
+     */
     stories.push({
-      code,
       amount,
       issuedAtJalali,
       usedAtJalali,
       reason,
-      text:
-        `بارکد ${code} در تاریخ ${faDigits(issuedAtJalali)} به مشتری بابت ${CREDIT_ISSUE_REASON_LABELS[reason]} ` +
-        `داده شد و در تاریخ ${faDigits(usedAtJalali)} خرج شد (${money(amount)} ریال).`
+      safeText:
+        `اعتبار خرید در تاریخ ${faDigits(issuedAtJalali)} به مشتری بابت ${CREDIT_ISSUE_REASON_LABELS[reason]} ` +
+        `داده شد و در تاریخ ${faDigits(usedAtJalali)} مصرف شد (${money(amount)} ریال).`
     })
   }
   return stories
@@ -1546,8 +1549,8 @@ async function bridgeSources(
       rows.sort((a, b) => Number(b.id) - Number(a.id))
       for (const r of rows)
         out.push({
-          kind: 'STORE_CREDIT', id: r.id, amount: n(r.amount),
-          label: `اعتبار «${r.code}»` + (r.customerName ? ` · ${r.customerName}` : ''),
+          kind: 'STORE_CREDIT', subKind: 'STORE_CREDIT_ISSUANCE', id: r.id, amount: n(r.amount),
+          label: 'اعتبار خرید صادرشده' + (r.customerName ? ` · ${r.customerName}` : ''),
           dateJalali: r.issuedAtJalali || toJalaliDate(r.issuedAt),
           invoiceId: r.exchangeInvoiceId ?? r.sourceInvoiceId ?? null, receiptNo: null
         })
@@ -1577,8 +1580,8 @@ async function bridgeSources(
       }
       for (const r of rows)
         out.push({
-          kind: 'STORE_CREDIT', id: r.id, amount: n(r.amount),
-          label: `مصرف اعتبار «${r.code}» (نوبت ${r.seq})` + (r.receiptNo ? ` روی فاکتور ${r.receiptNo}` : ''),
+          kind: 'STORE_CREDIT', subKind: 'STORE_CREDIT_REDEMPTION', id: r.id, amount: n(r.amount),
+          label: `مصرف اعتبار خرید (نوبت ${r.seq})` + (r.receiptNo ? ` روی فاکتور ${r.receiptNo}` : ''),
           dateJalali: r.atJalali || toJalaliDate(r.at), invoiceId: r.invoiceId ?? null, receiptNo: r.receiptNo ?? null
         })
       return { sources: out, page: makePage(totalCount) }

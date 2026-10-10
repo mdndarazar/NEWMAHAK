@@ -1243,7 +1243,7 @@ export default function SalesReports() {
         (summary.creditUsedTotal > 0
           ? ` · ${money(summary.creditUsedTotal)} ریال فروش با بارکد اعتبار تسویه شده (نقد وارد صندوق نشده؛ کسری نیست` +
             ((report.accounting?.storeCredits?.usedStories ?? []).length
-              ? `؛ ${faDigits((report.accounting?.storeCredits?.usedStories ?? []).length)} بارکد — روی صفحه با + باز می‌شود`
+              ? `؛ ${faDigits((report.accounting?.storeCredits?.usedStories ?? []).length)} مصرف اعتبار — روی صفحه با + باز می‌شود`
               : '') +
             ').'
           : '') +
@@ -2761,7 +2761,8 @@ function SaleSummaryBlock({
   nonCash: number
   creditRefundTotal: number
   creditUsedTotal: number
-  creditUsedStories?: { code: string; amount: number; text: string }[]
+  /** داستان‌های امن مصرف اعتبار؛ کد قابل مصرف از گزارش فروش عبور نمی‌کند. */
+  creditUsedStories?: { amount: number; safeText: string }[]
   creditUsedStoryHidden?: number
   priorCreditStories?: { paymentId: number; receiptNo: number; amount: number; text: string }[]
   priorCreditStoryHidden?: number
@@ -3004,16 +3005,16 @@ function SaleSummaryBlock({
                   type="button"
                   className="btn btn-xs"
                   onClick={() => setCreditStoriesOpen((open) => !open)}
-                  title={creditStoriesOpen ? 'جمع شدن فهرست بارکدها' : 'باز شدن همهٔ بارکدهای اعتبار مصرف‌شده'}
+                  title={creditStoriesOpen ? 'جمع شدن فهرست مصرف اعتبارها' : 'باز شدن سابقهٔ امن اعتبارهای مصرف‌شده'}
                 >
                   {creditStoriesOpen
-                    ? `− جمع شدن ${faDigits(creditUsedStories.length)} بارکد اعتبار`
-                    : `+ نمایش ${faDigits(creditUsedStories.length)} بارکد اعتبار`}
+                    ? `− جمع شدن ${faDigits(creditUsedStories.length)} سابقهٔ اعتبار`
+                    : `+ نمایش ${faDigits(creditUsedStories.length)} سابقهٔ اعتبار`}
                 </button>
                 {creditStoriesOpen && (
                   <div className="mt-1 leading-7 font-normal">
-                    {creditUsedStories.map((s) => (
-                      <div key={`${s.code}-${s.amount}-${s.text}`}>{s.text}</div>
+                    {creditUsedStories.map((s, index) => (
+                      <div key={`${s.safeText}-${s.amount}-${index}`}>{s.safeText}</div>
                     ))}
                     {creditUsedStoryHidden > 0 && (
                       <div className="font-bold">

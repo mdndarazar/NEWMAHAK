@@ -10,7 +10,8 @@ export interface NonCashDrawerProps {
   creditSources: SaleBridgeSource[]
   loading?: boolean
   onOpenInvoice: (invoiceId: number) => void
-  creditUsedStories?: { code: string; amount: number; text: string }[]
+  /** داستان‌های امن مصرف اعتبار؛ کد قابل مصرف هرگز به این پنل گزارش نمی‌رسد. */
+  creditUsedStories?: { amount: number; safeText: string }[]
 }
 
 export const NonCashDrawer: React.FC<NonCashDrawerProps> = ({
@@ -66,7 +67,7 @@ export const NonCashDrawer: React.FC<NonCashDrawerProps> = ({
               activeTab === 'credits' ? 'bg-white text-amber-950 shadow-xs' : 'text-amber-800 hover:text-amber-950'
             }`}
           >
-            🎫 مصرف بارکد اعتبار ({faDigits(creditSources.length)})
+            🎫 مصرف اعتبار خرید ({faDigits(creditSources.length)})
           </button>
         </div>
       </div>
@@ -139,19 +140,19 @@ export const NonCashDrawer: React.FC<NonCashDrawerProps> = ({
             </div>
           )}
 
-          {/* تب مصرف بارکد اعتبار */}
+          {/* تب مصرف اعتبار خرید؛ کد قابل مصرف عمداً نمایش داده نمی‌شود. */}
           {activeTab === 'credits' && (
             <div className="overflow-x-auto space-y-2">
               {creditSources.length === 0 ? (
                 <div className="text-center py-5 text-xs text-slate-500 bg-white/70 rounded border border-amber-200">
-                  در این بازه هیچ بارکد اعتباری روی فاکتورها خرج نشده است.
+                  در این بازه هیچ اعتباری روی فاکتورها مصرف نشده است.
                 </div>
               ) : (
                 <table className="w-full text-xs text-right bg-white rounded-lg border border-amber-200 overflow-hidden shadow-xs">
                   <thead className="bg-amber-100 text-amber-950 font-bold border-b border-amber-200">
                     <tr>
                       <th className="p-2">فاکتور</th>
-                      <th className="p-2">عنوان / بارکد</th>
+                      <th className="p-2">عنوان امن</th>
                       <th className="p-2">تاریخ</th>
                       <th className="p-2 text-left">مبلغ اعتبار مصرف‌شده</th>
                       <th className="p-2 text-center">عملیات</th>
@@ -163,7 +164,7 @@ export const NonCashDrawer: React.FC<NonCashDrawerProps> = ({
                         <td className="p-2 font-mono font-bold text-slate-800">
                           {cs.receiptNo ? `#${cs.receiptNo}` : cs.invoiceId ? `#${cs.invoiceId}` : '—'}
                         </td>
-                        <td className="p-2 text-slate-700 font-mono font-semibold">{cs.label}</td>
+                        <td className="p-2 text-slate-700 font-semibold">{cs.label}</td>
                         <td className="p-2 text-slate-600" dir="ltr">
                           {cs.dateJalali || '—'}
                         </td>
@@ -200,10 +201,10 @@ export const NonCashDrawer: React.FC<NonCashDrawerProps> = ({
               {/* داستان‌های متنی مصرف اعتبار اگر موجود باشد */}
               {creditUsedStories.length > 0 && (
                 <div className="bg-white/80 p-2.5 rounded border border-amber-200 text-[11px] text-amber-900 space-y-1">
-                  <span className="font-bold block mb-1">شرح مصرف بارکدها:</span>
+                  <span className="font-bold block mb-1">شرح امن مصرف اعتبارها:</span>
                   {creditUsedStories.map((story, i) => (
-                    <div key={i} className="text-slate-700">
-                      • {story.text}
+                    <div key={`${story.safeText}-${i}`} className="text-slate-700">
+                      • {story.safeText}
                     </div>
                   ))}
                 </div>
