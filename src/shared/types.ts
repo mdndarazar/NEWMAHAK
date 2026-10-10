@@ -1289,7 +1289,8 @@ export interface FinancialSourceRequest {
 }
 
 export interface FinancialSourceRow {
-  ref: Pick<SaleBridgeSource, 'kind' | 'id'>
+  /** subKind فقط metadata امنِ مسیر افشای مدیر است؛ کد اعتبار نیست. */
+  ref: Pick<SaleBridgeSource, 'kind' | 'id' | 'subKind'>
   /** متن سرور، از همان سند سازنده؛ برای نمایش و جست‌وجوی امن. */
   documentLabel: string
   amount: number
@@ -1337,7 +1338,8 @@ export interface FinancialDocumentRequest {
 
 /** شناسنامهٔ فقط‌خواندنیِ سندی که عضویت آن در منبع مالی سمت سرور تأیید شده است. */
 export interface FinancialDocumentDetail {
-  ref: Pick<SaleBridgeSource, 'kind' | 'id'>
+  /** subKind از source اثبات‌شدهٔ server می‌آید و فقط برای reveal جداگانهٔ مدیر است. */
+  ref: Pick<SaleBridgeSource, 'kind' | 'id' | 'subKind'>
   title: string
   /** سهم همین سند در عدد مالی بازشده، نه لزوماً کل مبلغ سند. */
   sourceAmount: number

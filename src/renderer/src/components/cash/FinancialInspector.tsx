@@ -9,11 +9,13 @@ import type {
   FinancialSourceResponse,
   FinancialSourceResult,
   FinancialSourceSort,
+  ManagerStoreCreditCodeReveal,
   SaleAccountingStatements,
   SaleReportFilter,
   SaleReportTotals
 } from '@shared/types'
 import { call, CH } from '../../lib/api'
+import { useManagerSession } from '../../hooks/useManagerSession'
 
 type FocusArea = 'overview' | 'drawer' | 'pos' | 'other' | 'manager' | 'nonCash'
 type Pane =
@@ -90,6 +92,7 @@ export default function FinancialInspector({
   initialFocus = 'overview',
   onOpenBridgeDiag
 }: FinancialInspectorProps) {
+  const { isManager } = useManagerSession()
   const dialogRef = useRef<HTMLDivElement | null>(null)
   const closeButtonRef = useRef<HTMLButtonElement | null>(null)
   const wasOpenRef = useRef(false)
@@ -110,6 +113,10 @@ export default function FinancialInspector({
   const [sort, setSort] = useState<FinancialSourceSort>('DATE_DESC')
   const [documentBusy, setDocumentBusy] = useState(false)
   const [documentError, setDocumentError] = useState<string | null>(null)
+  /** فقط بعد از درخواست صریح مدیر، و فقط تا وقتی نشست او باز است. */
+  const [revealedCreditCode, setRevealedCreditCode] = useState<string | null>(null)
+  const [revealBusy, setRevealBusy] = useState(false)
+  const [revealError, setRevealError] = useState<string | null>(null)
 
   useEffect(() => {
     stackRef.current = stack
@@ -139,9 +146,20 @@ export default function FinancialInspector({
       setSearchApplied('')
       setSort('DATE_DESC')
       setDocumentError(null)
+      setRevealedCreditCode(null)
+      setRevealError(null)
+      setRevealBusy(false)
     }
     wasOpenRef.current = open
   }, [open, scope, totals, statements, referenceRealCash, split, bridgeAlarm, initialFocus])
+
+  /** خروج مدیر یا انقضای نشست نباید کد revealشده را روی صفحه نگه دارد. */
+  useEffect(() => {
+    if (!isManager) {
+      setRevealedCreditCode(null)
+      setRevealError(null)
+    }
+  }, [isManager])
 
   /** focus trap و بازگردانی focus؛ یک مودال داخلی با navigation stack است، نه مودال‌های روی هم. */
   useEffect(() => {
@@ -243,6 +261,8 @@ export default function FinancialInspector({
     if (!sourceKey) return
     setDocumentBusy(true)
     setDocumentError(null)
+    setRevealedCreditCode(null)
+    setRevealError(null)
     void call<FinancialDocumentResponse>(CH.saleReportFinancialDocument, { scope: scopeSnapshot, key: sourceKey, ref })
       .then((response) => {
         if (!response?.ok || !response.detail) throw new Error(response?.message || 'شناسنامهٔ سند خوانده نشد.')
@@ -250,6 +270,33 @@ export default function FinancialInspector({
       })
       .catch((error: any) => setDocumentError(error?.message || 'شناسنامهٔ سند خوانده نشد.'))
       .finally(() => setDocumentBusy(false))
+  }
+
+  /**
+   * کد هرگز همراه DTO ریزبین نمی‌آید. فقط مدیرِ حاضر می‌تواند با این عملِ صریح
+   * IPC جدا را صدا بزند؛ main نیز مستقل از این شرط UI نشست MANAGER را کنترل می‌کند.
+   */
+  const revealCreditCode = () => {
+    if (pane.type !== 'document' || pane.detail.ref.kind !== 'STORE_CREDIT' || !pane.detail.ref.subKind) return
+    if (!isManager) {
+      setRevealError('نمایش کد فقط برای مدیرِ واردشده مجاز است.')
+      return
+    }
+    setRevealBusy(true)
+    setRevealError(null)
+    void call<ManagerStoreCreditCodeReveal>(CH.creditManagerCodeReveal, {
+      sourceId: pane.detail.ref.id,
+      sourceSubKind: pane.detail.ref.subKind
+    })
+      .then((result) => {
+        if (!result?.code) throw new Error('کد اعتبار برای نمایش برنگشت.')
+        setRevealedCreditCode(result.code)
+      })
+      .catch((error: any) => {
+        setRevealedCreditCode(null)
+        setRevealError(error?.message || 'کد اعتبار نمایش داده نشد.')
+      })
+      .finally(() => setRevealBusy(false))
   }
 
   if (!open) return null
@@ -494,6 +541,31 @@ export default function FinancialInspector({
                 <div className="border rounded p-3 sm:col-span-2"><span className="text-xs text-slate-500">روش / مرجع</span><b className="block mt-1">{pane.detail.settlement.methodLabel}{pane.detail.settlement.reference ? ` · ${pane.detail.settlement.reference}` : ''}{pane.detail.settlement.status ? ` · ${pane.detail.settlement.status}` : ''}</b></div>
                 <div className="border rounded p-3"><span className="text-xs text-slate-500">وضعیت سند</span><b className={`block mt-1 ${pane.detail.voided ? 'text-rose-700' : 'text-emerald-700'}`}>{pane.detail.voided ? 'باطل/برگشت‌خورده' : 'فعال در منبع'}</b></div>
               </div>
+              {pane.detail.ref.kind === 'STORE_CREDIT' && pane.detail.ref.subKind && (
+                <section className="rounded border border-violet-300 bg-violet-50 p-3 text-sm" aria-live="polite">
+                  <b className="block text-violet-950">کد قابل‌مصرف اعتبار</b>
+                  {isManager ? (
+                    <div className="mt-2 flex gap-2 flex-wrap items-center">
+                      {revealedCreditCode ? (
+                        <code dir="ltr" className="rounded border border-violet-400 bg-white px-2 py-1 font-bold tracking-wider text-violet-950">{revealedCreditCode}</code>
+                      ) : (
+                        <button
+                          type="button"
+                          className={`${BUTTON} border border-violet-500 bg-white px-2.5 py-1.5 text-xs font-bold text-violet-950 hover:bg-violet-100`}
+                          onClick={revealCreditCode}
+                          disabled={revealBusy}
+                        >
+                          {revealBusy ? 'در حال دریافت امن…' : 'نمایش کد (فقط مدیر)'}
+                        </button>
+                      )}
+                      <span className="text-xs leading-5 text-violet-900">این کد جزو اطلاعات عادی گزارش نیست و با چاپ یا خروجی گزارش منتقل نمی‌شود.</span>
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-xs leading-6 text-violet-900">کد قابل‌مصرف در گزارش نمایش داده نمی‌شود؛ فقط مدیرِ واردشده می‌تواند آن را با درخواست جداگانه ببیند.</p>
+                  )}
+                  {revealError && <p className="mt-2 rounded border border-rose-300 bg-rose-50 p-2 text-xs text-rose-900" role="alert">{revealError}</p>}
+                </section>
+              )}
               <div className="border rounded overflow-hidden"><div className="bg-slate-100 px-3 py-2 font-bold text-sm">اقلام سند</div>{pane.detail.items.length ? <table className="w-full text-sm"><thead><tr className="border-b text-slate-600"><th className="p-2 text-right">کالا</th><th className="p-2 text-right">کد</th><th className="p-2 text-left">تعداد</th><th className="p-2 text-left">جمع</th></tr></thead><tbody>{pane.detail.items.map((item, index) => <tr key={`${item.code}-${index}`} className="border-b last:border-0"><td className="p-2">{item.name}</td><td className="p-2">{item.code}</td><td className="p-2 text-left" dir="ltr">{item.qty}</td><td className="p-2 text-left" dir="ltr">{money(item.lineTotal)}</td></tr>)}</tbody></table> : <p className="p-3 text-sm text-slate-600">برای این نوع سند، قلم کالایی ثبت نشده یا سند مستقیماً یک رویداد مالی است.</p>}</div>
               {pane.detail.note && <div className="rounded border border-slate-200 bg-slate-50 p-3 text-sm"><span className="font-bold">یادداشت:</span> {pane.detail.note}</div>}
             </div>

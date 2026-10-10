@@ -246,7 +246,8 @@ async function actorAndShift(userId: number | null | undefined, shiftId: number 
 
 async function documentForSource(source: SaleBridgeSource): Promise<FinancialDocumentDetail> {
   const base = {
-    ref: { kind: source.kind, id: source.id },
+    /** فقط discriminator امن؛ کد قابل‌مصرف هرگز در detail عادی نمی‌آید. */
+    ref: { kind: source.kind, id: source.id, subKind: source.subKind },
     sourceAmount: n(source.amount),
     documentLabel: source.label
   } as const
@@ -487,7 +488,7 @@ export const financialInspectorService = {
       : all
     const rows = sortRows(
       filtered.map((source): FinancialSourceRow => ({
-        ref: { kind: source.kind, id: source.id },
+        ref: { kind: source.kind, id: source.id, subKind: source.subKind },
         documentLabel: source.label,
         amount: source.amount,
         dateJalali: source.dateJalali,
