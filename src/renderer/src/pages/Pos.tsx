@@ -20,7 +20,7 @@ import { describeChargeRule } from '@shared/charges'
 import { describeDiscountPolicy, discountCeilingFor, fixedDiscountFor, scaleLineDiscounts } from '@shared/priceAdjust'
 import ManagerGate from '../components/ManagerGate'
 import { CENTRAL_WITHDRAW_GATE, PANEL_KEYS } from '@shared/panels'
-import type { ActiveDiscountInfo, CartLine, ShiftInfo, StoreCreditRow } from '@shared/types'
+import type { ActiveDiscountInfo, CartLine, ShiftInfo, StoreCreditRow, StoreCreditSafeRow } from '@shared/types'
 import {
   creditCartCoverage,
   isLineExcluded,
@@ -237,7 +237,7 @@ export default function Pos() {
    * یک‌بارمصرفش کامل سمت main و داخل همان تراکنش فاکتور انجام می‌گیرد.
    */
   const [creditCode, setCreditCode] = useState('')
-  const [creditInfo, setCreditInfo] = useState<StoreCreditRow | null>(null)
+  const [creditInfo, setCreditInfo] = useState<StoreCreditSafeRow | null>(null)
   const [creditErr, setCreditErr] = useState<string | null>(null)
   const [creditBusy, setCreditBusy] = useState(false)
   const [creditPreview, setCreditPreview] = useState<CreditPreviewLike | null>(null)
@@ -494,7 +494,7 @@ export default function Pos() {
     if (!code) return
     setCreditBusy(true)
     try {
-      const row = await call<StoreCreditRow>(CH.storeCreditLookup, { code })
+      const row = await call<StoreCreditSafeRow>(CH.storeCreditLookup, { code })
       setCreditInfo(row)
     } catch (e: any) {
       // پیام‌های فارسی تفکیک‌شده از main می‌آیند («قبلاً مصرف شده» / «منقضی» / …)

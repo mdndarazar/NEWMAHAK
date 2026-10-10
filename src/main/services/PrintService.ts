@@ -815,11 +815,14 @@ export const printService = {
     const settings = await readCreditSettings()
     const detail = await storeCreditService.detail({ id })
     const c = detail.credit
+    // DTO جزئیات عمداً credential ندارد؛ فقط ساخت سند در main رکورد اصلی را می‌خواند.
+    const credit = await prisma.storeCredit.findUnique({ where: { id }, select: { code: true } })
+    const code = credit?.code ?? ''
     const scope = normalizeRestrictScope(c.restrictScope)
     let barcodeDataUrl: string | null = null
     try {
       // §۷ — بارکد فقط *کد* را حمل می‌کند؛ هیچ مبلغی داخلش نیست، پس قابل جعل نیست.
-      barcodeDataUrl = await barcodePng(c.code, {
+      barcodeDataUrl = await barcodePng(code, {
         scale: 2,
         height: Math.round(settings.barcodeHeightMm),
         includetext: settings.barcodeIncludeText
@@ -828,7 +831,7 @@ export const printService = {
       barcodeDataUrl = null
     }
     return {
-      code: c.code,
+      code,
       amount: c.amount,
       usedAmount: c.usedAmount,
       remaining: c.remaining,

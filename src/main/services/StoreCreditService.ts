@@ -111,6 +111,7 @@ import type {
   CreditTimelineEvent,
   ManagerStoreCreditCodeReveal,
   StoreCreditRow,
+  StoreCreditSafeRow,
   StoreCreditReportRow,
   PagedRows,
   SaleReportPage
@@ -1520,7 +1521,7 @@ async function managerChange(
     toStatus?: string
     build: (row: any, reason: string) => { data: Record<string, unknown>; before: Record<string, unknown>; after: Record<string, unknown>; note: string }
   }
-): Promise<StoreCreditRow> {
+): Promise<StoreCreditSafeRow> {
   assertCreditId(input.id) // نشست ۱۵۰ — پیش از رمز
   /**
    * 🔴 نشست ۱۸۳ — از «فقط رمز مدیر» به «رمز مدیر یا رمز دوم/سوم همین پنل».
@@ -1575,7 +1576,7 @@ async function managerChange(
       after: JSON.stringify({ ...built.after, reason }),
       note: `${built.note} · دلیل: ${reason}`
     })
-    return shapeStoreCredit(updated)
+    return shapeStoreCreditSafe(shapeStoreCredit(updated))
   }, TX_OPTIONS)
 }
 
@@ -1585,7 +1586,7 @@ export async function voidCredit(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   return managerChange({
     ...input,
     actionTitle: 'ابطال اعتبار خرید',
@@ -1606,7 +1607,7 @@ export async function suspendCredit(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   return managerChange({
     ...input,
     actionTitle: 'تعلیق موقت اعتبار خرید',
@@ -1632,7 +1633,7 @@ export async function reactivateCredit(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   // نشست ۱۵۰ — خالی ⇒ ۰؛ اعشار/منفی/متن/بیش از ۳٬۶۵۰ روز ⇒ رد (قبلاً clamp بی‌صدا)
   const extend = input.extendDays == null ? 0 : assertCreditInt(input.extendDays, 'تعداد روز تمدید', 0, 3650, ' روز')
   return managerChange({
@@ -1676,7 +1677,7 @@ export async function changeCreditExpiry(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   const target = String(input.expiresAtJalali ?? '').trim()
   return managerChange({
     ...input,
@@ -1710,7 +1711,7 @@ export async function changeCreditAmount(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   // نشست ۱۵۰ — پیام قدیمی صفر/منفی حفظ شد؛ اعشار/متن/NaN/سقف ⇒ رد، نه گرد
   if (typeof input.amount === 'number' && Number.isFinite(input.amount) && input.amount <= 0)
     throw new BusinessError('مبلغ اعتبار باید بزرگ‌تر از صفر باشد.')
@@ -1745,7 +1746,7 @@ export async function changeCreditUses(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   // نشست ۱۵۰ — عددها پیش از رمز و بدون clamp (۵۰۰۰ دیگر بی‌صدا ۱۰۰۰ نمی‌شود)
   const reqMaxUses =
     input.maxUses == null ? null : assertCreditInt(input.maxUses, 'سقف دفعات مصرف', 1, MULTI_USE_UNLIMITED, ' بار')
@@ -1814,7 +1815,7 @@ export async function changeCreditHolder(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   return managerChange({
     ...input,
     actionTitle: 'تغییر دارنده‌ی اعتبار خرید',
@@ -1870,7 +1871,7 @@ export async function changeCreditRestrictions(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   // نشست ۱۵۰ — عددها پیش از رمز و بدون clamp
   const reqMinPurchase =
     input.minPurchase == null ? null : assertCreditInt(input.minPurchase, 'حداقل خرید', 0, CREDIT_INT_MAX, ' ریال')
@@ -2313,7 +2314,7 @@ export async function bulkIssueCredits(input: BulkIssueInput): Promise<CreditBul
           ]
         : [])
     ],
-    credits: rows.map((r) => shapeStoreCredit(r))
+    credits: rows.map((r) => shapeStoreCreditSafe(shapeStoreCredit(r)))
   }
 }
 
@@ -2684,14 +2685,15 @@ export const storeCreditService = {
 
   /**
    * بررسی یک اعتبار *بدون* مصرف کردنش (دکمه‌ی «بررسی» پنل فروش).
+   * کد فقط ورودیِ اعتبارسنجی است؛ پاسخِ استاندارد شناسهٔ امن دارد، نه credential.
    *
    * ⚠️ این تابع بیرون از هر تراکنشی اجرا می‌شود، پس همان‌جا **قفل موقت کد**
    * (§۸) اعمال می‌شود: کد اشتباه پشت‌سرهم ⇒ قفل، دقیقاً مثل رمز دوم پنل‌ها.
    */
-  async lookup(input: { code?: string; userId?: number | null } = {}): Promise<StoreCreditRow> {
+  async lookup(input: { code?: string; userId?: number | null } = {}): Promise<StoreCreditSafeRow> {
     const row = await guardCreditCode(String(input?.code ?? ''), input?.userId ?? null)
     const map = await receiptNoMap(prisma, [row])
-    return shapeStoreCredit(row, map)
+    return shapeStoreCreditSafe(shapeStoreCredit(row, map))
   },
 
   /**
@@ -2709,7 +2711,7 @@ export const storeCreditService = {
     lines?: CreditCartLine[]
     userId?: number | null
   }): Promise<{
-    credit: StoreCreditRow
+    credit: StoreCreditSafeRow
     ok: boolean
     applied: number
     error: string | null
@@ -2727,7 +2729,7 @@ export const storeCreditService = {
     })
     const map = await receiptNoMap(prisma, [row])
     return {
-      credit: shapeStoreCredit(row, map),
+      credit: shapeStoreCreditSafe(shapeStoreCredit(row, map)),
       ok: decision.ok,
       applied: decision.applied,
       error: decision.error,
@@ -3093,7 +3095,7 @@ export const storeCreditService = {
   bulkIssue: bulkIssueCredits,
 
   /** صدور تکیِ «اعتبار مدیریتی» (§۲) — همان `issueStoreCredit` با نوع MANUAL. */
-  async issueManual(input: IssueCreditInput): Promise<StoreCreditRow> {
+  async issueManual(input: IssueCreditInput): Promise<StoreCreditSafeRow> {
     /**
      * نشست ۱۴۳ · بند ۴-۲۹ — صدور دستی اعتبار بدون فاکتور واقعی همیشه رمز مدیر
      * می‌خواهد؛ Gate رندرر کافی نبود چون هر تماس IPC دورش می‌زد. پیش از تراکنش.
@@ -3119,7 +3121,7 @@ export const storeCreditService = {
       async (tx) => issueStoreCredit(tx, { ...safeInput, source: CreditSource.MANUAL, settings }),
       TX_OPTIONS
     )
-    return shapeStoreCredit(created)
+    return shapeStoreCreditSafe(shapeStoreCredit(created))
   },
 
   /**
@@ -3135,7 +3137,7 @@ export const storeCreditService = {
     file?: string | null
     /** ممیزی AUDIT-S129-01 — نتیجه‌ی چاپ نامعلوم بود و احتیاطاً شمرده می‌شود. */
     uncertain?: boolean
-  }): Promise<StoreCreditRow> {
+  }): Promise<StoreCreditSafeRow> {
     const now = new Date()
     /**
      * جلسه ۲۹ · §۱۰ — به‌روزرسانی شمارنده و لاگش داخل **یک** تراکنش رفتند.
@@ -3170,7 +3172,7 @@ export const storeCreditService = {
         after: log.after,
         note: creditPrintUncertainNote(log.note, input.uncertain)
       })
-      return shapeStoreCredit(updated)
+      return shapeStoreCreditSafe(shapeStoreCredit(updated))
     }, TX_OPTIONS)
   },
 

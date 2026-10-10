@@ -2154,7 +2154,7 @@ export interface CreditBulkResult {
   lengthGrown: boolean
   lengthMessage: string | null
   warnings: string[]
-  credits: StoreCreditRow[]
+  credits: StoreCreditSafeRow[]
 }
 
 /** صفحه‌ی جزئیات یک اعتبار (§۱۶). */

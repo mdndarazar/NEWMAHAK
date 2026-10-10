@@ -37,7 +37,7 @@ import { faDigits, money, jalaliToday, isValidJalaliDate, jalaliStartOfDay, jala
 import { describeChargeRule } from '@shared/charges'
 import { OrderType } from '@shared/enums'
 import { purchasePageRequest, purchaseRangeDirty } from '@shared/purchaseListPaging'
-import type { SecondaryWarehouseRow, StoreCreditRow } from '@shared/types'
+import type { SecondaryWarehouseRow, StoreCreditSafeRow } from '@shared/types'
 import {
   STOCK_PICK_TEXT,
   STORE_PICK_KEY,
@@ -199,7 +199,7 @@ export default function SalesInvoice() {
    * می‌گیرد؛ این‌جا فقط کد و مبلغش را نشان می‌دهیم.
    */
   const [creditCode, setCreditCode] = useState('')
-  const [creditInfo, setCreditInfo] = useState<StoreCreditRow | null>(null)
+  const [creditInfo, setCreditInfo] = useState<StoreCreditSafeRow | null>(null)
   const [creditErr, setCreditErr] = useState<string | null>(null)
   const [creditBusy, setCreditBusy] = useState(false)
   /** فوکوس داخل فیلد بارکد اعتبار ⇒ بارکدخوان سراسری خاموش (وگرنه دنبال کالا می‌گشت) */
@@ -461,7 +461,7 @@ export default function SalesInvoice() {
     if (!code) return
     setCreditBusy(true)
     try {
-      setCreditInfo(await call<StoreCreditRow>(CH.storeCreditLookup, { code }))
+      setCreditInfo(await call<StoreCreditSafeRow>(CH.storeCreditLookup, { code }))
     } catch (e: any) {
       // پیام‌های تفکیک‌شده‌ی فارسی از main («قبلاً مصرف شده» / «منقضی» / …)
       setCreditErr(e.message)
