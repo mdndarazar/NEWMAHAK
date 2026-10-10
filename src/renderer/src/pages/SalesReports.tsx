@@ -59,7 +59,7 @@ import { faDigits, money, isValidJalaliDate } from '@shared/jalali'
 import { physicalMoneyInDrawerAndCard, returnCreditAmountOf } from '@shared/accounting'
 import { buildNetToDrawer, splitDrawerPos } from '@shared/cashExplainer'
 import { DrawerVsPosSplit } from '../components/cash/DrawerVsPosSplit'
-import { NetToDrawerCard } from '../components/cash/NetToDrawerCard'
+import FinancialInspector from '../components/cash/FinancialInspector'
 import { NonCashDrawer } from '../components/cash/NonCashDrawer'
 import {
   creditOutstandingOf,
@@ -112,6 +112,7 @@ import type {
   SaleReportRow,
   SaleItemReportRow,
   SaleReportTotals,
+  SaleAccountingStatements,
   SaleBridgeBlock,
   SaleBridgeSource
 } from '@shared/types'
@@ -2586,6 +2587,7 @@ export default function SalesReports() {
           range={`از ${appliedFilters.fromJalali} تا ${appliedFilters.toJalali}`}
           channels={appliedFilters.channels}
           bridge={report.accounting?.bridge}
+          statements={report.accounting ?? null}
           appliedFiltersPayload={toServiceFilter(appliedFilters)}
           onOpenInvoice={(id) => setPaymentsFor(id)}
           onOpenBridgeDiag={openBridgeDiag}
@@ -2736,6 +2738,7 @@ function SaleSummaryBlock({
   range,
   channels,
   bridge,
+  statements,
   appliedFiltersPayload,
   onOpenInvoice,
   onOpenBridgeDiag,
@@ -2766,6 +2769,7 @@ function SaleSummaryBlock({
   range: string
   channels: string[]
   bridge?: SaleBridgeBlock | null
+  statements?: SaleAccountingStatements | null
   appliedFiltersPayload?: any
   onOpenInvoice?: (id: number) => void
   onOpenBridgeDiag?: () => void
@@ -2774,7 +2778,9 @@ function SaleSummaryBlock({
 }) {
   const [creditStoriesOpen, setCreditStoriesOpen] = useState(false)
   const [priorCreditStoriesOpen, setPriorCreditStoriesOpen] = useState(false)
-  const [explainerOpen, setExplainerOpen] = useState(false)
+  /** یک ریزبین واحد؛ focus تعیین می‌کند کاربر از کدام کاشی وارد شده است. */
+  const [financialInspectorOpen, setFinancialInspectorOpen] = useState(false)
+  const [financialInspectorFocus, setFinancialInspectorFocus] = useState<'overview' | 'drawer' | 'pos' | 'other' | 'manager' | 'nonCash'>('overview')
   const [nonCashOpen, setNonCashOpen] = useState(false)
   const [nonCashLoading, setNonCashLoading] = useState(false)
   const [exchangeRows, setExchangeRows] = useState<ExchangeReportRow[]>([])
@@ -2925,24 +2931,52 @@ function SaleSummaryBlock({
           destinationUnknownTotal={totals?.destinationUnknownTotal ?? destinationUnknownTotal}
           hasDiscrepancy={split.hasDiscrepancy}
           discrepancy={split.discrepancy}
-          onOpenExplainer={() => setExplainerOpen(true)}
+          discrepancyKind={
+            split.discrepancyKind === 'OFFICIAL_REFERENCE'
+              ? 'OFFICIAL_REFERENCE'
+              : split.discrepancyKind === 'CHAIN_COMPOSITION'
+                ? 'CHAIN_COMPOSITION'
+                : null
+          }
+          bridgeAlarm={netToDrawer.alarm}
+          onOpenExplainer={() => {
+            setFinancialInspectorFocus('overview')
+            setFinancialInspectorOpen(true)
+          }}
+          onOpenFinancialInspector={(focus) => {
+            setFinancialInspectorFocus(focus)
+            setFinancialInspectorOpen(true)
+          }}
           onOpenBridgeDiag={onOpenBridgeDiag}
           nonCash={nonCash}
           nonCashOpen={nonCashOpen}
           onToggleNonCash={() => setNonCashOpen((prev) => !prev)}
         />
 
-        {/* پاپ‌اور زنجیره ریاضی چطور رسیدیم */}
-        <NetToDrawerCard
-          open={explainerOpen}
-          onClose={() => setExplainerOpen(false)}
-          result={netToDrawer}
-          summaryNet={net}
-          isBalanced={bridge?.balanced ?? true}
+        {/* ریزبین واحد: هیچ مودال مالی دیگری روی آن باز نمی‌شود. */}
+        <FinancialInspector
+          open={financialInspectorOpen}
+          onClose={() => setFinancialInspectorOpen(false)}
+          scope={appliedFiltersPayload ?? {}}
+          totals={totals ?? {
+            cashTotal,
+            cardTotal,
+            creditTotal: creditCardTotal,
+            otherTotal,
+            managerAccountTotal,
+            destinationUnknownTotal,
+            refundCashTotal,
+            refundCardTotal
+          }}
+          statements={statements}
+          referenceRealCash={realCash}
+          split={split}
+          bridgeAlarm={netToDrawer.alarm}
+          initialFocus={financialInspectorFocus}
           onOpenBridgeDiag={onOpenBridgeDiag}
         />
 
-        {/* آکاردئون ریز تسویه‌های غیرنقدی */}
+        {/* آکاردئون legacy ریز تسویه‌های غیرنقدی؛ اعداد و منابع آن دست‌نخورده‌اند. */}
         <NonCashDrawer
           open={nonCashOpen}
           onToggle={() => setNonCashOpen((prev) => !prev)}

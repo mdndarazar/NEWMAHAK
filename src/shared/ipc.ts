@@ -181,6 +181,10 @@ export const IPC = {
   saleReportSummary: 'sale:report:summary',
   /** ردیف‌های آماده‌ی جدول «سرجمع فروش» + جمع‌ها */
   saleReportRows: 'sale:report:rows',
+  /** ریز اسناد سازنده‌ی یک ردیف مالی؛ فقط‌خواندنی، با جست‌وجو/sort/page در main. */
+  saleReportFinancialSources: 'sale:report:financialSources',
+  /** شناسنامهٔ فقط‌خواندنیِ سند عضو منبع مالی؛ عضویت ref دوباره سمت main کنترل می‌شود. */
+  saleReportFinancialDocument: 'sale:report:financialDocument',
   /** همان گزارش، ولی تفکیک‌شده به شیفت‌های هر روز */
   saleReportByShift: 'sale:report:byShift',
   /**

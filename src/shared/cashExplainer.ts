@@ -23,15 +23,23 @@ export interface NetToDrawerResult {
   alarmMessage?: string
 }
 
+export type SplitDiscrepancyKind = 'OFFICIAL_REFERENCE' | 'CHAIN_COMPOSITION' | null
+
 export interface SplitDrawerPosResult {
   drawer: number
   pos: number
   other: number
   managerOutside: number
   sum: number
+  /** تفاوتِ جمع کاشی‌ها با عدد مرجعِ فعلی گزارش. */
   vsOfficial: number
+  /** تفاوتِ جمع کاشی‌ها با انتهای زنجیرهٔ توضیحی؛ الزاماً پل باز نیست. */
   vsChain: number
+  hasOfficialDiscrepancy: boolean
+  hasChainDiscrepancy: boolean
   hasDiscrepancy: boolean
+  /** منشأ مقدار نمایشی اختلاف؛ برای جلوگیری از برچسب نادرست «پل باز». */
+  discrepancyKind: SplitDiscrepancyKind
   discrepancy: number
 }
 
@@ -198,8 +206,21 @@ export function splitDrawerPos(
   const vsOfficial = officialRealCash - sum
   const vsChain = chainEnd !== undefined ? chainEnd - sum : 0
 
-  const hasDiscrepancy = Math.abs(vsOfficial) > 0 || (chainEnd !== undefined && Math.abs(vsChain) > 0)
-  const discrepancy = Math.abs(vsOfficial) > 1 ? vsOfficial : vsChain
+  /**
+   * این دو مقایسه معنای یکسان ندارند. تا پیش از این، هشدار با آستانهٔ صفر فعال
+   * می‌شد ولی متن آن با آستانهٔ یک ریال از مقایسه‌ای دیگر انتخاب می‌شد؛ نتیجه
+   * ممکن بود هشدارِ درست با مبلغ/علت نادرست باشد. هیچ عددی تغییر نمی‌کند؛ فقط
+   * منشأ اختلاف برای UI صریح می‌شود.
+   */
+  const hasOfficialDiscrepancy = Math.abs(vsOfficial) > 0
+  const hasChainDiscrepancy = chainEnd !== undefined && Math.abs(vsChain) > 0
+  const hasDiscrepancy = hasOfficialDiscrepancy || hasChainDiscrepancy
+  const discrepancyKind: SplitDiscrepancyKind = hasOfficialDiscrepancy
+    ? 'OFFICIAL_REFERENCE'
+    : hasChainDiscrepancy
+      ? 'CHAIN_COMPOSITION'
+      : null
+  const discrepancy = discrepancyKind === 'OFFICIAL_REFERENCE' ? vsOfficial : vsChain
 
   return {
     drawer,
@@ -209,7 +230,10 @@ export function splitDrawerPos(
     sum,
     vsOfficial,
     vsChain,
+    hasOfficialDiscrepancy,
+    hasChainDiscrepancy,
     hasDiscrepancy,
+    discrepancyKind,
     discrepancy
   }
 }

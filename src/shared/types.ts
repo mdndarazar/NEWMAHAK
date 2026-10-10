@@ -770,6 +770,8 @@ export interface SaleReportFilter {
   productSearch?: string | null
   /** فقط فاکتورهای تجمیع‌نشده (برای پنل تجمیع و انتقال) */
   onlyNotConsolidated?: boolean
+  /** درخواست صریح بازهٔ کامل؛ گزارش عادیِ بی‌تاریخ همچنان «امروز» است. */
+  fullRange?: boolean
   /** پیش‌نمایش/عملیات مدیریتی روی همین فاکتورهای مشخص، مستقل از صفحه‌ی گزارش */
   invoiceIds?: number[] | null
   /**
@@ -1207,6 +1209,122 @@ export interface SaleBridgeSource {
   /** شناسه‌ای که UI با آن می‌تواند سند مبدأ را باز کند */
   invoiceId: number | null
   receiptNo: number | null
+}
+
+/**
+ * ===========================================================================
+ * ریزبین مالی گزارش فروش — قرارداد فقط‌خواندنی.
+ *
+ * هر key مستقیماً یک ردیف موجود در پل تطبیق است؛ هیچ فرمول یا bucket موازی
+ * در Renderer تعریف نمی‌شود. `totalAmount` همیشه مبلغ authoritative همان ردیف
+ * است، و `sourceAmount` فقط مجموع اسناد واقعاً مطابق search فعلی است.
+ * ===========================================================================
+ */
+export const FINANCIAL_SOURCE_KEYS = [
+  'realCash',
+  'managerAccountReceived',
+  'destinationUnknownReceived',
+  'storeCreditIssued',
+  'priorCreditSettlements',
+  'priorClearedCheques',
+  'priorManagerAccountReceived',
+  'priorDestinationUnknownReceived',
+  'storeCreditUsed',
+  'uncollectedCredit',
+  'cashRefunds',
+  'cardRefunds',
+  'cardToCardRefunds',
+  'exchangeCashRefunds',
+  'exchangeCardRefunds',
+  'exchangeCardToCardRefunds',
+  'priorDebtReturns',
+  'overpayReceived'
+] as const
+export type FinancialSourceKey = (typeof FINANCIAL_SOURCE_KEYS)[number]
+
+export type FinancialSourceSort =
+  | 'DATE_DESC'
+  | 'DATE_ASC'
+  | 'AMOUNT_DESC'
+  | 'AMOUNT_ASC'
+  | 'DOCUMENT_DESC'
+  | 'DOCUMENT_ASC'
+
+export interface FinancialSourceRequest {
+  scope: SaleReportFilter
+  key: FinancialSourceKey
+  skip?: number
+  take?: number
+  search?: string
+  sort?: FinancialSourceSort
+}
+
+export interface FinancialSourceRow {
+  ref: Pick<SaleBridgeSource, 'kind' | 'id'>
+  /** متن سرور، از همان سند سازنده؛ برای نمایش و جست‌وجوی امن. */
+  documentLabel: string
+  amount: number
+  dateJalali: string | null
+  invoiceId: number | null
+  receiptNo: number | null
+  /** اثر این سند در ردیف پل؛ منابع فعلی همگی سهم مثبت دارند و جهت در خود ردیف پل است. */
+  effect: 'IN' | 'OUT' | 'NON_CASH' | 'BALANCE'
+}
+
+export interface FinancialSourceResult {
+  key: FinancialSourceKey
+  label: string
+  hint: string
+  /** مبلغ رسمی ردیف پل، مستقل از صفحه/جست‌وجوی منابع. */
+  totalAmount: number
+  /** جمع اسناد منطبق با search جاری؛ هرگز جای مبلغ رسمی نمی‌نشیند. */
+  sourceAmount: number
+  totalCount: number
+  filteredCount: number
+  page: SaleReportPage
+  sort: FinancialSourceSort
+  search: string
+  /** اگر false باشد UI نباید تیک هم‌خوانی سبز نمایش دهد. */
+  reconciles: boolean
+  difference: number
+  sources: FinancialSourceRow[]
+}
+
+export interface FinancialSourceResponse {
+  ok: boolean
+  result?: FinancialSourceResult
+  message?: string
+}
+
+export interface FinancialDocumentRequest {
+  scope: SaleReportFilter
+  key: FinancialSourceKey
+  ref: Pick<SaleBridgeSource, 'kind' | 'id'>
+}
+
+/** شناسنامهٔ فقط‌خواندنیِ سندی که عضویت آن در منبع مالی سمت سرور تأیید شده است. */
+export interface FinancialDocumentDetail {
+  ref: Pick<SaleBridgeSource, 'kind' | 'id'>
+  title: string
+  /** سهم همین سند در عدد مالی بازشده، نه لزوماً کل مبلغ سند. */
+  sourceAmount: number
+  documentAmount: number
+  documentLabel: string
+  occurredAt: { dateJalali: string | null; time: string | null }
+  invoice: { id: number; receiptNo: number; issuedAtJalali: string | null } | null
+  customer: { id: number | null; name: string }
+  actor: { id: number | null; name: string }
+  shift: { id: number | null; name: string | null }
+  settlement: { method: string; methodLabel: string; reference: string | null; status: string | null }
+  items: Array<{ name: string; code: string; qty: number; unitPrice: number; lineTotal: number }>
+  note: string | null
+  voided: boolean
+}
+
+export interface FinancialDocumentResponse {
+  ok: boolean
+  detail?: FinancialDocumentDetail
+  message?: string
 }
 
 /** بلوک ۷ — پل تطبیق. */

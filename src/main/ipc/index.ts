@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron'
 import { cardTransferService } from '../services/CardTransferService'
 import { bridgeDiagnosticsService } from '../services/bridgeDiagnosticsService'
+import { financialInspectorService } from '../services/financialInspectorService'
 import { pendingRestockService } from '../services/PendingRestockService'
 import { stockCountService } from '../services/StockCountService'
 import { staffReportService } from '../services/StaffReportService'
@@ -721,6 +722,9 @@ export function registerIpcHandlers(): void {
   handle(IPC.saleCreditList, (p) => salesService.creditList(p ?? {}))
   handle(IPC.saleReportSummary, (p) => salesService.summary(p ?? {}))
   handle(IPC.saleReportRows, (p) => salesService.reportRows(p ?? {}))
+  // ریزبین مالی: فقط‌خواندنی و با authorization سمت main، مستقل از gate ظاهری renderer.
+  handle(IPC.saleReportFinancialSources, (p) => financialInspectorService.sources(p))
+  handle(IPC.saleReportFinancialDocument, (p) => financialInspectorService.document(p))
   // نشست ۳۱۸ — نمای تشخیص پل تطبیق (طرح برنده «کامیلا»، فاز ۲-۴)
   // open همیشه رمز تازه می‌خواهد (strict)؛ بقیه با نشست باز همان پنل. actor از main.
   handle(IPC.saleReportBridgeDiagOpen, (p) => bridgeDiagnosticsService.open((p as any)?.scope ?? {}, (p as any)?.password))

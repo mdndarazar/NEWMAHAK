@@ -87,6 +87,18 @@ assert.equal(splitWithOther.other, 10000000, 'سهم سایر باید مستق�
 assert.equal(splitWithOther.hasDiscrepancy, false, 'جمع کشو + پوز + سایر دقیقاً برابر با officialRealCash است')
 console.log('  ✓ سبد سایر / اعتباری به‌درستی و به روش غیرهیدرولیکی شناسایی شد')
 
+// اختلاف یک ریالی هم باید دقیقاً از همان مقایسه‌ای نمایش داده شود که هشدار را ساخته است.
+const officialOneRialDifferent = splitDrawerPos(sampleTotals, cardOnly, officialRealCash + 1, officialRealCash)
+assert.equal(officialOneRialDifferent.hasDiscrepancy, true, 'اختلاف ۱ ریال با عدد مرجع نباید حذف شود')
+assert.equal(officialOneRialDifferent.discrepancyKind, 'OFFICIAL_REFERENCE', 'منشأ اختلاف ۱ ریالی باید عدد مرجع باشد')
+assert.equal(officialOneRialDifferent.discrepancy, 1, 'مبلغ نمایشی باید همان اختلاف مرجع باشد، نه اختلاف زنجیره')
+
+const chainOnlyDifferent = splitDrawerPos(sampleTotals, cardOnly, officialRealCash, officialRealCash + 2)
+assert.equal(chainOnlyDifferent.hasDiscrepancy, true, 'اختلاف زنجیره باید قابل مشاهده باشد')
+assert.equal(chainOnlyDifferent.discrepancyKind, 'CHAIN_COMPOSITION', 'اختلاف فقط زنجیره نباید «پل باز» نام بگیرد')
+assert.equal(chainOnlyDifferent.discrepancy, 2, 'مبلغ نمایشی اختلاف زنجیره باید دقیق باشد')
+console.log('  ✓ منشأ اختلاف رسمی و اختلاف صرفاً ترکیبی از هم تفکیک شدند')
+
 console.log('\n--- ۴. آزمون جهش خطا (Mutation Test) ---')
 
 const sampleBridge = goldenData.fixtures.closed.bridge

@@ -28,7 +28,7 @@ import { remainingOf, isSimpleReturn, refundFromReceivedOf, exchangeRefundPartOf
 import { debtAdjustmentsByInvoice, adjustmentsOrEmpty } from './invoiceDebt'
 import { creditIdsForReportScope } from './creditReportScope'
 import { bridgeDrillPager } from '@shared/reportExtraOutput'
-import { eventInvoiceContextWhere, paymentEventOwnerWhere, resolveReportEventShiftIds, returnEventOwnerWhere, reportEventInvoiceStatusWhere, financialStatementInvoiceWhere, excludedStatusStatementWarning } from './SalesService'
+import { eventInvoiceContextWhere, paymentEventOwnerWhere, resolveReportEventShiftIds, resolveReportPeriod, returnEventOwnerWhere, reportEventInvoiceStatusWhere, financialStatementInvoiceWhere, excludedStatusStatementWarning, saleWhere } from './SalesService'
 import type {
   SaleAccountingStatements,
   SaleBridgeRow,
@@ -86,6 +86,32 @@ export interface StatementScope {
   /** گردش نقدی خارج از فروش (برداشت/واریز) — از CashMovement */
   withdrawals?: number
   deposits?: number
+}
+
+/**
+ * اسکوپ فقط‌خواندنیِ ریزبین مالی. این helper همان تاریخ مؤثر، دروازهٔ وضعیت و
+ * مالک رویدادِ `buildStatements` را نگه می‌دارد تا هیچ سندی بیرون از معنای عدد
+ * گزارش به مدیر نمایش داده نشود. حرکت‌های خارج از فروش برای خواندن منابع پل
+ * لازم نیستند و صفر هستند؛ SalesService هنگام ساخت خود گزارش مقدار واقعی را
+ * تزریق می‌کند.
+ */
+export async function resolveAccountingReadScope(filter: SaleReportFilter): Promise<StatementScope> {
+  const where = saleWhere(filter)
+  const period = await resolveReportPeriod(filter, where)
+  const gatedScope: StatementScope = {
+    where: financialStatementInvoiceWhere(where, filter),
+    from: period.from,
+    to: period.to,
+    period: {
+      fromJalali: period.from ? toJalaliDate(period.from) : null,
+      toJalali: period.to ? toJalaliDate(period.to) : null,
+      source: period.source
+    },
+    filter,
+    withdrawals: 0,
+    deposits: 0
+  }
+  return { ...gatedScope, eventShiftIds: await resolveReportEventShiftIds(filter) }
 }
 
 /**
@@ -1675,6 +1701,20 @@ async function bridgeSources(
     return { sources: out, page: { ...makePage(0), failed: true } }
   }
   return { sources: out, page: makePage(out.length) }
+}
+
+/**
+ * درگاه فقط‌خواندنیِ منابع یک ردیف پل برای ریزبین مالی. از همان تابع داخلی
+ * استفاده می‌شود تا predicate/تقسیم مبلغِ aggregate و source-list هرگز دو بار
+ * نوشته نشود. اعتبارسنجی دسترسی و ورودی IPC عمداً در سرویس بالادست می‌ماند.
+ */
+export async function readBridgeSources(
+  scope: StatementScope,
+  key: string,
+  skip = 0,
+  take = 200
+): Promise<{ sources: SaleBridgeSource[]; page: SaleReportPage }> {
+  return bridgeSources(scope, key, skip, take)
 }
 
 /** نام خالی / «مشتری عمومی» در خط کنترل وصول نسیه نشان داده نمی‌شود. */
