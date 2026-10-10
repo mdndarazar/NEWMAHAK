@@ -463,13 +463,14 @@ export function effectiveStatus(c: CreditCore, now: Date | number = Date.now()):
 }
 
 /**
- * وضعیت بعدی، بعد از یک مصرف موفق — قلبِ تفکیک «یک‌بارمصرف» از «چندباره» (§۴).
+ * وضعیت بعدی، بعد از یک مصرف موفق — قلبِ سیاستِ مصرف اعتبار (§۴).
  *
- *   • یک‌بارمصرف (`multiUse = false`): با *یک* بار مصرف — حتی جزئی — وضعیت
- *     قطعاً می‌بندد (USED). باقی‌مانده‌اش (اگر باشد) طبق مسیر تاریخی تعویض کالا
- *     به شکل یک اعتبار *جدید* به مشتری برمی‌گردد، نه روی همین رکورد.
+ *   • کوپن تک‌مصرف واقعی (`multiUse = false` و `carryRemainder = false`): با
+ *     نخستین مصرف، حتی جزئی، `USED` می‌شود.
+ *   • اعتبار غیرچندباره با حفظ مانده: بارکد و مانده روی همان رکورد می‌مانند و
+ *     تا صفرشدن مبلغ `PARTIALLY_USED` است؛ این مسیر کد جانشین صادر نمی‌کند.
  *   • چندباره (`multiUse = true`): تا وقتی هم مبلغ مانده و هم دفعه مانده،
- *     وضعیت `PARTIALLY_USED` است؛ با تمام شدن *هرکدام* (مبلغ یا دفعات) می‌بندد.
+ *     `PARTIALLY_USED` است؛ با تمام شدن هرکدام می‌بندد.
  */
 export function statusAfterRedeem(c: CreditCore, applied: number): string {
   const amount = Math.max(0, Math.round(Number(c.amount) || 0))
@@ -681,7 +682,18 @@ export function decideRedeem(c: CreditCore, ctx: RedeemContext): RedeemDecision 
   }
 
   if (remaining <= 0) return fail('باقی‌مانده‌ی این اعتبار صفر است.')
-  if (usesLeft <= 0)
+  /**
+   * `carryRemainder=true` برای اعتبار غیرچندباره یعنی «مانده روی *همین* سند
+   * بماند» (تصمیم نشست ۱۸۴)، نه این‌که بعد از نخستین مصرف جزئی قفل شود.
+   *
+   * پیش از این استثنا، `statusAfterRedeem` درست `PARTIALLY_USED` می‌نوشت اما
+   * همین گارد با `maxUses=1` مصرف دومِ مانده را رد می‌کرد؛ در نتیجه هم بارکد
+   * جدیدی صادر نمی‌شد و هم پول مشتری عملاً گیر می‌کرد. در حالت
+   * `carryRemainder=false` واقعاً کوپنِ تک‌مصرف است و سقف دفعات همچنان سخت
+   * اعمال می‌شود. برای اعتبار چندباره نیز `maxUses` دقیقاً مثل قبل پابرجاست.
+   */
+  const usageLimitApplies = c.multiUse === true || c.carryRemainder === false
+  if (usageLimitApplies && usesLeft <= 0)
     return fail(
       `دفعات مجاز مصرف این اعتبار تمام شده است (${Math.max(1, Math.round(Number(c.maxUses ?? 1)))} بار مجاز بود).`
     )

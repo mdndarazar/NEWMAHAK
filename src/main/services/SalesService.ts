@@ -3239,6 +3239,15 @@ async function runReturn(
       })
       const redeemedAmt = Math.max(0, toNumberRial(redeemedOnInvoice._sum.amount ?? 0))
       /**
+       * پرداخت اعتبار خرید، پولِ قابل‌برگشت از صندوق نیست: در برگشت کامل، همان
+       * دفتر مصرف معکوس و خود اعتبار دوباره فعال می‌شود. بنابراین هم گیتِ
+       * «اضافه‌دریافت» و هم تشخیصِ بدهیِ بعد از برگشت باید فقط پول واقعی را
+       * ببینند. در غیر این صورت، برگشت کاملِ یک فروش ۱۰۰٪ اعتباری به اشتباه
+       * درخواست تأیید «اضافه‌دریافت» می‌کرد، با این که هیچ پولی از صندوق خارج
+       * نشده و اعتبار همان لحظه قرار است بازگردد.
+       */
+      const cashLikeReceived = await cashLikeReceivedOf(tx, invoice.id, debtBefore.received)
+      /**
        * نشست ۱۹۷ — سقف خروج = پول واقعی (نقد/کارت/چک پاس‌شده)، نه `paidTotal`
        * و نه `EXCHANGE_CREDIT`. اعتبار خرج‌شده دوباره اعتبار می‌شود، نقد نه.
        */
@@ -3260,7 +3269,7 @@ async function runReturn(
        */
       const afterNone = remainingOf({
         grandTotal: toNumberRial(invoice.grandTotal),
-        received: debtBefore.received,
+        received: cashLikeReceived,
         returnedValue: debtBefore.returnedValue + returnTotal,
         refundFromReceived: debtBefore.refundFromReceived
       })
@@ -3326,14 +3335,12 @@ async function runReturn(
         refundAmount: refund?.amount ?? 0
       })
       /**
-       * نشست ۱۹۷ — اضافه‌دریافت برگشت روی سند تعویض را با پول واقعی بسنج، نه با
-       * EXCHANGE_CREDIT؛ وگرنه برگشت نسیه با تبدیل به NONE هشدار اضافه‌دریافت
-       * جعلی می‌دهد و مسیر «بله ثبت کن» اعتبار می‌سازد.
+       * اضافه‌دریافت برگشت را در همه‌ی نوع فاکتورها با پول واقعی بسنج؛ نه
+       * EXCHANGE_CREDIT و نه STORE_CREDIT نقد نیستند. اعتبار مصرف‌شده در برگشت
+       * کامل از طریق `reverseInvoiceRedemptions` برمی‌گردد، نه با ساختن یک
+       * اضافه‌دریافت یا الزام تایید مدیر.
        */
-      const overpayReceived =
-        invoice.orderType === OrderType.EXCHANGE
-          ? await cashLikeReceivedOf(tx, invoice.id, debtBefore.received)
-          : debtBefore.received
+      const overpayReceived = await cashLikeReceivedOf(tx, invoice.id, debtBefore.received)
       const after = remainingOf({
         grandTotal: toNumberRial(invoice.grandTotal),
         received: overpayReceived,
