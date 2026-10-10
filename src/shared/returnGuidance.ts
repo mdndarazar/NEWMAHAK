@@ -152,11 +152,17 @@ export function guideReturn(input: {
           state: 'ALLOWED',
           reason: 'ثبت درخواست کارت‌به‌کارت توسط مدیر.'
         },
-        STORE_CREDIT: {
-          state: p.remainingDebt > 0 ? 'BLOCKED' : 'ALLOWED',
-          reasonCode: p.remainingDebt > 0 ? 'DEBT_REMAINS' : undefined,
-          reason: p.remainingDebt > 0 ? 'تا زمان تسویه کامل بدهی، صدور اعتبار مجاز نیست.' : 'صدور بارکد اعتبار خرید.'
-        }
+        STORE_CREDIT:
+          p.remainingDebt > 0
+            ? {
+                state: 'BLOCKED',
+                reasonCode: 'DEBT_REMAINS',
+                reason: 'تا زمان تسویه کامل بدهی، صدور اعتبار مجاز نیست.'
+              }
+            : {
+                state: 'ALLOWED',
+                reason: 'صدور بارکد اعتبار خرید.'
+              }
       },
       notices: [
         {

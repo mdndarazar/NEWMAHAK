@@ -105,12 +105,15 @@ import type {
   CreditReportResult,
   CreditSettlementRow,
   ExchangeReportResult,
+  ExchangeReportRow,
   PagedRows,
   SaleReportResult,
   SaleReportPage,
   SaleReportRow,
   SaleItemReportRow,
-  SaleReportTotals
+  SaleReportTotals,
+  SaleBridgeBlock,
+  SaleBridgeSource
 } from '@shared/types'
 
 /**

@@ -64,7 +64,7 @@ const isLargeRow = (frozen: readonly BridgeLikeRow[], row: BridgeLikeRow): boole
  * رتبه‌ی نزولیِ «بزرگ‌ترین ردیفهای غیرصفر» بدون تقسیمبندی: بدون جمع زدن،
  * فقط از روی compare.
  */
-const largestRows = (frozen: readonly BridgeLikeRow[], take = 3): BridgeLikeRow[] => {
+const largestRows = <T extends BridgeLikeRow>(frozen: readonly T[], take = 3): T[] => {
   const nonzero = frozen.filter((r) => unnestNumber(r.amount) !== 0)
   const sorted = [...nonzero].sort((a, b) => unnestNumber(b.amount) - unnestNumber(a.amount))
   return sorted.slice(0, take)

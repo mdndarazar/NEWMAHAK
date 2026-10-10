@@ -148,8 +148,6 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
           </div>
         )}
       </div>
-        )}
-      </div>
 
       {/* سطر جمع کل پولی که باید باشد */}
       <div className="bg-white/80 border border-sky-300 rounded-lg p-2.5 flex items-center justify-between flex-wrap gap-2">

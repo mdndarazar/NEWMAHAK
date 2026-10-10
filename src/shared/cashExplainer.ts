@@ -124,14 +124,6 @@ export function buildNetToDrawer(
     }
   }
 
-  // اگر ردیف چک پاس‌شده تفکیک‌شده به نقد/کارت در cashBlock بود
-  if (cashBlock) {
-    const cqToCashCard = Number(cashBlock.clearedChequeToCash ?? 0) + Number(cashBlock.clearedChequeToCard ?? 0)
-    if (cqToCashCard > 0 && !byKey.has('clearedChequeToCashCard')) {
-      // فقط در صورتی که جداگانه نیاز به نمایش باشد
-    }
-  }
-
   // ردیف پلی که در هیچ گروهی تعریف نشده ⇒ خط جدای «سایر» (هرگز بی‌صدا حذف نمی‌شود)
   const leftovers = bridge.rows.filter((r) => !used.has(r.key) && (r.amount ?? 0) !== 0)
   for (const r of leftovers) {
