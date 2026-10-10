@@ -10,6 +10,24 @@ export const IPC = {
   categoryUpsert: 'category:upsert',
   stockAdjust: 'stock:adjust',
   stockMovements: 'stock:movements',
+  /** WooCommerce stock sync — فقط موجودی انبار، نه قیمت/سفارش/مشتری. */
+  wooStatus: 'woo:status',
+  wooSettingsSave: 'woo:settings:save',
+  wooTest: 'woo:test',
+  wooCatalog: 'woo:catalog',
+  wooLinks: 'woo:links',
+  wooLinkCreate: 'woo:links:create',
+  wooLinksPause: 'woo:links:pause',
+  wooLinksResumePreview: 'woo:links:resumePreview',
+  wooLinksResumeApply: 'woo:links:resumeApply',
+  wooLinksUnlink: 'woo:links:unlink',
+  wooSyncNow: 'woo:sync:now',
+  wooParkedRetry: 'woo:parked:retry',
+  wooApprovals: 'woo:approvals',
+  wooApprovalResolve: 'woo:approvals:resolve',
+  wooLinksPauseProduct: 'woo:links:pauseProduct',
+  wooLinksResumeProductMahak: 'woo:links:resumeProductMahak',
+  wooLogs: 'woo:logs',
 
   // فروش
   saleCreate: 'sale:create',
@@ -112,6 +130,11 @@ export const IPC = {
   creditList: 'credit:list',
   /** جزئیات یک اعتبار + دفتر مصرف + Timeline کامل رویدادها */
   creditDetail: 'credit:detail',
+  /**
+   * افشای صریحِ یک کد اعتبار از یک source گزارش؛ فقط برای نشست فعالِ مدیر.
+   * هیچ فهرست/گزارش معمولی نباید این مقدار را در DTO خودش حمل کند.
+   */
+  creditManagerCodeReveal: 'credit:manager:code:reveal',
   /** صدور تکیِ اعتبار توسط مدیریت (source = MANUAL) */
   creditIssue: 'credit:issue',
   /** تولید گروهی (۱ تا هزاران) با Batch Insert و سنجش ظرفیت کد */
@@ -155,13 +178,29 @@ export const IPC = {
   creditPdf: 'credit:pdf',
   /** HTML پیش‌نمایش سند اعتبار (بدون چاپ) */
   creditPreviewHtml: 'credit:previewHtml',
+  /** نشست ۳۱۷ — پیش‌نمایش/چاپ آزمایشی چاپگر در کارت «چاپ سند اعتبار» */
+  creditSampleHtml: 'credit:sampleHtml',
+  creditSamplePrint: 'credit:samplePrint',
   /** فهرست فاکتورهای نسیه (تسویه‌نشده/جزئی) + تسویه‌های نسیه‌ی بازه‌های قبل */
   saleCreditList: 'sale:credit:list',
   saleReportSummary: 'sale:report:summary',
   /** ردیف‌های آماده‌ی جدول «سرجمع فروش» + جمع‌ها */
   saleReportRows: 'sale:report:rows',
+  /** ریز اسناد سازنده‌ی یک ردیف مالی؛ فقط‌خواندنی، با جست‌وجو/sort/page در main. */
+  saleReportFinancialSources: 'sale:report:financialSources',
+  /** شناسنامهٔ فقط‌خواندنیِ سند عضو منبع مالی؛ عضویت ref دوباره سمت main کنترل می‌شود. */
+  saleReportFinancialDocument: 'sale:report:financialDocument',
   /** همان گزارش، ولی تفکیک‌شده به شیفت‌های هر روز */
   saleReportByShift: 'sale:report:byShift',
+  /**
+   * نشست ۳۱۸ — نمای تشخیص پل تطبیق (طرح برنده «کامیلا»).
+   * open همیشه رمز تازه می‌خواهد؛ بقیه با نشستِ بازِ همان پنل کار می‌کنند.
+   */
+  saleReportBridgeDiagOpen: 'sale:report:bridgeDiag:open',
+  saleReportBridgeDiagSources: 'sale:report:bridgeDiag:sources',
+  saleReportBridgeDiagNotes: 'sale:report:bridgeDiag:notes',
+  saleReportBridgeDiagNoteAdd: 'sale:report:bridgeDiag:noteAdd',
+  saleReportBridgeDiagDoc: 'sale:report:bridgeDiag:doc',
   /** ردیف‌های «جزئیات فروش» (سطر کالا به کالا) */
   saleReportItems: 'sale:report:items',
   /**
@@ -255,6 +294,10 @@ export const IPC = {
 
   // شیفت (جلسه ۱۹: هر رکورد شیفت = یک «نشست»)
   shiftCurrent: 'shift:current',
+  /** وضعیت نشست برای UI: بدون خطا، بدون ساختن نشست AUTO (برخلاف shift:current) */
+  shiftStatus: 'shift:status',
+  /** نشست ۳۱۰ · فاز ۲ — اعلام اضافه‌کاری نشستِ بازِ دیروز (گیت‌های سروری، فقط یک‌بار) */
+  shiftOvertimeDeclare: 'shift:overtime:declare',
   shiftOpen: 'shift:open',
   shiftClose: 'shift:close',
   shiftList: 'shift:list',
@@ -322,6 +365,12 @@ export const IPC = {
    * ورودی هیچ قالبی ندارد: تنظیمات *ذخیره‌شده* سمت main خوانده می‌شود.
    */
   printTestPage: 'print:testPage',
+  /**
+   * «چاپ فاکتور نمونه» کارت‌های تکی/عمده: یک رسید *واقعی* با داده‌ی نمونه‌ی
+   * همان پیش‌نمایش (`printService.previewHtml`) و تنظیمات ذخیره‌شده، از همان
+   * موتور فاکتور واقعی (`printMaybeRaw`). برگه‌ی کالیبراسیون همچنان `printTestPage` است.
+   */
+  printSampleInvoice: 'print:sampleInvoice',
   barcodePng: 'barcode:png',
 
   // مدیر (رمز تنظیمات / کالاها / فاکتور خرید و «نشست مدیر»)
@@ -469,6 +518,8 @@ export const IPC = {
    * فرم بماند (مورد ۱).
    */
   settingsShiftByTime: 'settings:shift:byTime',
+  /** نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت (۰=خاموش؛ تغییر با رمز مدیر) */
+  settingsShiftOvertimeMax: 'settings:shift:overtimeMax',
   /**
    * جلسه ۱۹ · بند ۹ — «تاریخ و ساعت رسمی»: خواندن، ذخیره‌ی افست دستی، و دکمه‌ی
    * «بررسی ساعت سیستم» (بدون نیاز به اینترنت).

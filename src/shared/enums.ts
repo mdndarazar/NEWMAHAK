@@ -14,7 +14,13 @@ export const StockReason = {
    * انتقال از «انبار مرکزی» به انبار فروشگاه، در لحظه‌ی فروش و فقط وقتی
    * چک‌باکس «برداشت خودکار از انبار مرکزی» روشن باشد (مورد ۳).
    */
-  CENTRAL_WITHDRAW: 'CENTRAL_WITHDRAW'
+  CENTRAL_WITHDRAW: 'CENTRAL_WITHDRAW',
+  /** خروج موجودی که از ژورنال WooCommerce آمده؛ هیچ فروش/درآمدی در MAHAK نمی‌سازد. */
+  WOO_SYNC_OUT: 'WOO_SYNC_OUT',
+  /** ورود موجودی که از ژورنال WooCommerce آمده؛ فقط موجودی را هم‌تراز می‌کند. */
+  WOO_SYNC_IN: 'WOO_SYNC_IN',
+  /** هم‌ترازسازی دستی/وصل دوباره با سایت؛ فقط اثر موجودی دارد. */
+  WOO_SYNC_ADJUST: 'WOO_SYNC_ADJUST'
 } as const
 export type StockReason = (typeof StockReason)[keyof typeof StockReason]
 
@@ -566,6 +572,13 @@ export const AuditAction = {
   PRICE_EDIT: 'PRICE_EDIT',
   STOCK_ADJUST: 'STOCK_ADJUST',
   STOCK_INITIAL: 'STOCK_INITIAL',
+  /** اتصال/قطع/وصل یا همگام‌سازی موجودی سایت WooCommerce (فقط موجودی). */
+  WOO_SYNC_SETTINGS: 'WOO_SYNC_SETTINGS',
+  WOO_LINK_CREATE: 'WOO_LINK_CREATE',
+  WOO_LINK_PAUSE: 'WOO_LINK_PAUSE',
+  WOO_LINK_RESUME: 'WOO_LINK_RESUME',
+  WOO_LINK_UNLINK: 'WOO_LINK_UNLINK',
+  WOO_SYNC_RUN: 'WOO_SYNC_RUN',
   DELETE: 'DELETE',
   /** نشست ۶۴ · بند ۴-۲۲ — ابطال سند مالی (سند می‌ماند، با مهر کی/کِی/چرا) */
   VOID: 'VOID',
@@ -587,6 +600,8 @@ export const AuditAction = {
   CONSOLIDATE: 'CONSOLIDATE',
   SHIFT_OPEN: 'SHIFT_OPEN',
   SHIFT_CLOSE: 'SHIFT_CLOSE',
+  /** نشست ۳۱۰ — اعلام اضافه‌کاری شیفت شب (دائم در حسابرسی، با دلیل و سقف) */
+  SHIFT_OVERTIME: 'SHIFT_OVERTIME',
   SETTINGS_UPDATE: 'SETTINGS_UPDATE',
   /** برداشت خودکار کمبود موجودی از «انبار مرکزی» در لحظه‌ی فروش */
   CENTRAL_WITHDRAW: 'CENTRAL_WITHDRAW',

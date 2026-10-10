@@ -37,6 +37,7 @@ import {
   MIN_CREDIT_CODE_LENGTH,
   assessCodeSpace,
   creditAlphabet,
+  creditPaperSize,
   isCreditReprint,
   normalizeCreditPrefix,
   normalizeRestrictScope,
@@ -279,7 +280,7 @@ export function dashboardCards(d: DashboardLike | null): DashboardCard[] {
 // ---------------------------------------------------------------------------
 
 export const CREDIT_LIST_HEADERS = [
-  'کد',
+  'شناسهٔ امن اعتبار',
   'نوع',
   'وضعیت',
   'مبلغ',
@@ -307,10 +308,10 @@ export const CREDIT_LIST_HEADERS = [
   'توضیح'
 ]
 
-/** یک ردیف `StoreCreditRow` ⇒ یک ردیف اکسل. عمداً هیچ فیلدی حذف نشده. */
+/** یک ردیف امن اعتبار ⇒ یک ردیف اکسل؛ credential هرگز وارد خروجی نمی‌شود. */
 export function creditListRow(r: any): (string | number | null)[] {
   return [
-    String(r.code ?? ''),
+    String(r.publicReference ?? `اعتبار #${intOf(r.id)}`),
     String(r.sourceLabel ?? CREDIT_SOURCE_LABELS[String(r.source ?? '')] ?? ''),
     String(r.statusLabel ?? CREDIT_STATUS_LABELS[String(r.status ?? '')] ?? ''),
     intOf(r.amount),
@@ -384,7 +385,7 @@ export function timelineRow(e: any): (string | number | null)[] {
 }
 
 export const CREDIT_REMINDER_HEADERS = [
-  'کد',
+  'شناسهٔ امن اعتبار',
   'دارنده',
   'تلفن',
   'مبلغ',
@@ -402,7 +403,7 @@ export const CREDIT_REMINDER_HEADERS = [
 export function reminderCandidateRow(c: any): (string | number | null)[] {
   const r = c?.credit ?? {}
   return [
-    String(r.code ?? ''),
+    String(r.publicReference ?? `اعتبار #${intOf(r.id)}`),
     String(c.holderName ?? r.customerName ?? ''),
     String(c.phone ?? ''),
     intOf(r.amount),
@@ -418,13 +419,13 @@ export function reminderCandidateRow(c: any): (string | number | null)[] {
   ]
 }
 
-export const CREDIT_REMINDER_LOG_HEADERS = ['تاریخ', 'ساعت', 'کد', 'نوع پیام', 'وضعیت', 'تلفن', 'متن پیام', 'دلیل', 'کاربر']
+export const CREDIT_REMINDER_LOG_HEADERS = ['تاریخ', 'ساعت', 'شناسهٔ امن اعتبار', 'نوع پیام', 'وضعیت', 'تلفن', 'متن پیام', 'دلیل', 'کاربر']
 
 export function reminderLogRow(r: any): (string | number | null)[] {
   return [
     String(r.atJalali ?? ''),
     String(r.atTime ?? ''),
-    String(r.code ?? ''),
+    String(r.publicReference ?? `اعتبار #${intOf(r.creditId)}`),
     String(r.kindLabel ?? r.kind ?? ''),
     String(r.statusLabel ?? r.status ?? ''),
     String(r.phone ?? ''),
@@ -1245,7 +1246,7 @@ export function creditLinkFacts(detail: any): CreditFact[] {
     out.push({
       key: 'remainder',
       label: 'اعتبار باقی‌مانده',
-      value: `${String(detail.remainderCredit.code ?? '')} (${intOf(detail.remainderCredit.amount)} ریال)`
+      value: `${String(detail.remainderCredit.publicReference ?? `اعتبار #${intOf(detail.remainderCredit.id)}`)} (${intOf(detail.remainderCredit.amount)} ریال)`
     })
   if (detail?.batch)
     out.push({
@@ -1253,7 +1254,6 @@ export function creditLinkFacts(detail: any): CreditFact[] {
       label: 'دسته‌ی تولید گروهی',
       value: `#${intOf(detail.batch.id)} ${trimmed(detail.batch.title)}`.trim()
     })
-  if (c.legacyCode) out.push({ key: 'legacyCode', label: 'کد تاریخیِ قبل از یکتاسازی', value: trimmed(c.legacyCode) })
   if (c.settingsOverride === true)
     out.push({
       key: 'override',
@@ -1358,6 +1358,42 @@ export const CREDIT_PAPER_OPTIONS: { value: string; label: string }[] = [
   CreditPaper.T58,
   CreditPaper.CUSTOM
 ].map((k) => ({ value: k, label: CREDIT_PAPER_LABELS[k] ?? k }))
+
+// ===== نشست ۳۱۷ · طرح کلاد (برنده) — کارت «چاپ سند اعتبار» (§۷ + §۱۳) =====
+
+/** گزینه‌های اندازه‌ی فونت چاپ سند (مثل سایه‌های فاکتور/لیبل: ثابت و خوانا). */
+export const CREDIT_FONT_SIZE_OPTIONS: { value: string; label: string }[] = [
+  { value: '8', label: 'ریز (۸)' },
+  { value: '10', label: 'کوچک (۱۰)' },
+  { value: '11', label: 'پیش‌فرض (۱۱)' },
+  { value: '12', label: 'متوسط (۱۲)' },
+  { value: '14', label: 'درشت (۱۴)' },
+  { value: '16', label: 'خیلی درشت (۱۶)' }
+]
+
+/**
+ * برچسب کوتاهِ کاغذ/فونت/حاشیه‌ی فعلی برای نمایش داخل کارت و هشدار ویژگی‌ها.
+ * (شبیه سربرگِ «چاپ: فونت X · حاشیه Y×Zmm · کاغذ D»)
+ */
+export function creditPrintSummaryLabel(form: CreditSettings): string {
+  return `فونت ${form.printFontPx}px · حاشیه ${form.printMarginYMm}×${form.printMarginXMm}mm · ${CREDIT_PAPER_LABELS[form.paper] ?? form.paper}`
+}
+
+/**
+ * هشدارهای نمایشی کارت چاپ سند (صرفاً اخطار UI؛ clamp نهایی همیشه در main
+ * انجام می‌شود — §۶: هیچ‌کدام سند واقعی چاپ نمی‌کنند).
+ */
+export function creditPrintWarnings(form: CreditSettings): string[] {
+  const out: string[] = []
+  const width = creditPaperSize(form.paper, form.customWidthMm, form.customHeightMm).widthMm
+  if (form.printFontPx >= 14 && width < 105)
+    out.push('فونت درشت روی کاغذ باریک (کمتر از A6) ممکن است سطرها بپیچد یا از عرض بیرون بزند — پیش‌نمایش را ببینید.')
+  if (form.printMarginXMm >= 8 && width <= 80)
+    out.push('حاشیه‌ی افقی پهن روی رول حرارتی، عرض مفید لایه را بیش از حد کوچک می‌کند — پیش‌نمایش را ببینید.')
+  if (form.printFontPx <= 8)
+    out.push('فونت ریز ممکن است روی برگه‌ی باطل‌شده/نمونه هم خوانا نباشد — رعایت کنید هر سند بدون استثنا خوانا شود.')
+  return out
+}
 
 export const CREDIT_EXPIRY_MODE_OPTIONS: { value: IssueDraft['expiryMode']; label: string }[] = [
   { value: 'default', label: 'پیش‌فرض همین نوع اعتبار' },
@@ -2293,6 +2329,8 @@ export interface CreditPrintOutcome {
   capped?: boolean
   marked?: number
   reprints?: number
+  markFailed?: boolean
+  warnings?: string[]
 }
 
 /**
@@ -2306,15 +2344,17 @@ export function creditPrintFlash(op: CreditPrintOp, res: CreditPrintOutcome | nu
   const total = Math.max(0, Math.round(Number(r.total) || 0))
   const reprints = Math.max(0, Math.round(Number(r.reprints) || 0))
   const capNote = r.capped === true ? `\n⚠️ از ${fa(total)} سند فقط ${fa(count)} سند در این فایل آمد (سقف هر فایل). بقیه را با انتخاب دستی در چند نوبت بگیرید.` : ''
+  const warningNote = Array.isArray(r.warnings) && r.warnings.length ? `\n⚠️ ${r.warnings.filter(Boolean).join('\n⚠️ ')}` : ''
   if (op === 'print') {
     const copies = Math.max(1, Math.round(Number(r.copies) || 1))
-    return `سند اعتبار به چاپگر رفت (${fa(copies)} نسخه). چاپ‌های بعدی برچسب «نسخه‌ی مجدد» می‌گیرند.`
+    return `سند اعتبار به چاپگر رفت (${fa(copies)} نسخه). چاپ‌های بعدی برچسب «نسخه‌ی مجدد» می‌گیرند.${warningNote}`
   }
   if (op === 'batch') {
     return (
       `چاپ دسته‌ای به‌صورت یک سند چندصفحه‌ای به چاپگر رفت: ${fa(count)} سند` +
       (reprints ? ` · ${fa(reprints)} مورد نسخه‌ی مجدد` : '') +
-      capNote
+      capNote +
+      warningNote
     )
   }
   if (r.saved !== true) return 'ذخیره‌ی PDF لغو شد؛ هیچ فایلی ساخته نشد و شمارنده‌ی چاپ هم دست نخورد.'

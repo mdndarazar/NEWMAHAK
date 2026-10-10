@@ -67,7 +67,7 @@ eq('StoreCreditBatch پس از تلاش گروهی ناموفق', batches(), 0)
 
 console.log('\n۳) با رمز درست ⇒ صدور + Audit با actor')
 const one = await safe('issueManual با رمز مدیر', () => storeCreditService.issueManual({ amount: 500000, userId, managerPassword: PW }))
-truthy('کد اعتبار تکی صادر شد', !!one?.code)
+truthy('صدور تکی شناسهٔ امن دارد و کد را برنمی‌گرداند', /^اعتبار #\d+$/.test(String(one?.publicReference ?? '')) && !Object.hasOwn(one ?? {}, 'code'))
 eq('StoreCredit پس از صدور تکی', credits(), 1)
 const aud = seed.one(`SELECT userId FROM "AuditLog" WHERE entity = 'StoreCredit' ORDER BY id DESC LIMIT 1`)
 eq('actor Audit صدور تکی', aud?.userId, userId)

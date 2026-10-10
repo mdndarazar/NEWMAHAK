@@ -90,6 +90,28 @@ export function isPanelUnlocked(panel: string): boolean {
 }
 
 /**
+ * آیا نشست واقعیِ مدیر در main هنوز معتبر است؟
+ *
+ * عمداً با `isPanelUnlocked` یکی نیست: رمز دومِ یک پنل فقط همان پنل را باز
+ * می‌کند و به افشای کدِ قابل‌مصرف اعتبار مجوز نمی‌دهد. این کنترل فقط حافظهٔ
+ * سرور را می‌سنجد، نه state رندرر یا فیلد قابل‌جعلِ IPC.
+ */
+export function isManagerSessionUnlocked(): boolean {
+  return !!alive(MANAGER_KEY)
+}
+
+/**
+ * گیت مسیرهای افشای محرمانه که فقط مدیرِ احراز هویت‌شده می‌تواند بخواند.
+ * «OPEN» شدن قفل پنل و scopeِ «PANEL» عمداً اینجا پذیرفته نمی‌شوند.
+ */
+export function assertManagerSession(action: string): void {
+  if (isManagerSessionUnlocked()) return
+  throw new BusinessError(
+    `برای ${action} فقط نشست فعال مدیر معتبر است. با رمز مدیر وارد شوید؛ رمز دوم پنل یا باز بودن قفل کافی نیست.`
+  )
+}
+
+/**
  * گیت کانال‌های خواندنیِ حساس.
  *
  * اگر قفل این پنل در تنظیمات خاموش باشد، مثل بقیه‌ی جاهای پروژه آزاد است
@@ -107,3 +129,28 @@ export async function assertPanelUnlocked(panel: string, action: string): Promis
 
 /** کلید پنلی که کانال‌های اعتبار خرید زیر آن قفل می‌شوند. */
 export const CREDIT_READ_PANEL = PANEL_KEYS.creditManagement
+
+/**
+ * ===========================================================================
+ * نشست ۳۱۸ · طرح برنده (کامیلا) — فاز ۲ — نمای تشخیص پل تطبیق.
+ *
+ * unlike `assertPanelUnlocked` که «با خاموش بودن قفل» هم رد می‌شود، این نسخه
+ * *همیشه* رمز تازه می‌خواهد (همان `assertPanelPasswordStrict`) و بعد نشست را
+ * ثبت می‌کند، تا کانال‌های بعدیِ همان نما (`sources` / `notes`) بدون رمز
+ * کار کنند. منظور از «انحصاری» این است: باز کردن نما هر بار رمز می‌خواهد،
+ * حتی اگر قفل پنل خاموش باشد (بخش خواندنیِ حساس).
+ *
+ * ⚠️ به هیچ تابع موجود دست نخورده؛ TTL همان ttl این ماژول است (قابل‌کم‌شونده
+ *    در تست با `applyPanelSessionTtlMs`).
+ * ===========================================================================
+ */
+export async function assertPanelUnlockedStrict(
+  panel: string,
+  password: string | null | undefined,
+  action: string
+): Promise<'MANAGER' | 'PANEL'> {
+  const { assertPanelPasswordStrict } = await import('./AuthService')
+  const scope = await assertPanelPasswordStrict(panel, password, action)
+  notePanelUnlocked(panel, scope)
+  return scope
+}

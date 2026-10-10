@@ -35,9 +35,9 @@ import { settingsService } from '../services/SettingsService'
 import { printHtml } from './printer'
 import { resolvePrintTargetName, type PrintProfileKind } from './target'
 // نشست ۲۲۲ · فاز ۵ — چاپ آزمایشی «دقیق (RAW)»: همان برگه، از مسیر خام
-import { isRawMethod } from './raw/route'
+import { assertRawNotDialog, isRawMethod } from './raw/route'
 import { markRawTrialOk } from './raw/gate'
-import { printEscPosDoc, printTsplRow } from './raw'
+import { mmToPrinterDots, printEscPosDoc, printTsplRow } from './raw'
 
 /** اندازه‌ی مستطیل مرجع مطابق طرح (بخش ۷.۴). */
 export const TEST_REF_WIDTH_MM = 50
@@ -306,7 +306,12 @@ export async function runPrintTestPage(input: TestPageInput = {}): Promise<TestP
     direction: number
     density: number
     speed: number
+    referenceX: number
+    referenceY: number
+    invertBits: boolean
   } | null = null
+  /** پارامترهای خام رسید/فاکتور (ESC/POS). */
+  let rawReceipt: { dpi: number; cutMode: 'FULL' | 'PARTIAL' | 'NONE'; invertBits: boolean } | null = null
   if (profile === 'LABEL') {
     const tpl = await settingsService.labelTemplate()
     savedName = tpl.printerName
@@ -318,7 +323,10 @@ export async function runPrintTestPage(input: TestPageInput = {}): Promise<TestP
       sensorType: tpl.sensorType,
       direction: tpl.direction,
       density: tpl.density,
-      speed: tpl.speed
+      speed: tpl.speed,
+      referenceX: mmToPrinterDots(tpl.offsetXMm, tpl.rawDpi),
+      referenceY: mmToPrinterDots(tpl.offsetYMm, tpl.rawDpi),
+      invertBits: tpl.rawInvert
     }
   } else {
     const tpl = await settingsService.receiptTemplate()
@@ -326,6 +334,7 @@ export async function runPrintTestPage(input: TestPageInput = {}): Promise<TestP
       profile === 'WHOLESALE' && tpl.wholesaleSeparate === true ? tpl.wholesalePrinterName : tpl.printerName
     useSystemDialog = tpl.useSystemDialog === true
     savedMethod = tpl.printMethod
+    rawReceipt = { dpi: tpl.rawDpi, cutMode: tpl.cutMode, invertBits: tpl.rawInvert }
   }
   const { deviceName, viaWindowsDefault } = await resolvePrintTargetName({
     requestedDeviceName: input.deviceName,
@@ -358,6 +367,7 @@ export async function runPrintTestPage(input: TestPageInput = {}): Promise<TestP
   const silent = input.silent == null ? !useSystemDialog : input.silent !== false
 
   if (method === 'RAW') {
+    assertRawNotDialog(silent)
     /**
      * برگه‌ی آزمایشی RAW (بخش ۸.۳). برای لیبل هر **ردیف** یک کار TSPL و برای رسید
      * یک کار ESC/POS فرستاده می‌شود. ⚠️ عرض `SIZE` روی لیبل، عرض کل ردیف گرفته
@@ -375,7 +385,10 @@ export async function runPrintTestPage(input: TestPageInput = {}): Promise<TestP
         sensorType: rawLabel.sensorType,
         direction: rawLabel.direction,
         density: rawLabel.density,
-        speed: rawLabel.speed
+        speed: rawLabel.speed,
+        referenceX: rawLabel.referenceX,
+        referenceY: rawLabel.referenceY,
+        invertBits: rawLabel.invertBits
       })
     } else {
       await printEscPosDoc({
@@ -383,7 +396,9 @@ export async function runPrintTestPage(input: TestPageInput = {}): Promise<TestP
         printerName: deviceName,
         widthMm: spec.widthMm,
         heightMm: spec.heightMm,
-        dpi: 203
+        dpi: rawReceipt?.dpi ?? 203,
+        cutMode: rawReceipt?.cutMode,
+        invertBits: rawReceipt?.invertBits === true
       })
     }
     /**

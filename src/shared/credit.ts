@@ -864,6 +864,16 @@ export interface CreditSettings {
   paper: CreditPaper
   customWidthMm: number
   customHeightMm: number
+  /**
+   * نشست ۳۱۷ · طرح کلاد (گزینه‌ی برنده) — سه عددِ جدیدِ چاپ سند اعتبار.
+   * پیش‌فرض‌ها دقیقاً CSS تاریخی‌اند (font 11px، padding ‌۵mm ۴mm) تا بدون
+   * هیچ اکشنی، خروجی بایت‌به‌بایت همان امروز بماند (`isLegacy` در
+   * `@shared/creditPrint`). بازه‌ها: فونت ۶..۲۲px (یعنی ضریب حدود ۰٫۵ تا ۲)،
+   * حاشیه ۰..۲۰mm (هنگام رندر نسبت به کاغذ هم clamp دوم می‌خورد).
+   */
+  printFontPx: number
+  printMarginXMm: number
+  printMarginYMm: number
   showRules: boolean
   showHolder: boolean
   showRemaining: boolean
@@ -913,6 +923,10 @@ export const DEFAULT_CREDIT_SETTINGS: CreditSettings = {
   paper: CreditPaper.A6,
   customWidthMm: 100,
   customHeightMm: 150,
+  // نشست ۳۱۷ — پیش‌فرض = CSS تاریخی («پیش‌فرض = امروز» بدون مهاجرت)
+  printFontPx: 11,
+  printMarginXMm: 4,
+  printMarginYMm: 5,
   showRules: true,
   showHolder: true,
   showRemaining: true,
@@ -985,6 +999,10 @@ export function parseCreditSettings(raw: unknown): CreditSettings {
     paper: (Object.prototype.hasOwnProperty.call(CreditPaper, paperRaw) ? paperRaw : d.paper) as CreditPaper,
     customWidthMm: num(o.customWidthMm, d.customWidthMm, 40, 400),
     customHeightMm: num(o.customHeightMm, d.customHeightMm, 40, 600),
+    // نشست ۳۱۷ — نبودن کلید در JSON قدیمی ⇒ پیش‌فرضِ سازگار (= رندر امروز)
+    printFontPx: num(o.printFontPx, d.printFontPx, 6, 22),
+    printMarginXMm: num(o.printMarginXMm, d.printMarginXMm, 0, 20),
+    printMarginYMm: num(o.printMarginYMm, d.printMarginYMm, 0, 20),
     showRules: bool(o.showRules, d.showRules),
     showHolder: bool(o.showHolder, d.showHolder),
     showRemaining: bool(o.showRemaining, d.showRemaining),
@@ -1018,6 +1036,15 @@ export function describeCreditSettings(s: CreditSettings): string {
     `${s.autoGrowLength ? ' · افزایش خودکار طول' : ''}` +
     ` · پیشوند ${s.prefixManual || '—'}/${s.prefixExchange || '—'} · ${types}` +
     ` · سقف تولید گروهی ${s.bulkMaxCount} · کاغذ ${CREDIT_PAPER_LABELS[s.paper] ?? s.paper}` +
+    /**
+     * نشست ۳۱۷ — فقط اگر کاربر چیزی را از پیش‌فرض چاپ دور کرده باشد در لاگ
+     * می‌آید؛ یادداشت AuditLog مشتریانِ فعلی (همه روی پیش‌فرض) تغییر نمی‌کند.
+     */
+    (s.printFontPx !== DEFAULT_CREDIT_SETTINGS.printFontPx ||
+    s.printMarginXMm !== DEFAULT_CREDIT_SETTINGS.printMarginXMm ||
+    s.printMarginYMm !== DEFAULT_CREDIT_SETTINGS.printMarginYMm
+      ? ` · چاپ سند: فونت ${s.printFontPx}px · حاشیه ${s.printMarginXMm}×${s.printMarginYMm}mm`
+      : '') +
     ` · یادآوری ${s.reminder.enabled ? `روشن (حداقل ${s.reminder.minDaysSinceIssue} روز، فاصله ${s.reminder.minGapDays} روز، سقف ${s.reminder.maxCount})` : 'خاموش'}` +
     ` · گزارش تعهد ${s.reportLiability ? 'روشن' : 'خاموش'}`
   )

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — کارت‌های چاپگر و بخش پیشرفته‌ی تب چاپ
@@ -240,6 +240,8 @@ export default function Settings() {
   // نشست ۱۵۷ (Y13) — رمز مدیر برای دو کانال فوری: افست ساعت رسمی و سوییچ «شیفت بر اساس ساعت»
   const [timePw, setTimePw] = useState('')
   const [byTimePw, setByTimePw] = useState('')
+  /** نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت؛ ذخیره‌ی فوری با همان فیلد رمز مدیر */
+  const [overtimeCap, setOvertimeCap] = useState('0')
   const [custDelPw, setCustDelPw] = useState('')
   /** نشست ۱۶۵ (S165-D4) — رمز پنل تنظیمات برای ثبت/ویرایش کارمند (سمت main هم سنجیده می‌شود) */
   const [staffPw, setStaffPw] = useState('')
@@ -302,6 +304,13 @@ export default function Settings() {
   const [lockBusy, setLockBusy] = useState('')
   const [busy, setBusy] = useState(false)
   const [dirty, setDirty] = useState(false)
+  /**
+   * نام چاپگرِ رسید/لیبل در لحظه‌ی بارگذاری (یا آخرین ذخیره‌ی موفق) صفحه. save() با مقایسه‌ی نام فعلیِ
+   * فرم با این مقدار می‌فهمد کاربر *خودش* چاپگر را روی همین صفحه عوض کرده یا نه (ضد‌کهنگیِ mergeFreshPrinter
+   * فقط برای حالت «دست‌نخورده» می‌ماند).
+   */
+  const receiptPrinterAtLoad = useRef('')
+  const labelPrinterAtLoad = useRef('')
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   // ---- بکاپ و بازگردانی ----
@@ -417,10 +426,16 @@ export default function Settings() {
         /** جلسه ۱۹ · بند ۹ — افست دستی ساعت رسمی */
         time: OfficialTimeConfig
       }>(CH.settingsBundle)
-      setReceipt({ ...DEFAULT_RECEIPT_TEMPLATE, ...b.receipt })
+      const loadedReceipt = { ...DEFAULT_RECEIPT_TEMPLATE, ...b.receipt }
+      const loadedLabel = parseLabelTemplate(b.label)
+      receiptPrinterAtLoad.current = loadedReceipt.printerName
+      labelPrinterAtLoad.current = loadedLabel.printerName
+      setReceipt(loadedReceipt)
       setSale({ ...DEFAULT_SALE_DEFAULTS, ...b.sale })
-      setShift(parseShiftConfig(b.shift))
-      setLabel(parseLabelTemplate(b.label))
+      const loadedShift = parseShiftConfig(b.shift)
+      setShift(loadedShift)
+      setOvertimeCap(String(loadedShift.overtimeMaxMinutes ?? 0))
+      setLabel(loadedLabel)
       setSecurity(parseSecurityConfig(b.security))
       // مقدار خراب یا نبودِ کلید ⇒ پیش‌فرض FREE (رفتار نسخه‌های قبل)، بدون کرش
       setDiscount(parseDiscountPolicy(b.discount))
@@ -774,6 +789,31 @@ export default function Settings() {
   }
 
   /**
+   * نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری هم *فوری* ذخیره می‌شود (مثل خودِ سوییچ):
+   * رمز مدیر همان فیلد byTimePw است و خودِ سرویس باز هم رمز را و محدوده‌ی
+   * ۰..۲۴۰ را سروری بازبینی می‌کند.
+   */
+  const saveOvertimeMax = async () => {
+    const mins = Math.trunc(Number(toLatinDigits(overtimeCap).replace(/[^0-9-]/g, '')))
+    if (!Number.isFinite(mins) || mins < 0 || mins > 240) {
+      return setErr('سقف اضافه‌کاری باید عددی صحیح بین ۰ تا ۲۴۰ دقیقه باشد (۰ یعنی خاموش).')
+    }
+    try {
+      const next = await call<ShiftConfig>(CH.settingsShiftOvertimeMax, { minutes: mins, managerPassword: byTimePw })
+      setShift(next)
+      flash(
+        mins > 0
+          ? `ذخیره شد · اضافه‌کاری شیفت شب تا ${faDigits(mins)} دقیقه بعد از پایان بازه فعال است.`
+          : 'ذخیره شد · اضافه‌کاری خاموش است؛ نشستِ بازِ دیروز بیرون از بازه همیشه باید بسته شود.'
+      )
+    } catch (e: any) {
+      setErr(`ذخیره‌ی سقف اضافه‌کاری انجام نشد: ${e.message}`)
+    } finally {
+      setByTimePw('')
+    }
+  }
+
+  /**
    * بانک شماره مشتریان (مورد ۶): همه‌ی مشتری‌های ثبت‌شده — از پنل فروش، فاکتور
    * عمده یا هر جای دیگر — با تعداد و جمع خریدشان. فعلاً فقط نمایش + کپی همه‌ی
    * شماره‌ها در حافظه (برای چسباندن در پنل پیامک).
@@ -1006,14 +1046,22 @@ export default function Settings() {
        * در پنجره‌ی انتخاب چاپگر «ذخیره به‌عنوان پیش‌فرض» زده، این ذخیره‌ی کهنه
        * آن انتخاب را برنگرداند (همان نقش mergeFreshPosToggles برای چاپگر).
        */
-      const receiptToSave = mergeFreshPrinter(receipt, { ...DEFAULT_RECEIPT_TEMPLATE, ...fresh.receipt })
-      const labelToSave = mergeFreshPrinter(label, { ...DEFAULT_LABEL_TEMPLATE, ...fresh.label })
+      const receiptToSave =
+        receipt.printerName !== receiptPrinterAtLoad.current
+          ? receipt // کاربر خودش روی همین صفحه چاپگر را عوض کرده ⇒ انتخاب صفحه ذخیره شود
+          : mergeFreshPrinter(receipt, { ...DEFAULT_RECEIPT_TEMPLATE, ...fresh.receipt })
+      const labelToSave =
+        label.printerName !== labelPrinterAtLoad.current
+          ? label
+          : mergeFreshPrinter(label, { ...DEFAULT_LABEL_TEMPLATE, ...fresh.label })
       /**
        * ⚠️ این خط عمداً یک‌خطی و با همین کلیدها/ترتیب می‌ماند: تست
        * `fix-s168-settings-stale-pos-toggles` این payload را به‌صورت متن دقیق
        * بررسی می‌کند (قرارداد «صفحه‌ی کهنه نباید مقدار POS را برگرداند»).
        */
       await call(CH.settingsSaveBundle, { receipt: receiptToSave, sale: saleToSave, shift, label: labelToSave, security, time, managerPassword: bundlePw })
+      receiptPrinterAtLoad.current = receiptToSave.printerName
+      labelPrinterAtLoad.current = labelToSave.printerName
       setReceipt(receiptToSave)
       setLabel(labelToSave)
       setSale(saleToSave)
@@ -1618,7 +1666,8 @@ export default function Settings() {
   }, [tab])
 
   const resetReceipt = () => {
-    setReceipt(DEFAULT_RECEIPT_TEMPLATE)
+    // نام چاپگر جزو «قالب» نیست؛ ریست قالب نباید آن را خالی کند (همان رفتار قبلِ ذخیره: چاپگر دست‌نخورده)
+    setReceipt((p) => ({ ...DEFAULT_RECEIPT_TEMPLATE, printerName: p.printerName }))
     setDirty(true)
     flash('قالب رسید به حالت پیش‌فرض برگشت (برای اعمال، ذخیره کنید).')
   }
@@ -2441,6 +2490,21 @@ export default function Settings() {
                     <div className="kbd leading-6">
                       پیش‌فرض خاموش است: فروشنده پرداخت را مثل امروز ثبت می‌کند و تمام. اگر روشن باشد، بعد از ثبت موفق
                       فیش مبلغ همین پرداخت و باقی‌مانده چاپ می‌شود. اگر چاپگر کار نکرد، پرداخت سر جایش می‌ماند.
+                    </div>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 cursor-pointer mt-2">
+                  <input
+                    type="checkbox"
+                    className="mt-1 w-4 h-4"
+                    checked={sale.splitStoreCreditPayment !== false}
+                    onChange={(e) => setS({ splitStoreCreditPayment: e.target.checked })}
+                  />
+                  <span>
+                    <div className="font-bold">پرداخت ترکیبی اعتبار خرید در پنل فروش فعال باشد</div>
+                    <div className="kbd leading-6">
+                      روشن: فروشنده می‌تواند مشخص کند چه مقدار از اعتبار خرید مصرف و باقی فاکتور نقدی یا کارتی دریافت شود.
+                      خاموش: اعتبار معتبر فقط تا سقف مجاز کامل مصرف می‌شود. این محدودیت در سرور هم اعمال می‌شود.
                     </div>
                   </span>
                 </label>
@@ -3362,6 +3426,33 @@ export default function Settings() {
                       خوانده می‌شود و ساعت‌ها بی‌اثرند.
                     </>
                   )}
+                </div>
+              </div>
+
+              {/* ---------- نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت شب ---------- */}
+              <div className="rounded p-2 border bg-slate-50 space-y-1">
+                <div className="font-bold">سقف اضافه‌کاری شیفت شب</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="flex items-center gap-2">
+                    <span className="kbd">سقف (دقیقه، ۰ تا ۲۴۰؛ ۰ = خاموش):</span>
+                    <input
+                      className="inp w-24"
+                      type="text"
+                      inputMode="numeric"
+                      value={overtimeCap}
+                      onChange={(e) => setOvertimeCap(e.target.value)}
+                    />
+                  </label>
+                  <button className="btn" disabled={!byTimePw.trim()} onClick={() => void saveOvertimeMax()}>
+                    ذخیره‌ی فوری (با رمز مدیر بالا)
+                  </button>
+                </div>
+                <div className="kbd leading-6">
+                  خاموش (پیش‌فرض ۰): نشستِ بازِ دیروز که از بازه‌اش گذشته باشد، همیشه باید با دلیل و رمز مدیر بسته
+                  شود. روشن: کارمند همان نشست از مودال «نشست صندوق» می‌تواند <b>فقط یک‌بار</b> و تا «پایان بازه +
+                  این سقف» اضافه‌کاری اعلام کند — با دلیلِ اجباری که برای همیشه در حسابرسی می‌ماند (رمز مدیر لازم
+                  نیست، چون فاکتورها به کارمند همان نشست نسبت داده می‌شوند). این گزینه فقط وقتی اثر دارد که «تعیین
+                  شیفت بر اساس ساعت» روشن باشد.
                 </div>
               </div>
 
