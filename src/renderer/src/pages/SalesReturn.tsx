@@ -541,14 +541,14 @@ export default function SalesReturn() {
               : 'این فاکتور بدون کسر از موجودی بود، پس موجودی تغییر نکرد') +
             (res.fullyReturned ? ' · وضعیت فاکتور: برگشت کامل' : ' · وضعیت فاکتور: برگشت جزئی') +
             (res.refundNote ? `\n${res.refundNote}` : '') +
-            (res.storeCreditCode ? ` · بارکد اعتبار «${res.storeCreditCode}»` : '') +
-            (res.overpayCredit?.code
+            (res.storeCreditReference ? ` · ${res.storeCreditReference} صادر شد` : '') +
+            (res.overpayCredit?.id
               ? ` · ${overpayCreditFlash(res.overpayCredit, money, faDigits)}`
               : res.overpayAmount > 0
                 ? ` · مبلغ اضافه‌ی دریافتی: ${money(res.overpayAmount)} ریال (ردیف «دریافت پول اضافه»)`
                 : '')
         )
-        if (res.overpayCredit?.code) {
+        if (res.overpayCredit?.id) {
           issuedOverpayCreditOpenRef.current = true
           setIssuedOverpayCredit(res.overpayCredit)
           await printIssuedOverpayCredit(res.overpayCredit)
@@ -668,7 +668,7 @@ export default function SalesReturn() {
             (res.diff > 0
               ? `${money(res.diff)} ریال از مشتری دریافت شد`
               : res.diff < 0
-                ? `${money(-res.diff)} ریال بارکد اعتبار «${res.storeCredit?.code ?? '—'}» صادر شد`
+                ? `${money(-res.diff)} ریال ${res.storeCredit?.publicReference ?? 'اعتبار خرید'} صادر شد و برای مشتری چاپ شد`
                 : 'مابه‌التفاوت صفر بود') +
             /**
              * جلسه ۵۰ · مرحله ۱-ب — «کالای جایگزین از کدام انبار آمد».
@@ -954,8 +954,8 @@ export default function SalesReturn() {
               : 'این فاکتور بدون کسر از موجودی بود، پس موجودی تغییر نکرد'}
           </span>
           {retResult.storeCredit && (
-            <span className="px-2 py-1 rounded bg-white border font-bold" dir="ltr" title="بارکد اعتبار خرید بعدی">
-              {retResult.storeCredit.code}
+            <span className="px-2 py-1 rounded bg-white border font-bold" title="مرجع امن اعتبار خرید صادرشده">
+              {retResult.storeCredit.publicReference}
             </span>
           )}
           {/* جلسه ۱۷ · بند ۱ — هیچ پولی جابه‌جا نشده؛ فقط یک درخواست ساخته شده است */}
@@ -1012,8 +1012,8 @@ export default function SalesReturn() {
             </span>
           )}
           {exResult.storeCredit && (
-            <span className="px-2 py-1 rounded bg-white border font-bold" dir="ltr" title="بارکد اعتبار خرید بعدی">
-              {exResult.storeCredit.code}
+            <span className="px-2 py-1 rounded bg-white border font-bold" title="مرجع امن اعتبار خرید صادرشده">
+              {exResult.storeCredit.publicReference}
             </span>
           )}
           {exResult.storeCredit && (

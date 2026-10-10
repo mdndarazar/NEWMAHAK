@@ -1082,9 +1082,9 @@ export default function Pos() {
               : '') +
             (inv.storeCreditApplied > 0 ? ` · اعتبار مصرف‌شده: ${money(inv.storeCreditApplied)} ریال` : '') +
             (inv.storeCreditRemainder
-              ? ` · باقی‌مانده‌ی اعتبار با بارکد جدید ${inv.storeCreditRemainder.code} (${money(
+              ? ` · باقی‌مانده‌ی ${inv.storeCreditRemainder.publicReference} (${money(
                   inv.storeCreditRemainder.amount
-                )} ریال) به مشتری برگشت`
+                )} ریال) صادر و برای مشتری چاپ شد`
               : '') +
             printNote
         )
@@ -1546,18 +1546,17 @@ export default function Pos() {
               </span>
             )}
             {!!last.storeCreditApplied && (
-              <span className="px-2 py-1 rounded bg-white border font-bold" title="بارکد اعتبار مصرف‌شده روی این فاکتور">
+              <span className="px-2 py-1 rounded bg-white border font-bold" title="مبلغ اعتبار مصرف‌شده روی این فاکتور">
                 اعتبار مصرف‌شده {money(last.storeCreditApplied)} ریال
-                {last.storeCredit ? ` (${last.storeCredit.code})` : ''}
+                {last.storeCredit ? ` · ${last.storeCredit.publicReference}` : ''}
               </span>
             )}
             {last.storeCreditRemainder && (
               <span
                 className="px-2 py-1 rounded bg-amber-50 border-2 border-amber-400 font-bold"
-                dir="ltr"
-                title="باقی‌ماندهٔ اعتبار سوخت نشد: یک بارکد جدید صادر شد که باید به مشتری داده شود"
+                title="باقی‌ماندهٔ اعتبار سوخت نشد و برای مشتری چاپ شد"
               >
-                {last.storeCreditRemainder.code} · {money(last.storeCreditRemainder.amount)}
+                {last.storeCreditRemainder.publicReference} · {money(last.storeCreditRemainder.amount)}
               </span>
             )}
             {/* بخش ۷: فاکتور نسیه ⇒ باقی‌ماندهٔ بدهی، واضح و جدا */}

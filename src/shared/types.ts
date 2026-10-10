@@ -2218,8 +2218,8 @@ export interface ExchangeSaleResult {
   /** CASH | CREDIT | NONE */
   settlement: string
   settlementLabel: string
-  /** بارکد اعتبار صادرشده (فقط وقتی ما بدهکار شدیم) */
-  storeCredit: StoreCreditRow | null
+  /** اعتبار صادرشده (فقط وقتی ما بدهکار شدیم)؛ کد فقط از reveal مدیر. */
+  storeCredit: StoreCreditSafeRow | null
   /** تعدادی که به موجودی فروشگاه برگشت */
   restockedQty: number
   /** هشدارهای موجودی کالای جایگزین */

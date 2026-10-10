@@ -135,7 +135,7 @@ import type {
   CreditSettlementRow,
   CreditReportResult,
   ReturnListRow,
-  StoreCreditRow,
+  StoreCreditSafeRow,
   SaleAccountingStatements,
   PagedRows,
   SaleReportPage
@@ -144,6 +144,20 @@ import type { Prisma } from '@prisma/client'
 
 /** هر `IN` گزارش حداکثر ۵۰۰ شناسه داشته باشد؛ سقف امن برای SQLite و Prisma. */
 const REPORT_IN_CHUNK = 500
+
+/** مرز خروجیِ جریان فروش: credential فقط در main می‌ماند، نه پاسخ IPC/POS. */
+function shapeStoreCreditSafe(row: any): StoreCreditSafeRow {
+  const shaped = shapeStoreCredit(row)
+  const { code: _redeemableCode, legacyCode: _legacyCode, ...safe } = shaped
+  return { ...safe, publicReference: `اعتبار #${safe.id}` }
+}
+
+/** نتیجهٔ صدور از اضافه‌دریافت هم credential ندارد؛ مدل DB همچنان کامل است. */
+function shapeOverpayCreditSafe(row: OverpayCreditResult | null): OverpayCreditSafeResult | null {
+  if (!row) return null
+  const { code: _redeemableCode, ...safe } = row
+  return { ...safe, publicReference: `اعتبار #${safe.id}` }
+}
 
 function reportIdChunks(ids: Iterable<number>): number[][] {
   const unique = [...new Set([...ids].map(Number).filter((id) => Number.isFinite(id)))]
@@ -1762,18 +1776,18 @@ async function auditOverpayChanges(
 async function overpayCreditBacking(
   tx: Prisma.TransactionClient,
   invoiceId: number
-): Promise<{ realOverpay: number; committed: number; available: number; codes: string[] }> {
+): Promise<{ realOverpay: number; committed: number; available: number; creditIds: number[] }> {
   const credits = await tx.storeCredit.findMany({
     where: { sourceInvoiceId: invoiceId, source: CreditSource.OVERPAY },
-    select: { code: true, amount: true, usedAmount: true, status: true, voidedAt: true, deletedAt: true }
+    select: { id: true, amount: true, usedAmount: true, status: true, voidedAt: true, deletedAt: true }
   })
   let committed = 0
-  const codes: string[] = []
+  const creditIds: number[] = []
   for (const c of credits as any[]) {
     const dead = c.status === StoreCreditStatus.CANCELED || !!c.voidedAt || !!c.deletedAt
     const part = dead ? Math.max(0, toNumberRial(c.usedAmount ?? 0)) : Math.max(0, toNumberRial(c.amount))
     committed += part
-    if (part > 0) codes.push(String(c.code))
+    if (part > 0) creditIds.push(Number(c.id))
   }
   const pays = await tx.payment.findMany({
     // ممیزی A88-03 — اضافه‌دریافتِ پرداخت باطل دیگر «اضافه‌دریافت واقعی» نیست
@@ -1793,7 +1807,7 @@ async function overpayCreditBacking(
     if (bucket === 'exchangeCredit' || bucket === 'storeCredit') continue
     realOverpay += Math.max(0, toNumberRial(p.overpayAmount ?? 0))
   }
-  return { realOverpay, committed, available: Math.max(0, realOverpay - committed), codes }
+  return { realOverpay, committed, available: Math.max(0, realOverpay - committed), creditIds }
 }
 
 async function checkOverpayCreditBacking(
@@ -1806,11 +1820,11 @@ async function checkOverpayCreditBacking(
   if (shortfall <= 0) return 0
   const inv = await tx.saleInvoice.findUnique({ where: { id: invoiceId }, select: { receiptNo: true } })
   const receipt = faDigits(inv?.receiptNo ?? invoiceId)
-  const codes = b.codes.map((c) => `«${c}»`).join('، ')
+  const references = b.creditIds.map((id) => `اعتبار #${id}`).join('، ')
   if ((opts.overpayCreditShortfall ?? 'throw') === 'throw')
     throw new BusinessError(
       `این عملیات انجام نشد: از «مبلغ اضافه‌ی دریافتی» فاکتور ${receipt} قبلاً ${money(b.committed)} ریال ` +
-        `اعتبار خرید صادر شده (${codes})، ولی بعد از این تغییر اضافه‌دریافت واقعی فاکتور فقط ` +
+        `اعتبار خرید صادر شده (${references})، ولی بعد از این تغییر اضافه‌دریافت واقعی فاکتور فقط ` +
         `${money(b.realOverpay)} ریال می‌ماند؛ یعنی ${money(shortfall)} ریال اعتبار بی‌پشتوانه می‌شد.\n` +
         'اگر آن اعتبار هنوز مصرف نشده، اول در «مدیریت اعتبار خرید» باطلش کنید و بعد دوباره تلاش کنید؛ ' +
         'اگر مصرف شده، با مدیر هماهنگ کنید.'
@@ -1820,9 +1834,15 @@ async function checkOverpayCreditBacking(
     entity: 'SaleInvoice',
     entityId: invoiceId,
     userId: opts.userId ?? null,
-    after: JSON.stringify({ needsManagerReview: true, overpayCreditCommitted: b.committed, realOverpay: b.realOverpay, shortfall, codes: b.codes }),
+    after: JSON.stringify({
+      needsManagerReview: true,
+      overpayCreditCommitted: b.committed,
+      realOverpay: b.realOverpay,
+      shortfall,
+      creditIds: b.creditIds
+    }),
     note:
-      `⚠️ نیاز به رسیدگی مدیر: اعتبار خرید صادرشده از اضافه‌دریافت فاکتور ${receipt} (${codes}) ` +
+      `⚠️ نیاز به رسیدگی مدیر: اعتبار خرید صادرشده از اضافه‌دریافت فاکتور ${receipt} (${references}) ` +
       `${money(shortfall)} ریال از اضافه‌دریافت واقعی فعلی بیشتر است (تعهد ${money(b.committed)} · ` +
       `اضافه‌دریافت واقعی ${money(b.realOverpay)} ریال). اعتبار را باطل/اصلاح یا مابه‌التفاوت را از مشتری وصول کنید.`
   })
@@ -2354,6 +2374,7 @@ async function writeSaleChargeOverrideAudit(
   })
 }
 
+/** خام و فقط در main: برای ساخت/چاپ همان سند اعتبار، نه پاسخ IPC. */
 export interface OverpayCreditResult {
   id: number
   code: string
@@ -2363,6 +2384,9 @@ export interface OverpayCreditResult {
   invoiceId: number
   receiptNo: number
 }
+
+/** پاسخ امن عملیات فروش برای اعتبار اضافه‌دریافت. */
+export type OverpayCreditSafeResult = Omit<OverpayCreditResult, 'code'> & { publicReference: string }
 
 async function issueOverpayCreditTx(
   tx: Prisma.TransactionClient,
@@ -2451,11 +2475,11 @@ async function issueOverpayCreditTx(
     entityId: credit.id,
     userId: input.userId ?? null,
     after: JSON.stringify({
-      code: credit.code, amount, source: CreditSource.OVERPAY, invoiceId: inv.id, receiptNo: inv.receiptNo,
+      creditId: credit.id, amount, source: CreditSource.OVERPAY, invoiceId: inv.id, receiptNo: inv.receiptNo,
       paymentId: input.paymentId ?? null, realOverpay: b.realOverpay, committedBefore: b.committed
     }),
     note:
-      `صدور اعتبار «${credit.code}» به مبلغ ${money(amount)} ریال از اضافه‌دریافت فاکتور ${faDigits(inv.receiptNo)}` +
+      `صدور اعتبار #${credit.id} به مبلغ ${money(amount)} ریال از اضافه‌دریافت فاکتور ${faDigits(inv.receiptNo)}` +
       (input.paymentSeq ? ` (پرداختی ${faDigits(input.paymentSeq)})` : '') +
       ` · پشتوانه: پول واقعاً دریافت‌شده · آزاد قبل از صدور ${money(b.available)} ریال · غیرقابل نقد شدن`
   })
@@ -3492,7 +3516,7 @@ async function runReturn(
           returnTotal,
           refundMethod: refund.method,
           refundAmount: refund.amount,
-          storeCreditCode: refundCredit?.code ?? null,
+          storeCreditId: refundCredit?.id ?? null,
           cashLeftDrawer: refund.method === RefundMethod.CASH,
           fullAmountOverride: !!opts.fullRefundOverride
         }),
@@ -4074,8 +4098,8 @@ export const salesService = {
        * یک بارکد جدید به مشتری برمی‌گردد (سوخت نمی‌شود).
        * -------------------------------------------------------------------
        */
-      let storeCredit: StoreCreditRow | null = null
-      let storeCreditRemainder: StoreCreditRow | null = null
+      let storeCredit: StoreCreditSafeRow | null = null
+      let storeCreditRemainder: StoreCreditSafeRow | null = null
       let storeCreditApplied = 0
       let settledPaidTotal = t.paidTotal
       const creditCode = String(input.storeCreditCode ?? '').trim()
@@ -4103,8 +4127,8 @@ export const salesService = {
           seq: (input.payments ?? []).length + 1
         })
         storeCreditApplied = redeemed.applied
-        storeCredit = shapeStoreCredit(redeemed.credit)
-        storeCreditRemainder = redeemed.remainder ? shapeStoreCredit(redeemed.remainder) : null
+        storeCredit = shapeStoreCreditSafe(redeemed.credit)
+        storeCreditRemainder = redeemed.remainder ? shapeStoreCreditSafe(redeemed.remainder) : null
         // پرداختی جدید اضافه شد ⇒ جمع پرداختی و علامت «تسویه‌شده» بازمحاسبه می‌شوند
         const settle = await recalcSettlement(tx, invoice.id)
         settledPaidTotal = settle.paidTotal
@@ -4168,8 +4192,8 @@ export const salesService = {
         settled: settledPaidTotal >= t.grandTotal,
         /** نشست ۶۲ — مبلغ اضافه‌ی دریافتی همین فاکتور (۰ = عادی) */
         overpayAmount: saleOverpay,
-        /** نشست ۶۲ — کد اعتبار صادرشده از مبلغ اضافه (null = مرحله ۴) */
-        overpayCredit
+        /** نشست ۶۲ — مرجع امنِ اعتبار صادرشده از مبلغ اضافه (null = مرحله ۴) */
+        overpayCredit: shapeOverpayCreditSafe(overpayCredit)
       }
     }, TX_OPTIONS)
   },
@@ -4650,7 +4674,7 @@ export const salesService = {
       const overpayNote =
         overpayIncrease > 0
           ? ` · دریافت پول اضافه (با تایید فروشنده): ${money(overpayIncrease)} ریال` +
-            (overpayCredit ? ` ⇐ کد اعتبار خرید ${overpayCredit.code} (غیرقابل نقد شدن)` : '')
+            (overpayCredit ? ` ⇐ اعتبار #${overpayCredit.id} صادر شد (غیرقابل نقد شدن)` : '')
           : ''
       await audit(tx, {
         action: AuditAction.SALE_UPDATE,
@@ -4716,8 +4740,8 @@ export const salesService = {
         keptPayments: keepPayments,
         /** نشست ۶۳ — افزایش اضافه‌دریافت با همین ویرایش (۰ = عادی) */
         overpayAmount: overpayIncrease,
-        /** نشست ۶۳ — کد اعتبار صادرشده از آن (null = مرحله ۴) */
-        overpayCredit
+        /** نشست ۶۳ — مرجع امنِ اعتبار صادرشده از آن (null = مرحله ۴) */
+        overpayCredit: shapeOverpayCreditSafe(overpayCredit)
       }
     }, TX_OPTIONS)
   },
@@ -5557,7 +5581,16 @@ export const salesService = {
       // فیلدهای کمکیِ مسیر تعویض (رکوردهای خام) روی سیم IPC نمی‌روند
       // بند ۱۱ — مسیر برگشت ساده همیشه روش بازپرداخت را اجباری می‌کند
       const full = await runReturn(tx, input, { applyRefund: true, fullRefundOverride, overpayManagerApproved })
-      const { returnRecord: _rec, invoice: _inv, returnedLines: _lines, ...res } = full
+      // دادهٔ خام فقط برای ادامهٔ تراکنش است؛ پاسخ استاندارد هیچ credential ندارد.
+      const {
+        returnRecord: _rec,
+        invoice: _inv,
+        returnedLines: _lines,
+        storeCreditCode: _storeCreditCode,
+        storeCredit: rawStoreCredit,
+        overpayCredit: rawOverpayCredit,
+        ...res
+      } = full
 
       /**
        * ---------------- جلسه ۱۷ · بند ۱ — «کارت‌به‌کارت توسط مدیر» ----------------
@@ -5627,7 +5660,14 @@ export const salesService = {
           }
         })
       }
-      return { ...res, cardTransfer }
+      return {
+        ...res,
+        /** فقط مرجع امنِ اعتبار صادرشده برای برگشت. */
+        storeCredit: rawStoreCredit ? shapeStoreCreditSafe(rawStoreCredit) : null,
+        storeCreditReference: rawStoreCredit ? `اعتبار #${rawStoreCredit.id}` : null,
+        overpayCredit: shapeOverpayCreditSafe(rawOverpayCredit),
+        cardTransfer
+      }
     }, TX_OPTIONS)
   },
 
@@ -6466,7 +6506,7 @@ export const salesService = {
           exchangeTotal,
           diff,
           settlement,
-          storeCreditCode: credit?.code ?? null,
+          storeCreditId: credit?.id ?? null,
           returnedItems: back.returnedLines.map((i: any) => ({ variantId: i.variantId, qty: i.qty })),
           replacementItems: repLines.map((l) => ({ variantId: l.variantId, qty: l.qty, unitPrice: l.unitPrice })),
           /** جلسه ۵۰ · مرحله ۱-ب — برداشت از انبار مرکزی، به تفکیک انبار */
@@ -6483,7 +6523,7 @@ export const salesService = {
                 (debtCut > 0 && -diff - debtCut > 0 ? ' و ' : '') +
                 (-diff - debtCut > 0
                   ? credit
-                    ? `${money(-diff - debtCut)} ریال بارکد اعتبار «${credit.code}» صادر شد`
+                    ? `${money(-diff - debtCut)} ریال اعتبار #${credit.id} صادر شد`
                     : cardToCard > 0
                       ? `${money(cardToCard)} ریال کارت‌به‌کارت مدیر (در انتظار)`
                       : `${money(cashRefunded)} ریال ${refundMode === 'CARD' ? 'به کارت مشتری' : 'نقد از صندوق'} برگشت`
@@ -6506,7 +6546,8 @@ export const salesService = {
         diff,
         settlement,
         settlementLabel: EXCHANGE_SETTLEMENT_LABELS[settlement] ?? settlement,
-        storeCredit: credit ? shapeStoreCredit(credit) : null,
+        /** کد در نتیجهٔ عادی تعویض نیست؛ فقط مرجع امن برای ردیابی برمی‌گردد. */
+        storeCredit: credit ? shapeStoreCreditSafe(credit) : null,
         restockedQty: back.restockedQty ?? 0,
         /** ---- جلسه ۴۰ · کار ب ---- */
         restockPending: back.restockPending === true && releasedPending === 0,
@@ -8570,8 +8611,8 @@ export const salesService = {
         remainingBefore,
         /** کار الف: مقصد ثبت‌شده‌ی پول (برای پیام تأیید پنل) */
         destination,
-        /** نشست ۶۱ — کد اعتبار صادرشده از مبلغ اضافه (null = مرحله ۴: فقط ردیف دریافت پول اضافه) */
-        overpayCredit
+        /** نشست ۶۱ — مرجع امنِ اعتبار صادرشده از مبلغ اضافه (null = مرحله ۴: فقط ردیف دریافت پول اضافه) */
+        overpayCredit: shapeOverpayCreditSafe(overpayCredit)
       }
     }, TX_OPTIONS)
   },
@@ -8587,7 +8628,7 @@ export const salesService = {
     amount?: number | null
     userId?: number | null
     managerPassword?: string | null
-  }): Promise<OverpayCreditResult & { available: number }> {
+  }): Promise<OverpayCreditSafeResult & { available: number }> {
     if (input?.invoiceId == null) throw new BusinessError('فاکتوری برای صدور اعتبار اضافه‌دریافت مشخص نشده است.')
     const invoiceId = assertSafeInteger(input.invoiceId, 'شناسه فاکتور', 1)
     /**
@@ -8618,7 +8659,7 @@ export const salesService = {
       const res = await issueOverpayCreditTx(tx, {
         invoiceId, amount, userId: input?.userId ?? null, managerApproved
       })
-      return { ...res, available: Math.max(0, b.available - res.amount) }
+      return { ...shapeOverpayCreditSafe(res)!, available: Math.max(0, b.available - res.amount) }
     }, TX_OPTIONS)
   },
 

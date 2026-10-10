@@ -135,7 +135,7 @@ const c3 = creditsOf(r3?.id ?? -1)
 eq('دقیقاً یک اعتبار صادر شد', c3.length, 1)
 eq('مبلغ اعتبار = فقط مبلغ اضافه', Number(c3[0]?.amount ?? 0), 300)
 eq('منبع اعتبار = OVERPAY', c3[0]?.source, 'OVERPAY')
-truthy('نتیجه کد اعتبار را برای چاپ برمی‌گرداند', !!c3[0]?.code && r3?.overpayCredit?.code === c3[0]?.code)
+truthy('نتیجه کد اعتبار را برنمی‌گرداند', !Object.hasOwn(r3?.overpayCredit ?? {}, 'code') && r3?.overpayCredit?.publicReference === `اعتبار #${c3[0]?.id}`)
 truthy('نتیجه شناسه‌ی اعتبار را برای چاپ برمی‌گرداند', c3[0]?.id != null && r3?.overpayCredit?.id === c3[0]?.id)
 truthy('نتیجه «غیرقابل نقد شدن» دارد', String(r3?.overpayCredit?.notice ?? '').includes('غیرقابل نقد شدن'))
 const s3 = await report()
@@ -242,9 +242,9 @@ eq('«انصراف» در مرحله ۱ ⇒ هیچ ارسالی', stx?.step, 'id
 const stp = st2 && F.overpayFlowPassword?.(st2, 'رمز')
 truthy('رمز مدیر همان درخواست مرحله ۳ را با managerPassword تکرار می‌کند',
   stp?.step === 'submit' && stp?.request?.overpayAsCredit === true && stp?.request?.managerPassword === 'رمز')
-const flashText = F.overpayCreditFlash?.({ code: 'AB12', amount: 300, expiresAtJalali: null, notice: 'x' }, (n) => String(n), (s) => s)
-truthy('متن نتیجه کد، مبلغ و «غیرقابل نقد شدن» را دارد',
-  typeof flashText === 'string' && flashText.includes('AB12') && flashText.includes('300') && flashText.includes('غیرقابل نقد شدن'))
+const flashText = F.overpayCreditFlash?.({ id: 12, publicReference: 'اعتبار #12', amount: 300, expiresAtJalali: null, notice: 'x' }, (n) => String(n), (s) => s)
+truthy('متن نتیجه مرجع امن، مبلغ و «غیرقابل نقد شدن» را دارد',
+  typeof flashText === 'string' && flashText.includes('اعتبار #12') && !flashText.includes('AB12') && flashText.includes('300') && flashText.includes('غیرقابل نقد شدن'))
 const btn = F.overpayCreditButton?.({ overpayCreditAvailable: 500 }, (n) => String(n))
 truthy('دکمه با مبلغ آزاد دیده می‌شود', btn?.show === true && String(btn?.label).includes('500'))
 eq('دکمه بدون مبلغ آزاد پنهان است', F.overpayCreditButton?.({ overpayCreditAvailable: 0 }, (n) => String(n))?.show, false)

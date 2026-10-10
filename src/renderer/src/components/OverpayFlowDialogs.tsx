@@ -255,9 +255,10 @@ export default function OverpayFlowDialogs({
         }
       >
         <div className="leading-8 text-center space-y-1">
-          <div className="text-2xl font-bold tracking-widest" dir="ltr">
-            {issuedCredit?.code}
+          <div className="text-lg font-bold">
+            {issuedCredit?.publicReference ?? (issuedCredit?.id ? `اعتبار #${issuedCredit.id}` : 'اعتبار خرید')}
           </div>
+          <div className="kbd">کد قابل‌استفاده فقط روی برگهٔ چاپ‌شده است.</div>
           <div className="font-bold">{money(issuedCredit?.amount ?? 0)} ریال</div>
           <div className="kbd">
             {issuedCredit?.expiresAtJalali ? `مهلت تا ${faDigits(issuedCredit.expiresAtJalali)}` : 'بدون انقضا'}

@@ -279,7 +279,7 @@ export default function InvoicePaymentsModal({
   }
 
   const onCreditIssued = async (credit: (OverpayCreditLike & { id?: number }) | null | undefined) => {
-    if (!credit?.code) return
+    if (!credit?.id) return
     issuedCreditOpenRef.current = true
     setIssuedCredit(credit)
     // مرحله ۳ بند ۴-۳۵: «اگر بله، کد اعتباری چاپ شود»
@@ -359,7 +359,7 @@ export default function InvoicePaymentsModal({
             (destination === PaymentDestination.MANAGER ? ` (${MANAGER_ACCOUNT_ROW_NOTE})` : '')) +
           ` · باقی‌مانده ${money(res?.remaining ?? 0)} ریال` +
           (res?.settled ? ' · فاکتور تسویه شد ✔' : '') +
-          (res?.overpayCredit?.code
+          (res?.overpayCredit?.id
             ? ` · ${overpayCreditFlash(res.overpayCredit, money, faDigits)}`
             : res?.overpayAmount > 0
               ? ` · مبلغ اضافه‌ی دریافتی: ${money(res.overpayAmount)} ریال (ردیف «دریافت پول اضافه» در گزارش فاکتور و گزارشات فروش)`
@@ -367,7 +367,7 @@ export default function InvoicePaymentsModal({
                 ? ' · توجه: جمع پرداختی‌ها از مبلغ فاکتور بیشتر شد'
                 : '')
       )
-      if (res?.overpayCredit?.code) await onCreditIssued(res.overpayCredit)
+      if (res?.overpayCredit?.id) await onCreditIssued(res.overpayCredit)
       printedPaymentId = Number(res?.payment?.id ?? 0) || null
     } catch (e: any) {
       const message = String(e.message ?? '')

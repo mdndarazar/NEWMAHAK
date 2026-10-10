@@ -789,9 +789,9 @@ export default function SalesInvoice() {
               (inv.storeCreditApplied > 0
                 ? ` · بارکد اعتبار ${money(inv.storeCreditApplied)} ریال مصرف شد` +
                   (inv.storeCreditRemainder
-                    ? ` · بارکد اعتبار جدید ${inv.storeCreditRemainder.code} (${money(
+                    ? ` · ${inv.storeCreditRemainder.publicReference} (${money(
                         inv.storeCreditRemainder.amount
-                      )} ریال) به مشتری برگشت`
+                      )} ریال) برای مشتری صادر و چاپ شد`
                     : '')
                 : '') +
               // مورد ۷: کد برگشت همین فاکتور عمده (روی رسید چاپی هم می‌آید)
@@ -803,7 +803,7 @@ export default function SalesInvoice() {
                   )} روز`
                 : '') +
               // نشست ۶۳ · بند ۴-۳۵ — مبلغ اضافه هرگز بی‌صدا نیست: کد اعتبار یا ردیف «دریافت پول اضافه»
-              (inv.overpayCredit?.code
+              (inv.overpayCredit?.id
                 ? ` · ${overpayCreditFlash(inv.overpayCredit, money, faDigits)}`
                 : inv.overpayAmount > 0
                   ? ` · مبلغ اضافه‌ی دریافتی: ${money(inv.overpayAmount)} ریال (ردیف «دریافت پول اضافه» در گزارش فاکتور و گزارشات فروش)`
@@ -811,8 +811,8 @@ export default function SalesInvoice() {
           )
           resetForm()
           if (editId) void reloadList()
-          if (inv.overpayCredit?.code) {
-            // مرحله ۳ بند ۴-۳۵: کد اعتبار نمایش و خودکار چاپ می‌شود (چاپ دوباره از همان پنجره)
+          if (inv.overpayCredit?.id) {
+            // مرحله ۳ بند ۴-۳۵: اعتبار صادرشده بی‌درنگ چاپ می‌شود (چاپ دوباره از همان پنجره)
             issuedCreditOpenRef.current = true
             setIssuedCredit(inv.overpayCredit)
             await printIssuedOverpayCredit(inv.overpayCredit)
