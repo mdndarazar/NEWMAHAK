@@ -1147,6 +1147,12 @@ export interface SaleStoreCreditBlock {
   issuedRemainder?: number
   /** نشست ۱۷۱ · S170-D3 — باقی‌مانده‌ی اعتبار اضافه‌دریافت (داخل issuedFromOverpay) */
   issuedOverpayRemainder?: number
+  /** تفکیک نمایشی گردش همان «اعتبار صادرشده»؛ هیچ‌کدام فرمول گزارش را تغییر نمی‌دهد. */
+  issuedReturn?: number
+  issuedExchange?: number
+  issuedManual?: number
+  issuedOther?: number
+  issuedOverpayFresh?: number
   used: number
   active: number
   expired: number
@@ -1268,7 +1274,16 @@ export const FINANCIAL_COMPONENT_KEYS = [
   'posCardReceived',
   'otherMethodReceived',
   /** فقط فاکتورهای صفحهٔ فعلی گزارش؛ با جمع کل بازه جایگزین نمی‌شود. */
-  'creditMethodReceived'
+  'creditMethodReceived',
+  /** گردش اعتبار خرید: هر کلید فقط یک برش read-only از statement رسمی است. */
+  'storeCreditIssuedReturn',
+  'storeCreditIssuedExchange',
+  'storeCreditIssuedManual',
+  'storeCreditIssuedOther',
+  'storeCreditIssuedOverpay',
+  'storeCreditIssuedRemainder',
+  'storeCreditExpired',
+  'storeCreditCanceled'
 ] as const
 export type FinancialComponentKey = (typeof FINANCIAL_COMPONENT_KEYS)[number]
 export type FinancialInspectorKey = FinancialSourceKey | FinancialComponentKey

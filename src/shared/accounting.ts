@@ -268,6 +268,17 @@ export interface StoreCreditTotals {
   /** نشست ۱۷۱ · S170-D3 — «باقی‌مانده»ی مصرف جزئی اعتبار اضافه‌دریافت (داخل issuedFromOverpay) */
   issuedOverpayRemainder?: Rial
   issuedOverpayRemainderCount?: number
+  /** گردش گزارش‌پذیر اعتبار: این تفکیک‌ها فقط شرحِ همان `issued` هستند و هیچ فرمولی را عوض نمی‌کنند. */
+  issuedReturn?: Rial
+  issuedReturnCount?: number
+  issuedExchange?: Rial
+  issuedExchangeCount?: number
+  issuedManual?: Rial
+  issuedManualCount?: number
+  issuedOther?: Rial
+  issuedOtherCount?: number
+  issuedOverpayFresh?: Rial
+  issuedOverpayFreshCount?: number
 }
 
 export interface AccrualInput {

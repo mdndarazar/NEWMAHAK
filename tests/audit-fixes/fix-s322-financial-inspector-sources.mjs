@@ -68,6 +68,28 @@ for (const [invoiceId, hour] of [[invCash.id, 9], [invCard.id, 10], [invCredit.i
     .run(at(hour).getTime(), at(hour).getTime(), day, `${String(hour).padStart(2, '0')}:00:00`, invoiceId)
 }
 
+/** فیکسچر گردش اعتبار: گزارش و ریزبین فقط ref امن می‌گیرند، نه کدهای قابل‌مصرف. */
+const issueCredit = (code, partial) => seed.insert('StoreCredit', {
+  code,
+  amount: 0,
+  source: 'EXCHANGE',
+  status: 'ACTIVE',
+  issuedAt: at(12),
+  issuedAtJalali: day,
+  issuedAtTime: '12:00:00',
+  userId,
+  sourceInvoiceId: invCash.id,
+  ...partial
+})
+const manualCredit = issueCredit('FI-CIRC-MANUAL-ONLY', { amount: 70_000, source: 'MANUAL', note: 'یادداشت حاوی FI-CIRC-MANUAL-ONLY' })
+issueCredit('FI-CIRC-OVERPAY-ONLY', { amount: 40_000, source: 'OVERPAY' })
+issueCredit('FI-CIRC-RETURN-ONLY', { amount: 30_000, returnId: 901 })
+issueCredit('FI-CIRC-EXCHANGE-ONLY', { amount: 35_000, exchangeInvoiceId: invCard.id })
+const remainderCredit = issueCredit('FI-CIRC-REMAINDER-ONLY', { amount: 20_000, source: 'MANUAL' })
+issueCredit('FI-CIRC-REMAINDER-CHILD', { amount: 1, source: 'OTHER', remainderCreditId: remainderCredit })
+issueCredit('FI-CIRC-EXPIRED-ONLY', { amount: 100_000, usedAmount: 25_000, expiresAt: at(-24) })
+issueCredit('FI-CIRC-CANCELED-ONLY', { amount: 25_000, status: 'CANCELED', source: 'OTHER' })
+
 const scope = { fromJalali: day, toJalali: day }
 const tableCounts = () => ({
   invoices: Number(sql.prepare('SELECT COUNT(*) AS n FROM "SaleInvoice"').get().n),
@@ -134,6 +156,36 @@ assert.equal(creditMethodSources.result?.sources.length, 1)
 assert.equal(creditMethodSources.result?.sources[0]?.invoiceId, invCredit.id, 'ریز اعتباری فقط همان فاکتور صفحه را نشان می‌دهد')
 assert.equal((await svc.document({ scope: creditPageScope, key: 'creditMethodReceived', ref: creditMethodSources.result?.sources[0]?.ref })).detail?.invoice?.id, invCredit.id,
   'شناسنامهٔ اعتباری نیز عضویت در همان صفحه را سمت سرور اثبات می‌کند')
+
+/** کارت گردش اعتبار فقط ارقام رسمی statement و sourceهای امنِ server را باز می‌کند. */
+const circulationChecks = [
+  ['storeCreditIssuedReturn', 30_000],
+  ['storeCreditIssuedExchange', 35_000],
+  ['storeCreditIssuedManual', 70_000],
+  ['storeCreditIssuedOverpay', 40_000],
+  ['storeCreditIssuedRemainder', 20_000],
+  ['storeCreditExpired', 75_000],
+  ['storeCreditCanceled', 25_000]
+]
+for (const [key, amount] of circulationChecks) {
+  const result = await svc.sources({ scope, key })
+  assert.equal(result.result?.totalAmount, amount, `${key} باید مبلغ رسمی statement را بخواند`)
+  assert.equal(result.result?.sourceAmount, amount, `${key} باید با اسناد امن خود تراز شود`)
+  assert.equal(result.result?.reconciles, true)
+  assert.equal(result.result?.sources.length, 1)
+}
+const manualSources = await svc.sources({ scope, key: 'storeCreditIssuedManual' })
+assert.equal(manualSources.result?.sources[0]?.ref.kind, 'STORE_CREDIT')
+assert.equal(manualSources.result?.sources[0]?.ref.id, manualCredit)
+const manualDocument = await svc.document({ scope, key: 'storeCreditIssuedManual', ref: manualSources.result?.sources[0]?.ref })
+assert.equal(manualDocument.detail?.invoice?.id, invCash.id, 'شناسنامهٔ صدور اعتبار به فاکتور مرجع امن وصل می‌شود')
+assert.match(manualDocument.detail?.note ?? '', /کد اعتبار پنهان است/, 'کد حتی از یادداشت آزاد سند هم redaction می‌شود')
+assert.doesNotMatch(JSON.stringify(manualDocument.detail), /FI-CIRC-MANUAL-ONLY/, 'کد قابل‌مصرف در ریزبین عادی نشت نمی‌کند')
+assert.match(
+  await errorOf(() => svc.document({ scope, key: 'storeCreditIssuedManual', ref: { kind: 'STORE_CREDIT', id: remainderCredit, subKind: 'STORE_CREDIT_ISSUANCE' } })) ?? '',
+  /عضو عدد مالی/,
+  'سند اعتبارِ خارج از دستهٔ گردش با ID دلخواه باز نمی‌شود'
+)
 assert.match(
   await errorOf(() => svc.document({ scope, key: 'drawerCashReceived', ref: posCard.result?.sources[0]?.ref })) ?? '',
   /عضو عدد مالی/,

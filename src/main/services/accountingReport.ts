@@ -928,6 +928,16 @@ async function storeCreditBridgeSplit(issuedWhere: any, issuedIds: number[] | nu
   remainderCount: number
   overpayRemainder: number
   overpayRemainderCount: number
+  issuedReturn: number
+  issuedReturnCount: number
+  issuedExchange: number
+  issuedExchangeCount: number
+  issuedManual: number
+  issuedManualCount: number
+  issuedOther: number
+  issuedOtherCount: number
+  issuedOverpayFresh: number
+  issuedOverpayFreshCount: number
 }> {
   /**
    * نشست ۱۷۱ · S170-D3 — ردیف‌های OVERPAY هم خوانده می‌شوند، فقط برای جدا کردن «باقی‌مانده»ی
@@ -935,9 +945,15 @@ async function storeCreditBridgeSplit(issuedWhere: any, issuedIds: number[] | nu
    * اعتبار اضافه‌دریافتِ تازه. OVERPAY هرگز وارد backed/unbacked/remainder نمی‌شود (S61-2).
    */
   /** نشست ۱۷۴ · S173-D3 — روی دسته‌های شناسه (issuedIds) و یکتا، به ترتیب id نزولی */
-  const rows = await liteRowsByIdChunks<{ id: number; amount: any; returnId: number | null; source: string }>(
+  const rows = await liteRowsByIdChunks<{
+    id: number
+    amount: any
+    returnId: number | null
+    exchangeInvoiceId: number | null
+    source: string
+  }>(
     'storeCredit', { ...issuedWhere }, issuedIds,
-    { amount: true, returnId: true, source: true },
+    { amount: true, returnId: true, exchangeInvoiceId: true, source: true },
     (a, b) => Number(b.id) - Number(a.id)
   )
   const remainderIds = new Set<number>()
@@ -951,16 +967,33 @@ async function storeCreditBridgeSplit(issuedWhere: any, issuedIds: number[] | nu
   }
   const out = {
     backedIds: [] as number[], backed: 0, unbacked: 0, unbackedCount: 0, remainder: 0, remainderCount: 0,
-    overpayRemainder: 0, overpayRemainderCount: 0
+    overpayRemainder: 0, overpayRemainderCount: 0,
+    issuedReturn: 0, issuedReturnCount: 0,
+    issuedExchange: 0, issuedExchangeCount: 0,
+    issuedManual: 0, issuedManualCount: 0,
+    issuedOther: 0, issuedOtherCount: 0,
+    issuedOverpayFresh: 0, issuedOverpayFreshCount: 0
   }
   for (const r of rows) {
     const amount = n(r.amount)
     if (r.source === CreditSource.OVERPAY) {
       if (remainderIds.has(r.id)) { out.overpayRemainder += amount; out.overpayRemainderCount++ }
+      else { out.issuedOverpayFresh += amount; out.issuedOverpayFreshCount++ }
       continue
     }
-    if (remainderIds.has(r.id)) { out.remainder += amount; out.remainderCount++ }
-    else if (r.returnId != null) { out.backed += amount; out.backedIds.push(r.id) }
+    if (remainderIds.has(r.id)) {
+      out.remainder += amount
+      out.remainderCount++
+      continue
+    }
+    /** همان resolver مشترکِ برچسب اعتبار: سند تعویض بر returnId اولویت دارد. */
+    const reason = creditIssueReasonOf(r)
+    if (reason === 'RETURN') { out.issuedReturn += amount; out.issuedReturnCount++ }
+    else if (reason === 'EXCHANGE') { out.issuedExchange += amount; out.issuedExchangeCount++ }
+    else if (reason === 'MANUAL') { out.issuedManual += amount; out.issuedManualCount++ }
+    else { out.issuedOther += amount; out.issuedOtherCount++ }
+
+    if (r.returnId != null) { out.backed += amount; out.backedIds.push(r.id) }
     else { out.unbacked += amount; out.unbackedCount++ }
   }
   return out
@@ -1145,6 +1178,16 @@ async function storeCreditStatement(
     /** نشست ۱۷۱ · S170-D3 — باقی‌مانده‌ی اعتبار اضافه‌دریافت (داخل issuedFromOverpay) */
     issuedOverpayRemainder: split.overpayRemainder,
     issuedOverpayRemainderCount: split.overpayRemainderCount,
+    issuedReturn: split.issuedReturn,
+    issuedReturnCount: split.issuedReturnCount,
+    issuedExchange: split.issuedExchange,
+    issuedExchangeCount: split.issuedExchangeCount,
+    issuedManual: split.issuedManual,
+    issuedManualCount: split.issuedManualCount,
+    issuedOther: split.issuedOther,
+    issuedOtherCount: split.issuedOtherCount,
+    issuedOverpayFresh: split.issuedOverpayFresh,
+    issuedOverpayFreshCount: split.issuedOverpayFreshCount,
     issuedCount: issued.count,
     used: used.sum.amount,
     usageCount: used.count,
@@ -1525,7 +1568,91 @@ async function bridgeSources(
   const isRealMoney = (r: PayLite, b: string) =>
     r.kind === PaymentEntryKind.CHEQUE ? r.chequeStatus === ChequeStatus.CLEARED : !isCredit(b)
   try {
-    if (key === 'storeCreditIssued') {
+    if (([
+      'storeCreditIssuedReturn', 'storeCreditIssuedExchange', 'storeCreditIssuedManual',
+      'storeCreditIssuedOther', 'storeCreditIssuedOverpay', 'storeCreditIssuedRemainder'
+    ] as const).includes(key as any)) {
+      /**
+       * کارت گردش اعتبار همان صفِ صدور رسمی را می‌خواند؛ این فقط دسته‌بندی امن
+       * اسناد موجود است و هیچ مبلغ حسابداری تازه‌ای نمی‌سازد. کد قابل‌مصرف هرگز
+       * در label یا payload این مسیر وارد نمی‌شود.
+       */
+      const { issuedWhere, issuedIds } = await storeCreditScopes(scope, [])
+      const rows = await liteRowsByIdChunks<{
+        id: number; amount: any; returnId: number | null; exchangeInvoiceId: number | null
+        sourceInvoiceId: number | null; source: string; issuedAt: Date; issuedAtJalali: string; customerName: string | null
+      }>(
+        'storeCredit', issuedWhere, issuedIds,
+        { amount: true, returnId: true, exchangeInvoiceId: true, sourceInvoiceId: true, source: true, issuedAt: true, issuedAtJalali: true, customerName: true },
+        (a, b) => Number(b.id) - Number(a.id)
+      )
+      const ids = rows.map((r) => Number(r.id))
+      const remainderIds = new Set<number>()
+      for (let i = 0; i < ids.length; i += 500) {
+        const children: Array<{ remainderCreditId: number | null }> = await prisma.storeCredit.findMany({
+          where: { remainderCreditId: { in: ids.slice(i, i + 500) } }, select: { remainderCreditId: true }
+        })
+        for (const child of children) if (child.remainderCreditId != null) remainderIds.add(Number(child.remainderCreditId))
+      }
+      const wanted = key
+      const matching = rows.filter((r) => {
+        const isRemainder = remainderIds.has(Number(r.id))
+        if (wanted === 'storeCreditIssuedRemainder') return isRemainder
+        if (String(r.source) === CreditSource.OVERPAY) return wanted === 'storeCreditIssuedOverpay' && !isRemainder
+        if (isRemainder) return false
+        const reason = creditIssueReasonOf(r)
+        return (wanted === 'storeCreditIssuedReturn' && reason === 'RETURN') ||
+          (wanted === 'storeCreditIssuedExchange' && reason === 'EXCHANGE') ||
+          (wanted === 'storeCreditIssuedManual' && reason === 'MANUAL') ||
+          (wanted === 'storeCreditIssuedOther' && reason === 'OTHER')
+      })
+      const labels: Record<string, string> = {
+        storeCreditIssuedReturn: 'اعتبار صادرشده بابت برگشت از فروش',
+        storeCreditIssuedExchange: 'اعتبار صادرشده بابت تعویض کالا',
+        storeCreditIssuedManual: 'اعتبار صادرشده مدیریتی/دستی',
+        storeCreditIssuedOther: 'اعتبار صادرشده بدون سند بازگشت/تعویض',
+        storeCreditIssuedOverpay: 'اعتبار صادرشده از اضافه‌دریافت',
+        storeCreditIssuedRemainder: 'اعتبارِ باقی‌مانده پس از مصرف'
+      }
+      for (const r of matching.slice(skip, skip + take))
+        out.push({
+          kind: 'STORE_CREDIT', subKind: 'STORE_CREDIT_ISSUANCE', id: Number(r.id), amount: n(r.amount),
+          label: `${labels[wanted]}${r.customerName ? ` · ${r.customerName}` : ''}`,
+          dateJalali: r.issuedAtJalali || toJalaliDate(r.issuedAt),
+          invoiceId: r.exchangeInvoiceId ?? r.sourceInvoiceId ?? null, receiptNo: null
+        })
+      return { sources: out, page: makePage(matching.length) }
+    } else if (key === 'storeCreditExpired' || key === 'storeCreditCanceled') {
+      /** وضعیت‌ها از همان predicate statement می‌آیند؛ منقضی مبلغِ باقیمانده است، نه مبلغ اولیه. */
+      const { range: creditRange, scopedIds } = await storeCreditScopes(scope, [])
+      const asOf = (creditRange && scope.to) || new Date()
+      const expired = key === 'storeCreditExpired'
+      const where: any = expired
+        ? {
+            OR: [
+              { status: { in: [StoreCreditStatus.ACTIVE, StoreCreditStatus.PARTIALLY_USED, StoreCreditStatus.SUSPENDED] }, expiresAt: { not: null, lte: asOf } },
+              { status: StoreCreditStatus.EXPIRED }
+            ],
+            ...(creditRange && scope.to ? { issuedAt: { lte: scope.to } } : {})
+          }
+        : { status: StoreCreditStatus.CANCELED, ...(creditRange && scope.to ? { issuedAt: { lte: scope.to } } : {}) }
+      const rows = await liteRowsByIdChunks<{
+        id: number; amount: any; usedAmount: any; issuedAt: Date; issuedAtJalali: string; customerName: string | null
+      }>(
+        'storeCredit', where, scopedIds,
+        { amount: true, usedAmount: true, issuedAt: true, issuedAtJalali: true, customerName: true },
+        (a, b) => Number(b.id) - Number(a.id)
+      )
+      const matching = expired ? rows.filter((r) => n(r.amount) > n(r.usedAmount)) : rows
+      for (const r of matching.slice(skip, skip + take))
+        out.push({
+          kind: 'STORE_CREDIT', subKind: 'STORE_CREDIT_ISSUANCE', id: Number(r.id),
+          amount: expired ? Math.max(0, n(r.amount) - n(r.usedAmount)) : n(r.amount),
+          label: `${expired ? 'اعتبار منقضی‌شده (باقی‌مانده)' : 'اعتبار لغوشده'}${r.customerName ? ` · ${r.customerName}` : ''}`,
+          dateJalali: r.issuedAtJalali || toJalaliDate(r.issuedAt), invoiceId: null, receiptNo: null
+        })
+      return { sources: out, page: makePage(matching.length) }
+    } else if (key === 'storeCreditIssued') {
       // نشست ۶۱ — اعتبار اضافه‌دریافت در ردیف overpayReceived است.
       // ممیزی A108-02 — همان where ردیف (مالک رویداد/هویت A97-01)، نه کل بازه.
       const { issuedWhere, issuedIds } = await storeCreditScopes(scope, [])
@@ -1756,7 +1883,19 @@ export async function readBridgeSources(
  */
 export async function readFinancialComponentSources(
   scope: StatementScope,
-  key: 'drawerCashReceived' | 'posCardReceived' | 'otherMethodReceived' | 'creditMethodReceived',
+  key:
+    | 'drawerCashReceived'
+    | 'posCardReceived'
+    | 'otherMethodReceived'
+    | 'creditMethodReceived'
+    | 'storeCreditIssuedReturn'
+    | 'storeCreditIssuedExchange'
+    | 'storeCreditIssuedManual'
+    | 'storeCreditIssuedOther'
+    | 'storeCreditIssuedOverpay'
+    | 'storeCreditIssuedRemainder'
+    | 'storeCreditExpired'
+    | 'storeCreditCanceled',
   skip = 0,
   take = 200
 ): Promise<{ sources: SaleBridgeSource[]; page: SaleReportPage }> {
@@ -2184,6 +2323,11 @@ export async function buildStatements(
       issuedBacked: sc.issuedBacked, issuedUnbacked: sc.issuedUnbacked, issuedRemainder: sc.issuedRemainder,
       /** نشست ۱۷۱ · S170-D3 — داخل issuedFromOverpay */
       issuedOverpayRemainder: sc.issuedOverpayRemainder,
+      issuedReturn: sc.issuedReturn,
+      issuedExchange: sc.issuedExchange,
+      issuedManual: sc.issuedManual,
+      issuedOther: sc.issuedOther,
+      issuedOverpayFresh: sc.issuedOverpayFresh,
       expired: sc.expired, canceled: sc.canceled,
       issuedCount: sc.issuedCount, usageCount: sc.usageCount,
       usedStories: sc.usedStories ?? []

@@ -114,7 +114,9 @@ import type {
   SaleReportTotals,
   SaleAccountingStatements,
   SaleBridgeBlock,
-  SaleBridgeSource
+  SaleBridgeSource,
+  SaleStoreCreditBlock,
+  FinancialInspectorKey
 } from '@shared/types'
 
 /**
@@ -2704,6 +2706,59 @@ export default function SalesReports() {
   )
 }
 
+/** کارت گردش اعتبار خرید؛ همهٔ اعداد از statement سمت سرور می‌آیند و هر سطر همان‌جا ریز امن دارد. */
+function StoreCreditCirculationCard({
+  credits,
+  onOpenSources
+}: {
+  credits?: SaleStoreCreditBlock | null
+  onOpenSources: (key: FinancialInspectorKey) => void
+}) {
+  const c = credits ?? {
+    issuedReturn: 0, issuedExchange: 0, issuedManual: 0, issuedOther: 0, issuedOverpayFresh: 0,
+    issuedRemainder: 0, used: 0, expired: 0, canceled: 0
+  }
+  const issuance: Array<{ key: FinancialInspectorKey; label: string; value: number; note: string }> = [
+    { key: 'storeCreditIssuedReturn', label: 'صدور بابت برگشت', value: Number(c.issuedReturn ?? 0), note: 'سند برگشت فروش' },
+    { key: 'storeCreditIssuedExchange', label: 'صدور بابت تعویض', value: Number(c.issuedExchange ?? 0), note: 'سند تعویض کالا' },
+    { key: 'storeCreditIssuedManual', label: 'صدور مدیریتی/دستی', value: Number(c.issuedManual ?? 0), note: 'ثبت مدیریت یا صدور دستی' },
+    { key: 'storeCreditIssuedOther', label: 'صدور بی‌سند بازگشت/تعویض', value: Number(c.issuedOther ?? 0), note: 'علت در سابقهٔ امن سند است' },
+    { key: 'storeCreditIssuedOverpay', label: 'صدور از اضافه‌دریافت', value: Number(c.issuedOverpayFresh ?? 0), note: 'اعتبار تازه، نه باقی‌مانده' },
+    { key: 'storeCreditIssuedRemainder', label: 'انتقال باقی‌ماندهٔ مصرف', value: Number(c.issuedRemainder ?? 0), note: 'تعهد تازه نیست' }
+  ]
+  const outcome: Array<{ key: FinancialInspectorKey; label: string; value: number; note: string }> = [
+    { key: 'storeCreditUsed', label: 'مصرف روی فروش', value: Number(c.used ?? 0), note: 'پول نقد وارد صندوق نشده' },
+    { key: 'storeCreditExpired', label: 'منقضی‌شده', value: Number(c.expired ?? 0), note: 'باقی‌مانده در پایان بازه' },
+    { key: 'storeCreditCanceled', label: 'لغوشده', value: Number(c.canceled ?? 0), note: 'اعتبار با وضعیت لغو' }
+  ]
+  const renderRow = (row: (typeof issuance)[number]) => (
+    <button
+      key={row.key}
+      type="button"
+      className="rounded border border-violet-200 bg-white px-2.5 py-2 text-right hover:border-violet-400 hover:bg-violet-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-600"
+      onClick={() => onOpenSources(row.key)}
+      title="باز کردن فهرست امن اسناد سازنده"
+    >
+      <span className="block text-xs font-bold text-violet-950">{row.label}</span>
+      <b className="mt-1 block tabular-nums text-sm text-slate-900" dir="ltr">{money(row.value)} ریال</b>
+      <span className="mt-1 block text-[11px] leading-4 text-slate-600">{row.note} · مشاهدهٔ سند</span>
+    </button>
+  )
+  return (
+    <section className="mt-3 rounded border-2 border-violet-300 bg-violet-50/70" aria-label="گردش اعتبار خرید">
+      <div className="border-b border-violet-200 px-3 py-2">
+        <h3 className="font-bold text-violet-950">گردش اعتبار خرید</h3>
+        <p className="mt-1 text-xs leading-5 text-violet-900">صدور، مصرف، انقضا و لغو از هم جدا هستند. روی هر بخش بزنید تا اسناد و شناسنامهٔ امن آن باز شود؛ کد قابل‌مصرف در این کارت و فهرست عادی نمایش داده نمی‌شود.</p>
+      </div>
+      <div className="grid gap-2 p-2 sm:grid-cols-2 lg:grid-cols-3">{issuance.map(renderRow)}</div>
+      <div className="border-t border-violet-200 px-2 py-2">
+        <span className="px-1 text-xs font-bold text-violet-950">سرنوشت اعتبار</span>
+        <div className="mt-1 grid gap-2 sm:grid-cols-3">{outcome.map(renderRow)}</div>
+      </div>
+    </section>
+  )
+}
+
 /**
  * ===========================================================================
  * بند ۷ — بلوک «خلاصه‌ی فروش بازه» (نمایش + فیلتر پویا + کنترل کارت‌خوان).
@@ -2786,6 +2841,7 @@ function SaleSummaryBlock({
   /** یک ریزبین واحد؛ focus تعیین می‌کند کاربر از کدام کاشی وارد شده است. */
   const [financialInspectorOpen, setFinancialInspectorOpen] = useState(false)
   const [financialInspectorFocus, setFinancialInspectorFocus] = useState<'overview' | 'drawer' | 'pos' | 'other' | 'manager' | 'nonCash'>('overview')
+  const [financialInspectorSourceKey, setFinancialInspectorSourceKey] = useState<FinancialInspectorKey | null>(null)
   const [nonCashOpen, setNonCashOpen] = useState(false)
   const [nonCashLoading, setNonCashLoading] = useState(false)
   const [exchangeRows, setExchangeRows] = useState<ExchangeReportRow[]>([])
@@ -2945,10 +3001,12 @@ function SaleSummaryBlock({
           }
           bridgeAlarm={netToDrawer.alarm}
           onOpenExplainer={() => {
+            setFinancialInspectorSourceKey(null)
             setFinancialInspectorFocus('overview')
             setFinancialInspectorOpen(true)
           }}
           onOpenFinancialInspector={(focus) => {
+            setFinancialInspectorSourceKey(null)
             setFinancialInspectorFocus(focus)
             setFinancialInspectorOpen(true)
           }}
@@ -2956,6 +3014,15 @@ function SaleSummaryBlock({
           nonCash={nonCash}
           nonCashOpen={nonCashOpen}
           onToggleNonCash={() => setNonCashOpen((prev) => !prev)}
+        />
+
+        <StoreCreditCirculationCard
+          credits={statements?.storeCredits}
+          onOpenSources={(key) => {
+            setFinancialInspectorFocus('overview')
+            setFinancialInspectorSourceKey(key)
+            setFinancialInspectorOpen(true)
+          }}
         />
 
         {/* ریزبین واحد: هیچ مودال مالی دیگری روی آن باز نمی‌شود. */}
@@ -2979,6 +3046,7 @@ function SaleSummaryBlock({
           bridgeAlarm={netToDrawer.alarm}
           pageInvoiceIds={pageInvoiceIds}
           initialFocus={financialInspectorFocus}
+          initialSourceKey={financialInspectorSourceKey}
           onOpenBridgeDiag={onOpenBridgeDiag}
         />
 

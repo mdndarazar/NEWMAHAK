@@ -36,6 +36,8 @@ export interface FinancialInspectorProps {
   /** شناسه‌های همان صفحهٔ گزارش؛ فقط برای ریز «روش اعتباری» که page-based است. */
   pageInvoiceIds?: number[]
   initialFocus?: FocusArea
+  /** ورود مستقیم از کارت گردش اعتبار؛ همچنان در همان ریزبین و stack واحد. */
+  initialSourceKey?: FinancialInspectorKey | null
   onOpenBridgeDiag?: () => void
 }
 
@@ -74,7 +76,15 @@ function inspectorKeyLabel(key: FinancialInspectorKey): string {
     drawerCashReceived: 'دریافت‌های نقدی ثبت‌شده',
     posCardReceived: 'دریافت‌های کارت‌خوان فروشگاه',
     otherMethodReceived: 'پرداخت با سایر روش‌ها',
-    creditMethodReceived: 'پرداخت با روش «اعتباری»'
+    creditMethodReceived: 'پرداخت با روش «اعتباری»',
+    storeCreditIssuedReturn: 'اعتبار صادرشده بابت برگشت از فروش',
+    storeCreditIssuedExchange: 'اعتبار صادرشده بابت تعویض کالا',
+    storeCreditIssuedManual: 'اعتبار صادرشده مدیریتی/دستی',
+    storeCreditIssuedOther: 'اعتبار صادرشده بدون سند بازگشت/تعویض',
+    storeCreditIssuedOverpay: 'اعتبار صادرشده از اضافه‌دریافت',
+    storeCreditIssuedRemainder: 'اعتبار باقی‌مانده پس از مصرف',
+    storeCreditExpired: 'اعتبار منقضی‌شده',
+    storeCreditCanceled: 'اعتبار لغوشده'
   }[key] ?? key
 }
 
@@ -94,6 +104,7 @@ export default function FinancialInspector({
   bridgeAlarm,
   pageInvoiceIds = [],
   initialFocus = 'overview',
+  initialSourceKey = null,
   onOpenBridgeDiag
 }: FinancialInspectorProps) {
   const { isManager } = useManagerSession()
@@ -149,9 +160,11 @@ export default function FinancialInspector({
       setAlarmSnapshot(bridgeAlarm)
       // ورود از یک کاشی، بخش جزئیات را نشان می‌دهد اما ریشهٔ ریزبین همچنان
       // جمع‌بندی است؛ پس Esc اول به همان ریشه برمی‌گردد و فقط Esc بعدی می‌بندد.
-      setStack(initialFocus === 'overview'
-        ? [{ type: 'overview' }]
-        : [{ type: 'overview' }, { type: 'formula', focus: initialFocus }])
+      setStack(initialSourceKey
+        ? [{ type: 'overview' }, { type: 'sources', key: initialSourceKey }]
+        : initialFocus === 'overview'
+          ? [{ type: 'overview' }]
+          : [{ type: 'overview' }, { type: 'formula', focus: initialFocus }])
       setSourceResult(null)
       setSourcesError(null)
       setSearchDraft('')
@@ -163,7 +176,7 @@ export default function FinancialInspector({
       setRevealBusy(false)
     }
     wasOpenRef.current = open
-  }, [open, scope, totals, statements, referenceRealCash, split, bridgeAlarm, pageInvoiceIds, initialFocus])
+  }, [open, scope, totals, statements, referenceRealCash, split, bridgeAlarm, pageInvoiceIds, initialFocus, initialSourceKey])
 
   /** خروج مدیر یا انقضای نشست نباید کد revealشده را روی صفحه نگه دارد. */
   useEffect(() => {

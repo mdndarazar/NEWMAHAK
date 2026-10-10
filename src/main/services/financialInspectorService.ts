@@ -33,6 +33,7 @@ import {
 import { prisma } from '../db/client'
 import { toJalaliDate, toLatinDigits } from '@shared/jalali'
 import { toNumberRial } from '@shared/money'
+import { creditIssueReasonOf, CREDIT_ISSUE_REASON_LABELS } from '@shared/credit'
 
 const PANEL = PANEL_KEYS.salesReports
 const MAX_TAKE = 200
@@ -209,6 +210,14 @@ function n(value: unknown): number {
   return Number.isFinite(parsed) ? Math.round(parsed) : 0
 }
 
+/** حتی یادداشت آزادِ خود اعتبار هم نباید credential را از مسیر ریزبین عادی نشت دهد. */
+function redactCreditCodeText(value: unknown, code: unknown): string | null {
+  const text = String(value ?? '')
+  if (!text) return null
+  const credential = String(code ?? '').trim()
+  return credential ? text.split(credential).join('[کد اعتبار پنهان است]') : text
+}
+
 function itemsOf(invoice: any): FinancialDocumentDetail['items'] {
   return Array.isArray(invoice?.items)
     ? invoice.items.map((item: any) => ({
@@ -380,9 +389,19 @@ async function documentForSource(source: SaleBridgeSource): Promise<FinancialDoc
     }
     const credit: any = await prisma.storeCredit.findUnique({ where: { id: source.id } })
     if (!credit) throw new BusinessError('اعتبار خرید منبع دیگر وجود ندارد.')
-    const invoice: any = credit.sourceInvoiceId
-      ? await prisma.saleInvoice.findUnique({ where: { id: credit.sourceInvoiceId }, include: { customer: true, user: true, shift: true, items: true } })
+    /** سند تعویض، اگر موجود باشد، دقیق‌تر از فاکتور اولیهٔ صدور است. */
+    const invoiceId = credit.exchangeInvoiceId ?? credit.sourceInvoiceId
+    const invoice: any = invoiceId
+      ? await prisma.saleInvoice.findUnique({ where: { id: invoiceId }, include: { customer: true, user: true, shift: true, items: true } })
       : null
+    const reason = creditIssueReasonOf(credit)
+    const reasonReference = credit.returnId != null
+      ? `سند برگشت #${credit.returnId}`
+      : credit.exchangeInvoiceId != null
+        ? `فاکتور تعویض #${credit.exchangeInvoiceId}`
+        : credit.remainderCreditId != null
+          ? `اعتبار مرتبط #${credit.remainderCreditId}`
+          : null
     const own = await actorAndShift(credit.userId, null)
     return {
       ...base,
@@ -392,8 +411,13 @@ async function documentForSource(source: SaleBridgeSource): Promise<FinancialDoc
       ...invoiceContext(invoice),
       actor: own.actor,
       shift: { id: null, name: null },
-      settlement: { method: 'STORE_CREDIT', methodLabel: 'اعتبار خرید', reference: null, status: credit.status ?? null },
-      note: credit.note ?? null,
+      settlement: {
+        method: 'STORE_CREDIT',
+        methodLabel: `اعتبار خرید · ${CREDIT_ISSUE_REASON_LABELS[reason]}`,
+        reference: reasonReference,
+        status: credit.status ?? null
+      },
+      note: redactCreditCodeText(credit.note, credit.code),
       voided: credit.voidedAt != null || credit.deletedAt != null
     }
   }
@@ -461,6 +485,26 @@ function officialAmountOf(report: any, key: FinancialInspectorKey): OfficialFina
       totalAmount: n(report?.totals?.creditTotal),
       basis: 'CURRENT_PAGE',
       pageCoversRange: false
+    }
+  }
+  const creditCirculation: Record<string, { label: string; hint: string; field: string }> = {
+    storeCreditIssuedReturn: { label: 'اعتبار صادرشده بابت برگشت از فروش', hint: 'اعتبارهای صادرشده از سند برگشت در همین بازه.', field: 'issuedReturn' },
+    storeCreditIssuedExchange: { label: 'اعتبار صادرشده بابت تعویض کالا', hint: 'اعتبارهای صادرشده از سند تعویض در همین بازه.', field: 'issuedExchange' },
+    storeCreditIssuedManual: { label: 'اعتبار صادرشده مدیریتی/دستی', hint: 'صدورهای مدیریتی یا دستیِ ثبت‌شده در همین بازه.', field: 'issuedManual' },
+    storeCreditIssuedOther: { label: 'اعتبار صادرشده بدون سند بازگشت/تعویض', hint: 'صدورهای بی‌سند بازگشت/تعویض که علتشان در سابقه مشخص است.', field: 'issuedOther' },
+    storeCreditIssuedOverpay: { label: 'اعتبار صادرشده از اضافه‌دریافت', hint: 'اعتبار تازهٔ ناشی از اضافه‌دریافت؛ باقی‌ماندهٔ مصرف نیست.', field: 'issuedOverpayFresh' },
+    storeCreditIssuedRemainder: { label: 'اعتبار باقی‌مانده پس از مصرف', hint: 'انتقالِ باقی‌ماندهٔ یک اعتبار قبلی است، نه تعهد تازه.', field: 'issuedRemainder' },
+    storeCreditExpired: { label: 'اعتبار منقضی‌شده', hint: 'باقی‌ماندهٔ اعتبارهای منقضی در پایان بازه.', field: 'expired' },
+    storeCreditCanceled: { label: 'اعتبار لغوشده', hint: 'اعتبارهای با وضعیت لغوشده در پایان بازه.', field: 'canceled' }
+  }
+  const circulation = creditCirculation[key]
+  if (circulation) {
+    return {
+      label: circulation.label,
+      hint: circulation.hint,
+      totalAmount: n(report?.accounting?.storeCredits?.[circulation.field]),
+      basis: 'RANGE',
+      pageCoversRange: true
     }
   }
   const row = report?.accounting?.bridge?.rows?.find((candidate: any) => candidate?.key === key)
