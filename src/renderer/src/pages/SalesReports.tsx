@@ -2564,9 +2564,13 @@ export default function SalesReports() {
           }
           onAll={(all) => setSummaryOn(all ? [...ALL_SUMMARY_PARTS] : [])}
           net={summary.net}
+          totals={t}
           cashTotal={t.cashTotal}
           cardTotal={summary.cardTotal}
           creditCardTotal={t.creditTotal}
+          otherTotal={t.otherTotal}
+          managerAccountTotal={t.managerAccountTotal}
+          destinationUnknownTotal={t.destinationUnknownTotal}
           realCash={summary.realCash}
           nonCash={summary.nonCash}
           creditRefundTotal={summary.creditRefundTotal}
@@ -2713,9 +2717,13 @@ function SaleSummaryBlock({
   onToggle,
   onAll,
   net,
+  totals,
   cashTotal,
   cardTotal,
   creditCardTotal,
+  otherTotal = 0,
+  managerAccountTotal = 0,
+  destinationUnknownTotal = 0,
   realCash,
   nonCash,
   creditRefundTotal,
@@ -2739,17 +2747,21 @@ function SaleSummaryBlock({
   onToggle: (key: SummaryPartKey) => void
   onAll: (all: boolean) => void
   net: number
+  totals?: Partial<SaleReportTotals>
   cashTotal: number
   cardTotal: number
   creditCardTotal: number
+  otherTotal?: number
+  managerAccountTotal?: number
+  destinationUnknownTotal?: number
   realCash: number
   nonCash: number
   creditRefundTotal: number
   creditUsedTotal: number
-  creditUsedStories: { code: string; amount: number; text: string }[]
-  creditUsedStoryHidden: number
-  priorCreditStories: { paymentId: number; receiptNo: number; amount: number; text: string }[]
-  priorCreditStoryHidden: number
+  creditUsedStories?: { code: string; amount: number; text: string }[]
+  creditUsedStoryHidden?: number
+  priorCreditStories?: { paymentId: number; receiptNo: number; amount: number; text: string }[]
+  priorCreditStoryHidden?: number
   invoiceCount: number
   range: string
   channels: string[]
@@ -2773,15 +2785,24 @@ function SaleSummaryBlock({
   const allOn = active.length === parts.length
   const hidden = parts.filter((p) => !active.includes(p.key))
 
-  // تفکیک درشت کشو و کارت‌خوان
-  const split = useMemo(() => {
-    return splitDrawerPos({ cashTotal, refundCashTotal, refundCardTotal }, cardTotal, realCash)
-  }, [cashTotal, refundCashTotal, refundCardTotal, cardTotal, realCash])
-
   // ساخت زنجیره تراز ریاضی خالص به دخل
   const netToDrawer = useMemo(() => {
     return buildNetToDrawer(bridge, realCash)
   }, [bridge, realCash])
+
+  // تفکیک درشت کشو و کارت‌خوان
+  const split = useMemo(() => {
+    const rawTotals = totals ?? {
+      cashTotal,
+      refundCashTotal,
+      refundCardTotal,
+      otherTotal,
+      creditTotal: creditCardTotal,
+      destinationUnknownTotal,
+      managerAccountTotal
+    }
+    return splitDrawerPos(rawTotals, cardTotal, realCash, netToDrawer.end)
+  }, [totals, cashTotal, refundCashTotal, refundCardTotal, otherTotal, creditCardTotal, destinationUnknownTotal, managerAccountTotal, cardTotal, realCash, netToDrawer.end])
 
   // بارگذاری داده‌های ریز اقلام غیرنقدی (Lazy loading بر مبنای appliedFilters)
   const currentPayloadKey = JSON.stringify(appliedFiltersPayload ?? {})
@@ -2899,6 +2920,9 @@ function SaleSummaryBlock({
           cardTotal={cardTotal}
           refundCashTotal={refundCashTotal}
           refundCardTotal={refundCardTotal}
+          otherTotal={totals?.otherTotal ?? otherTotal}
+          creditTotal={totals?.creditTotal ?? creditCardTotal}
+          destinationUnknownTotal={totals?.destinationUnknownTotal ?? destinationUnknownTotal}
           hasDiscrepancy={split.hasDiscrepancy}
           discrepancy={split.discrepancy}
           onOpenExplainer={() => setExplainerOpen(true)}
