@@ -1,4 +1,4 @@
-import type { SaleReportTotals, SaleBridgeBlock } from './types'
+import type { SaleReportTotals, SaleBridgeBlock, SaleCashBlock } from './types'
 
 export type ExplainerLine = {
   key: string
@@ -9,6 +9,8 @@ export type ExplainerLine = {
   hint: string
 }
 
+export type NetToDrawerAlarm = 'BRIDGE_UNBALANCED' | 'COMPOSITION_DRIFT' | null
+
 export interface NetToDrawerResult {
   start: number
   lines: ExplainerLine[]
@@ -17,44 +19,68 @@ export interface NetToDrawerResult {
   official: number
   gap: number
   omittedZeroCount: number
+  alarm: NetToDrawerAlarm
+  alarmMessage?: string
 }
 
-/** گروه‌بندی ردیف‌های پل به چند خط ساده و قابل‌فهم. هر ردیف پل دقیقاً در یک گروه. */
-export const GROUPS: { key: string; label: string; keys: string[] }[] = [
+export interface SplitDrawerPosResult {
+  drawer: number
+  pos: number
+  other: number
+  managerOutside: number
+  sum: number
+  vsOfficial: number
+  vsChain: number
+  hasDiscrepancy: boolean
+  discrepancy: number
+}
+
+/** گروه‌بندی دقیق و جامع ردیف‌های پل برای تراز شفاف از خالص فروش به سمت دخل فیزیکی */
+export const GROUPS_V2: { key: string; label: string; keys: string[] }[] = [
   { key: 'creditKept', label: 'پول مرجوعی‌هایی که در دخل ماند (کوپن صادر شد)', keys: ['storeCreditIssued'] },
   { key: 'noMoneyIn', label: 'فروش‌هایی که پولی نیاورد (کوپن مصرف‌شده)', keys: ['storeCreditUsed'] },
   { key: 'notYet', label: 'نسیه‌ی این بازه که هنوز نیامده', keys: ['uncollectedCredit'] },
   {
     key: 'otherIn',
     label: 'سایر دریافتی‌ها (وصول نسیه/چک قبلی، پول اضافه)',
-    keys: ['priorCreditSettlements', 'priorClearedCheques', 'overpayReceived', 'priorDebtReturns']
+    keys: [
+      'priorCreditSettlements',
+      'priorClearedCheques',
+      'overpayReceived',
+      'priorDebtReturns',
+      'priorDestinationUnknownReceived'
+    ]
   },
   {
     key: 'notInDrawer',
-    label: 'پولی که به کشو/کارت‌خوان نرسید (حساب مدیر، نامشخص)',
-    keys: [
-      'managerAccountReceived',
-      'destinationUnknownReceived',
-      'priorManagerAccountReceived',
-      'priorDestinationUnknownReceived'
-    ]
+    label: 'پولی که به حساب مدیر رفته (خارج از صندوق فروشگاه)',
+    keys: ['managerAccountReceived', 'priorManagerAccountReceived']
+  },
+  {
+    key: 'c2cRefund',
+    label: 'مرجوعی کارت‌به‌کارت (از حساب مدیر پرداخت شد، نه از دخل)',
+    keys: ['cardToCardRefunds', 'exchangeCardToCardRefunds']
   }
 ]
 
-export const REFUND_KEYS = [
+export const PHYSICAL_REFUND_KEYS = [
   'cashRefunds',
   'cardRefunds',
-  'cardToCardRefunds',
   'exchangeCashRefunds',
-  'exchangeCardRefunds',
-  'exchangeCardToCardRefunds'
+  'exchangeCardRefunds'
 ]
 
+export const GROUPS = GROUPS_V2
+export const REFUND_KEYS = PHYSICAL_REFUND_KEYS
+
 /**
- * تبدیل ردیف‌های پل تطبیق به کارت تراز قابل‌فهم «از خالص فروش تا موجودی واقعی دخل».
- * بدون اختراع عدد جدید؛ صرفاً بازآرایی و گروه‌بندی ردیف‌های موجود پل.
+ * ساخت تراز زنجیره‌ای ریاضی از خالص فروش تعهدی تا موجودی فیزیکی واقعی صندوق و کارت‌خوان.
  */
-export function buildNetToDrawer(bridge: SaleBridgeBlock | undefined | null, officialRealCash: number): NetToDrawerResult {
+export function buildNetToDrawer(
+  bridge: SaleBridgeBlock | undefined | null,
+  officialRealCash: number,
+  cashBlock?: SaleCashBlock | null
+): NetToDrawerResult {
   if (!bridge || !Array.isArray(bridge.rows)) {
     return {
       start: 0,
@@ -63,18 +89,20 @@ export function buildNetToDrawer(bridge: SaleBridgeBlock | undefined | null, off
       end: 0,
       official: officialRealCash,
       gap: officialRealCash,
-      omittedZeroCount: 0
+      omittedZeroCount: 0,
+      alarm: officialRealCash !== 0 ? 'COMPOSITION_DRIFT' : null,
+      alarmMessage: 'اطلاعات پل تطبیق در دسترس نیست.'
     }
   }
 
-  // جهت حرکت: از خالص (target) به سمت پول واقعی دخل ⇒ هر ردیف پل با «−sign» اعمال می‌شود
   const byKey = new Map(bridge.rows.map((r) => [r.key, r]))
-  // ردیف realCash و ردیف‌های بازپرداخت (refunds) قبلاً در خالص کسر شده‌اند و در officialRealCash هم کسر هستند
-  const used = new Set<string>(['realCash', ...REFUND_KEYS])
+  // بازپرداخت‌های فیزیکی کشو/کارت در خالص فروش اولیه کسر شده‌اند و در officialRealCash هم کسر هستند
+  // دریافتی با مقصد نامشخص و وجه واقعی نیز مستقیماً داخل officialRealCash هستند
+  const used = new Set<string>(['realCash', 'destinationUnknownReceived', ...PHYSICAL_REFUND_KEYS])
   const lines: ExplainerLine[] = []
   let zeroGroupCount = 0
 
-  for (const g of GROUPS) {
+  for (const g of GROUPS_V2) {
     const signed = g.keys.reduce((s, k) => {
       const r = byKey.get(k)
       if (!r) return s
@@ -96,6 +124,14 @@ export function buildNetToDrawer(bridge: SaleBridgeBlock | undefined | null, off
     }
   }
 
+  // اگر ردیف چک پاس‌شده تفکیک‌شده به نقد/کارت در cashBlock بود
+  if (cashBlock) {
+    const cqToCashCard = Number(cashBlock.clearedChequeToCash ?? 0) + Number(cashBlock.clearedChequeToCard ?? 0)
+    if (cqToCashCard > 0 && !byKey.has('clearedChequeToCashCard')) {
+      // فقط در صورتی که جداگانه نیاز به نمایش باشد
+    }
+  }
+
   // ردیف پلی که در هیچ گروهی تعریف نشده ⇒ خط جدای «سایر» (هرگز بی‌صدا حذف نمی‌شود)
   const leftovers = bridge.rows.filter((r) => !used.has(r.key) && (r.amount ?? 0) !== 0)
   for (const r of leftovers) {
@@ -112,9 +148,20 @@ export function buildNetToDrawer(bridge: SaleBridgeBlock | undefined | null, off
   const start = Number(bridge.target ?? 0)
   const netFromLines = lines.reduce((s, l) => s + l.sign * l.amount, 0)
   const unexplained = Number(bridge.unexplained ?? 0)
-  // جمع مستقیم گام‌ها باید دقیقاً برابر با موجودی مورد انتظار در کشو و کارت‌خوان باشد
-  const end = start + netFromLines
+  const end = start + netFromLines - unexplained
   const gap = officialRealCash - end
+
+  const isBalanced = bridge.balanced === true && unexplained === 0
+  let alarm: NetToDrawerAlarm = null
+  let alarmMessage: string | undefined
+
+  if (!isBalanced) {
+    alarm = 'BRIDGE_UNBALANCED'
+    alarmMessage = `مغایرت در پل تطبیق: مبلغ ${Math.abs(unexplained).toLocaleString('fa-IR')} ریال نیاز به بررسی در نمای تشخیص پل دارد.`
+  } else if (Math.abs(gap) > 1) {
+    alarm = 'COMPOSITION_DRIFT'
+    alarmMessage = `تفاوت در ترکیب اقلام نمایشی (${Math.abs(gap).toLocaleString('fa-IR')} ریال)؛ اما پل حسابداری کاملاً تراز است.`
+  }
 
   return {
     start,
@@ -123,34 +170,54 @@ export function buildNetToDrawer(bridge: SaleBridgeBlock | undefined | null, off
     end,
     official: officialRealCash,
     gap,
-    omittedZeroCount: zeroGroupCount
+    omittedZeroCount: zeroGroupCount,
+    alarm,
+    alarmMessage
   }
 }
 
 /**
- * تفکیک درشت کشوی پول فیزیکی و دستگاه کارت‌خوان.
- * فقط برش و دسته‌بندی مقادیر موجود، بدون تغییر حسابی.
+ * تفکیک درشت کشو، کارت‌خوان و سبد سایر به روش غیرهیدرولیکی (مستقیم از منابع واقعی)
  */
 export function splitDrawerPos(
   t: Partial<SaleReportTotals> | undefined | null,
   cardOnly: number,
-  officialRealCash: number
-): { drawer: number; pos: number; other: number; hasDiscrepancy: boolean; discrepancy: number } {
+  officialRealCash: number,
+  chainEnd?: number
+): SplitDrawerPosResult {
   const cashTotal = Number(t?.cashTotal ?? 0)
   const refundCashTotal = Number(t?.refundCashTotal ?? 0)
   const refundCardTotal = Number(t?.refundCardTotal ?? 0)
+  const otherTotal = Number(t?.otherTotal ?? 0)
+  const creditTotal = Number(t?.creditTotal ?? 0)
+  const destinationUnknownTotal = Number(t?.destinationUnknownTotal ?? 0)
+  const managerAccountTotal = Number(t?.managerAccountTotal ?? 0)
 
+  // ۱) کشو (اسکناس فیزیکی) = نقد دریافتی منهای مرجوعی نقد
   const drawer = cashTotal - refundCashTotal
+  // ۲) کارت‌خوان (پوز) = کارت کشیده‌شده منهای مرجوعی کارت
   const pos = cardOnly - refundCardTotal
-  const other = officialRealCash - drawer - pos
+  // ۳) سایر = واریزی‌های متفرقه + اعتباری + دریافتی با مقصد نامشخص (مستقیم، نه تفریق هیدرولیکی!)
+  const other = otherTotal + creditTotal + destinationUnknownTotal
+  // ۴) حساب مدیر = خارج از دخل فیزیکی مغازه
+  const managerOutside = managerAccountTotal
+
   const sum = drawer + pos + other
-  const discrepancy = officialRealCash - sum
+  const vsOfficial = officialRealCash - sum
+  const vsChain = chainEnd !== undefined ? chainEnd - sum : 0
+
+  const hasDiscrepancy = Math.abs(vsOfficial) > 0 || (chainEnd !== undefined && Math.abs(vsChain) > 0)
+  const discrepancy = Math.abs(vsOfficial) > 1 ? vsOfficial : vsChain
 
   return {
     drawer,
     pos,
     other,
-    hasDiscrepancy: Math.abs(discrepancy) > 1,
+    managerOutside,
+    sum,
+    vsOfficial,
+    vsChain,
+    hasDiscrepancy,
     discrepancy
   }
 }

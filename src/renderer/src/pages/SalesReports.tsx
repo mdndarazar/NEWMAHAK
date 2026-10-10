@@ -2048,6 +2048,17 @@ export default function SalesReports() {
             فاکتورهای تسویه‌شده‌ی این بازه هم نمایش داده شوند
           </label>
         )}
+        {cols.customized && (
+          <button
+            type="button"
+            className="btn btn-sm bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 font-bold px-2.5 py-1 text-xs rounded transition-colors flex items-center gap-1"
+            onClick={cols.reset}
+            title="بازگشت عرض ستون‌های همین جدول به حالت خودکار"
+          >
+            <span>⟲</span>
+            <span>بازنشانی عرض ستون‌ها</span>
+          </button>
+        )}
       </ReportFilterBar>
 
       {/* نشست ۱۱۷ (S117-2) — تب نسیه: هشدار برش + صفحه‌بندی واقعی؛ جمع‌ها روی کل بازه‌اند */}
@@ -2879,6 +2890,7 @@ function SaleSummaryBlock({
           drawer={split.drawer}
           pos={split.pos}
           other={split.other}
+          managerOutside={split.managerOutside}
           realCash={realCash}
           cashTotal={cashTotal}
           cardTotal={cardTotal}

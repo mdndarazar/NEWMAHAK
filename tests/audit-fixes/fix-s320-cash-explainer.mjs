@@ -16,16 +16,17 @@ for (const [name, fixture] of Object.entries(goldenData.fixtures)) {
   const officialRealCash = realCashRow ? realCashRow.amount : 0
 
   const res = buildNetToDrawer(bridge, officialRealCash)
-  const manualSum = res.start + res.lines.reduce((s, l) => s + l.sign * l.amount, 0)
+  const manualSum = res.start + res.lines.reduce((s, l) => s + l.sign * l.amount, 0) - res.unexplained
   assert.equal(res.end, manualSum, `در فیکسچر ${name} فرمول زنجیره باید با end بخواند`)
 
   if (bridge.balanced) {
     assert.equal(res.gap, 0, `در فیکسچر متوازن ${name} باید gap برابر با 0 باشد`)
     assert.equal(res.end, officialRealCash, `در فیکسچر متوازن ${name} باید end با official برابر باشد`)
+    assert.equal(res.alarm, null, `در فیکسچر متوازن ${name} نباید آلارم فعال باشد`)
     console.log(`  ✓ فیکسچر متوازن «${name}»: Invariant تراز کامل و gap = 0`)
   } else {
-    assert.equal(res.gap, -bridge.unexplained, `در فیکسچر نامتوازن ${name} مقدار gap باید دقیقاً برابر با -unexplained باشد`)
-    console.log(`  ✓ فیکسچر نامتوازن «${name}»: مغایرت پل با gap = ${res.gap} دقیقاً شناسایی شد`)
+    assert.equal(res.alarm, 'BRIDGE_UNBALANCED', `در فیکسچر نامتوازن ${name} باید آلارم BRIDGE_UNBALANCED فعال باشد`)
+    console.log(`  ✓ فیکسچر نامتوازن «${name}»: مغایرت پل با unexplained = ${res.unexplained} دقیقاً شناسایی شد`)
   }
 }
 
@@ -33,7 +34,7 @@ console.log('\n--- ۲. آزمون پوشش کامل ۱۸ ردیف پل تطبی�
 
 import { REFUND_KEYS } from '../../src/shared/cashExplainer.ts'
 
-const allGroupedKeys = new Set([...GROUPS.flatMap((g) => g.keys), 'realCash', ...REFUND_KEYS])
+const allGroupedKeys = new Set([...GROUPS.flatMap((g) => g.keys), 'realCash', 'destinationUnknownReceived', ...REFUND_KEYS])
 
 const standard18Keys = [
   'realCash',
@@ -79,11 +80,12 @@ assert.equal(split.hasDiscrepancy, false, 'نباید مغایرت داشته ب
 assert.equal(split.discrepancy, 0, 'مغایرت 0 باشد')
 console.log('  ✓ تفکیک کشو و پوز با جمع واقعی تطبیق دارد')
 
-// آزمون وجود سهم «سایر»
-const splitWithOther = splitDrawerPos(sampleTotals, cardOnly, officialRealCash + 10000000)
-assert.equal(splitWithOther.other, 10000000, 'مابقی باید به سبد سایر منتقل شود')
+// آزمون وجود سهم «سایر» با منبع مستقیم (غیر هیدرولیکی)
+const sampleTotalsWithOther = { ...sampleTotals, otherTotal: 10000000 }
+const splitWithOther = splitDrawerPos(sampleTotalsWithOther, cardOnly, officialRealCash + 10000000)
+assert.equal(splitWithOther.other, 10000000, 'سهم سایر باید مستقیماً از otherTotal خوانده شود')
 assert.equal(splitWithOther.hasDiscrepancy, false, 'جمع کشو + پوز + سایر دقیقاً برابر با officialRealCash است')
-console.log('  ✓ سبد سایر / اعتباری به‌درستی شناسایی شد')
+console.log('  ✓ سبد سایر / اعتباری به‌درستی و به روش غیرهیدرولیکی شناسایی شد')
 
 console.log('\n--- ۴. آزمون جهش خطا (Mutation Test) ---')
 

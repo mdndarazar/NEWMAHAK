@@ -5,6 +5,7 @@ export interface DrawerVsPosSplitProps {
   drawer: number
   pos: number
   other: number
+  managerOutside?: number
   realCash: number
   cashTotal: number
   cardTotal: number
@@ -23,6 +24,7 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
   drawer,
   pos,
   other,
+  managerOutside = 0,
   realCash,
   cashTotal,
   cardTotal,
@@ -58,21 +60,26 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
       </div>
 
       {/* کاشی‌های درشت تفکیک کشو و کارت‌خوان */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 mb-3">
         {/* کاشی ۱: کشوی پول فیزیکی (اسکناس) */}
-        <div className="bg-white border-2 border-emerald-300 rounded-lg p-3 shadow-xs flex flex-col justify-between">
+        <div className={`bg-white border-2 ${drawer < 0 ? 'border-amber-400 bg-amber-50/30' : 'border-emerald-300'} rounded-lg p-3 shadow-xs flex flex-col justify-between`}>
           <div className="flex items-center justify-between text-emerald-950 mb-1">
             <span className="font-bold text-sm flex items-center gap-1.5">
               <span>💵</span>
               <span>کشو (اسکناس فیزیکی)</span>
             </span>
-            <span className="text-xs bg-emerald-50 text-emerald-800 px-1.5 py-0.5 rounded font-mono">
+            <span className={`text-xs ${drawer < 0 ? 'bg-amber-100 text-amber-900' : 'bg-emerald-50 text-emerald-800'} px-1.5 py-0.5 rounded font-mono`}>
               باید در کشو باشد
             </span>
           </div>
-          <div className="text-2xl font-black text-emerald-900 tracking-tight my-1" dir="ltr">
+          <div className={`text-2xl font-black ${drawer < 0 ? 'text-amber-900' : 'text-emerald-900'} tracking-tight my-1`} dir="ltr">
             {money(drawer)} <span className="text-xs font-normal text-slate-500">ریال</span>
           </div>
+          {drawer < 0 && (
+            <div className="text-[11px] text-amber-800 font-normal leading-tight my-1 bg-amber-100/60 p-1.5 rounded">
+              خروج نقد بیش از ورود بوده (پرداخت مرجوعی از نقدینگی اول وقت/تنخواه)
+            </div>
+          )}
           <div className="text-xs text-slate-600 border-t border-slate-100 pt-1 mt-1 flex justify-between" dir="ltr">
             <span>{money(cashTotal)} دریافت</span>
             <span>−</span>
@@ -118,6 +125,29 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
               واریزی‌های متفرقه / چک‌های پاس‌شده
             </div>
           </div>
+        )}
+
+        {/* کاشی ۴: حساب مدیر (در صورت وجود) */}
+        {managerOutside > 0 && (
+          <div className="bg-purple-50/70 border border-purple-200 rounded-lg p-3 shadow-xs flex flex-col justify-between">
+            <div className="flex items-center justify-between text-purple-950 mb-1">
+              <span className="font-bold text-sm flex items-center gap-1.5">
+                <span>🏦</span>
+                <span>واریز به حساب مدیر</span>
+              </span>
+              <span className="text-xs bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded font-mono">
+                خارج از دخل فیزیکی
+              </span>
+            </div>
+            <div className="text-xl font-bold text-purple-900 tracking-tight my-1" dir="ltr">
+              {money(managerOutside)} <span className="text-xs font-normal text-slate-500">ریال</span>
+            </div>
+            <div className="text-xs text-purple-700/80 border-t border-purple-100 pt-1 mt-1">
+              واریز مستقیم به حساب/کارت شخصی مدیر
+            </div>
+          </div>
+        )}
+      </div>
         )}
       </div>
 
