@@ -2041,6 +2041,17 @@ export interface StoreCreditRow {
   userId: number | null
 }
 
+/**
+ * ردیف امنِ تب legacy «اعتبار خرید» در گزارش فروش.
+ *
+ * این گزارش در اختیار کاربر عادی هم قرار می‌گیرد، پس کد قابل‌مصرف عمداً از
+ * قرارداد حذف است. `publicReference` فقط شناسهٔ غیرقابل‌مصرف گزارش برای چاپ و
+ * خروجی است؛ نمایش خودِ کد مسیر جداگانهٔ manager-only دارد.
+ */
+export type StoreCreditReportRow = Omit<StoreCreditRow, 'code'> & {
+  publicReference: string
+}
+
 /** یک ردیف «دفتر مصرف» (§۴ و §۱۶) — هر مصرف، مبلغ و فاکتور و کاربر خودش را دارد. */
 export interface CreditRedemptionRow {
   id: number

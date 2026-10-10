@@ -210,7 +210,7 @@ function reportDataKey(
  * ستون مرده با «منبع» (تعویض/صدور دستی — ردیابی صدور بی‌فاکتور، بند ۴-۲۹) جایگزین شد.
  */
 const STORE_CREDIT_NOT_CASHABLE_TITLE = 'غیرقابل نقد شدن'
-const STORE_CREDIT_OUTPUT_HEADERS = ['کد اعتبار', 'شماره فیش مبدأ', 'تاریخ صدور', 'تاریخ انقضا', 'وضعیت', 'مبلغ', 'مصرف‌شده', 'مانده‌ی قابل مصرف', 'تاریخ مصرف', 'منبع']
+const STORE_CREDIT_OUTPUT_HEADERS = ['شناسهٔ امن اعتبار', 'شماره فیش مبدأ', 'تاریخ صدور', 'تاریخ انقضا', 'وضعیت', 'مبلغ', 'مصرف‌شده', 'مانده‌ی قابل مصرف', 'تاریخ مصرف', 'منبع']
 
 const SUMMARY_HEADERS = [
   'شماره فیش',
@@ -1407,7 +1407,7 @@ export default function SalesReports() {
           meta: output.meta,
           headers: STORE_CREDIT_OUTPUT_HEADERS,
           rows: output.storeCreditRows.map((r: any) => [
-            r.code ?? '—',
+            r.publicReference ?? `اعتبار #${r.id ?? '—'}`,
             faDigits(r.sourceReceiptNo ?? r.receiptNo ?? '—'),
             faDigits(r.issuedAtJalali ?? r.dateJalali ?? '—'),
             faDigits(r.expiresAtJalali ?? '—'),
@@ -1678,7 +1678,7 @@ export default function SalesReports() {
           title: `گزارش اعتبار خرید (${STORE_CREDIT_NOT_CASHABLE_TITLE}) — ${meta}`,
           headers: STORE_CREDIT_OUTPUT_HEADERS,
           rows: output.storeCreditRows.map((r: any) => [
-            r.code ?? '',
+            r.publicReference ?? `اعتبار #${r.id ?? ''}`,
             r.sourceReceiptNo ?? r.receiptNo ?? '',
             r.issuedAtJalali ?? r.dateJalali ?? '',
             r.expiresAtJalali ?? '',

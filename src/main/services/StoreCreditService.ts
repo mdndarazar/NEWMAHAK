@@ -111,6 +111,7 @@ import type {
   CreditTimelineEvent,
   ManagerStoreCreditCodeReveal,
   StoreCreditRow,
+  StoreCreditReportRow,
   PagedRows,
   SaleReportPage
 } from '@shared/types'
@@ -190,7 +191,7 @@ function attachPagedRows<T>(rows: T[], page: SaleReportPage, noun = 'ردیف'):
   return Object.assign(rows, { page, warnings }) as PagedRows<T>
 }
 
-function attachCreditPage(rows: StoreCreditRow[], page: SaleReportPage): PagedRows<StoreCreditRow> {
+function attachCreditPage<T>(rows: T[], page: SaleReportPage): PagedRows<T> {
   return attachPagedRows(rows, page)
 }
 
@@ -493,6 +494,16 @@ export function shapeStoreCredit(row: any, receiptNos?: Map<number, number>): St
     remainderCreditId: row.remainderCreditId ?? null,
     userId: row.userId ?? null
   }
+}
+
+/**
+ * شکلِ عمومیِ گزارش فروش: همه‌ی اعداد/وضعیت‌ها همان `StoreCreditRow` هستند، اما
+ * کد قابل‌مصرف عمداً پیش از عبور از IPC حذف می‌شود. شناسهٔ گزارش فقط برای
+ * ردیابی امن و بدون قابلیت مصرف در UI/print/export است.
+ */
+function shapeStoreCreditReport(row: StoreCreditRow): StoreCreditReportRow {
+  const { code: _redeemableCode, ...safe } = row
+  return { ...safe, publicReference: `اعتبار #${safe.id}` }
 }
 
 /** شماره فیش فاکتورهای مرجع چند اعتبار، با یک رفت‌و‌برگشت. */
@@ -2439,7 +2450,12 @@ async function whereFromFilter(filter: ListFilter, now: Date = new Date()): Prom
 
 /** ممیزی A97-01 — نگاشت فیلتر نوار گزارش به ListFilter (وضعیت نوار = وضعیت فاکتور). */
 export async function reportCreditListFilter(filter: ListFilter): Promise<ListFilter> {
-  const { status, ...rest } = (filter ?? {}) as ListFilter
+  /**
+   * تب گزارش فروش نه کد برمی‌گرداند و نه باید آن را قابل جست‌وجو کند؛ در غیر این
+   * صورت تعداد نتایج خودش یک oracle برای حدس‌زدن کد می‌شد. جست‌وجوی کد فقط در
+   * جریان اختصاصیِ POS/مدیریت اعتبار می‌ماند.
+   */
+  const { status, search: _codeSearch, ...rest } = (filter ?? {}) as ListFilter
   return { ...rest, invoiceStatus: status ? String(status) : rest.invoiceStatus ?? null }
 }
 
@@ -2709,8 +2725,9 @@ export const storeCreditService = {
    * `creditStatusWhere` می‌رسید ⇒ «تسویه شده» تب را بی‌صدا خالی می‌کرد و «لغو شده»
    * اعتبارهای لغوشده را نشان می‌داد. اینجا به `invoiceStatus` نگاشت می‌شود.
    */
-  async reportList(filter: ListFilter = {}): Promise<PagedRows<StoreCreditRow>> {
-    return reportCreditListFilter(filter).then((f) => this.list(f))
+  async reportList(filter: ListFilter = {}): Promise<PagedRows<StoreCreditReportRow>> {
+    const detailed = await this.list(await reportCreditListFilter(filter))
+    return attachCreditPage(detailed.map(shapeStoreCreditReport), detailed.page)
   },
 
   async list(filter: ListFilter = {}): Promise<PagedRows<StoreCreditRow>> {
