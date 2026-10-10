@@ -1372,6 +1372,17 @@ export interface FinancialDocumentDetail {
   actor: { id: number | null; name: string }
   shift: { id: number | null; name: string | null }
   settlement: { method: string; methodLabel: string; reference: string | null; status: string | null }
+  /**
+   * فقط در شناسنامهٔ امنِ اعتبار: وضعیتِ مؤثر و تاریخ واقعی انقضا.
+   * این بلوک هیچ‌گاه کد قابل‌مصرف را حمل نمی‌کند؛ reveal کد مسیر جداگانهٔ مدیر است.
+   */
+  creditValidity?: {
+    status: string
+    statusLabel: string
+    expiresAtJalali: string | null
+    issuedDays: number | null
+    remaining: number
+  }
   items: Array<{ name: string; code: string; qty: number; unitPrice: number; lineTotal: number }>
   note: string | null
   voided: boolean

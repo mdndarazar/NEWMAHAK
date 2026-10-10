@@ -33,6 +33,7 @@ import {
 import { prisma } from '../db/client'
 import { toJalaliDate, toLatinDigits } from '@shared/jalali'
 import { toNumberRial } from '@shared/money'
+import { CREDIT_STATUS_LABELS, effectiveStatus, remainingOf } from '@shared/credit'
 
 const PANEL = PANEL_KEYS.salesReports
 const MAX_TAKE = 200
@@ -411,6 +412,23 @@ async function documentForSource(source: SaleBridgeSource): Promise<FinancialDoc
             : credit.source === 'MANUAL'
               ? { label: 'اعتبار دستی/مدیریتی', reference: null }
               : { label: 'اعتبار خرید', reference: null }
+    /**
+     * `status` خامِ رکورد با گذشت زمان خودکار rewrite نمی‌شود؛ بنابراین اعتبار
+     * صادرشده از تعویض ممکن است ستون ACTIVE داشته باشد ولی تاریخ انقضایش گذشته
+     * باشد. شناسنامهٔ ریزبین باید همان وضعیت مؤثری را نشان دهد که گزارش «منقضی»
+     * با آن محاسبه شده است؛ نمایش ACTIVE در چنین سندی مدیر را به اشتباه می‌انداخت.
+     */
+    const expiresAt = credit.expiresAt ? new Date(credit.expiresAt) : null
+    const creditStatus = effectiveStatus({
+      amount: n(credit.amount),
+      usedAmount: n(credit.usedAmount),
+      usedCount: n(credit.usedCount),
+      maxUses: n(credit.maxUses),
+      multiUse: credit.multiUse === true,
+      status: String(credit.status ?? 'ACTIVE'),
+      expiresAt
+    })
+    const creditRemaining = remainingOf({ amount: n(credit.amount), usedAmount: n(credit.usedAmount) })
     return {
       ...base,
       title: 'شناسنامهٔ اعتبار خرید',
@@ -419,7 +437,14 @@ async function documentForSource(source: SaleBridgeSource): Promise<FinancialDoc
       ...invoiceContext(invoice),
       actor: own.actor,
       shift: { id: null, name: null },
-      settlement: { method: 'STORE_CREDIT', methodLabel: origin.label, reference: origin.reference, status: credit.status ?? null },
+      settlement: { method: 'STORE_CREDIT', methodLabel: origin.label, reference: origin.reference, status: creditStatus },
+      creditValidity: {
+        status: creditStatus,
+        statusLabel: CREDIT_STATUS_LABELS[creditStatus] ?? creditStatus,
+        expiresAtJalali: credit.expiresAtJalali ?? (expiresAt ? toJalaliDate(expiresAt) : null),
+        issuedDays: credit.issuedDays == null ? null : n(credit.issuedDays),
+        remaining: creditRemaining
+      },
       note: credit.note ?? null,
       voided: credit.voidedAt != null || credit.deletedAt != null
     }

@@ -22,13 +22,17 @@ const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mj
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
 const { salesService } = await import('../../src/main/services/SalesService.ts')
 const { storeCreditService } = await import('../../src/main/services/StoreCreditService.ts')
+const { financialInspectorService } = await import('../../src/main/services/financialInspectorService.ts')
 const { RefundMethod } = await import('../../src/shared/enums.ts')
-const { DEFAULT_MANAGER_PASSWORD } = await import('../../src/shared/receipt.ts')
+const { DEFAULT_MANAGER_PASSWORD, SETTING_KEYS } = await import('../../src/shared/receipt.ts')
+const { PANEL_KEYS } = await import('../../src/shared/panels.ts')
 const { toJalaliDate } = await import('../../src/shared/jalali.ts')
 
 const db = harnessClient()
 const seed = makeSeeder(db)
 const sql = db.$harness.db
+/** فقط برای سنجش ریزبین read-only؛ هیچ نشست یا credential تولید نمی‌کنیم. */
+seed.setting(SETTING_KEYS.panelLocks, { [PANEL_KEYS.salesReports]: false })
 const userId = seed.user('مدیر تست چرخه اعتبار ۳۳۸')
 const categoryId = seed.category('دسته چرخه اعتبار')
 const productId = seed.product('کالای چرخه اعتبار', categoryId)
@@ -141,6 +145,26 @@ const expiringSafe = await storeCreditService.issueManual({ amount: 500, days: 1
 const expiringCode = creditCode(expiringSafe.id)
 sql.prepare('UPDATE "StoreCredit" SET expiresAt = ?, expiresAtJalali = ? WHERE id = ?')
   .run(Date.now() - 86_400_000, '۱۴۰۰/۰۱/۰۱', expiringSafe.id)
+/**
+ * ریزبین باید وضعیت مؤثر را نشان دهد، نه ستون خامِ ACTIVE؛ در غیر این صورت
+ * مدیر روی کارت «منقضی» کلیک می‌کند ولی در شناسنامهٔ همان سند ACTIVE می‌بیند.
+ */
+const expiredSources = await financialInspectorService.sources({
+  scope: { fromJalali: today, toJalali: today },
+  key: 'storeCreditExpired'
+})
+const expiredSource = expiredSources.result?.sources.find((source) => source.ref.id === expiringSafe.id)
+assert.ok(expiredSource, 'اعتبار تاریخ‌گذشته در ریزبین همان کارت منقضی دیده می‌شود')
+const expiredDetail = await financialInspectorService.document({
+  scope: { fromJalali: today, toJalali: today },
+  key: 'storeCreditExpired',
+  ref: expiredSource.ref
+})
+assert.equal(expiredDetail.detail?.creditValidity?.status, 'EXPIRED')
+assert.equal(expiredDetail.detail?.creditValidity?.statusLabel, 'منقضی شد')
+assert.equal(expiredDetail.detail?.creditValidity?.expiresAtJalali, '۱۴۰۰/۰۱/۰۱')
+assert.equal(expiredDetail.detail?.creditValidity?.remaining, 500)
+assert.equal(Object.hasOwn(expiredDetail.detail?.creditValidity ?? {}, 'code'), false, 'جزئیات انقضا هم کد قابل‌مصرف ندارد')
 assert.match(await errorOf(() => saleWithCredit(500, expiringCode)) ?? '', /تمام شده|مهلت/)
 assert.match(
   await errorOf(() => storeCreditService.reactivate({

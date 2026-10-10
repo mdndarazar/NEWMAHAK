@@ -553,8 +553,17 @@ export default function FinancialInspector({
                 <div className="border rounded p-3"><span className="text-xs text-slate-500">فاکتور مرجع</span><b className="block mt-1">{pane.detail.invoice ? `فیش ${faDigits(pane.detail.invoice.receiptNo)}` : '—'}</b></div>
                 <div className="border rounded p-3"><span className="text-xs text-slate-500">مشتری</span><b className="block mt-1">{pane.detail.customer.name}</b></div>
                 <div className="border rounded p-3"><span className="text-xs text-slate-500">کاربر / شیفت</span><b className="block mt-1">{pane.detail.actor.name}{pane.detail.shift.name ? ` · ${pane.detail.shift.name}` : ''}</b></div>
-                <div className="border rounded p-3 sm:col-span-2"><span className="text-xs text-slate-500">روش / مرجع</span><b className="block mt-1">{pane.detail.settlement.methodLabel}{pane.detail.settlement.reference ? ` · ${pane.detail.settlement.reference}` : ''}{pane.detail.settlement.status ? ` · ${pane.detail.settlement.status}` : ''}</b></div>
-                <div className="border rounded p-3"><span className="text-xs text-slate-500">وضعیت سند</span><b className={`block mt-1 ${pane.detail.voided ? 'text-rose-700' : 'text-emerald-700'}`}>{pane.detail.voided ? 'باطل/برگشت‌خورده' : 'فعال در منبع'}</b></div>
+                <div className="border rounded p-3 sm:col-span-2"><span className="text-xs text-slate-500">روش / مرجع</span><b className="block mt-1">{pane.detail.settlement.methodLabel}{pane.detail.settlement.reference ? ` · ${pane.detail.settlement.reference}` : ''}{!pane.detail.creditValidity && pane.detail.settlement.status ? ` · ${pane.detail.settlement.status}` : ''}</b></div>
+                {pane.detail.creditValidity ? (
+                  <>
+                    <div className="border rounded p-3"><span className="text-xs text-slate-500">وضعیت اعتبار</span><b className={`block mt-1 ${pane.detail.creditValidity.status === 'EXPIRED' || pane.detail.creditValidity.status === 'CANCELED' ? 'text-rose-700' : pane.detail.creditValidity.status === 'SUSPENDED' ? 'text-amber-700' : 'text-emerald-700'}`}>{pane.detail.creditValidity.statusLabel}</b></div>
+                    <div className="border rounded p-3"><span className="text-xs text-slate-500">مهلت اعتبار</span><b className="block mt-1">{pane.detail.creditValidity.expiresAtJalali ? `تا ${faDigits(pane.detail.creditValidity.expiresAtJalali)}` : 'بدون انقضا'}</b>{pane.detail.creditValidity.issuedDays != null && <span className="mt-1 block text-xs text-slate-500">قاعدهٔ صدور: {faDigits(pane.detail.creditValidity.issuedDays)} روز</span>}</div>
+                    <div className="border rounded p-3"><span className="text-xs text-slate-500">ماندهٔ اعتبار</span><b className="block mt-1" dir="ltr">{money(pane.detail.creditValidity.remaining)} ریال</b></div>
+                    <div className="border rounded p-3"><span className="text-xs text-slate-500">وضعیت سند در منبع</span><b className={`block mt-1 ${pane.detail.voided ? 'text-rose-700' : 'text-emerald-700'}`}>{pane.detail.voided ? 'باطل/برگشت‌خورده' : 'ثبت و فعال'}</b></div>
+                  </>
+                ) : (
+                  <div className="border rounded p-3"><span className="text-xs text-slate-500">وضعیت سند</span><b className={`block mt-1 ${pane.detail.voided ? 'text-rose-700' : 'text-emerald-700'}`}>{pane.detail.voided ? 'باطل/برگشت‌خورده' : 'فعال در منبع'}</b></div>
+                )}
               </div>
               {pane.detail.ref.kind === 'STORE_CREDIT' && pane.detail.ref.subKind && (
                 <section className="rounded border border-violet-300 bg-violet-50 p-3 text-sm" aria-live="polite">
