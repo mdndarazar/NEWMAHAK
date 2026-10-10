@@ -43,10 +43,10 @@ const TILE_BUTTON =
   'w-full text-right appearance-none cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-600 focus-visible:ring-offset-2'
 
 const detailMeta: Record<DetailKey, { icon: string; title: string }> = {
-  drawer: { icon: '💵', title: 'ریز محاسبات کشوی نقدی (اسکناس فیزیکی)' },
-  pos: { icon: '💳', title: 'ریز محاسبات دستگاه کارت‌خوان (پوز)' },
-  other: { icon: '🏷️', title: 'ریز دریافتی‌های غیرنقدی، متفرقه و نامشخص' },
-  manager: { icon: '🏦', title: 'ریز دریافتی‌های مستقیم به حساب مدیر' }
+  drawer: { icon: '💵', title: 'جزئیات ثبت‌شدهٔ کشوی نقدی' },
+  pos: { icon: '💳', title: 'جزئیات ثبت‌شدهٔ دستگاه کارت‌خوان' },
+  other: { icon: '🏷️', title: 'جزئیات دریافتی‌های غیرنقدی، متفرقه و نامشخص' },
+  manager: { icon: '🏦', title: 'جزئیات دریافتی‌های مستقیم به حساب مدیر' }
 }
 
 export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
@@ -165,7 +165,7 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
             drawer < 0 ? 'border-amber-400 bg-amber-50/30' : 'border-emerald-300'
           } rounded-lg p-3 shadow-xs flex flex-col justify-between hover:shadow-md hover:border-emerald-500 transition-all group`}
           aria-haspopup="dialog"
-          title="مشاهده ریز محاسبات کشوی نقدی"
+          title="مشاهده جزئیات ثبت‌شدهٔ کشوی نقدی"
         >
           <span className="flex items-center justify-between text-emerald-950 mb-1">
             <span className="font-bold text-sm flex items-center gap-1.5 group-hover:text-emerald-700">
@@ -175,7 +175,7 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
             <span
               className={`text-xs ${
                 drawer < 0 ? 'bg-amber-100 text-amber-900' : 'bg-emerald-50 text-emerald-800'
-              } px-1.5 py-0.5 rounded font-mono`}
+              } px-1.5 py-0.5 rounded font-medium`}
             >
               انتظار ثبت‌شده
             </span>
@@ -189,43 +189,46 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
             {money(drawer)} <span className="text-xs font-normal text-slate-500">ریال</span>
           </span>
           {drawer < 0 && (
-            <span className="block text-[11px] text-amber-800 font-normal leading-tight my-1 bg-amber-100/60 p-1.5 rounded">
-              خروج نقدِ ثبت‌شده از دریافت نقدِ ثبت‌شده بیش‌تر است؛ منبع را در ریز محاسبات بررسی کنید.
+            <span className="block text-xs text-amber-800 font-normal leading-5 my-1 bg-amber-100/60 p-1.5 rounded">
+              بازپرداخت نقدی ثبت‌شده از دریافت نقدی ثبت‌شده بیش‌تر است؛ برای بررسی، جزئیات رویدادها را باز کنید.
             </span>
           )}
-          <span className="text-xs text-slate-600 border-t border-slate-100 pt-1 mt-1 flex justify-between items-center" dir="ltr">
-            <span>{money(cashTotal)} دریافت</span>
-            <span>−</span>
-            <span>{money(refundCashTotal)} بازپرداخت</span>
+          <span className="text-sm text-slate-600 border-t border-slate-100 pt-1.5 mt-1 flex justify-between gap-2 items-center">
+            <span>دریافت نقدی: <b dir="ltr">{money(cashTotal)}</b></span>
+            <span>بازپرداخت: <b dir="ltr">{money(refundCashTotal)}</b></span>
           </span>
-          <span className="block text-[10px] text-emerald-700/80 font-medium text-center pt-1 group-hover:underline">
-            ریز محاسبات
+          <span className="block text-xs text-emerald-700/80 font-medium text-center pt-1 group-hover:underline">
+            مشاهدهٔ جزئیات ثبت‌شده
           </span>
         </button>
 
         <button
           type="button"
           onClick={(event) => openDetail('pos', event.currentTarget)}
-          className={`${TILE_BUTTON} bg-white border-2 border-blue-300 rounded-lg p-3 shadow-xs flex flex-col justify-between hover:shadow-md hover:border-blue-500 transition-all group`}
+          className={`${TILE_BUTTON} bg-white border-2 ${pos < 0 ? 'border-amber-400 bg-amber-50/30 hover:border-amber-500' : 'border-blue-300 hover:border-blue-500'} rounded-lg p-3 shadow-xs flex flex-col justify-between hover:shadow-md transition-all group`}
           aria-haspopup="dialog"
-          title="مشاهده ریز محاسبات کارت‌خوان"
+          title="مشاهده جزئیات ثبت‌شدهٔ کارت‌خوان"
         >
           <span className="flex items-center justify-between text-blue-950 mb-1">
             <span className="font-bold text-sm flex items-center gap-1.5 group-hover:text-blue-700">
               <span aria-hidden="true">💳</span>
               <span>کارت‌خوان (دستگاه پوز)</span>
             </span>
-            <span className="text-xs bg-blue-50 text-blue-800 px-1.5 py-0.5 rounded font-mono">انتظار ثبت‌شده</span>
+            <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${pos < 0 ? 'bg-amber-100 text-amber-900' : 'bg-blue-50 text-blue-800'}`}>انتظار ثبت‌شده</span>
           </span>
-          <span className="block text-2xl font-black text-blue-900 tracking-tight my-1" dir="ltr">
+          <span className={`block text-2xl font-black tracking-tight my-1 ${pos < 0 ? 'text-amber-900' : 'text-blue-900'}`} dir="ltr">
             {money(pos)} <span className="text-xs font-normal text-slate-500">ریال</span>
           </span>
-          <span className="text-xs text-slate-600 border-t border-slate-100 pt-1 mt-1 flex justify-between items-center" dir="ltr">
-            <span>{money(cardTotal)} کارت</span>
-            <span>−</span>
-            <span>{money(refundCardTotal)} بازپرداخت</span>
+          {pos < 0 && (
+            <span className="block text-xs text-amber-800 font-normal leading-5 my-1 bg-amber-100/60 p-1.5 rounded">
+              بازپرداخت کارتی ثبت‌شده از دریافت کارت‌خوان ثبت‌شده بیش‌تر است؛ برای بررسی، جزئیات رویدادها را باز کنید.
+            </span>
+          )}
+          <span className="text-sm text-slate-600 border-t border-slate-100 pt-1.5 mt-1 flex justify-between gap-2 items-center">
+            <span>دریافت کارتی: <b dir="ltr">{money(cardTotal)}</b></span>
+            <span>بازپرداخت: <b dir="ltr">{money(refundCardTotal)}</b></span>
           </span>
-          <span className="block text-[10px] text-blue-700/80 font-medium text-center pt-1 group-hover:underline">ریز محاسبات</span>
+          <span className="block text-xs text-blue-700/80 font-medium text-center pt-1 group-hover:underline">مشاهدهٔ جزئیات ثبت‌شده</span>
         </button>
 
         {other !== 0 && (
@@ -249,7 +252,7 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
             <span className="block text-xs text-slate-500 border-t border-slate-100 pt-1 mt-1">
               واریزی متفرقه، اعتبار و مسیرهای نامشخص
             </span>
-            <span className="block text-[10px] text-slate-600 font-medium text-center pt-1 group-hover:underline">ریز محاسبات</span>
+            <span className="block text-xs text-slate-600 font-medium text-center pt-1 group-hover:underline">مشاهدهٔ جزئیات ثبت‌شده</span>
           </button>
         )}
 
@@ -266,13 +269,13 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
                 <span aria-hidden="true">🏦</span>
                 <span>واریز به حساب مدیر</span>
               </span>
-              <span className="text-xs bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded font-mono">خارج از دخل</span>
+              <span className="text-xs bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded font-medium">خارج از دخل</span>
             </span>
             <span className="block text-xl font-bold text-purple-900 tracking-tight my-1" dir="ltr">
               {money(managerOutside)} <span className="text-xs font-normal text-slate-500">ریال</span>
             </span>
             <span className="block text-xs text-purple-700/80 border-t border-purple-100 pt-1 mt-1">دریافتی مستقیم به حساب یا کارت مدیر</span>
-            <span className="block text-[10px] text-purple-800 font-medium text-center pt-1 group-hover:underline">ریز محاسبات</span>
+            <span className="block text-xs text-purple-800 font-medium text-center pt-1 group-hover:underline">مشاهدهٔ جزئیات ثبت‌شده</span>
           </button>
         )}
       </div>
@@ -342,7 +345,7 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
                 type="button"
                 onClick={closeDetail}
                 className={`${ACTION_BUTTON} text-slate-300 hover:text-white text-base font-bold p-1 rounded hover:bg-slate-800`}
-                aria-label="بستن ریز محاسبات"
+                aria-label="بستن جزئیات ثبت‌شده"
                 title="بستن (Esc)"
               >
                 ✕
@@ -353,16 +356,16 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
               {activeDetail === 'drawer' && (
                 <div className="space-y-2">
                   <div className="flex justify-between items-center p-2 rounded bg-slate-50 border border-slate-200">
-                    <span className="text-slate-700">۱. جمع دریافت‌های نقدی ثبت‌شده:</span>
-                    <b className="text-emerald-700" dir="ltr">+ {money(cashTotal)} ریال</b>
+                    <span className="text-slate-700">دریافت‌های نقدی ثبت‌شده:</span>
+                    <b className="text-emerald-700" dir="ltr">{money(cashTotal)} ریال</b>
                   </div>
                   <div className="flex justify-between items-center p-2 rounded bg-rose-50/60 border border-rose-200">
-                    <span className="text-slate-700">۲. بازپرداخت نقدی ثبت‌شده:</span>
-                    <b className="text-rose-700" dir="ltr">− {money(refundCashTotal)} ریال</b>
+                    <span className="text-slate-700">بازپرداخت نقدی ثبت‌شده:</span>
+                    <b className="text-rose-700" dir="ltr">{money(refundCashTotal)} ریال</b>
                   </div>
                   <div className="flex justify-between items-center p-2.5 rounded bg-emerald-100 border-2 border-emerald-300 font-bold">
                     <span className="text-emerald-950">انتظار ثبت‌شده برای کشو:</span>
-                    <b className="text-emerald-950 text-base" dir="ltr">= {money(drawer)} ریال</b>
+                    <b className="text-emerald-950 text-base" dir="ltr">{money(drawer)} ریال</b>
                   </div>
                   <div className="text-xs text-slate-500 bg-slate-50 p-2 rounded border border-slate-200 leading-5">
                     این یک انتظار مبتنی بر رویدادهای ثبت‌شده است؛ برای بستن صندوق، شمارش فیزیکی و گردش‌های خارج از فروش هم باید جداگانه بررسی شوند.
@@ -373,16 +376,16 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
               {activeDetail === 'pos' && (
                 <div className="space-y-2">
                   <div className="flex justify-between items-center p-2 rounded bg-slate-50 border border-slate-200">
-                    <span className="text-slate-700">۱. جمع تراکنش‌های کارتی ثبت‌شده:</span>
-                    <b className="text-blue-700" dir="ltr">+ {money(cardTotal)} ریال</b>
+                    <span className="text-slate-700">دریافت‌های کارتی ثبت‌شده:</span>
+                    <b className="text-blue-700" dir="ltr">{money(cardTotal)} ریال</b>
                   </div>
                   <div className="flex justify-between items-center p-2 rounded bg-rose-50/60 border border-rose-200">
-                    <span className="text-slate-700">۲. بازپرداخت‌های کارتی ثبت‌شده:</span>
-                    <b className="text-rose-700" dir="ltr">− {money(refundCardTotal)} ریال</b>
+                    <span className="text-slate-700">بازپرداخت‌های کارتی ثبت‌شده:</span>
+                    <b className="text-rose-700" dir="ltr">{money(refundCardTotal)} ریال</b>
                   </div>
                   <div className="flex justify-between items-center p-2.5 rounded bg-blue-100 border-2 border-blue-300 font-bold">
                     <span className="text-blue-950">انتظار ثبت‌شده برای کارت‌خوان:</span>
-                    <b className="text-blue-950 text-base" dir="ltr">= {money(pos)} ریال</b>
+                    <b className="text-blue-950 text-base" dir="ltr">{money(pos)} ریال</b>
                   </div>
                   <div className="text-xs text-slate-500 bg-slate-50 p-2 rounded border border-slate-200 leading-5">
                     این عدد را با گزارش پایان‌روز دستگاه مقایسه کنید؛ تراکنش‌های کارت‌به‌کارت و حساب مدیر در این کاشی نیستند.
@@ -412,7 +415,7 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
                   )}
                   <div className="flex justify-between items-center p-2.5 rounded bg-slate-100 border-2 border-slate-300 font-bold">
                     <span>جمع این سبد:</span>
-                    <b className="text-base" dir="ltr">= {money(other)} ریال</b>
+                    <b className="text-base" dir="ltr">{money(other)} ریال</b>
                   </div>
                   <div className="text-xs text-slate-500 bg-slate-50 p-2 rounded border border-slate-200 leading-5">
                     این سبد نباید معادل پول فیزیکی کشو یا کارت‌خوان تلقی شود؛ هر مسیر در ریزبین مالی به‌طور جداگانه مستند می‌شود.

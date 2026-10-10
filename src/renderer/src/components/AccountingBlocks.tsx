@@ -95,17 +95,27 @@ function Row({
   )
 }
 
+/**
+ * آکاردئون نمایشیِ بلوک‌های صورت حساب: باز/بسته شدن هیچ query، مبلغ، چاپ یا
+ * خروجی را تغییر نمی‌دهد. پیش‌فرض باز است تا رفتار گزارش قبلی حفظ شود.
+ */
 function Block({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
+  const [open, setOpen] = useState(true)
   return (
-    <div className="bg-white rounded shadow">
-      <div className="px-3 py-2 border-b font-bold">
-        {title}
+    <section className="bg-white rounded shadow">
+      <button
+        type="button"
+        className="w-full px-3 py-2 border-b font-bold text-right flex items-center gap-2 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-600"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+      >
+        <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-slate-300 bg-white text-sm" aria-hidden="true">{open ? '−' : '+'}</span>
+        <span>{title}</span>
         {subtitle && <span className="kbd font-normal ms-2">{subtitle}</span>}
-      </div>
-      <table className="tbl">
-        <tbody>{children}</tbody>
-      </table>
-    </div>
+        <span className="sr-only">{open ? 'بستن بخش' : 'باز کردن بخش'}</span>
+      </button>
+      {open && <table className="tbl"><tbody>{children}</tbody></table>}
+    </section>
   )
 }
 
@@ -119,6 +129,7 @@ export default function AccountingBlocks({
   onBridgePage
 }: Props) {
   const [drillKey, setDrillKey] = useState<string | null>(null)
+  const [bridgeOpen, setBridgeOpen] = useState(true)
 
   if (!statements)
     return (
@@ -353,15 +364,22 @@ export default function AccountingBlocks({
       </div>
 
       {/* -------------------------- بلوک ۷: پل تطبیق -------------------------- */}
-      <div className={`bg-white rounded shadow border-2 ${s.bridge.balanced ? 'border-emerald-500' : 'border-rose-500'}`}>
-        <div className="px-3 py-2 border-b font-bold flex flex-wrap items-center gap-2">
-          ۷) پل تطبیق — «وجه واقعی» تا «خالص فروش تعهدی»، ریال‌به‌ریال
+      <section className={`bg-white rounded shadow border-2 ${s.bridge.balanced ? 'border-emerald-500' : 'border-rose-500'}`}>
+        <button
+          type="button"
+          className="w-full px-3 py-2 border-b font-bold text-right flex flex-wrap items-center gap-2 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-600"
+          onClick={() => setBridgeOpen((value) => !value)}
+          aria-expanded={bridgeOpen}
+        >
+          <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-slate-300 bg-white text-sm" aria-hidden="true">{bridgeOpen ? '−' : '+'}</span>
+          <span>۷) پل تطبیق — «وجه واقعی» تا «خالص فروش تعهدی»، ریال‌به‌ریال</span>
           <span className={`px-2 py-0.5 rounded font-bold ${s.bridge.balanced ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
             {s.bridge.balanced ? 'پل کامل بسته شد' : `${money(Math.abs(s.bridge.unexplained))} ریال بدون توضیح`}
           </span>
           <span className="kbd font-normal">روی هر عدد کلیک کنید تا اسناد سازنده‌اش باز شود</span>
-        </div>
-        <table className="tbl">
+          <span className="sr-only">{bridgeOpen ? 'بستن بخش' : 'باز کردن بخش'}</span>
+        </button>
+        {bridgeOpen && <table className="tbl">
           <thead>
             <tr>
               <th>ردیف</th>
@@ -421,8 +439,8 @@ export default function AccountingBlocks({
               </td>
             </tr>
           </tfoot>
-        </table>
-      </div>
+        </table>}
+      </section>
 
       {/* ---------------------- drill-down اسناد یک ردیف ---------------------- */}
       <Modal

@@ -4,6 +4,7 @@ import type { NetToDrawerAlarm, SplitDrawerPosResult } from '@shared/cashExplain
 import type {
   FinancialDocumentDetail,
   FinancialDocumentResponse,
+  FinancialInspectorKey,
   FinancialSourceKey,
   FinancialSourceResponse,
   FinancialSourceResult,
@@ -18,7 +19,7 @@ type FocusArea = 'overview' | 'drawer' | 'pos' | 'other' | 'manager' | 'nonCash'
 type Pane =
   | { type: 'overview' }
   | { type: 'formula'; focus: FocusArea }
-  | { type: 'sources'; key: FinancialSourceKey }
+  | { type: 'sources'; key: FinancialInspectorKey }
   | { type: 'document'; detail: FinancialDocumentDetail }
 
 export interface FinancialInspectorProps {
@@ -56,12 +57,20 @@ function cloneScope(scope: SaleReportFilter): SaleReportFilter {
 function focusTitle(focus: FocusArea): string {
   return {
     overview: 'جمع‌بندی اعداد',
-    drawer: 'فرمول کشوی نقدی',
-    pos: 'فرمول کارت‌خوان',
-    other: 'سبد سایر / اعتباری / نامشخص',
+    drawer: 'جزئیات کشوی نقدی',
+    pos: 'جزئیات کارت‌خوان',
+    other: 'جزئیات سایر / اعتباری / نامشخص',
     manager: 'دریافتی حساب مدیر',
     nonCash: 'تسویه‌های غیرنقدی'
   }[focus]
+}
+
+function inspectorKeyLabel(key: FinancialInspectorKey): string {
+  return {
+    drawerCashReceived: 'دریافت‌های نقدی ثبت‌شده',
+    posCardReceived: 'دریافت‌های کارت‌خوان فروشگاه',
+    otherMethodReceived: 'پرداخت با سایر روش‌ها'
+  }[key] ?? key
 }
 
 function pageLabel(skip: number, total: number, count: number): string {
@@ -92,6 +101,7 @@ export default function FinancialInspector({
   const [splitSnapshot, setSplitSnapshot] = useState(split)
   const [alarmSnapshot, setAlarmSnapshot] = useState<NetToDrawerAlarm>(bridgeAlarm)
   const [stack, setStack] = useState<Pane[]>([{ type: 'overview' }])
+  const stackRef = useRef<Pane[]>(stack)
   const [sourceResult, setSourceResult] = useState<FinancialSourceResult | null>(null)
   const [sourcesBusy, setSourcesBusy] = useState(false)
   const [sourcesError, setSourcesError] = useState<string | null>(null)
@@ -100,6 +110,10 @@ export default function FinancialInspector({
   const [sort, setSort] = useState<FinancialSourceSort>('DATE_DESC')
   const [documentBusy, setDocumentBusy] = useState(false)
   const [documentError, setDocumentError] = useState<string | null>(null)
+
+  useEffect(() => {
+    stackRef.current = stack
+  }, [stack])
 
   const pane = stack[stack.length - 1]
   const bridgeRows = statementsSnapshot?.bridge.rows ?? []
@@ -114,7 +128,11 @@ export default function FinancialInspector({
       setReferenceSnapshot(referenceRealCash)
       setSplitSnapshot(split)
       setAlarmSnapshot(bridgeAlarm)
-      setStack([{ type: initialFocus === 'overview' ? 'overview' : 'formula', ...(initialFocus === 'overview' ? {} : { focus: initialFocus }) } as Pane])
+      // ورود از یک کاشی، بخش جزئیات را نشان می‌دهد اما ریشهٔ ریزبین همچنان
+      // جمع‌بندی است؛ پس Esc اول به همان ریشه برمی‌گردد و فقط Esc بعدی می‌بندد.
+      setStack(initialFocus === 'overview'
+        ? [{ type: 'overview' }]
+        : [{ type: 'overview' }, { type: 'formula', focus: initialFocus }])
       setSourceResult(null)
       setSourcesError(null)
       setSearchDraft('')
@@ -133,7 +151,10 @@ export default function FinancialInspector({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        onClose()
+        // Esc behaves like a manager's back button inside the inspector; only
+        // the root page closes the dialog.
+        if (stackRef.current.length > 1) setStack((current) => current.slice(0, -1))
+        else onClose()
         return
       }
       if (event.key !== 'Tab') return
@@ -163,6 +184,7 @@ export default function FinancialInspector({
   const back = () => setStack((current) => (current.length > 1 ? current.slice(0, -1) : current))
 
   const sourceRow = useMemo(() => bridgeRows.find((row) => row.key === sourceKey) ?? null, [bridgeRows, sourceKey])
+  const sourceLabel = sourceResult?.label ?? sourceRow?.label ?? (sourceKey ? inspectorKeyLabel(sourceKey) : '')
 
   useEffect(() => {
     if (!open || !sourceKey) return
@@ -252,12 +274,26 @@ export default function FinancialInspector({
     </button>
   )
 
+  /** هر سطر یک مبلغ آمادهٔ گزارش را نشان می‌دهد؛ جمع/تفریق تازه‌ای در Renderer ندارد. */
+  const detailAmount = (label: string, value: number, note: string, key?: FinancialInspectorKey, tone = 'slate') => {
+    const content = <>
+      <span className="min-w-0"><span className="block font-bold text-slate-800">{label}</span><span className="mt-0.5 block text-xs leading-5 text-slate-600">{note}</span></span>
+      <b className="shrink-0 text-base text-slate-950" dir="ltr">{money(value)} <span className="text-xs font-normal">ریال</span></b>
+    </>
+    const toneClass = tone === 'emerald' ? 'border-emerald-200 bg-emerald-50 hover:bg-emerald-100' : tone === 'blue' ? 'border-blue-200 bg-blue-50 hover:bg-blue-100' : tone === 'amber' ? 'border-amber-200 bg-amber-50 hover:bg-amber-100' : 'border-slate-200 bg-white hover:bg-slate-50'
+    return key ? (
+      <button type="button" className={`${BUTTON} w-full border p-3 text-right flex items-center justify-between gap-3 ${toneClass}`} onClick={() => go({ type: 'sources', key })}>
+        {content}<span className="sr-only">نمایش اسناد ثبت‌شده</span>
+      </button>
+    ) : <div className={`w-full border p-3 text-right flex items-center justify-between gap-3 rounded ${toneClass}`}>{content}</div>
+  }
+
   const breadcrumb = pane.type === 'overview'
     ? ['ریزبین مالی']
     : pane.type === 'formula'
       ? ['ریزبین مالی', focusTitle(pane.focus)]
       : pane.type === 'sources'
-        ? ['ریزبین مالی', sourceRow?.label ?? pane.key, 'اسناد سازنده']
+        ? ['ریزبین مالی', sourceLabel, 'اسناد ثبت‌شده']
         : ['ریزبین مالی', 'اسناد سازنده', pane.detail.title]
 
   return (
@@ -278,7 +314,7 @@ export default function FinancialInspector({
         <header className="bg-slate-950 text-white px-4 sm:px-5 py-3 flex items-center justify-between gap-3">
           <div className="min-w-0">
             <h2 id="financial-inspector-title" className="font-black text-base sm:text-lg">ریزبین مالی گزارش فروش</h2>
-            <p className="text-xs text-slate-300 mt-0.5">فقط‌خواندنی · عدد → فرمول → اسناد → شناسنامهٔ سند</p>
+            <p className="text-xs text-slate-300 mt-0.5">فقط‌خواندنی · از مبلغ گزارش تا رویدادها و شناسنامهٔ سند</p>
           </div>
           <button ref={closeButtonRef} type="button" onClick={onClose} className={`${BUTTON} p-1.5 text-slate-300 hover:text-white hover:bg-slate-800`} aria-label="بستن ریزبین مالی" title="بستن (Esc)">✕</button>
         </header>
@@ -353,20 +389,61 @@ export default function FinancialInspector({
 
           {pane.type === 'formula' && (
             <div className="space-y-4">
-              <div className="rounded border border-sky-200 bg-sky-50 p-3"><h3 className="font-bold text-sky-950">لایهٔ ۱ — {focusTitle(pane.focus)}</h3><p className="text-xs leading-6 mt-1 text-sky-900">فرمول‌ها فقط نمایش اعداد snapshot هستند؛ هیچ‌کدام در Renderer دوباره محاسبه یا ذخیره نمی‌شوند.</p></div>
-              {(pane.focus === 'overview' || pane.focus === 'drawer') && <div className="rounded border p-3"><h4 className="font-bold">کشوی نقدی</h4><p className="mt-2 font-mono" dir="ltr">{money(totalsSnapshot.cashTotal ?? 0)} − {money(totalsSnapshot.refundCashTotal ?? 0)} = {money(splitSnapshot.drawer)} ریال</p><p className="text-xs text-slate-600 mt-2">این فقط انتظار رویدادهای نقدی ثبت‌شده است؛ تنخواه، شمارش فیزیکی و برداشت/واریز مسیرهای مستقلی دارند.</p></div>}
-              {(pane.focus === 'overview' || pane.focus === 'pos') && <div className="rounded border p-3"><h4 className="font-bold">کارت‌خوان</h4><p className="mt-2 font-mono" dir="ltr">{money(splitSnapshot.pos + (totalsSnapshot.refundCardTotal ?? 0))} − {money(totalsSnapshot.refundCardTotal ?? 0)} = {money(splitSnapshot.pos)} ریال</p><p className="text-xs text-slate-600 mt-2">کارت‌به‌کارت و دریافتی حساب مدیر در این انتظار پوز نیستند.</p></div>}
-              {(pane.focus === 'overview' || pane.focus === 'other' || pane.focus === 'nonCash') && <div className="rounded border p-3"><h4 className="font-bold">سایر / اعتباری / مقصد نامشخص</h4><p className="mt-2 font-mono" dir="ltr">{money(totalsSnapshot.otherTotal ?? 0)} + {money(totalsSnapshot.creditTotal ?? 0)} + {money(totalsSnapshot.destinationUnknownTotal ?? 0)} = {money(splitSnapshot.other)} ریال</p><p className="text-xs text-slate-600 mt-2">این سبد را نباید پول فیزیکی کشو یا پوز نامید. اعتبار خرید و مقصد نامشخص مسیر مالی جدا دارند. سهم <b>تسویه‌های اعتباری</b> در دادهٔ فعلی از ردیف‌های صفحهٔ گزارش می‌آید (`PAGE_ROWS`)؛ تا وقتی منشأ آن aggregate کامل بازه نشود، ریزبین برای آن تیک هم‌خوانی کل‌بازه صادر نمی‌کند.</p></div>}
-              {(pane.focus === 'overview' || pane.focus === 'manager') && <div className="rounded border p-3"><h4 className="font-bold">دریافتی حساب مدیر</h4><p className="mt-2 font-mono" dir="ltr">= {money(splitSnapshot.managerOutside)} ریال</p><p className="text-xs text-slate-600 mt-2">بدهی مشتری می‌تواند کم شده باشد، اما این مبلغ به کشو/پوز فروشگاه نرسیده است.</p></div>}
-              {pane.focus === 'overview' && <div className="rounded border border-amber-200 bg-amber-50 p-3"><h4 className="font-bold text-amber-950">عدد مرجع سربرگ</h4><p className="mt-2 font-mono text-amber-950" dir="ltr">{money(totalsSnapshot.receivedTotal ?? 0)} − {money(totalsSnapshot.refundCashTotal ?? 0)} − {money(totalsSnapshot.refundCardTotal ?? 0)} = {money(referenceSnapshot)} ریال</p><p className="text-xs text-amber-900 mt-2">این تعریف با `netCashMovement` صورت‌حساب و «وجه واقعی» پل یکی نیست؛ هر سه عمداً جدا نمایش داده می‌شوند.</p></div>}
+              <div className="rounded border border-sky-200 bg-sky-50 p-3">
+                <h3 className="font-bold text-sky-950">جزئیات مبلغ — {focusTitle(pane.focus)}</h3>
+                <p className="text-xs leading-6 mt-1 text-sky-900">برای دیدن رویدادهای ثبت‌شده، روی هر ردیفِ دارای کادر کلیک کنید. این صفحه مبلغی را محاسبه یا تغییر نمی‌دهد.</p>
+              </div>
+
+              {(pane.focus === 'overview' || pane.focus === 'drawer') && (
+                <section className="rounded border border-slate-200 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-3"><h4 className="font-bold text-slate-900">کشوی نقدی</h4><b dir="ltr" className="text-lg text-emerald-800">{money(splitSnapshot.drawer)} ریال</b></div>
+                  <p className="text-xs leading-6 text-slate-600">انتظار ثبت‌شدهٔ کشو پس از بازپرداخت‌های نقدی است؛ شمارش فیزیکی کشو، تنخواه و برداشت/واریز ثبت‌شده مسیر جدا دارند.</p>
+                  {detailAmount('دریافت‌های نقدی ثبت‌شده', cash?.cashReceived ?? totalsSnapshot.cashTotal ?? 0, 'پرداخت‌های نقدی غیرچکی در این بازه.', 'drawerCashReceived', 'emerald')}
+                  {detailAmount('بازپرداخت نقدی', totalsSnapshot.refundCashTotal ?? 0, 'مبلغی که بابت برگشت یا مابه‌التفاوت تعویض از کشو پرداخت شده است.', 'cashRefunds', 'amber')}
+                </section>
+              )}
+
+              {(pane.focus === 'overview' || pane.focus === 'pos') && (
+                <section className="rounded border border-slate-200 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-3"><h4 className="font-bold text-slate-900">کارت‌خوان فروشگاه</h4><b dir="ltr" className="text-lg text-blue-800">{money(splitSnapshot.pos)} ریال</b></div>
+                  <p className="text-xs leading-6 text-slate-600">انتظار ثبت‌شدهٔ پوز پس از بازپرداخت کارتی است. کارت‌به‌کارت و دریافتی حساب مدیر در این مبلغ نیستند.</p>
+                  {detailAmount('دریافت‌های کارت‌خوان ثبت‌شده', totalsSnapshot.cardTotal ?? cash?.cardReceived ?? 0, 'پرداخت‌های کارتی غیرچکی در همین بازه.', 'posCardReceived', 'blue')}
+                  {detailAmount('بازپرداخت از کارت‌خوان', totalsSnapshot.refundCardTotal ?? 0, 'مبلغی که بابت برگشت یا مابه‌التفاوت تعویض از پوز بازپرداخت شده است.', 'cardRefunds', 'amber')}
+                </section>
+              )}
+
+              {(pane.focus === 'overview' || pane.focus === 'other' || pane.focus === 'nonCash') && (
+                <section className="rounded border border-slate-200 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-3"><h4 className="font-bold text-slate-900">سایر، اعتباری و مقصد نامشخص</h4><b dir="ltr" className="text-lg text-slate-800">{money(splitSnapshot.other)} ریال</b></div>
+                  <p className="text-xs leading-6 text-slate-600">این سبد، پول فیزیکی کشو یا پوز نیست. هر مسیر برای بررسی جدا نمایش داده می‌شود.</p>
+                  {detailAmount('پرداخت با سایر روش‌ها', cash?.otherReceived ?? totalsSnapshot.otherTotal ?? 0, 'پرداخت‌های ثبت‌شده با روشی غیر از نقد، کارت‌خوان، اعتبار و حساب مدیر.', 'otherMethodReceived')}
+                  {detailAmount('تسویه‌های اعتباری', totalsSnapshot.creditTotal ?? 0, 'این مبلغ فقط بر پایهٔ فاکتورهای نمایش‌داده‌شده در صفحهٔ فعلی گزارش است؛ برای آن تیک هم‌خوانی کل‌بازه یا تاریخچهٔ کامل صادر نمی‌شود.')}
+                  {detailAmount('دریافتی با مقصد نامشخص', totalsSnapshot.destinationUnknownTotal ?? 0, 'مقصد واقعی هنوز نیازمند بررسی مدیر است.', 'destinationUnknownReceived', 'amber')}
+                </section>
+              )}
+
+              {(pane.focus === 'overview' || pane.focus === 'manager') && (
+                <section className="rounded border border-slate-200 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-3"><h4 className="font-bold text-slate-900">دریافتی حساب مدیر</h4><b dir="ltr" className="text-lg text-purple-800">{money(splitSnapshot.managerOutside)} ریال</b></div>
+                  <p className="text-xs leading-6 text-slate-600">بدهی مشتری ممکن است کم شده باشد، اما این مبلغ به کشو یا کارت‌خوان فروشگاه نرسیده است.</p>
+                  {detailAmount('رویدادهای واریز به حساب مدیر', splitSnapshot.managerOutside, 'فقط برای بررسی؛ این مبلغ در کنترل فیزیکی فروشگاه وارد نمی‌شود.', 'managerAccountReceived')}
+                </section>
+              )}
+
+              {pane.focus === 'overview' && (
+                <section className="rounded border border-amber-200 bg-amber-50 p-3">
+                  <div className="flex items-center justify-between gap-3"><h4 className="font-bold text-amber-950">عدد مرجع سربرگ گزارش</h4><b dir="ltr" className="text-lg text-amber-950">{money(referenceSnapshot)} ریال</b></div>
+                  <p className="mt-1 text-xs leading-6 text-amber-900">این عدد، تعریف سربرگ گزارش است و با گردش نقدی صورت‌حساب یا «وجه واقعی» پل لزوماً یکسان نیست. هر کدام عمداً معنای جدا دارند.</p>
+                </section>
+              )}
             </div>
           )}
 
           {pane.type === 'sources' && (
             <div className="space-y-3">
               <div className="rounded border border-sky-200 bg-sky-50 p-3">
-                <h3 className="font-bold text-sky-950">لایهٔ ۲ — اسناد سازندهٔ «{sourceRow?.label ?? pane.key}»</h3>
-                <p className="text-xs text-sky-900 mt-1 leading-6">مبلغ رسمی این خط از پل تطبیق می‌آید. نتایج سرچ‌شده هرگز جای مبلغ رسمی را نمی‌گیرند.</p>
+                <h3 className="font-bold text-sky-950">اسناد ثبت‌شدهٔ «{sourceLabel}»</h3>
+                <p className="text-xs text-sky-900 mt-1 leading-6">مبلغ رسمی از گزارش اجراشده می‌آید. جست‌وجو فقط فهرست سندها را محدود می‌کند و هرگز جای مبلغ رسمی را نمی‌گیرد.</p>
               </div>
               <form className="flex gap-2 flex-wrap items-end" onSubmit={(event) => { event.preventDefault(); setSearchApplied(searchDraft) }}>
                 <label className="text-xs font-bold text-slate-700">جست‌وجوی سند<input className="inp mt-1 block min-w-56" value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="شماره فیش، شناسه یا متن سند" /></label>
@@ -379,8 +456,21 @@ export default function FinancialInspector({
               {sourceResult && (
                 <>
                   <div className={`rounded border p-3 text-sm ${sourceResult.reconciles ? 'border-emerald-300 bg-emerald-50 text-emerald-950' : 'border-amber-300 bg-amber-50 text-amber-950'}`}>
-                    <div className="flex gap-3 flex-wrap justify-between"><span>مبلغ رسمی: <b dir="ltr">{money(sourceResult.totalAmount)}</b> ریال</span><span>جمع {sourceResult.search ? 'نتیجهٔ جست‌وجو' : 'همهٔ منابع'}: <b dir="ltr">{money(sourceResult.sourceAmount)}</b> ریال</span></div>
-                    <div className="mt-1 text-xs">{sourceResult.reconciles ? '✓ جمع همهٔ منابع با عدد رسمی این ردیف هم‌خوان است.' : `تیک هم‌خوانی صادر نشده است. اختلاف: ${faDigits(money(Math.abs(sourceResult.difference)))} ریال${sourceResult.search ? ' (به‌دلیل فیلتر جست‌وجو یا منبع محدودشده)' : ''}.`}</div>
+                    <div className="flex gap-3 flex-wrap justify-between"><span>مبلغ رسمی گزارش: <b dir="ltr">{money(sourceResult.totalAmount)}</b> ریال</span><span>جمع {sourceResult.search ? 'نتیجهٔ جست‌وجو' : 'همهٔ رویدادهای ثبت‌شده'}: <b dir="ltr">{money(sourceResult.sourceAmount)}</b> ریال</span></div>
+                    <div className="mt-1 text-xs leading-6">
+                      {sourceResult.reconciles
+                        ? '✓ همهٔ رویدادهای این بخش با مبلغ رسمی گزارش هم‌خوان هستند.'
+                        : sourceResult.search
+                          ? `برای نتایج فیلترشده تیک هم‌خوانی صادر نمی‌شود؛ اختلاف با مبلغ رسمی: ${faDigits(money(Math.abs(sourceResult.difference)))} ریال.`
+                          : sourceResult.difference > 0
+                            ? `نیازمند بررسی: مبلغ رسمی گزارش ${faDigits(money(sourceResult.difference))} ریال بیش‌تر از جمع رویدادهای این فهرست است.`
+                            : `نیازمند بررسی: جمع رویدادهای این فهرست ${faDigits(money(Math.abs(sourceResult.difference)))} ریال بیش‌تر از مبلغ رسمی گزارش است.`}
+                    </div>
+                    {!sourceResult.reconciles && !sourceResult.search && (sourceKey === 'cashRefunds' || sourceKey === 'cardRefunds' || sourceKey === 'exchangeCashRefunds' || sourceKey === 'exchangeCardRefunds') && onOpenBridgeDiag && (
+                      <button type="button" className={`${BUTTON} mt-2 border border-amber-400 bg-white px-2.5 py-1.5 text-xs font-bold text-amber-950 hover:bg-amber-100`} onClick={() => { onClose(); onOpenBridgeDiag() }}>
+                        باز کردن بررسی فقط‌خواندنیِ اختلاف بازپرداخت
+                      </button>
+                    )}
                   </div>
                   <div className="overflow-x-auto border rounded"><table className="w-full min-w-[700px] text-sm"><thead className="bg-slate-100 text-slate-700"><tr><th className="p-2 text-right">سند</th><th className="p-2 text-right">تاریخ</th><th className="p-2 text-right">فیش</th><th className="p-2 text-right">مسیر</th><th className="p-2 text-left">سهم</th><th className="p-2" /></tr></thead><tbody>{sourceResult.sources.map((source) => <tr key={`${source.ref.kind}-${source.ref.id}`} className="border-t"><td className="p-2 max-w-[330px]">{source.documentLabel}</td><td className="p-2">{faDigits(source.dateJalali ?? '—')}</td><td className="p-2">{source.receiptNo == null ? '—' : faDigits(source.receiptNo)}</td><td className="p-2">{source.effect === 'IN' ? 'ورود/وصول' : source.effect === 'OUT' ? 'خروج/بازپرداخت' : source.effect === 'NON_CASH' ? 'غیرنقدی' : 'مانده'}</td><td className="p-2 text-left font-bold" dir="ltr">{money(source.amount)}</td><td className="p-2 text-left"><button type="button" className={`${BUTTON} border border-sky-300 bg-white text-sky-800 hover:bg-sky-50 px-2 py-1 text-xs`} disabled={documentBusy} onClick={() => openDocument(source.ref)}>شناسنامه</button></td></tr>)}</tbody></table></div>
                   {!sourceResult.sources.length && !sourcesBusy && <div className="rounded border border-slate-200 p-4 text-sm text-slate-600">سندی با این جست‌وجو پیدا نشد.</div>}

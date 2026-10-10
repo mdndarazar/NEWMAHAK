@@ -1215,9 +1215,9 @@ export interface SaleBridgeSource {
  * ===========================================================================
  * ریزبین مالی گزارش فروش — قرارداد فقط‌خواندنی.
  *
- * هر key مستقیماً یک ردیف موجود در پل تطبیق است؛ هیچ فرمول یا bucket موازی
- * در Renderer تعریف نمی‌شود. `totalAmount` همیشه مبلغ authoritative همان ردیف
- * است، و `sourceAmount` فقط مجموع اسناد واقعاً مطابق search فعلی است.
+ * `FINANCIAL_SOURCE_KEYS` ردیف‌های رسمی پل تطبیق‌اند. کلیدهای جزء در آرایهٔ
+ * جدا نگه داشته می‌شوند: آن‌ها فرمول جدیدی نیستند، فقط اسنادِ همان اجزای رسمی
+ * کاشی‌های کشو/پوز/سایر را با predicate سمت سرور نشان می‌دهند.
  * ===========================================================================
  */
 export const FINANCIAL_SOURCE_KEYS = [
@@ -1242,6 +1242,18 @@ export const FINANCIAL_SOURCE_KEYS = [
 ] as const
 export type FinancialSourceKey = (typeof FINANCIAL_SOURCE_KEYS)[number]
 
+/**
+ * اجزای قابل‌ردیابی کاشی‌ها. هر کدام فقط یک فیلتر خواندنی روی سندهای موجود است؛
+ * مبلغ رسمی از صورت حسابداری ساخته‌شده می‌آید، نه از جمع Renderer.
+ */
+export const FINANCIAL_COMPONENT_KEYS = [
+  'drawerCashReceived',
+  'posCardReceived',
+  'otherMethodReceived'
+] as const
+export type FinancialComponentKey = (typeof FINANCIAL_COMPONENT_KEYS)[number]
+export type FinancialInspectorKey = FinancialSourceKey | FinancialComponentKey
+
 export type FinancialSourceSort =
   | 'DATE_DESC'
   | 'DATE_ASC'
@@ -1252,7 +1264,7 @@ export type FinancialSourceSort =
 
 export interface FinancialSourceRequest {
   scope: SaleReportFilter
-  key: FinancialSourceKey
+  key: FinancialInspectorKey
   skip?: number
   take?: number
   search?: string
@@ -1272,10 +1284,14 @@ export interface FinancialSourceRow {
 }
 
 export interface FinancialSourceResult {
-  key: FinancialSourceKey
+  key: FinancialInspectorKey
   label: string
   hint: string
-  /** مبلغ رسمی ردیف پل، مستقل از صفحه/جست‌وجوی منابع. */
+  /** مبنای مبلغ رسمی؛ RANGE یعنی کل بازه و CURRENT_PAGE یعنی همان صفحهٔ گزارش اجراشده. */
+  basis: 'RANGE' | 'CURRENT_PAGE'
+  /** فقط برای CURRENT_PAGE: آیا صفحهٔ گزارش واقعاً همهٔ بازه را پوشش می‌دهد؟ */
+  pageCoversRange: boolean
+  /** مبلغ رسمی ردیف پل یا جزء کاشی، مستقل از صفحه/جست‌وجوی منابع. */
   totalAmount: number
   /** جمع اسناد منطبق با search جاری؛ هرگز جای مبلغ رسمی نمی‌نشیند. */
   sourceAmount: number
@@ -1298,7 +1314,7 @@ export interface FinancialSourceResponse {
 
 export interface FinancialDocumentRequest {
   scope: SaleReportFilter
-  key: FinancialSourceKey
+  key: FinancialInspectorKey
   ref: Pick<SaleBridgeSource, 'kind' | 'id'>
 }
 

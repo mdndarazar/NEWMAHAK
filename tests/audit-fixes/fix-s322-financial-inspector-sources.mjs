@@ -96,6 +96,32 @@ assert.equal(doc.detail?.sourceAmount, 225_000, 'سهم سند در عدد ما�
 assert.equal(doc.detail?.documentAmount, 225_000, 'مبلغ خود سند پرداخت درست است')
 assert.equal(doc.detail?.invoice?.id, invCard.id, 'سند پرداخت به فاکتور درست متصل است')
 assert.deepEqual(tableCounts(), before, 'خواندن شناسنامه هم فقط‌خواندنی است')
+
+/**
+ * کلیدهای جزء نباید از realCash (که نقد/کارت/سایر را مخلوط می‌کند) تغذیه شوند.
+ * این دو assertion دقیقاً قرارداد کاشی کشو و پوز را قفل می‌کنند.
+ */
+const drawerCash = await svc.sources({ scope, key: 'drawerCashReceived' })
+assert.equal(drawerCash.result?.totalAmount, 125_000, 'کشو فقط مبلغ رسمی دریافت نقدی را دارد')
+assert.equal(drawerCash.result?.sourceAmount, 125_000)
+assert.equal(drawerCash.result?.sources.length, 1, 'تاریخچهٔ کشو فقط یک پرداخت نقدی دارد')
+assert.equal(drawerCash.result?.sources[0]?.amount, 125_000)
+assert.equal(drawerCash.result?.basis, 'RANGE')
+assert.equal(drawerCash.result?.pageCoversRange, true)
+
+const posCard = await svc.sources({ scope, key: 'posCardReceived' })
+assert.equal(posCard.result?.totalAmount, 225_000, 'پوز فقط مبلغ رسمی دریافت کارت را دارد')
+assert.equal(posCard.result?.sourceAmount, 225_000)
+assert.equal(posCard.result?.sources.length, 1, 'تاریخچهٔ پوز پرداخت نقدی را قاطی نمی‌کند')
+assert.equal(posCard.result?.sources[0]?.amount, 225_000)
+assert.equal((await svc.document({ scope, key: 'drawerCashReceived', ref: drawerCash.result?.sources[0]?.ref })).detail?.invoice?.id, invCash.id,
+  'ضد-IDOR برای کلید جزء هم فقط سند عضو همان بخش را باز می‌کند')
+assert.match(
+  await errorOf(() => svc.document({ scope, key: 'drawerCashReceived', ref: posCard.result?.sources[0]?.ref })) ?? '',
+  /عضو عدد مالی/,
+  'پرداخت کارت نمی‌تواند با کلید کشو شناسنامه بگیرد'
+)
+assert.deepEqual(tableCounts(), before, 'کلیدهای جزء نیز فقط‌خواندنی هستند')
 console.log('  ✓ قفل عمداً خاموش: endpoint بدون رمز کار کرد و read-only ماند')
 
 console.log('--- ۲. صفحه‌بندی، جست‌وجو و allowlist ---')

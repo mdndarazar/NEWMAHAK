@@ -1612,6 +1612,31 @@ async function bridgeSources(
         },
         payLabel
       )
+    } else if (key === 'drawerCashReceived' || key === 'posCardReceived' || key === 'otherMethodReceived') {
+      /**
+       * ریزِ فقط‌خواندنیِ اجزای کاشی‌ها. این سه کلید فرمول تازه نیستند؛ تنها
+       * همان پرداخت‌های `paymentStatement` را با bucket دقیق جدا می‌کنند تا
+       * تاریخچهٔ کشو/پوز هیچ‌وقت با realCash مخلوط نشود. برخلاف realCash، چک
+       * پاس‌شده در این سه جزء نمی‌آید، چون cashReceived/cardReceived/otherReceived
+       * در صورت وجه واقعی نیز فقط پرداخت غیرچکی‌اند.
+       *
+       * `paymentEventWindowWhere` عمداً همان predicate aggregate است؛ استفاده از
+       * paidAt ساده در گزارش شیفت، وصول ثبت‌شده در شیفت را پنهان می‌کرد.
+       */
+      const events: any = {
+        invoice: eventWhere(scope),
+        voidedAt: null,
+        amount: { gt: 0 },
+        ...paymentEventWindowWhere(scope, range)
+      }
+      const wanted = key === 'drawerCashReceived' ? 'cash'
+        : key === 'posCardReceived' ? 'card'
+          : 'other'
+      return await paymentDrill(
+        [events],
+        (r, bucket) => r.kind !== PaymentEntryKind.CHEQUE && bucket === wanted ? n(r.amount) : 0,
+        payLabel
+      )
     } else if (key === 'realCash' || key === 'managerAccountReceived' || key === 'destinationUnknownReceived') {
       /**
        * realCash = نقد + کارت + سایر (پرداخت غیرچک، رویداد paidAt) + چک پاس‌شده‌ی بازه به سبد
@@ -1711,6 +1736,19 @@ async function bridgeSources(
 export async function readBridgeSources(
   scope: StatementScope,
   key: string,
+  skip = 0,
+  take = 200
+): Promise<{ sources: SaleBridgeSource[]; page: SaleReportPage }> {
+  return bridgeSources(scope, key, skip, take)
+}
+
+/**
+ * اجزای قابل‌ردیابی کاشی‌ها از همان source builder داخلی می‌آیند. این wrapper
+ * فقط مرز نام‌گذاری است؛ هیچ عدد یا predicate تازه‌ای نمی‌سازد.
+ */
+export async function readFinancialComponentSources(
+  scope: StatementScope,
+  key: 'drawerCashReceived' | 'posCardReceived' | 'otherMethodReceived',
   skip = 0,
   take = 200
 ): Promise<{ sources: SaleBridgeSource[]; page: SaleReportPage }> {

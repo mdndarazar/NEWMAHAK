@@ -10,14 +10,17 @@
  */
 import { BusinessError } from '../errors'
 import { salesService } from './SalesService'
-import { readBridgeSources, resolveAccountingReadScope } from './accountingReport'
+import { readBridgeSources, readFinancialComponentSources, resolveAccountingReadScope } from './accountingReport'
 import { assertPanelUnlocked } from './panelSession'
 import { PANEL_KEYS } from '@shared/panels'
 import {
+  FINANCIAL_COMPONENT_KEYS,
   FINANCIAL_SOURCE_KEYS,
+  type FinancialComponentKey,
   type FinancialDocumentDetail,
   type FinancialDocumentRequest,
   type FinancialDocumentResponse,
+  type FinancialInspectorKey,
   type FinancialSourceKey,
   type FinancialSourceRequest,
   type FinancialSourceResponse,
@@ -116,10 +119,15 @@ export function cleanFinancialScope(raw: unknown): SaleReportFilter {
   return scope
 }
 
-function cleanKey(value: unknown): FinancialSourceKey {
-  const key = String(value ?? '') as FinancialSourceKey
-  if (!(FINANCIAL_SOURCE_KEYS as readonly string[]).includes(key)) throw new BusinessError('دستهٔ منبع مالی نامعتبر است.')
+function cleanKey(value: unknown): FinancialInspectorKey {
+  const key = String(value ?? '') as FinancialInspectorKey
+  const allowed = [...FINANCIAL_SOURCE_KEYS, ...FINANCIAL_COMPONENT_KEYS] as readonly string[]
+  if (!allowed.includes(key)) throw new BusinessError('دستهٔ ریز مبلغ مالی نامعتبر است.')
   return key
+}
+
+function isComponentKey(key: FinancialInspectorKey): key is FinancialComponentKey {
+  return (FINANCIAL_COMPONENT_KEYS as readonly string[]).includes(key)
 }
 
 function cleanTake(value: unknown): number {
@@ -146,7 +154,7 @@ function cleanSearch(value: unknown): string {
   return value.trim().slice(0, 80)
 }
 
-function effectOf(source: SaleBridgeSource, key: FinancialSourceKey): FinancialSourceRow['effect'] {
+function effectOf(source: SaleBridgeSource, key: FinancialInspectorKey): FinancialSourceRow['effect'] {
   // جهت از «ردیف مالی» می‌آید، نه صرفاً نوع جدول: priorDebtReturns یک SaleReturn
   // است اما خروج وجه نیست؛ و StoreCreditIssued/Used هر دو غیرنقدی‌اند.
   if (key === 'uncollectedCredit' || key === 'priorDebtReturns') return 'BALANCE'
@@ -169,9 +177,13 @@ function sortRows(rows: FinancialSourceRow[], sort: FinancialSourceSort): Financ
   })
 }
 
-async function allSources(scope: SaleReportFilter, key: FinancialSourceKey): Promise<SaleBridgeSource[]> {
+async function allSources(scope: SaleReportFilter, key: FinancialInspectorKey): Promise<SaleBridgeSource[]> {
   const readScope = await resolveAccountingReadScope(scope)
-  const first = await readBridgeSources(readScope, key, 0, SOURCE_READ_CHUNK)
+  const read = (skip: number, take: number) =>
+    isComponentKey(key)
+      ? readFinancialComponentSources(readScope, key, skip, take)
+      : readBridgeSources(readScope, key, skip, take)
+  const first = await read(0, SOURCE_READ_CHUNK)
   if (first.page.failed) throw new BusinessError('اسناد سازندهٔ این عدد خوانده نشدند؛ فهرست خالی به معنی «بدون سند» نیست.')
   if (first.page.totalCount > MAX_SEARCHABLE_SOURCES)
     throw new BusinessError(
@@ -181,7 +193,7 @@ async function allSources(scope: SaleReportFilter, key: FinancialSourceKey): Pro
 
   const rows = [...first.sources]
   for (let skip = rows.length; skip < first.page.totalCount; skip += SOURCE_READ_CHUNK) {
-    const next = await readBridgeSources(readScope, key, skip, SOURCE_READ_CHUNK)
+    const next = await read(skip, SOURCE_READ_CHUNK)
     if (next.page.failed) throw new BusinessError('خواندن یکی از صفحه‌های منابع مالی ناموفق بود؛ هیچ نتیجهٔ ناقصی نمایش داده نمی‌شود.')
     rows.push(...next.sources)
   }
@@ -398,6 +410,54 @@ async function documentForSource(source: SaleBridgeSource): Promise<FinancialDoc
   }
 }
 
+type OfficialFinancialAmount = {
+  label: string
+  hint: string
+  totalAmount: number
+  basis: FinancialSourceResult['basis']
+  pageCoversRange: boolean
+}
+
+/** مبلغ رسمی جزء کاشی همیشه از صورت حسابداری گزارش می‌آید، نه از جمع سندهای UI. */
+function officialAmountOf(report: any, key: FinancialInspectorKey): OfficialFinancialAmount | null {
+  if (key === 'drawerCashReceived') {
+    return {
+      label: 'دریافت‌های نقدی ثبت‌شده',
+      hint: 'پرداخت‌های نقدی غیرچکیِ ثبت‌شده در همین بازه.',
+      totalAmount: n(report?.accounting?.cash?.cashReceived),
+      basis: 'RANGE',
+      pageCoversRange: true
+    }
+  }
+  if (key === 'posCardReceived') {
+    return {
+      label: 'دریافت‌های کارت‌خوان فروشگاه',
+      hint: 'پرداخت‌های کارتی غیرچکیِ ثبت‌شده در همین بازه؛ کارت‌به‌کارت و حساب مدیر در این مبلغ نیستند.',
+      totalAmount: n(report?.accounting?.cash?.cardReceived),
+      basis: 'RANGE',
+      pageCoversRange: true
+    }
+  }
+  if (key === 'otherMethodReceived') {
+    return {
+      label: 'پرداخت با سایر روش‌ها',
+      hint: 'پرداخت‌هایی که در ثبت فعلی نه نقدی‌اند، نه کارت‌خوان، نه اعتباری و نه حساب مدیر.',
+      totalAmount: n(report?.accounting?.cash?.otherReceived),
+      basis: 'RANGE',
+      pageCoversRange: true
+    }
+  }
+  const row = report?.accounting?.bridge?.rows?.find((candidate: any) => candidate?.key === key)
+  if (!row) return null
+  return {
+    label: String(row.label ?? key),
+    hint: String(row.hint ?? ''),
+    totalAmount: n(row.amount),
+    basis: 'RANGE',
+    pageCoversRange: true
+  }
+}
+
 export const financialInspectorService = {
   async sources(raw: unknown): Promise<FinancialSourceResponse> {
     await assertPanelUnlocked(PANEL, 'دیدن منابع ریزبین مالی گزارش فروش')
@@ -411,8 +471,8 @@ export const financialInspectorService = {
 
     /** مبلغ/عنوان فقط از گزارش authoritative گرفته می‌شود؛ هیچ aggregate تازه‌ای نداریم. */
     const report: any = await salesService.reportRows({ ...scope, take: 1, skip: 0 })
-    const row = report?.accounting?.bridge?.rows?.find((candidate: any) => candidate?.key === key)
-    if (!row) throw new BusinessError('این عدد مالی در گزارش انتخاب‌شده وجود ندارد.')
+    const official = officialAmountOf(report, key)
+    if (!official) throw new BusinessError('این ریز مبلغ مالی در گزارش انتخاب‌شده وجود ندارد.')
 
     const all = await allSources(scope, key)
     const query = search.toLocaleLowerCase('fa')
@@ -433,12 +493,14 @@ export const financialInspectorService = {
     )
     const pageRows = rows.slice(skip, skip + take)
     const sourceAmount = filtered.reduce((sum, source) => sum + Number(source.amount || 0), 0)
-    const totalAmount = Number(row.amount || 0)
+    const totalAmount = official.totalAmount
     const difference = totalAmount - sourceAmount
     const result: FinancialSourceResult = {
       key,
-      label: String(row.label ?? key),
-      hint: String(row.hint ?? ''),
+      label: official.label,
+      hint: official.hint,
+      basis: official.basis,
+      pageCoversRange: official.pageCoversRange,
       totalAmount,
       sourceAmount,
       totalCount: all.length,
