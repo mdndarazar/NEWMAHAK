@@ -90,6 +90,28 @@ export function isPanelUnlocked(panel: string): boolean {
 }
 
 /**
+ * آیا نشست واقعیِ مدیر در main هنوز معتبر است؟
+ *
+ * عمداً با `isPanelUnlocked` یکی نیست: رمز دومِ یک پنل فقط همان پنل را باز
+ * می‌کند و به افشای کدِ قابل‌مصرف اعتبار مجوز نمی‌دهد. این کنترل فقط حافظهٔ
+ * سرور را می‌سنجد، نه state رندرر یا فیلد قابل‌جعلِ IPC.
+ */
+export function isManagerSessionUnlocked(): boolean {
+  return !!alive(MANAGER_KEY)
+}
+
+/**
+ * گیت مسیرهای افشای محرمانه که فقط مدیرِ احراز هویت‌شده می‌تواند بخواند.
+ * «OPEN» شدن قفل پنل و scopeِ «PANEL» عمداً اینجا پذیرفته نمی‌شوند.
+ */
+export function assertManagerSession(action: string): void {
+  if (isManagerSessionUnlocked()) return
+  throw new BusinessError(
+    `برای ${action} فقط نشست فعال مدیر معتبر است. با رمز مدیر وارد شوید؛ رمز دوم پنل یا باز بودن قفل کافی نیست.`
+  )
+}
+
+/**
  * گیت کانال‌های خواندنیِ حساس.
  *
  * اگر قفل این پنل در تنظیمات خاموش باشد، مثل بقیه‌ی جاهای پروژه آزاد است

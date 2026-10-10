@@ -1220,6 +1220,15 @@ export interface SaleBridgeSource {
 }
 
 /**
+ * تنها پاسخِ صریحِ افشای کد اعتبار برای مدیر. این type هرگز عضو گزارش، ریزبین،
+ * چاپ یا export عمومی نیست و فقط از IPC مجوزدار `creditManagerCodeReveal` برمی‌گردد.
+ */
+export interface ManagerStoreCreditCodeReveal {
+  creditId: number
+  code: string
+}
+
+/**
  * ===========================================================================
  * ریزبین مالی گزارش فروش — قرارداد فقط‌خواندنی.
  *

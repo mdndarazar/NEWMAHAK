@@ -130,6 +130,11 @@ export const IPC = {
   creditList: 'credit:list',
   /** جزئیات یک اعتبار + دفتر مصرف + Timeline کامل رویدادها */
   creditDetail: 'credit:detail',
+  /**
+   * افشای صریحِ یک کد اعتبار از یک source گزارش؛ فقط برای نشست فعالِ مدیر.
+   * هیچ فهرست/گزارش معمولی نباید این مقدار را در DTO خودش حمل کند.
+   */
+  creditManagerCodeReveal: 'credit:manager:code:reveal',
   /** صدور تکیِ اعتبار توسط مدیریت (source = MANUAL) */
   creditIssue: 'credit:issue',
   /** تولید گروهی (۱ تا هزاران) با Batch Insert و سنجش ظرفیت کد */

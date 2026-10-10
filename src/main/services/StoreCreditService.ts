@@ -34,6 +34,7 @@ import { SETTING_KEYS } from '@shared/receipt'
 import { cleanCreditIds } from '@shared/creditPrint'
 import { creditIdsForReportScope, CREDIT_SCOPE_MAX_IDS } from './creditReportScope'
 import { PANEL_KEYS } from '@shared/panels'
+import { assertManagerSession } from './panelSession'
 import {
   CREDIT_SCOPE_LABELS,
   CREDIT_SOURCE_LABELS,
@@ -108,6 +109,7 @@ import type {
   CreditReminderCandidateRow,
   CreditReminderLogRow,
   CreditTimelineEvent,
+  ManagerStoreCreditCodeReveal,
   StoreCreditRow,
   PagedRows,
   SaleReportPage
@@ -2600,6 +2602,46 @@ function duePrefilter(base: any, settings: CreditReminderSettings, now: number):
   }
 
 export const storeCreditService = {
+  /**
+   * مسیر محرمانه و تک‌منظورهٔ نمایش کد از روی یک source گزارش.
+   *
+   * کد فقط پس از کنترلِ نشستِ واقعی مدیر در main خوانده می‌شود؛ رمز دوم پنل،
+   * خاموش بودن قفل، state رندرر و payload IPC هیچ‌کدام مجوز افشا نیستند. این
+   * متد عمداً تنها یک رکورد برمی‌گرداند و نه list/detail/report، تا کد به
+   * مسیرهای معمولِ گزارش، export، چاپ یا index نشت نکند.
+   */
+  async revealManagerCode(input: {
+    sourceId?: unknown
+    sourceSubKind?: unknown
+  } = {}): Promise<ManagerStoreCreditCodeReveal> {
+    assertManagerSession('نمایش کد اعتبار خرید')
+
+    const sourceId = assertCreditId(input.sourceId)
+    const sourceSubKind = String(input.sourceSubKind ?? '')
+    let creditId: number
+
+    if (sourceSubKind === 'STORE_CREDIT_ISSUANCE') {
+      creditId = sourceId
+    } else if (sourceSubKind === 'STORE_CREDIT_REDEMPTION') {
+      const redemption = await prisma.storeCreditRedemption.findUnique({
+        where: { id: sourceId },
+        select: { creditId: true }
+      })
+      if (!redemption) throw new BusinessError('سند مصرف اعتبار پیدا نشد؛ ممکن است حذف یا اصلاح شده باشد.')
+      creditId = Number(redemption.creditId)
+    } else {
+      throw new BusinessError('نوع سند اعتبار برای نمایش کد نامعتبر است.')
+    }
+
+    const credit = await prisma.storeCredit.findUnique({
+      where: { id: creditId },
+      select: { id: true, code: true }
+    })
+    if (!credit) throw new BusinessError('اعتبار مربوط به این سند پیدا نشد؛ ممکن است حذف شده باشد.')
+
+    return { creditId: Number(credit.id), code: String(credit.code) }
+  },
+
   /**
    * بررسی یک اعتبار *بدون* مصرف کردنش (دکمه‌ی «بررسی» پنل فروش).
    *

@@ -645,6 +645,13 @@ export function registerIpcHandlers(): void {
     await assertCreditRead('دیدن جزئیات یک اعتبار خرید')
     return storeCreditService.detail(p ?? {})
   })
+  /**
+   * افشای کد قابل‌مصرف عمداً از list/detail/report جداست. سرویس خودش فقط
+   * `MANAGER` session سمت main را می‌پذیرد؛ PANEL/OPEN حتی با IPC مستقیم رد می‌شوند.
+   */
+  handle(IPC.creditManagerCodeReveal, (p) =>
+    storeCreditService.revealManagerCode({ sourceId: p?.sourceId, sourceSubKind: p?.sourceSubKind })
+  )
   // نشست ۱۴۳ · بند ۴-۲۹ — actor صدور دستی/گروهی فقط از نشست باز main خوانده می‌شود، نه payload رندرر.
   handle(IPC.creditIssue, async (p) => storeCreditService.issueManual(await withSessionActor(p ?? {}, 'صدور دستی اعتبار خرید')))
   handle(IPC.creditBulkIssue, async (p) => storeCreditService.bulkIssue(await withSessionActor(p ?? {}, 'تولید گروهی اعتبار خرید')))
