@@ -1266,7 +1266,9 @@ export type FinancialSourceKey = (typeof FINANCIAL_SOURCE_KEYS)[number]
 export const FINANCIAL_COMPONENT_KEYS = [
   'drawerCashReceived',
   'posCardReceived',
-  'otherMethodReceived'
+  'otherMethodReceived',
+  /** فقط فاکتورهای صفحهٔ فعلی گزارش؛ با جمع کل بازه جایگزین نمی‌شود. */
+  'creditMethodReceived'
 ] as const
 export type FinancialComponentKey = (typeof FINANCIAL_COMPONENT_KEYS)[number]
 export type FinancialInspectorKey = FinancialSourceKey | FinancialComponentKey

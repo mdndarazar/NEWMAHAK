@@ -2589,6 +2589,7 @@ export default function SalesReports() {
           bridge={report.accounting?.bridge}
           statements={report.accounting ?? null}
           appliedFiltersPayload={toServiceFilter(appliedFilters)}
+          pageInvoiceIds={report.rows.map((row) => row.id)}
           onOpenInvoice={(id) => setPaymentsFor(id)}
           onOpenBridgeDiag={openBridgeDiag}
           refundCashTotal={t.refundCashTotal}
@@ -2740,6 +2741,7 @@ function SaleSummaryBlock({
   bridge,
   statements,
   appliedFiltersPayload,
+  pageInvoiceIds = [],
   onOpenInvoice,
   onOpenBridgeDiag,
   refundCashTotal = 0,
@@ -2772,6 +2774,8 @@ function SaleSummaryBlock({
   bridge?: SaleBridgeBlock | null
   statements?: SaleAccountingStatements | null
   appliedFiltersPayload?: any
+  /** فقط برای ریز روش «اعتباری» که جمعش page-based است. */
+  pageInvoiceIds?: number[]
   onOpenInvoice?: (id: number) => void
   onOpenBridgeDiag?: () => void
   refundCashTotal?: number
@@ -2973,6 +2977,7 @@ function SaleSummaryBlock({
           referenceRealCash={realCash}
           split={split}
           bridgeAlarm={netToDrawer.alarm}
+          pageInvoiceIds={pageInvoiceIds}
           initialFocus={financialInspectorFocus}
           onOpenBridgeDiag={onOpenBridgeDiag}
         />

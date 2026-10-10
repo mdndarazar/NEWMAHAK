@@ -44,6 +44,7 @@ const variantId = seed.variant(productId, 'آبی')
 sql.prepare('UPDATE "ProductVariant" SET stock = ?, salePrice = ? WHERE id = ?').run(10, 125_000, variantId)
 const cashMethod = seed.insert('PaymentMethod', { key: 'FI-CASH', label: 'نقدی تست', kind: 'CASH', isActive: 1, sortOrder: 1 })
 const cardMethod = seed.insert('PaymentMethod', { key: 'FI-CARD', label: 'کارتی تست', kind: 'CARD', isActive: 1, sortOrder: 2 })
+const creditMethod = seed.insert('PaymentMethod', { key: 'FI-CREDIT', label: 'اعتباری تست', kind: 'CREDIT', isActive: 1, sortOrder: 3 })
 await shiftService.openSession({ staffId: userId, name: 'شیفت ریزبین' })
 
 const invCash = await salesService.create({
@@ -56,7 +57,12 @@ const invCard = await salesService.create({
   lines: [{ variantId, qty: 1, unitPrice: 225_000, discount: 0, tax: 0 }],
   payments: [{ methodId: cardMethod, amount: 225_000, destination: 'CARD' }]
 })
-for (const [invoiceId, hour] of [[invCash.id, 9], [invCard.id, 10]]) {
+const invCredit = await salesService.create({
+  userId,
+  lines: [{ variantId, qty: 1, unitPrice: 125_000, discount: 0, tax: 0 }],
+  payments: [{ methodId: creditMethod, amount: 125_000 }]
+})
+for (const [invoiceId, hour] of [[invCash.id, 9], [invCard.id, 10], [invCredit.id, 11]]) {
   sql.prepare('UPDATE "SaleInvoice" SET issuedAt = ?, issuedAtJalali = ? WHERE id = ?').run(at(hour).getTime(), day, invoiceId)
   sql.prepare('UPDATE "Payment" SET paidAt = ?, createdAt = ?, paidAtJalali = ?, paidAtTime = ? WHERE invoiceId = ?')
     .run(at(hour).getTime(), at(hour).getTime(), day, `${String(hour).padStart(2, '0')}:00:00`, invoiceId)
@@ -116,6 +122,18 @@ assert.equal(posCard.result?.sources.length, 1, 'تاریخچهٔ پوز پرد�
 assert.equal(posCard.result?.sources[0]?.amount, 225_000)
 assert.equal((await svc.document({ scope, key: 'drawerCashReceived', ref: drawerCash.result?.sources[0]?.ref })).detail?.invoice?.id, invCash.id,
   'ضد-IDOR برای کلید جزء هم فقط سند عضو همان بخش را باز می‌کند')
+
+/** روش «اعتباری» عمداً page-based است: فقط همان invoiceIds صفحه، نه کل بازه. */
+const creditPageScope = { ...scope, invoiceIds: [invCredit.id] }
+const creditMethodSources = await svc.sources({ scope: creditPageScope, key: 'creditMethodReceived' })
+assert.equal(creditMethodSources.result?.totalAmount, 125_000, 'روش اعتباری فقط جمع فاکتورهای صفحهٔ انتخاب‌شده را دارد')
+assert.equal(creditMethodSources.result?.sourceAmount, 125_000)
+assert.equal(creditMethodSources.result?.basis, 'CURRENT_PAGE')
+assert.equal(creditMethodSources.result?.pageCoversRange, false)
+assert.equal(creditMethodSources.result?.sources.length, 1)
+assert.equal(creditMethodSources.result?.sources[0]?.invoiceId, invCredit.id, 'ریز اعتباری فقط همان فاکتور صفحه را نشان می‌دهد')
+assert.equal((await svc.document({ scope: creditPageScope, key: 'creditMethodReceived', ref: creditMethodSources.result?.sources[0]?.ref })).detail?.invoice?.id, invCredit.id,
+  'شناسنامهٔ اعتباری نیز عضویت در همان صفحه را سمت سرور اثبات می‌کند')
 assert.match(
   await errorOf(() => svc.document({ scope, key: 'drawerCashReceived', ref: posCard.result?.sources[0]?.ref })) ?? '',
   /عضو عدد مالی/,

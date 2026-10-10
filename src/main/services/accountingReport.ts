@@ -1615,16 +1615,20 @@ async function bridgeSources(
         },
         payLabel
       )
-    } else if (key === 'drawerCashReceived' || key === 'posCardReceived' || key === 'otherMethodReceived') {
+    } else if (
+      key === 'drawerCashReceived' || key === 'posCardReceived' ||
+      key === 'otherMethodReceived' || key === 'creditMethodReceived'
+    ) {
       /**
-       * ریزِ فقط‌خواندنیِ اجزای کاشی‌ها. این سه کلید فرمول تازه نیستند؛ تنها
+       * ریزِ فقط‌خواندنیِ اجزای کاشی‌ها. این کلیدها فرمول تازه نیستند؛ تنها
        * همان پرداخت‌های `paymentStatement` را با bucket دقیق جدا می‌کنند تا
-       * تاریخچهٔ کشو/پوز هیچ‌وقت با realCash مخلوط نشود. برخلاف realCash، چک
-       * پاس‌شده در این سه جزء نمی‌آید، چون cashReceived/cardReceived/otherReceived
-       * در صورت وجه واقعی نیز فقط پرداخت غیرچکی‌اند.
+       * تاریخچهٔ کشو/پوز/اعتباری هیچ‌وقت با realCash مخلوط نشود. برخلاف realCash،
+       * چک پاس‌شده در این اجزا نمی‌آید، چون این سبدها فقط پرداخت غیرچکی‌اند.
        *
-       * `paymentEventWindowWhere` عمداً همان predicate aggregate است؛ استفاده از
-       * paidAt ساده در گزارش شیفت، وصول ثبت‌شده در شیفت را پنهان می‌کرد.
+       * `creditMethodReceived` با scope فاکتورهای «صفحهٔ گزارش» فراخوانده می‌شود؛
+       * بنابراین عمداً به جمع کل بازه تبدیل نمی‌شود.
+       * `paymentEventWindowWhere` همان predicate aggregate است؛ استفاده از paidAt
+       * ساده در گزارش شیفت، وصول ثبت‌شده در شیفت را پنهان می‌کرد.
        */
       const events: any = {
         invoice: eventWhere(scope),
@@ -1634,7 +1638,8 @@ async function bridgeSources(
       }
       const wanted = key === 'drawerCashReceived' ? 'cash'
         : key === 'posCardReceived' ? 'card'
-          : 'other'
+          : key === 'creditMethodReceived' ? 'credit'
+            : 'other'
       return await paymentDrill(
         [events],
         (r, bucket) => r.kind !== PaymentEntryKind.CHEQUE && bucket === wanted ? n(r.amount) : 0,
@@ -1751,7 +1756,7 @@ export async function readBridgeSources(
  */
 export async function readFinancialComponentSources(
   scope: StatementScope,
-  key: 'drawerCashReceived' | 'posCardReceived' | 'otherMethodReceived',
+  key: 'drawerCashReceived' | 'posCardReceived' | 'otherMethodReceived' | 'creditMethodReceived',
   skip = 0,
   take = 200
 ): Promise<{ sources: SaleBridgeSource[]; page: SaleReportPage }> {

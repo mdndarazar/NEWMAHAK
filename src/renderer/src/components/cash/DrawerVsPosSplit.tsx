@@ -231,8 +231,7 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
           <span className="block text-xs text-blue-700/80 font-medium text-center pt-1 group-hover:underline">مشاهدهٔ جزئیات ثبت‌شده</span>
         </button>
 
-        {other !== 0 && (
-          <button
+        <button
             type="button"
             onClick={(event) => openDetail('other', event.currentTarget)}
             className={`${TILE_BUTTON} bg-white border border-slate-300 rounded-lg p-3 shadow-xs flex flex-col justify-between hover:shadow-md hover:border-slate-500 transition-all group`}
@@ -250,11 +249,10 @@ export const DrawerVsPosSplit: React.FC<DrawerVsPosSplitProps> = ({
               {money(other)} <span className="text-xs font-normal text-slate-500">ریال</span>
             </span>
             <span className="block text-xs text-slate-500 border-t border-slate-100 pt-1 mt-1">
-              واریزی متفرقه، اعتبار و مسیرهای نامشخص
+              {other === 0 ? '۰ ریال · در این بازه ثبت نشده' : 'واریزی متفرقه، اعتبار و مسیرهای نامشخص'}
             </span>
             <span className="block text-xs text-slate-600 font-medium text-center pt-1 group-hover:underline">مشاهدهٔ جزئیات ثبت‌شده</span>
           </button>
-        )}
 
         {managerOutside > 0 && (
           <button

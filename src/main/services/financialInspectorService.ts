@@ -454,6 +454,15 @@ function officialAmountOf(report: any, key: FinancialInspectorKey): OfficialFina
       pageCoversRange: true
     }
   }
+  if (key === 'creditMethodReceived') {
+    return {
+      label: 'پرداخت با روش «اعتباری»',
+      hint: 'فقط فاکتورهای صفحهٔ گزارش فعلی؛ نه فروش نسیه و نه بارکد اعتبار خرید.',
+      totalAmount: n(report?.totals?.creditTotal),
+      basis: 'CURRENT_PAGE',
+      pageCoversRange: false
+    }
+  }
   const row = report?.accounting?.bridge?.rows?.find((candidate: any) => candidate?.key === key)
   if (!row) return null
   return {
@@ -476,8 +485,16 @@ export const financialInspectorService = {
     const sort = cleanSort(request.sort)
     const search = cleanSearch(request.search)
 
-    /** مبلغ/عنوان فقط از گزارش authoritative گرفته می‌شود؛ هیچ aggregate تازه‌ای نداریم. */
-    const report: any = await salesService.reportRows({ ...scope, take: 1, skip: 0 })
+    /**
+     * مبلغ/عنوان فقط از گزارش authoritative گرفته می‌شود؛ هیچ aggregate تازه‌ای نداریم.
+     * «اعتباری» استثنای آگاهانه است: total آن تعریفاً جمع فاکتورهای همین صفحه است،
+     * پس همهٔ invoiceIds همان صفحه را می‌خوانیم، نه فقط نخستین فاکتور.
+     */
+    const report: any = await salesService.reportRows({
+      ...scope,
+      take: key === 'creditMethodReceived' ? 20_000 : 1,
+      skip: 0
+    })
     const official = officialAmountOf(report, key)
     if (!official) throw new BusinessError('این ریز مبلغ مالی در گزارش انتخاب‌شده وجود ندارد.')
 

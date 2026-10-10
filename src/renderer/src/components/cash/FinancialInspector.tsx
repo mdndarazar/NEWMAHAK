@@ -33,6 +33,8 @@ export interface FinancialInspectorProps {
   referenceRealCash: number
   split: SplitDrawerPosResult
   bridgeAlarm: NetToDrawerAlarm
+  /** شناسه‌های همان صفحهٔ گزارش؛ فقط برای ریز «روش اعتباری» که page-based است. */
+  pageInvoiceIds?: number[]
   initialFocus?: FocusArea
   onOpenBridgeDiag?: () => void
 }
@@ -71,7 +73,8 @@ function inspectorKeyLabel(key: FinancialInspectorKey): string {
   return {
     drawerCashReceived: 'دریافت‌های نقدی ثبت‌شده',
     posCardReceived: 'دریافت‌های کارت‌خوان فروشگاه',
-    otherMethodReceived: 'پرداخت با سایر روش‌ها'
+    otherMethodReceived: 'پرداخت با سایر روش‌ها',
+    creditMethodReceived: 'پرداخت با روش «اعتباری»'
   }[key] ?? key
 }
 
@@ -89,6 +92,7 @@ export default function FinancialInspector({
   referenceRealCash,
   split,
   bridgeAlarm,
+  pageInvoiceIds = [],
   initialFocus = 'overview',
   onOpenBridgeDiag
 }: FinancialInspectorProps) {
@@ -102,6 +106,8 @@ export default function FinancialInspector({
   const [statementsSnapshot, setStatementsSnapshot] = useState(statements ?? null)
   const [referenceSnapshot, setReferenceSnapshot] = useState(referenceRealCash)
   const [splitSnapshot, setSplitSnapshot] = useState(split)
+  /** snapshot صفحه، تا تغییر/صفحه‌زدن جدول پشت مودال معنای عدد بازشده را عوض نکند. */
+  const [pageInvoiceIdsSnapshot, setPageInvoiceIdsSnapshot] = useState<number[]>(() => [...new Set(pageInvoiceIds)])
   const [alarmSnapshot, setAlarmSnapshot] = useState<NetToDrawerAlarm>(bridgeAlarm)
   const [stack, setStack] = useState<Pane[]>([{ type: 'overview' }])
   const stackRef = useRef<Pane[]>(stack)
@@ -125,6 +131,11 @@ export default function FinancialInspector({
   const pane = stack[stack.length - 1]
   const bridgeRows = statementsSnapshot?.bridge.rows ?? []
   const sourceKey = pane.type === 'sources' ? pane.key : null
+  /** تنها «روش اعتباری» طبق قرارداد گزارش page-based است؛ بقیه کل scope را می‌خوانند. */
+  const scopeForKey = (key: FinancialInspectorKey): SaleReportFilter =>
+    key === 'creditMethodReceived'
+      ? { ...scopeSnapshot, invoiceIds: pageInvoiceIdsSnapshot }
+      : scopeSnapshot
 
   /** یک snapshot از گزارشِ اجراشده؛ تغییر فیلتر فرم، مودال باز را جابه‌جا نمی‌کند. */
   useEffect(() => {
@@ -134,6 +145,7 @@ export default function FinancialInspector({
       setStatementsSnapshot(statements ?? null)
       setReferenceSnapshot(referenceRealCash)
       setSplitSnapshot(split)
+      setPageInvoiceIdsSnapshot([...new Set(pageInvoiceIds)])
       setAlarmSnapshot(bridgeAlarm)
       // ورود از یک کاشی، بخش جزئیات را نشان می‌دهد اما ریشهٔ ریزبین همچنان
       // جمع‌بندی است؛ پس Esc اول به همان ریشه برمی‌گردد و فقط Esc بعدی می‌بندد.
@@ -151,7 +163,7 @@ export default function FinancialInspector({
       setRevealBusy(false)
     }
     wasOpenRef.current = open
-  }, [open, scope, totals, statements, referenceRealCash, split, bridgeAlarm, initialFocus])
+  }, [open, scope, totals, statements, referenceRealCash, split, bridgeAlarm, pageInvoiceIds, initialFocus])
 
   /** خروج مدیر یا انقضای نشست نباید کد revealشده را روی صفحه نگه دارد. */
   useEffect(() => {
@@ -211,7 +223,7 @@ export default function FinancialInspector({
     setSourcesError(null)
     setSourceResult(null)
     void call<FinancialSourceResponse>(CH.saleReportFinancialSources, {
-      scope: scopeSnapshot,
+      scope: scopeForKey(sourceKey),
       key: sourceKey,
       skip: 0,
       take: 50,
@@ -229,7 +241,7 @@ export default function FinancialInspector({
       .finally(() => {
         if (seq === requestSeq.current) setSourcesBusy(false)
       })
-  }, [open, sourceKey, scopeSnapshot, searchApplied, sort])
+  }, [open, sourceKey, scopeSnapshot, pageInvoiceIdsSnapshot, searchApplied, sort])
 
   const loadSourcePage = (skip: number) => {
     if (!sourceKey) return
@@ -237,7 +249,7 @@ export default function FinancialInspector({
     setSourcesBusy(true)
     setSourcesError(null)
     void call<FinancialSourceResponse>(CH.saleReportFinancialSources, {
-      scope: scopeSnapshot,
+      scope: scopeForKey(sourceKey),
       key: sourceKey,
       skip,
       take: 50,
@@ -263,7 +275,7 @@ export default function FinancialInspector({
     setDocumentError(null)
     setRevealedCreditCode(null)
     setRevealError(null)
-    void call<FinancialDocumentResponse>(CH.saleReportFinancialDocument, { scope: scopeSnapshot, key: sourceKey, ref })
+    void call<FinancialDocumentResponse>(CH.saleReportFinancialDocument, { scope: scopeForKey(sourceKey), key: sourceKey, ref })
       .then((response) => {
         if (!response?.ok || !response.detail) throw new Error(response?.message || 'شناسنامهٔ سند خوانده نشد.')
         go({ type: 'document', detail: response.detail })
@@ -464,7 +476,12 @@ export default function FinancialInspector({
                   <div className="flex items-center justify-between gap-3"><h4 className="font-bold text-slate-900">سایر، اعتباری و مقصد نامشخص</h4><b dir="ltr" className="text-lg text-slate-800">{money(splitSnapshot.other)} ریال</b></div>
                   <p className="text-xs leading-6 text-slate-600">این سبد، پول فیزیکی کشو یا پوز نیست. هر مسیر برای بررسی جدا نمایش داده می‌شود.</p>
                   {detailAmount('پرداخت با سایر روش‌ها', cash?.otherReceived ?? totalsSnapshot.otherTotal ?? 0, 'پرداخت‌های ثبت‌شده با روشی غیر از نقد، کارت‌خوان، اعتبار و حساب مدیر.', 'otherMethodReceived')}
-                  {detailAmount('تسویه‌های اعتباری', totalsSnapshot.creditTotal ?? 0, 'این مبلغ فقط بر پایهٔ فاکتورهای نمایش‌داده‌شده در صفحهٔ فعلی گزارش است؛ برای آن تیک هم‌خوانی کل‌بازه یا تاریخچهٔ کامل صادر نمی‌شود.')}
+                  {detailAmount(
+                    'پرداخت با روش «اعتباری»',
+                    totalsSnapshot.creditTotal ?? 0,
+                    'این مبلغ فقط بر پایهٔ فاکتورهای نمایش‌داده‌شده در صفحهٔ فعلی گزارش است؛ نه فروش نسیه و نه بارکد اعتبار خرید. روی ردیف برای دیدن سوابق همان صفحه کلیک کنید.',
+                    'creditMethodReceived'
+                  )}
                   {detailAmount('دریافتی با مقصد نامشخص', totalsSnapshot.destinationUnknownTotal ?? 0, 'مقصد واقعی هنوز نیازمند بررسی مدیر است.', 'destinationUnknownReceived', 'amber')}
                 </section>
               )}
