@@ -23,6 +23,7 @@ const { makeSeeder } = await import('../../test/harness/seed.mjs')
 const { salesService } = await import('../../src/main/services/SalesService.ts')
 const { storeCreditService } = await import('../../src/main/services/StoreCreditService.ts')
 const { financialInspectorService } = await import('../../src/main/services/financialInspectorService.ts')
+const { DEFAULT_CREDIT_SETTINGS } = await import('../../src/shared/credit.ts')
 const { RefundMethod } = await import('../../src/shared/enums.ts')
 const { DEFAULT_MANAGER_PASSWORD, SETTING_KEYS } = await import('../../src/shared/receipt.ts')
 const { PANEL_KEYS } = await import('../../src/shared/panels.ts')
@@ -33,6 +34,14 @@ const seed = makeSeeder(db)
 const sql = db.$harness.db
 /** فقط برای سنجش ریزبین read-only؛ هیچ نشست یا credential تولید نمی‌کنیم. */
 seed.setting(SETTING_KEYS.panelLocks, { [PANEL_KEYS.salesReports]: false })
+/**
+ * تنظیم مدیر: «ناشی از تعویض/برگشت = ۰ روز» باید در هر دو مسیر واقعاً
+ * به expiresAt=null برسد؛ نه این‌که fallback تاریخیِ returnCodeDays (۷ روز)
+ * بی‌صدا روی یکی از مسیرها اعمال شود.
+ */
+const noExpiryExchangeRules = structuredClone(DEFAULT_CREDIT_SETTINGS)
+noExpiryExchangeRules.types.EXCHANGE.days = 0
+seed.creditSettings(noExpiryExchangeRules)
 const userId = seed.user('مدیر تست چرخه اعتبار ۳۳۸')
 const categoryId = seed.category('دسته چرخه اعتبار')
 const productId = seed.product('کالای چرخه اعتبار', categoryId)
@@ -220,6 +229,8 @@ const returnCredit = latestCredit('returnId = ?', returnResult.id)
 assert.ok(returnCredit?.id, 'برگشت نقدیِ واقعی اعتبار جدید ساخت')
 assert.equal(Number(returnCredit.amount), 900)
 assert.equal(returnCredit.status, 'ACTIVE')
+assert.equal(returnCredit.expiresAt, null, 'تنظیم ۰ روزِ تعویض، اعتبار صادرشده از برگشت را بدون انقضا ساخت')
+assert.equal(returnCredit.issuedDays, null, 'اسنپ‌شات مدتِ اعتبار برگشت هم «بدون انقضا» ثبت شد')
 await saleWithCredit(900, returnCredit.code)
 assert.equal(credit(returnCredit.id).status, 'USED')
 console.log('  ✓ اعتبار صادرشده از برگشت فروش قابل مصرف و تسویه‌کننده است')
@@ -241,6 +252,8 @@ const exchangeCredit = latestCredit('exchangeInvoiceId = ?', exchange.exchangeIn
 assert.ok(exchangeCredit?.id, 'مابه‌التفاوت تعویض اعتبار ساخت')
 assert.equal(Number(exchangeCredit.amount), 400)
 assert.equal(exchangeCredit.status, 'ACTIVE')
+assert.equal(exchangeCredit.expiresAt, null, 'تنظیم ۰ روزِ تعویض، اعتبار مابه‌التفاوت تعویض را هم بدون انقضا ساخت')
+assert.equal(exchangeCredit.issuedDays, null, 'اسنپ‌شات مدتِ اعتبار تعویض هم «بدون انقضا» ثبت شد')
 await saleWithCredit(400, exchangeCredit.code)
 assert.equal(credit(exchangeCredit.id).status, 'USED')
 console.log('  ✓ اعتبار مابه‌التفاوت تعویض قابل مصرف و تسویه‌کننده است')
