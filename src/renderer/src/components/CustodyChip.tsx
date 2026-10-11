@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { call, CH } from '../lib/api'
 import { money } from '@shared/jalali'
 import { useTopmostModalKey } from './Modal'
+import { useManagerSession } from '../hooks/useManagerSession'
 
 type Staff = { id: number; name: string; role: string; isActive: boolean; hasCustodyPin: boolean; mustChangePin: boolean }
 type Status = {
@@ -12,6 +13,8 @@ type Status = {
   custodian: { id: number; name: string | null } | null
   shift: { id: number; name: string; openedAt: string } | null
   pendingHandover: { id: number; fromUserId: number; selectedRecipientUserId: number; startedAt: string } | null
+  schedule: { planId: number; title: string; scheduledEndAt: string } | null
+  reminder: { due: boolean; bucket: number | null; repeatMinutes: number; scheduledEndAt: string | null }
   unresolvedCount: number
   unresolved: Array<{ id: number; shiftId: number; openedAt: string; nightExpectedCash: number | null }>
 }
@@ -37,12 +40,14 @@ export function CustodyChip() {
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [dismissedReminderBucket, setDismissedReminderBucket] = useState<number | null>(null)
+  const { isManager } = useManagerSession()
 
   const reload = useCallback(async () => {
     try {
       const next = await call<Status>(CH.custodyStatus, {})
       setStatus(next)
-      if (next.enabled) setStaff(await call<Staff[]>(CH.custodyStaffList, {}))
+      setStaff(await call<Staff[]>(CH.custodyStaffList, {}))
     } catch {
       // The established shift chip remains usable if an old database has not
       // migrated yet. No renderer fallback may silently create a shift here.
@@ -61,7 +66,8 @@ export function CustodyChip() {
     if (!busy) setVisible(false)
   })
 
-  if (!status?.enabled) return null
+  if (!status) return null
+  if (!status.enabled) return isManager ? <CustodySetup staff={staff} onReady={reload} /> : null
   const eligible = staff.filter((row) => row.isActive && row.hasCustodyPin && !row.mustChangePin && (row.role === 'CASHIER' || row.role === 'MANAGER'))
   const managers = eligible.filter((row) => row.role === 'MANAGER')
   const nameOf = (id: number | null | undefined) => staff.find((row) => row.id === id)?.name ?? 'کارمند انتخاب‌شده'
@@ -92,6 +98,7 @@ export function CustodyChip() {
       setBusy(false)
     }
   }
+  const showReminder = !!status.reminder?.due && status.reminder.bucket !== dismissedReminderBucket
   const title =
     status.state === 'HANDOVER_PENDING'
       ? `تحویل در انتظار تأیید ${nameOf(status.pendingHandover?.selectedRecipientUserId)}`
@@ -115,6 +122,7 @@ export function CustodyChip() {
               <div className="flex-1"><h2 className="font-bold text-lg">حضانت صندوق</h2><p className="text-xs text-slate-500 mt-1">{title} · تغییر مسئول فقط با رمز شخصی و شمارش کور انجام می‌شود.</p></div>
               <button className="text-slate-500 hover:text-slate-900 px-2" onClick={() => !busy && setVisible(false)} aria-label="بستن">×</button>
             </div>
+            {showReminder ? <div className="mb-3 p-3 rounded border border-amber-300 bg-amber-50 text-sm"><b>یادآوری پایان برنامهٔ شیفت</b><br />برنامهٔ «{status.schedule?.title ?? 'شیفت'}» به پایان رسیده است. فروش متوقف نمی‌شود و همچنان به مسئول فعلی منتسب است؛ در زمان مناسب تحویل یا بستن نهایی را ثبت کنید.<button className="block mt-2 underline" onClick={() => setDismissedReminderBucket(status.reminder.bucket)}>فعلاً بستن این یادآوری</button></div> : null}
             {error ? <div className="mb-3 p-2 rounded bg-red-50 text-red-700 text-sm">{error}</div> : null}
             {view === 'main' ? <>
               {status.unresolvedCount ? <div className="mb-3 p-3 bg-amber-50 border border-amber-300 text-sm rounded">{status.unresolvedCount} بستنِ شبِ بی‌پاسخ دارید. تا زمانی که مدیر آن را تعیین تکلیف کند، اختلافِ شب به مسئول صبح نسبت داده نمی‌شود. <button className="underline font-bold" onClick={() => reset('resolve')}>تعیین تکلیف مدیر</button></div> : null}
@@ -131,6 +139,34 @@ export function CustodyChip() {
         </div>, document.body) : null}
     </>
   )
+}
+
+/** Initial activation is visible only inside the established manager session.
+ * The main process still verifies the existing manager secret before it creates
+ * the first personal manager credential, so this convenience UI is never the
+ * security boundary. */
+function CustodySetup({ staff, onReady }: { staff: Staff[]; onReady: () => Promise<void> }) {
+  const [open, setOpen] = useState(false)
+  const [managerId, setManagerId] = useState<number | ''>('')
+  const [managerPassword, setManagerPassword] = useState('')
+  const [personalPin, setPersonalPin] = useState('')
+  const [repeatPin, setRepeatPin] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const managers = staff.filter((row) => row.isActive && row.role === 'MANAGER')
+  const activate = async () => {
+    if (!managerId) return setError('مدیر راه‌انداز را انتخاب کنید.')
+    if (personalPin.length < 6) return setError('رمز شخصی مدیر باید دست‌کم ۶ کاراکتر باشد.')
+    if (personalPin !== repeatPin) return setError('تکرار رمز شخصی با آن یکسان نیست.')
+    setBusy(true); setError(null)
+    try {
+      await call(CH.custodyPinSet, { userId: managerId, currentPassword: managerPassword, newPassword: personalPin })
+      await call(CH.custodyConfigSet, { config: { enabled: true, mode: 'SINGLE_SHIFT' }, managerUserId: managerId, managerPassword: personalPin })
+      await onReady()
+      setOpen(false)
+    } catch (e: any) { setError(e?.message ?? 'راه‌اندازی انجام نشد.') } finally { setBusy(false) }
+  }
+  return <><button className="text-xs px-2 py-1 rounded whitespace-nowrap font-bold bg-amber-500 hover:bg-amber-600" onClick={() => setOpen(true)}>راه‌اندازی حضانت صندوق</button>{open ? createPortal(<div className="fixed inset-0 z-[80] bg-black/55 flex justify-center items-start overflow-auto p-4"><section className="w-full max-w-lg bg-white rounded-lg shadow-xl p-5 mt-8 text-slate-800" dir="rtl"><h2 className="font-bold text-lg border-b pb-3">راه‌اندازی حضانت صندوق</h2><p className="text-sm leading-6 mt-3">این مرحله اختیاری است. فروشگاه بدون تعریف برنامه هم در حالت تک‌شیفت کار می‌کند؛ پس از فعال‌سازی، هر فروش به مسئول احرازشدهٔ صندوق منتسب می‌ماند.</p>{error ? <div className="my-3 p-2 rounded bg-red-50 text-red-700 text-sm">{error}</div> : null}<div className="space-y-3 mt-4"><label className="block text-sm">مدیر راه‌انداز<select className="input mt-1 w-full" value={managerId} onChange={(e) => setManagerId(e.target.value ? Number(e.target.value) : '')}><option value="">انتخاب کنید…</option>{managers.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="block text-sm">رمز فعلی مدیر<input className="input mt-1 w-full" type="password" value={managerPassword} onChange={(e) => setManagerPassword(e.target.value)} autoComplete="current-password" /></label><label className="block text-sm">رمز شخصی جدید مدیر (حداقل ۶ کاراکتر)<input className="input mt-1 w-full" type="password" value={personalPin} onChange={(e) => setPersonalPin(e.target.value)} autoComplete="new-password" /></label><label className="block text-sm">تکرار رمز شخصی<input className="input mt-1 w-full" type="password" value={repeatPin} onChange={(e) => setRepeatPin(e.target.value)} autoComplete="new-password" /></label><div className="flex gap-2"><button className="btn-secondary flex-1" disabled={busy} onClick={() => setOpen(false)}>انصراف</button><button className="btn-primary flex-1" disabled={busy} onClick={() => void activate()}>{busy ? 'در حال راه‌اندازی…' : 'فعال‌سازی و ادامه'}</button></div></div></section></div>, document.body) : null}</>
 }
 
 function CredentialForm({ staff, selected, setSelected, password, setPassword, amount, setAmount, label, submit, busy, onBack, onSubmit, selectLabel = 'مسئول صندوق' }: any) {

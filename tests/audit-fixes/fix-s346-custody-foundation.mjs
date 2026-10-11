@@ -18,6 +18,7 @@ process.env.HARNESS_DB = join(DIR, 'shop.db')
 const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
 const { custodyService } = await import('../../src/main/services/CustodyService.ts')
+const { custodyPlanService } = await import('../../src/main/services/CustodyPlanService.ts')
 
 const db = harnessClient()
 const seed = makeSeeder(db)
@@ -39,7 +40,13 @@ const a = seed.user('صندوقدار الف', { role: 'CASHIER' })
 const b = seed.user('صندوقدار ب', { role: 'CASHIER' })
 
 eq('feature flag پیش‌فرض خاموش است', (await custodyService.status()).enabled, false)
-await custodyService.setPin({ userId: manager, newPassword: 'مدیر123!', currentPassword: '' })
+try {
+  await custodyService.setPin({ userId: manager, newPassword: 'مدیر123!', currentPassword: 'رمز-نادرست' })
+  eq('تعریف نخستین رمز مدیر بدون رمز موجود رد می‌شود', true, false)
+} catch {
+  eq('تعریف نخستین رمز مدیر بدون رمز موجود رد می‌شود', true, true)
+}
+await custodyService.setPin({ userId: manager, newPassword: 'مدیر123!', currentPassword: '1111' })
 await custodyService.setConfig({ config: { enabled: true }, managerUserId: manager, managerPassword: 'مدیر123!' })
 
 await custodyService.setPin({ userId: a, newPassword: 'A123456', managerUserId: manager, managerPassword: 'مدیر123!', reason: 'تعریف اولیه' })
@@ -52,10 +59,14 @@ try {
 await custodyService.setPin({ userId: a, currentPassword: 'A123456', newPassword: 'A123457!' })
 await custodyService.setPin({ userId: b, newPassword: 'B123456', managerUserId: manager, managerPassword: 'مدیر123!', reason: 'تعریف اولیه' })
 await custodyService.setPin({ userId: b, currentPassword: 'B123456', newPassword: 'B123457!' })
+const now = new Date()
+await custodyService.setConfig({ config: { enabled: true, mode: 'MULTI_SHIFT', overrunGraceMinutes: 0 }, managerUserId: manager, managerPassword: 'مدیر123!' })
+await custodyPlanService.save({ title: 'برنامه آزمایشی', startMinute: now.getHours() * 60, durationMinutes: 120, daysMask: 1 << now.getDay(), staffIds: [a], managerUserId: manager, managerPassword: 'مدیر123!' })
 
 const opened = await custodyService.open({ userId: a, password: 'A123457!', countedCash: 1000 })
 eq('افتتاح حضانت نشست مشخص می‌سازد', opened.countStatus, 'COUNTED')
 eq('یک Shift باز وجود دارد', db.$harness.db.prepare('SELECT COUNT(*) AS n FROM "Shift" WHERE closedAt IS NULL').get().n, 1)
+eq('برنامهٔ اختیاری فقط به نشست واقعی الصاق می‌شود', (await custodyService.status()).schedule?.title, 'برنامه آزمایشی')
 
 const handover = await custodyService.handoverStart({ password: 'A123457!', countedCash: 1000, toUserId: b, idempotencyKey: 's346-a-b' })
 eq('شروع تحویل تنها قفل جدید فروش است', handover.state, 'HANDOVER_PENDING')
