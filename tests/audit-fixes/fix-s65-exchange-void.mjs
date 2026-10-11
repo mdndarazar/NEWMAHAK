@@ -25,8 +25,10 @@ process.env.HARNESS_DB = join(DIR, 'shop.db')
 const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
 const { salesService, saleWhere } = await import('../../src/main/services/SalesService.ts')
+const { cardTransferService } = await import('../../src/main/services/CardTransferService.ts')
 const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
 const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
+const { DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/receipt')
 
 const db = harnessClient()
 const seed = makeSeeder(db)
@@ -318,7 +320,47 @@ truthy('دفتر، لغو تعهد کارت‌به‌کارت را اثر مست
 eq('کالای جایگزینِ تعویض معلق به موجودی برگشت', stockOf(repL), 100)
 
 // ===========================================================================
-console.log('\n۱۳) ساختاری')
+console.log('\n۱۳) کارت‌به‌کارتِ ناقص: سقف بازیافت فقط پرداخت واقعی است')
+const M = await safe('فاکتور پرداخت‌شده‌ی ۱٬۰۰۰ برای کارت‌به‌کارت ناقص', () => twoItems(1000))
+const repM = variant(200)
+const exM = await safe('تعویض ۶۰۰ با ۲۰۰ کارت‌به‌کارت', () => exchange(M.inv.id, M.items[0].id, repM, 'CARD_TO_CARD'))
+const reqM = seed.one('SELECT id FROM "CardTransferRequest" WHERE returnId = ?', exM?.returnId ?? -1)
+await safe('ثبت پرداخت واقعیِ ناقص ۲۰۰', () => cardTransferService.pay({ id: reqM?.id, paidAmount: 200, userId, managerPassword: PW }))
+await safe('ثبت اصلاح منفی ۵۰ برای پرداخت کارت‌به‌کارت', () => cardTransferService.adjust({ id: reqM?.id, amount: -50, reason: 'بخشی از پرداخت برگشت خورد', userId, managerPassword: PW }))
+await throwsWith('بازیافت بیشتر از خالص پرداخت واقعیِ کارت‌به‌کارت رد می‌شود', () =>
+  salesService.returnReconcileVoid({
+    id: exM?.returnId, userId, reason: 'تلاش بازیافت بیشتر از پرداخت واقعی',
+    cashRecovered: 200, cardRecovered: 0, cashPaidOut: 0, cardPaidOut: 0, creditOutcome: 'NONE'
+  }),
+  'بیشتر است'
+)
+const corrM = await safe('اصلاح با بازیافت برابر خالص پرداخت واقعی', () =>
+  salesService.returnReconcileVoid({
+    id: exM?.returnId, userId, reason: 'اصلاح کارت به کارت پرداخت ناقص',
+    cashRecovered: 150, cardRecovered: 0, cashPaidOut: 0, cardPaidOut: 0, creditOutcome: 'NONE'
+  })
+)
+eq('بازیافت ناقصِ واقعی، مغایرت باز ندارد', corrM?.unrecoveredAmount, 0)
+eq('کالای برگشتیِ آزادشده با اصلاح دوباره از موجودی خارج شد', stockOf(M.a), 99)
+eq('کالای جایگزینِ تعویض ناقص به موجودی برگشت', stockOf(repM), 100)
+
+// ===========================================================================
+console.log('\n۱۴) پیوند کارت‌به‌کارت خراب: چند درخواست مرجع ⇒ رد fail-closed')
+const N = await safe('فاکتور پرداخت‌شده‌ی ۱٬۰۰۰ برای پیوند کارت‌به‌کارت خراب', () => twoItems(1000))
+const repN = variant(200)
+const exN = await safe('تعویض کارت‌به‌کارت برای آزمون پیوند خراب', () => exchange(N.inv.id, N.items[0].id, repN, 'CARD_TO_CARD'))
+seed.insert('CardTransferRequest', { returnId: exN?.returnId, kind: 'REQUEST', status: 'CANCELED', amount: 400 })
+await throwsWith('چند درخواست کارت‌به‌کارت برای یک تعویض، اصلاح را متوقف می‌کند', () =>
+  salesService.returnReconcileVoid({
+    id: exN?.returnId, userId, reason: 'اصلاح با پیوند کارت خراب',
+    cashRecovered: 0, cardRecovered: 0, cashPaidOut: 0, cardPaidOut: 0, creditOutcome: 'NONE'
+  }),
+  'بیش از یک درخواست'
+)
+eq('رد fail-closed، موجودی کالای جایگزین را دوباره تغییر نمی‌دهد', stockOf(repN), 99)
+
+// ===========================================================================
+console.log('\n۱۵) ساختاری')
 truthy('migration ستون‌های ابطال فاکتور', existsSync(join(ROOT, 'prisma/migrations/20270928100000_sale_invoice_void/migration.sql')))
 const invModel = (src('prisma/schema.prisma').match(/model SaleInvoice \{[\s\S]*?\n\}/) ?? [''])[0]
 truthy('schema: SaleInvoice.voidedAt/voidedByUserId/voidReason', /voidedAt\s+DateTime\?/.test(invModel) && /voidedByUserId\s+Int\?/.test(invModel) && /voidReason\s+String\?/.test(invModel))

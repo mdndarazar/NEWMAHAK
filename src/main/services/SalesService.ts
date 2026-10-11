@@ -8673,6 +8673,45 @@ export const salesService = {
       /** درخواست معلق پول هنوز جابه‌جا نشده است؛ با اصلاح گراف باید صریحاً لغو شود. */
       let pendingCardTransfer: { id: number; amount: number | bigint } | null = null
       const refundMethod = String(ret.refundMethod ?? '')
+      /**
+       * درخواست کارت‌به‌کارت یک تعهد/جریان جداست: PENDING هنوز پرداخت نشده و
+       * PAID/ADJUSTED فقط به اندازه‌ی پرداخت خالصِ واقعی قابل بازیافت است.
+       */
+      const actualCardToCardPaid = async (): Promise<number> => {
+        const requests = await tx.cardTransferRequest.findMany({
+          where: { returnId: ret.id, kind: CardTransferKind.REQUEST },
+          orderBy: { id: 'asc' },
+          take: 2,
+          select: { id: true, status: true, amount: true, paidAmount: true, paidAt: true }
+        })
+        if (!requests.length)
+          throw new BusinessError('برای کارت‌به‌کارتِ این سند، درخواست مرجع پیدا نشد؛ مبلغ را صفر فرض نمی‌کنیم و رسیدگی دستی مدیر لازم است.')
+        if (requests.length > 1)
+          throw new BusinessError('برای کارت‌به‌کارت این سند بیش از یک درخواست مرجع پیدا شد؛ مبلغ بازیافتی حدس زده نمی‌شود و رسیدگی دستی مدیر لازم است.')
+        const request = requests[0]
+        if (request.status === CardTransferStatus.PENDING) {
+          pendingCardTransfer = { id: request.id, amount: request.amount }
+          return 0
+        }
+        if (request.status === CardTransferStatus.CANCELED) return 0
+        if (
+          (request.status !== CardTransferStatus.PAID && request.status !== CardTransferStatus.ADJUSTED) ||
+          request.paidAt == null
+        )
+          throw new BusinessError('وضعیت پرداخت کارت‌به‌کارت این سند قابل‌تطبیق نیست؛ مبلغ بازیافتی حدس زده نمی‌شود و رسیدگی دستی مدیر لازم است.')
+        const adjustments = await tx.cardTransferRequest.findMany({
+          where: { adjustsRequestId: request.id, kind: CardTransferKind.ADJUSTMENT },
+          select: { amount: true, paidAmount: true, status: true, paidAt: true }
+        })
+        if (adjustments.some((row) => row.status !== CardTransferStatus.PAID || row.paidAt == null))
+          throw new BusinessError('یکی از اصلاح‌های کارت‌به‌کارت این سند وضعیت پرداخت معتبر ندارد؛ مبلغ بازیافتی حدس زده نمی‌شود و رسیدگی دستی مدیر لازم است.')
+        const paidNet =
+          toNumberRial(request.paidAmount ?? request.amount) +
+          adjustments.reduce((sum, row) => sum + toNumberRial(row.paidAmount ?? row.amount), 0)
+        if (!Number.isSafeInteger(paidNet) || paidNet < 0)
+          throw new BusinessError('جمع پرداخت کارت‌به‌کارت این سند معتبر نیست؛ مبلغ بازیافتی حدس زده نمی‌شود و رسیدگی دستی مدیر لازم است.')
+        return paidNet
+      }
       if (isExchange) {
         const exchangeDiff = toNumberRial(ret.exchangeDiff ?? 0)
         const exchangeSettlement = String(ret.exchangeSettlement ?? '')
@@ -8697,15 +8736,7 @@ export const salesService = {
           if (exchangeSettlement === ExchangeSettlement.CASH_REFUND || exchangeSettlement === ExchangeSettlement.CARD_REFUND) {
             originalCashOrCardOut = exchangeRefund
           } else if (exchangeSettlement === ExchangeSettlement.CARD_TO_CARD) {
-            const request = await tx.cardTransferRequest.findFirst({
-              where: { returnId: ret.id },
-              select: { id: true, status: true, amount: true }
-            })
-            if (!request)
-              throw new BusinessError('برای کارت‌به‌کارتِ این تعویض، درخواست مرجع پیدا نشد؛ مبلغ را صفر فرض نمی‌کنیم و رسیدگی دستی مدیر لازم است.')
-            if (request.status === CardTransferStatus.PENDING) pendingCardTransfer = { id: request.id, amount: request.amount }
-            else if (request.status !== CardTransferStatus.CANCELED)
-              originalCashOrCardOut = Math.max(0, toNumberRial(request.amount))
+            originalCashOrCardOut = await actualCardToCardPaid()
           } else if (exchangeSettlement !== ExchangeSettlement.CREDIT)
             throw new BusinessError('مابه‌التفاوت منفی این تعویض با روش تسویه‌ی ناسازگار ثبت شده است؛ اصلاح جبرانی انجام نشد.')
         }
@@ -8718,16 +8749,7 @@ export const salesService = {
               : 'روش بازپرداخت این برگشت قدیمی ثبت نشده است؛ مبلغ آن را صفر فرض نمی‌کنیم. ابتدا رسیدگی دستی و تکمیل تسویه لازم است.'
           )
         if (refundMethod === RefundMethod.CASH || refundMethod === RefundMethod.CARD) originalCashOrCardOut = refundAmount
-        if (refundMethod === RefundMethod.CARD_TO_CARD) {
-          const request = await tx.cardTransferRequest.findFirst({
-            where: { returnId: ret.id },
-            select: { id: true, status: true, amount: true }
-          })
-          if (!request)
-            throw new BusinessError('برای بازپرداخت کارت‌به‌کارتِ این برگشت، درخواست مرجع پیدا نشد؛ مبلغ را صفر فرض نمی‌کنیم و رسیدگی دستی مدیر لازم است.')
-          if (request.status !== CardTransferStatus.PENDING && request.status !== CardTransferStatus.CANCELED)
-            originalCashOrCardOut = Math.max(0, toNumberRial(request.amount))
-        }
+        if (refundMethod === RefundMethod.CARD_TO_CARD) originalCashOrCardOut = await actualCardToCardPaid()
       }
       if (cashRecovered + cardRecovered > originalCashOrCardOut)
         throw new BusinessError(
@@ -8828,7 +8850,7 @@ export const salesService = {
       const effectRows: any[] = []
       /**
        * درخواست کارت‌به‌کارتِ معلق «پول پرداخت‌شده» نیست، اما تعهد باز است.
-       * اگر با اصلاح تعویض زنده بماند، مدیر بعداً برای معامله‌ای که برگردانده
+       * اگر با اصلاح سند زنده بماند، مدیر بعداً برای معامله‌ای که برگردانده
        * شده پول می‌پردازد؛ پس آن را با دلیلِ خودِ اثر جبرانی لغو و ثبت می‌کنیم.
        */
       if (pendingCardTransfer) {
@@ -8837,7 +8859,7 @@ export const salesService = {
           data: {
             status: CardTransferStatus.CANCELED,
             canceledAt: now,
-            cancelReason: `اصلاح جبرانی تعویض ${faDigits(ret.id)} · اصلاح ${faDigits(correction.id)} · ${reason}`
+            cancelReason: `اصلاح جبرانی ${isExchange ? 'تعویض' : 'برگشت'} ${faDigits(ret.id)} · اصلاح ${faDigits(correction.id)} · ${reason}`
           }
         })
         const pendingAmount = Math.max(0, toNumberRial(pendingCardTransfer.amount))
@@ -8860,7 +8882,7 @@ export const salesService = {
           entityId: pendingCardTransfer.id,
           userId: correctingUserId,
           after: JSON.stringify({ returnId: ret.id, correctionId: correction.id, amount: pendingAmount, status: CardTransferStatus.CANCELED }),
-          note: `درخواست کارت‌به‌کارت ${faDigits(pendingCardTransfer.id)} با اصلاح جبرانی تعویض ${faDigits(ret.id)} لغو شد · دلیل: ${reason}`
+          note: `درخواست کارت‌به‌کارت ${faDigits(pendingCardTransfer.id)} با اصلاح جبرانی ${isExchange ? 'تعویض' : 'برگشت'} ${faDigits(ret.id)} لغو شد · دلیل: ${reason}`
         })
       }
       const stockLines = ret.items
