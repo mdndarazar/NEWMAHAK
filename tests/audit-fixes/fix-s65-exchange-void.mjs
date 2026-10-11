@@ -194,6 +194,13 @@ const exItems = itemsOf(exF?.exchangeInvoiceId ?? -1)
 await safe('برگشت کالای جایگزین از سند تعویض', () => salesService.createReturn({ invoiceId: exF.exchangeInvoiceId, full: false, lines: [{ saleItemId: exItems[0].id, qty: 1 }], refundMethod: 'STORE_CREDIT', refundAmount: 200, userId }))
 await throwsWith('ابطال رد می‌شود (برگشت روی سند تعویض)', () => voidIt(exF?.returnId), 'سند تعویض')
 truthy('سند تعویض فعال ماند', invRow(exF?.exchangeInvoiceId ?? -1)?.voidedAt == null)
+await throwsWith('اصلاح جبرانی هم روی گراف دارای برگشت بعدی رد می‌شود', () =>
+  salesService.returnReconcileVoid({
+    id: exF?.returnId, userId, reason: 'تلاش اصلاح با برگشت جایگزین',
+    cashRecovered: 0, cardRecovered: 0, cashPaidOut: 0, cardPaidOut: 0, creditOutcome: 'NONE'
+  }),
+  'برگشت فعال'
+)
 
 // ===========================================================================
 console.log('\n۷) کارت‌به‌کارت در انتظار ⇒ ابطال + لغو درخواست، کالای معلق وارد موجودی نمی‌شود')

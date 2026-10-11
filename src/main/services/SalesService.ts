@@ -8627,6 +8627,28 @@ export const salesService = {
         : null
       if (isExchange && !exchangeInvoice)
         throw new BusinessError('سند تعویض جایگزین پیدا نشد؛ موجودی یا پرداخت را حدس نمی‌زنیم و اصلاح جبرانی انجام نشد.')
+      /**
+       * فقط گرافِ دقیقِ همین تعویض قابل جبران است. شناسه‌ی تنها کافی نیست؛
+       * رکورد نیمه‌باطل/پیوندِ دست‌خورده/فاکتور جایگزین دیگری می‌تواند دوباره
+       * موجودی را تغییر دهد، پس اینجا عمداً fail-closed است.
+       */
+      if (
+        isExchange &&
+        (exchangeInvoice!.voidedAt != null ||
+          exchangeInvoice!.orderType !== OrderType.EXCHANGE ||
+          Number(exchangeInvoice!.exchangeReturnId ?? 0) !== ret.id ||
+          Number(exchangeInvoice!.sourceInvoiceId ?? 0) !== ret.invoiceId ||
+          (ret.exchangeReceiptNo != null && Number(ret.exchangeReceiptNo) !== Number(exchangeInvoice!.receiptNo)))
+      )
+        throw new BusinessError('پیوند سند جایگزین این تعویض کامل و فعال نیست؛ برای جلوگیری از دوباره‌کاری انبار یا پول، اصلاح جبرانی انجام نشد و رسیدگی دستی مدیر لازم است.')
+      if (isExchange) {
+        const activeReturnsOnReplacement = await tx.saleReturn.count({ where: { invoiceId: exchangeInvoice!.id, voidedAt: null } })
+        if (activeReturnsOnReplacement > 0)
+          throw new BusinessError(
+            `روی سند جایگزین تعویض ${faDigits(exchangeInvoice!.receiptNo)}، ${faDigits(activeReturnsOnReplacement)} برگشت فعال ثبت شده است؛ ` +
+              'ابتدا سرنوشت آن برگشت‌ها را روشن کنید. اصلاح جبرانی این گراف اکنون موجودی را حدس نمی‌زند.'
+          )
+      }
       const existing = await (tx as any).returnCorrection.findUnique({ where: { returnId: ret.id }, select: { id: true } })
       if (existing)
         throw new BusinessError(`برای برگشت ${faDigits(ret.id)} قبلاً اصلاح جبرانی شماره ${faDigits(existing.id)} ثبت شده است؛ ثبت دوباره ممنوع است.`)
