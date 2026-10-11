@@ -13,7 +13,10 @@ const REASON_FA: Record<string, string> = {
   STOCKTAKE: 'انبارگردانی',
   SALE_EDIT: 'اصلاح فاکتور فروش',
   PURCHASE_EDIT: 'اصلاح فاکتور خرید',
-  CENTRAL_WITHDRAW: 'انتقال از انبار مرکزی'
+  CENTRAL_WITHDRAW: 'انتقال از انبار مرکزی',
+  WOO_SYNC_OUT: 'همگام‌سازی سایت: خروج موجودی',
+  WOO_SYNC_IN: 'همگام‌سازی سایت: ورود موجودی',
+  WOO_SYNC_ADJUST: 'همگام‌سازی سایت: هم‌ترازی موجودی'
 }
 
 const REF_FA: Record<string, string> = {

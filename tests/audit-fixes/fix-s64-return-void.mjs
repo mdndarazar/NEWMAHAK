@@ -26,9 +26,12 @@ process.env.HARNESS_DB = join(DIR, 'shop.db')
 const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
 const { salesService, saleWhere } = await import('../../src/main/services/SalesService.ts')
+const { setManagerCorrectionApprovalPassword } = await import('../../src/main/services/AuthService.ts')
 const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
 const { RefundMethod } = await import('@shared/enums')
 const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
+const { SETTING_KEYS, DEFAULT_MANAGER_PASSWORD } = await import('@shared/receipt')
+const { PANEL_KEYS } = await import('@shared/panels')
 
 const db = harnessClient()
 const seed = makeSeeder(db)
@@ -175,14 +178,126 @@ truthy('سند برگشت باطل شد', retRow(retId(rE))?.voidedAt != null)
 closed(await report())
 
 // ===========================================================================
-console.log('\n۶) ساختاری')
+console.log('\n۶) قفل اختیاریِ خودِ عملیات ابطال (پیش‌فرض خاموش)')
+const F = await safe('فاکتور نسیه برای قفل ابطال', () => twoItems(0))
+const rF = await safe('برگشت برای قفل ابطال', () => ret(F.inv.id, F.items[0].id))
+await safe('قفل پیش‌فرض خاموش: ابطال روز جاری بی‌رمز انجام می‌شود', () => voidIt(retId(rF), 'ابطال پیش‌فرض باز'))
+const auditF = seed.one(`SELECT after FROM "AuditLog" WHERE entity = 'SaleReturn' AND entityId = ? AND action = 'VOID' ORDER BY id DESC`, retId(rF))
+truthy('Audit سطح OPEN قفل عملیات را نگه می‌دارد', String(auditF?.after ?? '').includes('"correctionAuthScope":"OPEN"'))
+
+seed.setting(SETTING_KEYS.panelLocks, { [PANEL_KEYS.salesReturnCorrection]: true })
+const G = await safe('فاکتور نسیه با قفل ابطال روشن', () => twoItems(0))
+const rG = await safe('برگشت با قفل ابطال روشن', () => ret(G.inv.id, G.items[0].id))
+await throwsWith('قفل روشن: IPC مستقیم بی‌رمز رد می‌شود', () => voidIt(retId(rG), 'قفل روشن ابطال'), 'تأیید مدیر')
+truthy('رد گیت، سند را باطل نمی‌کند', retRow(retId(rG))?.voidedAt == null)
+const voidG = await safe('قفل روشن: رمز مدیر عملیات را مجاز می‌کند', () =>
+  salesService.returnDelete({ id: retId(rG), userId, reason: 'قفل روشن ابطال', panelPassword: DEFAULT_MANAGER_PASSWORD })
+)
+truthy('رمز مدیر، ابطال قفل‌شده را واقعاً ثبت کرد', voidG?.voided === true && retRow(retId(rG))?.voidedAt != null)
+seed.setting(SETTING_KEYS.panelLocks, {})
+
+// ===========================================================================
+console.log('\n۷) روز عملیاتی و تأیید هویت شخصی مدیر')
+const H = await safe('فاکتور برای ابطال دیرهنگام', () => twoItems(0))
+const rH = await safe('برگشت برای ابطال دیرهنگام', () => ret(H.inv.id, H.items[0].id))
+const yesterdayAt = new Date(Date.now() - 24 * 60 * 60 * 1000)
+const yesterday = toJalaliDate(yesterdayAt)
+sql.prepare('UPDATE "SaleReturn" SET returnedAt = ?, returnedAtJalali = ? WHERE id = ?').run(yesterdayAt.getTime(), yesterday, retId(rH))
+await throwsWith('فروشنده روز بعد، حتی با رمز سراسری، مدیر شخصی ندارد ⇒ رد', () =>
+  salesService.returnDelete({
+    id: retId(rH),
+    userId,
+    reason: 'اصلاح دیرهنگام تستی',
+    managerPassword: DEFAULT_MANAGER_PASSWORD
+  }), 'مدیر تأییدکننده')
+truthy('رد هویت دیرهنگام، سند را دست‌نخورده نگه می‌دارد', retRow(retId(rH))?.voidedAt == null)
+await safe('تعریف رمز شخصی مدیر تست', () =>
+  setManagerCorrectionApprovalPassword({ userId, password: '2468', actorUserId: userId })
+)
+await throwsWith('رمز شخصی غلط مدیر رد می‌شود', () =>
+  salesService.returnDelete({
+    id: retId(rH),
+    userId,
+    reason: 'اصلاح دیرهنگام تستی',
+    approverUserId: userId,
+    approverPassword: '0000'
+  }), 'رمز شخصی')
+const voidH = await safe('مدیر شخصی، ابطال دیرهنگام را تأیید می‌کند', () =>
+  salesService.returnDelete({
+    id: retId(rH),
+    userId,
+    reason: 'اصلاح دیرهنگام تستی',
+    approverUserId: userId,
+    approverPassword: '2468'
+  })
+)
+truthy('ابطال دیرهنگام با هویت مدیر ثبت شد', voidH?.voided === true && voidH?.approvingManager?.userId === userId)
+const auditH = seed.one(`SELECT after FROM "AuditLog" WHERE entity = 'SaleReturn' AND entityId = ? AND action = 'VOID' ORDER BY id DESC`, retId(rH))
+truthy('Audit ابطال دیرهنگام، مدیر تأییدکننده و روز عملیاتی را نگه می‌دارد',
+  String(auditH?.after ?? '').includes('"approvingManager":{"userId":' + userId) && String(auditH?.after ?? '').includes('"sameOperationalDay":false'))
+
+// ===========================================================================
+console.log('\n۸) اصلاح جبرانی: سند مبدأ می‌ماند، اثرها در شیفت فعلی ثبت می‌شوند')
+const I = await safe('فاکتور پرداخت‌شده برای دفتر جبرانی', () => twoItems(1000))
+const rI = await safe('برگشت نقدی برای دفتر جبرانی', () => ret(I.inv.id, I.items[0].id, RefundMethod.CASH, 600))
+eq('موجودی بعد از برگشت نقدی +۱', stockOf(I.a), 100)
+const correctionI = await safe('ثبت بازیافت ناقص نقد و خروج جبرانی موجودی', () =>
+  salesService.returnReconcileVoid({
+    id: retId(rI),
+    userId,
+    reason: 'ثبت اشتباه بازپرداخت نقدی',
+    cashRecovered: 400,
+    cardRecovered: 0,
+    creditOutcome: 'NONE'
+  })
+)
+truthy('سند برگشت اصلی باطل/حذف نشد', retRow(retId(rI))?.voidedAt == null)
+eq('موجودی با اثر جبرانی به قبل از برگشت برگشت', stockOf(I.a), 99)
+eq('اصلاح جبرانی، کسری بازیافت‌نشده را پنهان نمی‌کند', correctionI?.unrecoveredAmount, 200)
+eq('یک دفتر جبرانی مستقل ساخته شد', seed.rows('SELECT id FROM "ReturnCorrection" WHERE returnId = ?', retId(rI)).length, 1)
+const correctionEffects = seed.rows('SELECT type FROM "ReturnCorrectionEffect" WHERE correctionId = ? ORDER BY id', correctionI?.id)
+truthy('سه اثر مستقل انبار/نقد/مغایرت ثبت شد', correctionEffects.map((r) => r.type).join(',') === 'INVENTORY_OUT,CASH_RECOVERED,UNRECOVERED_REFUND')
+truthy('اثر نقد بازیافتی در کشوی شیفت فعلی است', !!seed.one(`SELECT id FROM "CashMovement" WHERE refType = 'ReturnCorrection' AND refId = ? AND type = 'CASH_IN'`, correctionI?.id))
+eq('وضعیت فاکتور پس از اثر جبرانی دوباره تسویه است', seed.one('SELECT status FROM "SaleInvoice" WHERE id = ?', I.inv.id)?.status, 'SETTLED')
+await throwsWith('اصلاح جبرانی تکراری برای همان برگشت رد می‌شود', () =>
+  salesService.returnReconcileVoid({
+    id: retId(rI), userId, reason: 'تلاش تکراری اصلاح', cashRecovered: 0, cardRecovered: 0, creditOutcome: 'NONE'
+  }), 'قبلاً اصلاح جبرانی')
+
+// ===========================================================================
+console.log('\n۹) اصلاح جبرانی دیرهنگام با مدیرِ مشخص')
+const J = await safe('فاکتور نسیه برای اصلاح دیرهنگام', () => twoItems(0))
+const rJ = await safe('برگشت نسیه برای اصلاح دیرهنگام', () => ret(J.inv.id, J.items[0].id))
+sql.prepare('UPDATE "SaleReturn" SET returnedAt = ?, returnedAtJalali = ? WHERE id = ?').run(yesterdayAt.getTime(), yesterday, retId(rJ))
+await throwsWith('اصلاح دیرهنگام بدون مدیر شخصی رد می‌شود', () =>
+  salesService.returnReconcileVoid({ id: retId(rJ), userId, reason: 'اصلاح دیرهنگام جبرانی', cashRecovered: 0, cardRecovered: 0, creditOutcome: 'NONE' }),
+  'مدیر تأییدکننده'
+)
+const correctionJ = await safe('اصلاح دیرهنگام با مدیر شخصی ثبت می‌شود', () =>
+  salesService.returnReconcileVoid({
+    id: retId(rJ), userId, reason: 'اصلاح دیرهنگام جبرانی', cashRecovered: 0, cardRecovered: 0, creditOutcome: 'NONE',
+    approverUserId: userId, approverPassword: '2468'
+  })
+)
+eq('هویت مدیر روی خود دفتر جبرانی ذخیره شد', seed.one('SELECT approvingManagerId FROM "ReturnCorrection" WHERE id = ?', correctionJ?.id)?.approvingManagerId, userId)
+
+// ===========================================================================
+console.log('\n۱۰) ساختاری')
 const svc = src('src/main/services/SalesService.ts')
 const delBody = (svc.match(/async returnDelete\([\s\S]*?\n  },\n/) ?? [''])[0]
+const correctionBody = (svc.match(/async returnReconcileVoid\([\s\S]*?\n  },\n\n  \/\*\* خواندنی: دفتر اصلاح/) ?? [''])[0]
 truthy('returnDelete دیگر saleReturn.delete ندارد', delBody.length > 0 && !delBody.includes('saleReturn.delete('))
 truthy('returnDelete اقلام را پاک نمی‌کند', delBody.length > 0 && !delBody.includes('saleReturnItem.deleteMany'))
 truthy('migration ستون‌های ابطال', existsSync(join(ROOT, 'prisma/migrations/20270927100000_sale_return_void/migration.sql')))
 const ui = src('src/renderer/src/pages/SalesReturn.tsx')
 truthy('صفحه‌ی برگشت دلیل ابطال را می‌فرستد', /saleReturnDelete,\s*\{[^}]*reason/.test(ui))
+truthy('ابطال سمت سرور قفل اختصاصی خودش را پیش از تراکنش می‌سنجد', /assertPanelPassword\(\s*PANEL_KEYS\.salesReturnCorrection/.test(delBody))
+truthy('قفل اختصاصی ابطال در نصب تازه خاموش است', /DEFAULT_OPEN_PANEL_KEYS[\s\S]{0,160}salesReturnCorrection/.test(src('src/shared/panels.ts')))
+truthy('ابطال دیرهنگام هویت شخصی مدیر را سمت سرور می‌سنجد', /verifyManagerCorrectionApproval\([\s\S]{0,500}approverUserId/.test(delBody))
+truthy('رمز شخصی مدیر فقط هش‌شده در AuthService است', /purpose: 'MANAGER_RETURN_CORRECTION'/.test(src('src/main/services/AuthService.ts')))
+truthy('migration دفتر جبرانی مستقل وجود دارد', existsSync(join(ROOT, 'prisma/migrations/20271018000000_return_correction_ledger/migration.sql')))
+truthy('اصلاح جبرانی سند مبدأ را void/delete نمی‌کند', correctionBody.includes('returnCorrection.create') && !correctionBody.includes('saleReturn.delete(') && !correctionBody.includes('saleReturn.update('))
+truthy('فرم تسویه‌ی واقعی اصلاح جبرانی در صفحه‌ی برگشت وجود دارد', /CH\.saleReturnCorrection/.test(ui) && /نقدی که واقعاً به کشوی فعلی برگشت/.test(ui))
 
 console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
 process.exit(bad === 0 ? 0 : 1)

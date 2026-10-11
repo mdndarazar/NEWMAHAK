@@ -564,6 +564,115 @@ export async function assertManagerPassword(password: string | null | undefined,
 }
 
 /**
+ * ---------------------------------------------------------------------------
+ * «تأیید شخصی مدیر برای اصلاح دیرهنگام».
+ *
+ * رمز سراسری مدیر فقط ثابت می‌کند که کسی رمز مجموعه را می‌داند؛ برای ابطال یا
+ * اصلاحی که پس از روز عملیاتی ثبت می‌شود کافی نیست، چون بعداً معلوم نمی‌شود
+ * کدام مدیر آن را پذیرفته است. مدیرِ ثبت‌شده‌ی فعال یک PIN/رمز شخصی و هش‌شده
+ * دارد و شناسه‌ی او همراه اثر جبرانی ذخیره می‌شود.
+ *
+ * عمداً همان ستون قدیمی `User.passwordHash` استفاده می‌شود: این سامانه login
+ * کارکنان ندارد و آن ستون تا امروز برای کارکنان خالی بوده است. envelope با
+ * `purpose` صریح جلوی تعبیرکردن داده‌ی قدیمی یا هر هشِ نامرتبط را می‌گیرد.
+ * ---------------------------------------------------------------------------
+ */
+interface ManagerCorrectionApprovalSecret {
+  purpose: 'MANAGER_RETURN_CORRECTION'
+  salt: string
+  hash: string
+  changedAt: string
+}
+
+function parseManagerCorrectionApprovalSecret(raw: string | null | undefined): ManagerCorrectionApprovalSecret | null {
+  if (!raw) return null
+  try {
+    const value = JSON.parse(raw)
+    if (
+      value?.purpose === 'MANAGER_RETURN_CORRECTION' &&
+      typeof value.salt === 'string' &&
+      typeof value.hash === 'string' &&
+      typeof value.changedAt === 'string'
+    )
+      return value as ManagerCorrectionApprovalSecret
+  } catch {
+    // یک مقدار legacy یا خراب هرگز «رمز شخصی معتبر» شمرده نمی‌شود.
+  }
+  return null
+}
+
+export function hasManagerCorrectionApprovalSecret(raw: string | null | undefined): boolean {
+  return parseManagerCorrectionApprovalSecret(raw) != null
+}
+
+/** فقط از مسیر محافظت‌شده‌ی تنظیمات کارکنان صدا زده می‌شود؛ رمز خام هرگز Audit نمی‌شود. */
+export async function setManagerCorrectionApprovalPassword(input: {
+  userId: number
+  password: string | null | undefined
+  actorUserId?: number | null
+}): Promise<void> {
+  const userId = Math.round(Number(input.userId))
+  if (!Number.isSafeInteger(userId) || userId <= 0) throw new BusinessError('مدیر تأییدکننده نامعتبر است.')
+  const password = normalize(input.password)
+  if (password.length < 4)
+    throw new BusinessError('رمز شخصی مدیر برای تأیید اصلاح باید دست‌کم ۴ نویسه باشد.')
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, role: true, isActive: true, displayName: true } })
+  if (!user || user.role !== 'MANAGER' || !user.isActive)
+    throw new BusinessError('رمز شخصی تأیید فقط برای مدیر فعال قابل ثبت است.')
+  const salt = randomBytes(16).toString('hex')
+  const secret: ManagerCorrectionApprovalSecret = {
+    purpose: 'MANAGER_RETURN_CORRECTION',
+    salt,
+    hash: derive(password, salt),
+    changedAt: new Date().toISOString()
+  }
+  await prisma.user.update({ where: { id: user.id }, data: { passwordHash: JSON.stringify(secret) } })
+  await audit(prisma, {
+    action: AuditAction.SETTINGS_UPDATE,
+    entity: 'User',
+    entityId: user.id,
+    userId: input.actorUserId ?? null,
+    after: JSON.stringify({ managerCorrectionApprovalConfigured: true }),
+    note: `رمز شخصی تأیید اصلاح دیرهنگام برای مدیر «${user.displayName}» تنظیم/تعویض شد (خود رمز ذخیره یا نمایش داده نمی‌شود).`
+  })
+}
+
+/**
+ * اعتبارسنجی هویت *یک مدیر مشخص*، بیرون از تراکنش. خروجی عمداً فقط شناسه/نام
+ * امن است تا در Audit اثر اصلاح به همان شخص وصل شود.
+ */
+export async function verifyManagerCorrectionApproval(input: {
+  managerUserId?: number | null
+  password?: string | null
+  action: string
+}): Promise<{ userId: number; displayName: string }> {
+  const userId = Math.round(Number(input.managerUserId ?? 0))
+  if (!Number.isSafeInteger(userId) || userId <= 0)
+    throw new BusinessError(`«${input.action}» باید با انتخاب مدیر تأییدکننده و رمز شخصی همان مدیر ثبت شود.`)
+  const gate = `manager-correction:${userId}`
+  await assertGateOpen(gate)
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, displayName: true, role: true, isActive: true, passwordHash: true }
+  })
+  if (!user || user.role !== 'MANAGER' || !user.isActive)
+    throw new BusinessError('مدیر تأییدکننده انتخاب‌شده فعال یا مجاز نیست.')
+  const secret = parseManagerCorrectionApprovalSecret(user.passwordHash)
+  if (!secret)
+    throw new BusinessError(
+      `برای مدیر «${user.displayName}» هنوز رمز شخصی تأیید اصلاح تعریف نشده است. ` +
+        'از تنظیمات ← کارکنان، مدیر را ویرایش و «رمز شخصی تأیید اصلاح دیرهنگام» را ثبت کنید.'
+    )
+  const password = normalize(input.password)
+  if (!password || !sameHash(secret.hash, derive(password, secret.salt))) {
+    const message = await noteFailure(gate, 'رمز شخصی مدیر تأییدکننده درست نیست.')
+    throw new BusinessError(message)
+  }
+  await noteSuccess(gate)
+  return { userId: user.id, displayName: user.displayName }
+}
+
+/**
  * ===========================================================================
  * جلسه ۴۰ · کار ب — «تأیید مدیر برای *عملیاتِ* یک پنل قفل‌دار»، سمت سرور.
  *

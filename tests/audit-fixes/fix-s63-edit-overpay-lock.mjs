@@ -165,8 +165,8 @@ const cc = creditsOf(c.inv.id)
 eq('یک اعتبار OVERPAY صادر شد', cc.length, 1)
 eq('مبلغ اعتبار = فقط افزایش اضافه‌دریافت (۴۰۰)', Number(cc[0]?.amount ?? 0), 400)
 eq('منبع اعتبار', cc[0]?.source, 'OVERPAY')
-truthy('نتیجه کد و «غیرقابل نقد شدن» را برای چاپ برمی‌گرداند',
-  c2?.overpayCredit?.code === cc[0]?.code && String(c2?.overpayCredit?.notice ?? '').includes('غیرقابل نقد شدن'))
+truthy('نتیجه مرجع امن و «غیرقابل نقد شدن» را برمی‌گرداند',
+  c2?.overpayCredit?.publicReference === `اعتبار #${cc[0]?.id}` && !Object.hasOwn(c2?.overpayCredit ?? {}, 'code') && String(c2?.overpayCredit?.notice ?? '').includes('غیرقابل نقد شدن'))
 closed(await report())
 await throwsWith('overpayAsCredit بدون افزایش اضافه‌دریافت رد می‌شود',
   () => salesService.update({ id: c.inv.id, userId, shiftId, lines: [line(vc, 600)], keepPayments: true, confirmOverpay: true, overpayAsCredit: true }), 'اضافه')
@@ -233,6 +233,8 @@ await throwsWith('اعتبار ۴۰۰ بالای سقف ۱۰۰ بدون رمز �
 const x = await probe('تعویض با اعتبار بالای سقف و رمز درست', () => salesService.createExchange({
   invoiceId: xInv.id, lines: [{ saleItemId: xItems[0].id, qty: 1 }], replacements: [{ variantId: variant(200), qty: 1 }], refundMode: 'STORE_CREDIT', userId, shiftId, managerPassword: PW }))
 truthy('تعویض ثبت شد', !x.err, String(x.err?.message))
+truthy('نتیجه تعویض فقط اعتبار امن دارد',
+  !Object.hasOwn(x.res?.storeCredit ?? {}, 'code') && x.res?.storeCredit?.publicReference === `اعتبار #${x.res?.storeCredit?.id}`)
 eq('Audit «بالاتر از سقف» تعویض', seed.rows(`SELECT id FROM "AuditLog" WHERE action = 'STORE_CREDIT_OVER_LIMIT' AND entity = 'SaleReturn'`).length, 1)
 await settingsService.setAccountingPolicy({ policy: { ...(await settingsService.accountingPolicy()), storeCreditLimit: 0 }, userId, managerPassword: PW }) // نشست ۱۵۴ (S153-D1): گیت رمز سیاست حسابداری در سرویس؛ فقط setup
 

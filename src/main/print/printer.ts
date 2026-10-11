@@ -66,9 +66,23 @@ export class PrintOutcomeUnknownError extends BusinessError {
   }
 }
 
+/** لغو صریح کاربر در دیالوگ چاپ: قطعاً چاپی انجام نشده و باید در UI بی‌صدا باشد. */
+export class PrintCancelledError extends BusinessError {
+  readonly printCancelled = true
+  constructor(message = 'چاپ لغو شد و هیچ برگه‌ای چاپ نشد.') {
+    super(message)
+    this.name = 'BusinessError'
+  }
+}
+
 /** آیا خطای چاپ «نتیجه‌ی نامعلوم» است (نه لغو/رد قطعی)؟ */
 export function isPrintOutcomeUnknown(err: unknown): boolean {
   return !!err && typeof err === 'object' && (err as { printOutcomeUnknown?: unknown }).printOutcomeUnknown === true
+}
+
+/** آیا خطا لغو صریح چاپ توسط کاربر است؟ */
+export function isPrintCancelled(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as { printCancelled?: unknown }).printCancelled === true
 }
 
 /** data URL سند، یا `null` اگر برای مسیر data URL بزرگ یا غیرقابل‌کدگذاری باشد. */
@@ -284,13 +298,16 @@ function runPrintJob(
   // بی‌صدا ⇒ ۳۰ ثانیه · با دیالوگ ⇒ ۱۰ دقیقه (AUDIT-S129-01)؛ مقدار صریح تست همیشه برنده است
   const waitMs = timeoutMs ?? (options.silent ? PRINT_CALLBACK_TIMEOUT_MS : PRINT_DIALOG_TIMEOUT_MS)
   return guardWindowJob<void>(win, 'print', (ok, fail) => {
+    const failure = (reason: unknown): BusinessError => {
+      const raw = String(reason ?? '').toLowerCase()
+      if (raw.includes('cancel')) return new PrintCancelledError(printFailureMessage(reason, deviceName))
+      return new BusinessError(printFailureMessage(reason, deviceName))
+    }
     try {
-      win.webContents.print(options, (success, reason) =>
-        success ? ok(undefined) : fail(new BusinessError(printFailureMessage(reason, deviceName)))
-      )
+      win.webContents.print(options, (success, reason) => (success ? ok(undefined) : fail(failure(reason))))
     } catch (err) {
       // نسخه‌های قدیمی‌تر Electron نام چاپگر نامعتبر را هم‌زمان throw می‌کنند
-      fail(new BusinessError(printFailureMessage((err as Error)?.message ?? err, deviceName)))
+      fail(failure((err as Error)?.message ?? err))
     }
   }, waitMs)
 }
@@ -323,6 +340,8 @@ export interface PrintHtmlOptions {
   deviceName?: string
   landscape?: boolean
   timeoutMs?: number
+  /** تعداد نسخه در یک job (به‌ویژه برای دیالوگ ویندوز تا چند پنجره پشت‌سرهم باز نشود). */
+  copies?: number
   /** اندازه‌ی صفحه‌ی ارسالی به چاپگر (میکرون). نبود ⇒ رفتار قبلی */
   pageSize?: PrintPageSizeOption
 }
@@ -362,6 +381,7 @@ export async function printHtml(html: string, opts: PrintHtmlOptions = {}): Prom
   try {
     doc = await loadPrintDocument(win, html)
     const pageSize = await resolvePrintPageSize(win, opts.pageSize, opts.timeoutMs)
+    const copies = Math.min(99, Math.max(1, Math.round(Number(opts.copies ?? 1)) || 1))
     await runPrintJob(
       win,
       {
@@ -370,6 +390,7 @@ export async function printHtml(html: string, opts: PrintHtmlOptions = {}): Prom
         deviceName: opts.deviceName,
         landscape: opts.landscape ?? false,
         margins: { marginType: 'none' },
+        ...(copies > 1 ? { copies } : {}),
         ...(pageSize ? { pageSize } : {})
       },
       opts.deviceName,

@@ -125,9 +125,9 @@ console.log('\nP1-6) مابه‌التفاوت تعویض با چک رد می‌
 console.log('\nP1-10) چاپ/پیش‌نمایش اعتبار گیت دارد')
 {
   const IPC = read('src/main/ipc/index.ts')
-  truthy('printCredit گیت خواندن دارد', /printCredit[\s\S]{0,200}assertCreditRead\('چاپ اعتبار خرید'\)/.test(IPC))
-  truthy('creditPreviewHtml گیت خواندن دارد', /creditPreviewHtml[\s\S]{0,200}assertCreditRead\('پیش‌نمایش چاپی اعتبار خرید'\)/.test(IPC))
-  truthy('creditPdf گیت خواندن دارد', /creditPdf[\s\S]{0,180}assertCreditRead\('خروجی PDF اعتبار خرید'\)/.test(IPC))
+  truthy('printCredit فقط نشست واقعی مدیر دارد', /printCredit[\s\S]{0,220}assertManagerSession\('چاپ اعتبار خرید'\)/.test(IPC))
+  truthy('creditPreviewHtml فقط نشست واقعی مدیر دارد', /creditPreviewHtml[\s\S]{0,220}assertManagerSession\('پیش‌نمایش چاپی اعتبار خرید'\)/.test(IPC))
+  truthy('creditPdf فقط نشست واقعی مدیر دارد', /creditPdf[\s\S]{0,220}assertManagerSession\('خروجی PDF اعتبار خرید'\)/.test(IPC))
 }
 
 console.log('\nP1-16) کارت‌به‌کارت لغوشده در ردیف فاکتور در انتظار نیست')

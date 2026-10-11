@@ -97,7 +97,8 @@ export const reportLimitsService = {
       prisma.saleReturn.count({
         where: {
           ...returnScope,
-          ...(filter.includeExchanges === true ? {} : { OR: [{ kind: ReturnKind.RETURN }, { kind: null as any }] })
+          // kind در schema اجباری است؛ شمارنده باید دقیقاً همان «برگشت ساده»ی جدول را بشمارد.
+          ...(filter.includeExchanges === true ? {} : { kind: ReturnKind.RETURN })
         }
       }),
       prisma.saleReturn.count({ where: { ...returnScope, kind: ReturnKind.EXCHANGE } }),

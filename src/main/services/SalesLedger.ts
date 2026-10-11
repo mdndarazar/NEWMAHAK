@@ -286,7 +286,7 @@ export const salesLedger = {
         id: true, kind: true, total: true, returnedAt: true, returnedAtJalali: true, returnedAtTime: true,
         refundMethod: true, refundAmount: true, refundReference: true, note: true,
         exchangeTotal: true, exchangeDiff: true, exchangeSettlement: true, exchangeInvoiceId: true, debtReduction: true,
-        exchangeReceiptNo: true, storeCreditCode: true, userId: true, shiftId: true,
+        exchangeReceiptNo: true, storeCreditId: true, userId: true, shiftId: true,
         invoiceId: true,
         invoice: { select: { receiptNo: true, customer: { select: { name: true } } } },
         items: { select: { qty: true, restockedQty: true } }
@@ -420,7 +420,7 @@ export const salesLedger = {
           stockEffect: -replacementQty,
           invoiceId: r.exchangeInvoiceId ?? r.invoiceId,
           note:
-            (r.storeCreditCode ? `اعتبار صادرشده: ${r.storeCreditCode}. ` : '') + (r.note ?? '')
+            (r.storeCreditId ? `اعتبار صادرشده: اعتبار #${r.storeCreditId}. ` : '') + (r.note ?? '')
         })
         continue
       }

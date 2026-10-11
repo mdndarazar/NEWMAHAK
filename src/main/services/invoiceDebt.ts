@@ -40,13 +40,33 @@ export async function debtAdjustmentsByInvoice(client: Client, ids: number[], as
       select: { id: true, invoiceId: true, kind: true, total: true, refundMethod: true, refundAmount: true, exchangeDiff: true, debtReduction: true }
     })
     if (!rets.length) continue
+    /**
+     * اثر «اصلاح جبرانی» با سند برگشت یکی نیست: منبعِ اولیه برای گزارشِ همان
+     * صبح می‌ماند، اما از لحظه‌ی اصلاح به بعد نباید دوباره بدهی را کم کند. `asOf`
+     * این تفکیک را برای گزارش تاریخی حفظ می‌کند (اصلاح فردا، گذشته را بازنویسی
+     * نمی‌کند). جدول جدید یک ردیف نهایی به‌ازای هر برگشت دارد.
+     */
+    const corrected = new Set<number>(
+      (
+        await (client as any).returnCorrection.findMany({
+          where: {
+            returnId: { in: rets.map((r: any) => r.id) },
+            status: 'POSTED',
+            ...(asOf ? { createdAt: { lte: asOf } } : {})
+          },
+          select: { returnId: true }
+        })
+      ).map((row: any) => Number(row.returnId))
+    )
+    const activeRets = rets.filter((r: any) => !corrected.has(Number(r.id)))
+    if (!activeRets.length) continue
     // کارت‌به‌کارتِ لغوشده: پولی به مشتری نرسید ⇒ بازپرداخت حساب نمی‌شود
     /**
      * نشست ۱۷۴ (بند ۳ نقطه‌ی شروع ۱۷۳) — c2cIds بی‌سقف بود: یک دسته‌ی ۵۰۰ فاکتور با چند برگشت
      * کارت‌به‌کارت روی هر فاکتور ⇒ ۵۰۱+ شناسه در `returnId in` (عبور از سقف IN گزارش‌ها). حالا
      * همان دسته‌ی ۵۰۰تایی؛ Set «لغوشده» از همه‌ی دسته‌ها جمع می‌شود و منطق بدهی دست نمی‌خورد.
      */
-    const c2cIds: number[] = rets.filter((r: any) => r.refundMethod === 'CARD_TO_CARD').map((r: any) => r.id)
+    const c2cIds: number[] = activeRets.filter((r: any) => r.refundMethod === 'CARD_TO_CARD').map((r: any) => r.id)
     const canceled = new Set<number>()
     for (let j = 0; j < c2cIds.length; j += 500) {
       const reqs = await (client as any).cardTransferRequest.findMany({
@@ -56,7 +76,7 @@ export async function debtAdjustmentsByInvoice(client: Client, ids: number[], as
       for (const q of reqs) canceled.add(q.returnId)
     }
     const byInv = new Map<number, any[]>()
-    for (const r of rets) {
+    for (const r of activeRets) {
       const list = byInv.get(r.invoiceId) ?? []
       list.push({ ...r, refundCanceled: canceled.has(r.id) })
       byInv.set(r.invoiceId, list)
