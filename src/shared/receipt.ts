@@ -128,8 +128,59 @@ export const SETTING_KEYS = {
    * کلید خوانده می‌شود ولی نام چاپگر، لوگو، نام/تلفن فروشگاه و بقیه‌ی هویت چاپ
    * همان `receipt.template` است (§۱۳ — سیستم تنظیمات چاپ جدا ساخته نشد).
    */
-  creditSettings: 'credit.settings'
+  creditSettings: 'credit.settings',
+  /** ماژول اختیاری حضانت صندوق/نشست کارکنان؛ پیش‌فرض خاموش تا رفتار قدیمی دست‌نخورده بماند. */
+  custodyConfig: 'custody.config'
 } as const
+
+export type CustodyMode = 'SINGLE_SHIFT' | 'MULTI_SHIFT'
+export interface CustodyConfig {
+  enabled: boolean
+  mode: CustodyMode
+  onboardingDismissedAt: string | null
+  onboardingDismissedBy: number | null
+  reminderEnabled: boolean
+  dayCutoverMinute: number
+  overrunGraceMinutes: number
+  continueMaxMinutes: number
+}
+
+export const DEFAULT_CUSTODY_CONFIG: CustodyConfig = {
+  enabled: false,
+  mode: 'SINGLE_SHIFT',
+  onboardingDismissedAt: null,
+  onboardingDismissedBy: null,
+  reminderEnabled: true,
+  dayCutoverMinute: 300,
+  overrunGraceMinutes: 60,
+  continueMaxMinutes: 240
+}
+
+export function parseCustodyConfig(raw: unknown): CustodyConfig {
+  let value: unknown = raw
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      value = null
+    }
+  }
+  const o = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+  const whole = (input: unknown, fallback: number, min: number, max: number) => {
+    const n = Math.round(Number(input))
+    return Number.isSafeInteger(n) && n >= min && n <= max ? n : fallback
+  }
+  return {
+    enabled: o.enabled === true,
+    mode: o.mode === 'MULTI_SHIFT' ? 'MULTI_SHIFT' : 'SINGLE_SHIFT',
+    onboardingDismissedAt: typeof o.onboardingDismissedAt === 'string' ? o.onboardingDismissedAt : null,
+    onboardingDismissedBy: whole(o.onboardingDismissedBy, 0, 1, Number.MAX_SAFE_INTEGER) || null,
+    reminderEnabled: o.reminderEnabled !== false,
+    dayCutoverMinute: whole(o.dayCutoverMinute, DEFAULT_CUSTODY_CONFIG.dayCutoverMinute, 0, 1439),
+    overrunGraceMinutes: whole(o.overrunGraceMinutes, DEFAULT_CUSTODY_CONFIG.overrunGraceMinutes, 0, 720),
+    continueMaxMinutes: whole(o.continueMaxMinutes, DEFAULT_CUSTODY_CONFIG.continueMaxMinutes, 0, 720)
+  }
+}
 
 /**
  * ---------------------------------------------------------------------------
@@ -319,6 +370,8 @@ export interface ReceiptTemplate {
   printMethod: 'CHROMIUM' | 'RAW'
   /** DPI چاپگر برای مسیر RAW (۲۰۳ یا ۳۰۰) */
   rawDpi: number
+  /** معکوس‌کردن قطبیت بیت‌های تصویر در مسیر RAW (برای دستگاه‌هایی که سفید/مشکی را برعکس می‌گیرند) */
+  rawInvert: boolean
   /** برش بعد از هر کار در مسیر RAW (ESC/POS) */
   cutMode: 'FULL' | 'PARTIAL' | 'NONE'
   /** در حالت «بپرس»، دیالوگ خود ویندوز به‌جای پنجره‌ی انتخاب برنامه */
@@ -415,6 +468,7 @@ export const DEFAULT_RECEIPT_TEMPLATE: ReceiptTemplate = {
   heightSafetyMm: 3,
   printMethod: 'CHROMIUM',
   rawDpi: 203,
+  rawInvert: false,
   cutMode: 'FULL',
   useSystemDialog: false,
   wholesaleSeparate: false,
@@ -503,6 +557,13 @@ export interface SaleDefaults {
    * روشن بودن این تیک مسیر پول را عوض نمی‌کند؛ چاپ بعد از commit است.
    */
   debtPaymentReceiptPrint: boolean
+  /**
+   * فعال‌بودن پرداخت ترکیبی «اعتبار خرید + نقد/کارت» در POS.
+   * پیش‌فرض روشن است تا فروشگاه‌های موجود دقیقاً همان رفتار قبلی را نگه دارند.
+   * خاموش = اعتبار همچنان کامل مصرف می‌شود، ولی درخواست مبلغِ دلخواهِ مصرف
+   * پذیرفته نمی‌شود؛ main نیز این مرز را مستقل از UI اعمال می‌کند.
+   */
+  splitStoreCreditPayment: boolean
 }
 
 export const DEFAULT_SALE_DEFAULTS: SaleDefaults = {
@@ -520,7 +581,9 @@ export const DEFAULT_SALE_DEFAULTS: SaleDefaults = {
   // مورد ۳: پیش‌فرض = همان رفتار فعلی (فاکتور چاپ می‌شود)
   printEnabled: true,
   autoCentralWithdraw: false,
-  debtPaymentReceiptPrint: false
+  debtPaymentReceiptPrint: false,
+  // پرداخت ترکیبی پیشاپیش وجود داشته است؛ پیش‌فرض روشن مانع تغییر رفتار فروشگاه‌های قبلی است.
+  splitStoreCreditPayment: true
 }
 
 /**
@@ -681,6 +744,8 @@ export interface LabelTemplate extends LabelDesign {
   speed: number
   /** جهت چاپ (RAW) */
   direction: number
+  /** معکوس‌کردن قطبیت بیت‌های تصویر در مسیر RAW (برای دستگاه‌هایی که سفید/مشکی را برعکس می‌گیرند) */
+  rawInvert: boolean
   /** پنجره‌ی چاپ ویندوز باز شود؟ (مثل فاکتور) */
   useSystemDialog: boolean
   /** لوگوی فروشگاه به‌صورت dataURL (آپلود از پنل تنظیمات) — مشترک همه‌ی قالب‌ها */
@@ -734,6 +799,7 @@ export const DEFAULT_LABEL_TEMPLATE: LabelTemplate = {
   density: 8,
   speed: 4,
   direction: 0,
+  rawInvert: false,
   useSystemDialog: false,
   logoDataUrl: '',
   activeTemplate: 'CLASSIC',
@@ -993,6 +1059,12 @@ export interface ShiftConfig {
   templates: ShiftTemplate[]
   /** بند ۷ — فرمت نمایش ساعت در فرم تنظیمات شیفت (فقط نمایشی) */
   clockFormat: ShiftClockFormat
+  /**
+   * نشست ۳۱۰ — سقف اضافه‌کاری شیفت شب به دقیقه؛ ۰ = خاموش (پیش‌فرض).
+   * کارمند همان نشستِ بازِ دیروز می‌تواند تا «پایان بازه + این سقف» اعلام کند؛
+   * حداکثر مقدار مجاز ۲۴۰ دقیقه (سقف پیشنهادی ۱۲۰). تغییرش رمز مدیر می‌خواهد.
+   */
+  overtimeMaxMinutes: number
 }
 
 export const DEFAULT_SHIFT_TEMPLATES: ShiftTemplate[] = [
@@ -1006,8 +1078,13 @@ export const DEFAULT_SHIFT_CONFIG: ShiftConfig = {
   byTime: false,
   templates: DEFAULT_SHIFT_TEMPLATES.map((t) => ({ ...t })),
   // پیش‌فرض = همان چیزی که تا امروز بود: ۱۲ساعته با AM/PM
-  clockFormat: '12'
+  clockFormat: '12',
+  // نشست ۳۱۰ — پیش‌فرض صفر یعنی اضافه‌کاری خاموش است (حالت جدید opt-in)
+  overtimeMaxMinutes: 0
 }
+
+/** نشست ۳۱۰ — سقف مطلق اضافه‌کاری که تنظیمات می‌تواند بگیرد (دقیقه). */
+export const SHIFT_OVERTIME_ABSOLUTE_MAX = 240
 
 /** '۸:۵' / '8:5' / '0800' → 'HH:mm' (ورودی خراب = مقدار پیش‌فرض داده‌شده). */
 export function normalizeTime(raw: unknown, fallback = '00:00'): string {
@@ -1223,6 +1300,7 @@ export const parseReceiptTemplate = (raw: unknown): ReceiptTemplate => {
     // فقط دو مقدار مجاز؛ هر چیز دیگر ⇒ رفتار امروز (موتور Chromium)
     printMethod: merged.printMethod === 'RAW' ? 'RAW' : 'CHROMIUM',
     rawDpi: Number(merged.rawDpi) === 300 ? 300 : 203,
+    rawInvert: merged.rawInvert === true,
     cutMode: merged.cutMode === 'PARTIAL' || merged.cutMode === 'NONE' ? merged.cutMode : 'FULL',
     useSystemDialog: merged.useSystemDialog === true,
     askEachTime: merged.askEachTime === true,
@@ -1250,7 +1328,11 @@ export const parseReceiptTemplate = (raw: unknown): ReceiptTemplate => {
     )
   }
 }
-export const parseSaleDefaults = (raw: unknown): SaleDefaults => merge(DEFAULT_SALE_DEFAULTS, raw)
+export const parseSaleDefaults = (raw: unknown): SaleDefaults => {
+  const parsed = merge(DEFAULT_SALE_DEFAULTS, raw)
+  // تنها false صریح این feature flag را می‌بندد؛ داده‌ی قدیمی/خراب رفتار پیشین (روشن) را دارد.
+  return { ...parsed, splitStoreCreditPayment: parsed.splitStoreCreditPayment !== false }
+}
 /**
  * خواندن ایمن تنظیمات چاپ لیبل.
  *
@@ -1326,6 +1408,7 @@ export const parseLabelTemplate = (raw: unknown): LabelTemplate => {
     density: numIn(flat.density, LABEL_ROLL_LIMITS.minDensity, LABEL_ROLL_LIMITS.maxDensity, DEFAULT_LABEL_TEMPLATE.density),
     speed: numIn(flat.speed, LABEL_ROLL_LIMITS.minSpeed, LABEL_ROLL_LIMITS.maxSpeed, DEFAULT_LABEL_TEMPLATE.speed),
     direction: Number(flat.direction) === 1 ? 1 : 0,
+    rawInvert: Boolean(flat.rawInvert),
     useSystemDialog: Boolean(flat.useSystemDialog),
     logoDataUrl: String(flat.logoDataUrl ?? ''),
     activeTemplate,
@@ -1390,7 +1473,12 @@ export const parseShiftConfig = (raw: unknown): ShiftConfig => {
     templates,
     names: templates.map((t) => t.name),
     // بند ۷: هر مقدار ناشناخته ⇒ '12' (رفتار قبلی)، پس تنظیم قدیمی هم امن است
-    clockFormat: String(obj.clockFormat ?? '') === '24' ? '24' : '12'
+    clockFormat: String(obj.clockFormat ?? '') === '24' ? '24' : '12',
+    // نشست ۳۱۰: نامشخص/خراب ⇒ ۰ (خاموش) — همیشه عدد صحیح در محدوده‌ی ۰..۲۴۰
+    overtimeMaxMinutes: Math.min(
+      240,
+      Math.max(0, Math.trunc(Number(obj.overtimeMaxMinutes)) || 0)
+    )
   }
 }
 

@@ -136,6 +136,9 @@ export default function ReturnEditModal({
           note: note.trim(),
           allowRemoved: allowRemoved || undefined,
           force: force || undefined,
+          /** قفل مستقلِ اصلاح/ابطال؛ همان رمز مدیر یا رمز دوم اختصاصی این عمل. */
+          panelPassword: editPw.trim() || undefined,
+          /** دوره‌ی بسته همچنان فقط رمز مدیر را می‌پذیرد. */
           managerPassword: editPw.trim() || undefined,
           overrideReason: editReason.trim() || undefined
         })
@@ -284,22 +287,23 @@ export default function ReturnEditModal({
 
           <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2">
             <div className="text-[11px] text-amber-900 leading-6">
-              اگر این برگشت بازپرداخت، اعتبار خرید یا کاهش بدهی دارد — یا تاریخش در دوره‌ی بسته است — رمز مدیر (یا رمز
-              دوم/سوم برگشت) و دلیل لازم است و در سابقه می‌ماند.
+              اصلاح برگشت و اثر احتمالی آن روی موجودی، بدهی و پول عملیات حساسی است: در نصب تازه همیشه رمز مدیر یا
+              رمز دوم اختصاصی «اصلاح و ابطال برگشت/تعویض» لازم است. برای بازپرداخت، اعتبار، کاهش بدهی یا دوره‌ی بسته،
+              نوشتن دلیل هم اجباری است؛ دوره‌ی بسته فقط رمز مدیر را می‌پذیرد.
             </div>
             <div className="flex flex-wrap gap-2 items-end">
               <label>
-                <div className="kbd">رمز</div>
+                <div className="kbd">رمز مجوز اصلاح</div>
                 <PasswordField
                   className="inp w-40"
-                  placeholder="رمز"
+                  placeholder="رمز مدیر یا رمز اصلاح"
                   value={editPw}
                   onChange={(e) => setEditPw(e.target.value)}
                   autoComplete="off"
                 />
               </label>
               <label className="flex-1 min-w-[240px]">
-                <div className="kbd">دلیل ویرایش (اجباری وقتی اثر مالی دارد)</div>
+                <div className="kbd">دلیل ویرایش (برای اثر مالی/دوره بسته اجباری)</div>
                 <input className="inp" value={editReason} onChange={(e) => setEditReason(e.target.value)} />
               </label>
             </div>

@@ -230,7 +230,7 @@ eq('مانده فاکتور اعتبار ۰ یا کم', Number(sql.prepare('SELE
 
 await rejects('صدور دستی بی‌رمز', () => storeCreditService.issueManual({ amount: 1_000_000, userId }), 'رمز')
 const manual = await storeCreditService.issueManual({ amount: 50_000, userId, managerPassword: PW })
-truthy('صدور دستی با رمز', !!manual?.code)
+truthy('صدور دستی با رمز فقط مرجع امن دارد', !!manual?.id && !!manual?.publicReference && !('code' in manual))
 
 console.log('\nF) پرداخت / چک / ابطال')
 const f1 = await salesService.create({ userId, shiftId, lines: [L(vC, 400_000)], payments: [] })

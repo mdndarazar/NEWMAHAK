@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import Modal from './Modal'
 import { call, CH } from '../lib/api'
 import { setPrinterPickerOpener, type PrinterChoice, type PrintFlowKind, type PrinterPickerOpener } from '../lib/printFlow'
@@ -56,33 +57,51 @@ export default function PrinterPickerHost() {
 
   useEffect(() => {
     const opener: PrinterPickerOpener = async (input) => {
+      /**
+       * محافظت در برابر فراخوانی هم‌زمان: تا وقتی پنجره‌ی قبلی جواب نگرفته،
+       * درخواست تازه را مثل «انصراف» برمی‌گردانیم تا Promise قبلی هرگز overwrite
+       * نشود و جریان چاپ/ثبت معلق نماند.
+       */
+      if (settleRef.current) return null
+
+      const saved = String(input.savedName ?? '').trim()
+      const promise = new Promise<PrinterChoice | null>((resolve) => {
+        settleRef.current = resolve
+      })
+
       setTitle(input.title)
       setKind(input.kind)
-      setSavedName(input.savedName)
-      setChosen(input.savedName)
+      setSavedName(saved)
+      setChosen(saved)
       setSaveAsDefault(false)
       setErr(null)
       setOpen(true)
       setBusy(true)
       try {
         const list = await refresh()
-        // پیش‌فرض: چاپگر ذخیره‌شده، وگرنه چاپگر پیش‌فرض ویندوز، وگرنه هیچ‌کدام.
-        const pre =
-          list.find((p) => p.name === input.savedName) ??
-          list.find((p) => p.isDefault) ??
-          undefined
-        setChosen(pre?.name ?? '')
+        const savedHit = saved ? list.find((p) => p.name === saved) : undefined
+        if (saved && !savedHit) {
+          setChosen('')
+          setErr(`چاپگر ذخیره‌شده «${saved}» روی این سیستم پیدا نشد؛ یک چاپگر را از فهرست انتخاب کنید.`)
+        } else {
+          // فقط وقتی چاپگر ذخیره‌شده نداریم، پیش‌فرض ویندوز را برای راحتی از قبل انتخاب می‌کنیم.
+          const pre = savedHit ?? list.find((p) => p.isDefault) ?? undefined
+          setChosen(pre?.name ?? '')
+        }
       } catch (e: any) {
         setErr(e.message)
       } finally {
         setBusy(false)
       }
-      return await new Promise<PrinterChoice | null>((resolve) => {
-        settleRef.current = resolve
-      })
+      return await promise
     }
     setPrinterPickerOpener(opener)
-    return () => setPrinterPickerOpener(null)
+    return () => {
+      const settle = settleRef.current
+      settleRef.current = null
+      settle?.(null)
+      setPrinterPickerOpener(null)
+    }
   }, [])
 
   const close = (value: PrinterChoice | null) => {
@@ -92,7 +111,7 @@ export default function PrinterPickerHost() {
     settle?.(value)
   }
 
-  return (
+  const modal = (
     <Modal
       open={open}
       title={title}
@@ -103,6 +122,7 @@ export default function PrinterPickerHost() {
        */
       onClose={() => close(null)}
       width="max-w-2xl"
+      zIndexClass="z-[60]"
       footer={
         <>
           <div className="me-auto kbd">
@@ -166,4 +186,6 @@ export default function PrinterPickerHost() {
       )}
     </Modal>
   )
+
+  return typeof document === 'undefined' ? modal : createPortal(modal, document.body)
 }

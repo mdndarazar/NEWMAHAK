@@ -44,6 +44,12 @@ const eA = await salesService.exchangeList({ ...base, userId: A })
 eq('تب تعویض با فیلتر کارمند الف (فقط فروشنده‌ی فاکتور): نمی‌آید، هم‌معنا با تب برگشت', (eA?.rows ?? []).length, 0)
 const lim = await reportLimitsService.limits({ ...base, shiftId: s2 })
 eq('شمارنده‌ی سقف با فیلتر شیفت شب: ۱ برگشت و ۱ تعویض (هم‌سان با جدول)', ['returns','exchanges'].map((k) => lim?.rows?.find((r) => r.key === k)?.total), [1, 1])
+// S340: kind در schema اجباری است؛ جدول و شمارنده با تیک «تعویض‌ها را هم نشان بده»
+// باید از یک دامنه استفاده کنند و هیچ null جعلی به Prisma نفرستند.
+const rWithExchanges = await salesService.returnList({ ...base, shiftId: s2, includeExchanges: true })
+const limWithExchanges = await reportLimitsService.limits({ ...base, shiftId: s2, includeExchanges: true })
+eq('S340: تیک تعویض‌ها جدول برگشت را از ۱ به ۲ سند می‌رساند', ids(rWithExchanges), [ret, exc])
+eq('S340: شمارنده با همان تیک دقیقاً ۲ سند (RETURN + EXCHANGE) است', limWithExchanges?.rows?.find((r) => r.key === 'returns')?.total, 2)
 const rNo = await salesService.returnList({ ...base, shiftId: s2, receiptNo: 501 })
 eq('فیلتر شماره فیش همچنان روی فاکتور مرجع کار می‌کند', ids(rNo), [ret])
 const rNo2 = await salesService.returnList({ ...base, shiftId: s2, receiptNo: 999 })

@@ -560,6 +560,35 @@ export const settingsService = {
   },
 
   /**
+   * نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت شب (۰ = خاموش که پیش‌فرض است؛ حداکثر ۲۴۰).
+   * الگوی setShiftByTime: ذخیره‌ی فوری، تغییر فقط با رمز مدیر، ثبت در حسابرسی.
+   * نرمال‌سازی نهایی دوباره از parseShiftConfig می‌گذرد تا مسیر دیگر (saveBundle)
+   * هم نتواند مقدار نامعتبر ذخیره کند.
+   */
+  async setShiftOvertimeMax(input: { minutes: number; userId?: number | null; managerPassword?: string | null }): Promise<ShiftConfig> {
+    const mins = Math.trunc(Number(input?.minutes))
+    if (!Number.isFinite(mins) || mins < 0 || mins > 240)
+      throw new BusinessError('سقف اضافه‌کاری باید عددی صحیح بین ۰ تا ۲۴۰ دقیقه باشد (۰ یعنی خاموش).')
+    const before = await this.shiftConfig()
+    const next = parseShiftConfig({ ...before, overtimeMaxMinutes: mins })
+    if (next.overtimeMaxMinutes !== before.overtimeMaxMinutes)
+      await assertManagerPassword(input?.managerPassword ?? null, 'تغییر «سقف اضافه‌کاری شیفت»')
+    await writeKey(SETTING_KEYS.shiftConfig, next)
+    await audit(prisma, {
+      action: 'SETTINGS_UPDATE',
+      entity: 'Setting',
+      userId: input?.userId ?? null,
+      before: JSON.stringify({ overtimeMaxMinutes: before.overtimeMaxMinutes }),
+      after: JSON.stringify({ overtimeMaxMinutes: next.overtimeMaxMinutes }),
+      note:
+        next.overtimeMaxMinutes > 0
+          ? `سقف اضافه‌کاری شیفت روی ${next.overtimeMaxMinutes} دقیقه تنظیم شد (ذخیره‌ی فوری)`
+          : 'اضافه‌کاری شیفت خاموش شد — نشست دیروز بیرون از بازه همیشه باید بسته شود (ذخیره‌ی فوری)'
+    })
+    return next
+  },
+
+  /**
    * ذخیره‌ی تنظیمات. هر بخش اختیاری است (فقط همان بخش بازنویسی می‌شود) و
    * مقدارها قبل از ذخیره نرمال‌سازی می‌شوند تا فیلد ناقص یا نوع اشتباه ذخیره
    * نشود. تغییر تنظیمات در AuditLog هم ثبت می‌گردد.

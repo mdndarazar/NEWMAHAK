@@ -132,7 +132,7 @@ console.log('\n۳) با تأیید + overpayAsCredit ⇒ کد OVERPAY')
       refundMethod: RefundMethod.NONE, confirmOverpay: true, overpayAsCredit: true,
       userId, shiftId, managerPassword: PW
     }))
-    truthy('کد اعتبار صادر شد', !!ret?.overpayCredit?.code)
+    truthy('اعتبار با مرجع امن صادر شد', !!ret?.overpayCredit?.id && /^اعتبار #\d+$/.test(String(ret?.overpayCredit?.publicReference ?? '')) && !Object.hasOwn(ret?.overpayCredit ?? {}, 'code'))
     eq('مبلغ اعتبار', Number(ret?.overpayCredit?.amount ?? 0), 400_000)
   }
 }
@@ -150,6 +150,34 @@ console.log('\n۴) بازپرداخت نقدی: سقف = پول − کالای �
     const row = seed.one('SELECT refundAmount, refundMethod FROM "SaleReturn" WHERE id = ?', ret?.id)
     eq('خروج نقد سقف ۴۰۰k (نه ۵۰۰k ارزش کالا)', Number(row?.refundAmount ?? 0), 400_000)
     eq('روش نقد ماند', String(row?.refundMethod ?? ''), RefundMethod.CASH)
+  }
+}
+
+console.log('\n۴ب) درخواست بالاتر از ارزش خودِ کالای برگشتی رد می‌شود؛ مبلغ پایین‌تر برقرار است')
+{
+  const tooHigh = await saleTwo('فروش د۲ برای سقف رسمی برگشت')
+  if (tooHigh) {
+    await throwsWith(
+      'درخواست نقد ۵۰۰٬۰۰۱ برای کالای برگشتی ۵۰۰٬۰۰۰',
+      () => salesService.createReturn({
+        invoiceId: tooHigh.id, full: false,
+        lines: [{ saleItemId: itemsOf(tooHigh.id)[0].id, qty: 1 }],
+        refundMethod: RefundMethod.CASH, refundAmount: 500_001, userId, shiftId
+      }),
+      'ارزش رسمی اقلام انتخاب‌شده'
+    )
+    eq('درخواست بالاتر هیچ برگشتی ثبت نکرد', seed.count('SaleReturn', 'invoiceId = ?', tooHigh.id), 0)
+  }
+
+  const lower = await saleTwo('فروش د۳ برای مبلغ پایین‌تر')
+  if (lower) {
+    const ret = await safe('بازپرداخت پایین‌ترِ ۲۰۰k با تسویهٔ موجود', () => salesService.createReturn({
+      invoiceId: lower.id, full: false,
+      lines: [{ saleItemId: itemsOf(lower.id)[0].id, qty: 1 }],
+      refundMethod: RefundMethod.CASH, refundAmount: 200_000, confirmOverpay: true, userId, shiftId
+    }))
+    const row = seed.one('SELECT refundAmount FROM "SaleReturn" WHERE id = ?', ret?.id)
+    eq('مبلغ پایین‌تر بی‌تغییر ثبت شد', Number(row?.refundAmount ?? 0), 200_000)
   }
 }
 

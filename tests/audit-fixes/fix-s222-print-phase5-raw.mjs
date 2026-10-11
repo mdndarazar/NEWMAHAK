@@ -588,6 +588,62 @@ console.log('\n— ۷) مسیر واقعی با ماک Electron')
     mock.state.captureCalls.length,
     mock.state.zoomCalls.length
   ], [0, 0, 0])
+
+  // ۷.۵ — RAW با دیالوگ ویندوز معنی ندارد: نه dialog می‌آورد، نه باید بی‌صدا روی پیش‌فرض چاپ کند.
+  mock.reset()
+  const rawDialog = await safe(() =>
+    route.printMaybeRaw({
+      method: 'RAW',
+      html: '<html><body>سند خام</body></html>',
+      deviceName: 'Axiom Thermal 80',
+      silent: false,
+      pageSize: { widthMm: 80, heightMm: 'AUTO', heightSafetyMm: 3 }
+    })
+  )
+  check('RAW + دیالوگ ویندوز رد می‌شود و هیچ کار چاپی ساخته نمی‌شود', [
+    /چاپ خام.*دیالوگ ویندوز/.test(rawDialog.error ?? ''),
+    mock.state.printCalls.length,
+    mock.state.captureCalls.length
+  ], [true, 0, 0])
+
+  // ۷.۶ — مسیرهای RAW لیبل و برگه‌ی آزمایشی هم نباید silent:false را بی‌صدا نادیده بگیرند.
+  mock.reset()
+  mock.state.printers = [{ name: 'TSC TE200', displayName: 'TSC TE200', isDefault: true, status: 0 }]
+  await writeSetting(SETTING_KEYS.labelTemplate, {
+    widthMm: 50,
+    heightMm: 30,
+    columns: 2,
+    gapXMm: 2,
+    gapYMm: 2,
+    sensorType: 'GAP',
+    rawDpi: 203,
+    density: 8,
+    speed: 4,
+    direction: 0,
+    printerName: 'TSC TE200',
+    printMethod: 'RAW',
+    useSystemDialog: true
+  })
+  const labelRawDialog = await safe(() =>
+    handlers.get(IPC.printLabels)(null, {
+      labels: [{ name: 'کالا', code: '123', price: 1000, barcodeDataUrl: '' }],
+      deviceName: 'TSC TE200',
+      silent: false
+    })
+  )
+  const testRawDialog = await safe(() => handler(null, { profile: 'LABEL', deviceName: 'TSC TE200', method: 'RAW' }))
+  check('printLabels RAW + دیالوگ ویندوز قبل از TSPL رد می‌شود', [
+    labelRawDialog.value?.ok,
+    /چاپ خام.*دیالوگ ویندوز/.test(labelRawDialog.value?.error ?? ''),
+    mock.state.printCalls.length,
+    mock.state.captureCalls.length
+  ], [false, true, 0, 0])
+  check('printTestPage RAW + useSystemDialog قبل از چاپ خام رد می‌شود', [
+    testRawDialog.value?.ok,
+    /چاپ خام.*دیالوگ ویندوز/.test(testRawDialog.value?.error ?? ''),
+    mock.state.printCalls.length,
+    mock.state.captureCalls.length
+  ], [false, true, 0, 0])
 }
 
 console.log(`\n${bad ? '✗' : '✓'} ${ok} بررسی موفق · ${bad} ناموفق\n`)

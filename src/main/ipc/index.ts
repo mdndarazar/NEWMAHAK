@@ -1,5 +1,7 @@
-import { ipcMain } from 'electron'
+import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron'
 import { cardTransferService } from '../services/CardTransferService'
+import { bridgeDiagnosticsService } from '../services/bridgeDiagnosticsService'
+import { financialInspectorService } from '../services/financialInspectorService'
 import { pendingRestockService } from '../services/PendingRestockService'
 import { stockCountService } from '../services/StockCountService'
 import { staffReportService } from '../services/StaffReportService'
@@ -9,6 +11,7 @@ import { debtReminderService } from '../services/DebtReminderService'
 import { IPC } from '@shared/ipc'
 import { prisma } from '../db/client'
 import { productService } from '../services/ProductService'
+import { wooSyncService } from '../services/WooSyncService'
 import { salesService } from '../services/SalesService'
 import { salesLedger } from '../services/SalesLedger'
 import { reportLimitsService } from '../services/reportLimits'
@@ -21,6 +24,8 @@ import { stockAllocationService } from '../services/StockAllocationService'
 import { variantPurgeService } from '../services/VariantPurgeService'
 import { cashboxService } from '../services/CashboxService'
 import { cashMovementService } from '../services/CashMovementService'
+import { custodyService } from '../services/CustodyService'
+import { custodyPlanService } from '../services/CustodyPlanService'
 import { fraudService } from '../services/FraudService'
 import { receiptGapReport } from '../services/receiptNo'
 import { shiftService } from '../services/ShiftService'
@@ -37,9 +42,12 @@ import { runPrintDiagnose } from '../print/diagnose'
 // نشست ۲۲۲ · فاز ۵ — دروازه‌ی مسیر RAW (بخش ۷.۱ طرح)
 import { assertRawMethodAllowed } from '../print/raw/gate'
 import { runPrintTestPage } from '../print/testPage'
+import { runPrintSampleInvoice } from '../print/sampleInvoice'
+// نشست ۳۱۷ — نمونه‌ی چاپ سند اعتبار (ایمن: بدون DB-write/شمارنده/audit)
+import { creditSampleHtml, runCreditSamplePrint } from '../print/sampleCredit'
 // نشست ۲۲۲ · فاز ۵ — مسیر خام (RAW): TSPL برای لیبل، ESC/POS برای رسید
-import { isRawMethod, printMaybeRaw } from '../print/raw/route'
-import { printTsplRow } from '../print/raw'
+import { assertRawNotDialog, isRawMethod, printMaybeRaw } from '../print/raw/route'
+import { mmToPrinterDots, printTsplRows } from '../print/raw'
 // نشست ۲۲۲ · فاز ۳ — resolver مشترک چاپگر (بخش ۶.۲ طرح)
 import { listPrintersDetailed, printerNotFoundMessage, resolvePrintTargetName } from '../print/target'
 // نشست ۲۲۲ · فاز ۱ طرح چاپ — اندازه‌ی کاغذ فاکتور (همان منبع حقیقت main/renderer)
@@ -50,11 +58,16 @@ import { toUserMessage } from '../errors'
 import { auditOrThrow } from '../services/AuditService'
 import { AuditAction } from '@shared/enums'
 import { SETTING_KEYS } from '@shared/receipt'
+import { faDigits } from '@shared/jalali'
 import { stripBigInts } from '@shared/money'
 import {
+  assertManagerSession,
   assertPanelUnlocked,
   notePanelUnlocked,
   clearPanelSessions,
+  clearPanelSessionsForOwner,
+  panelSessionStatus,
+  runWithPanelSessionOwner,
   applyPanelSessionTtlMinutes,
   CREDIT_READ_PANEL
 } from '../services/panelSession'
@@ -71,28 +84,54 @@ import { BusinessError } from '../errors'
  * undefined، قفل SQLite و ... — به یک جمله‌ی فارسی ترجمه می‌شود. متن اصلی فقط
  * در کنسول می‌ماند تا کاربر هیچ‌وقت خطای فنی نبیند.
  */
+/** webContents مجاز را به نشست همان پنجره متصل می‌کند؛ renderer هرگز owner را نمی‌فرستد. */
+const observedIpcSenders = new Set<number>()
+
+function sessionOwnerOf(event: IpcMainInvokeEvent): number {
+  const sender = event?.sender
+  if (!sender || sender.isDestroyed()) throw new BusinessError('پنجرهٔ درخواست معتبر نیست؛ عملیات انجام نشد.')
+  const owner = BrowserWindow.fromWebContents(sender)
+  if (!owner || owner.isDestroyed()) throw new BusinessError('این درخواست از پنجرهٔ مجاز برنامه نیست.')
+
+  const id = sender.id
+  if (!observedIpcSenders.has(id)) {
+    observedIpcSenders.add(id)
+    sender.once('destroyed', () => {
+      observedIpcSenders.delete(id)
+      clearPanelSessionsForOwner(id)
+    })
+  }
+  return id
+}
+
 function handle<T>(channel: string, fn: (payload: any) => Promise<T> | T) {
-  ipcMain.handle(channel, async (_e: unknown, payload: any) => {
+  ipcMain.handle(channel, async (event: IpcMainInvokeEvent, payload: any) => {
     try {
+      const owner = sessionOwnerOf(event)
       /**
-       * 🔴 نشست ۱۸۲ — مرز BigInt دقیقاً همین‌جاست.
-       *
-       * بعد از مهاجرت بند ۴-۲۸ الف، هر سرویسی که ردیف خام Prisma را برگرداند
-       * مقدار `bigint` می‌دهد، و structured clone الکترون آن را دست‌نخورده به
-       * renderer می‌رساند. کد رابط کاربری با `number` نوشته شده، پس اولین
-       * `s + r.grandTotal` یا `Math.round(inv.taxTotal)` کل صفحه را با
-       * «Cannot mix BigInt and other types» می‌اندازد — مثلاً ویرایش فاکتور
-       * عمده و فهرست فاکتور خرید.
-       *
-       * رفعِ نقطه‌به‌نقطه در سرویس‌ها هیچ‌وقت کامل نمی‌شود: هر کوئری تازه‌ای
-       * دوباره سوراخ می‌کند. پس تبدیل در همین تنها گلوگاه مشترک انجام می‌شود.
-       * مقدار خارج از محدوده‌ی امن throw می‌شود (نه گرد) و از راه
-       * `toUserMessage` به‌صورت پیام فارسی به کاربر می‌رسد.
+       * همه‌ی gateهای قدیمی داخل همین context اجرا می‌شوند؛ بنابراین بدون
+       * تغییر تک‌تک سرویس‌ها، `assertPanelUnlocked` فقط نشست پنجره‌ی درخواست
+       * را می‌بیند و نشست پنجره‌ی دیگری هرگز مجوز نمی‌دهد.
        */
-      return { ok: true, data: stripBigInts(await fn(payload), channel) }
+      return await runWithPanelSessionOwner(owner, async () => {
+        /**
+         * مرز BigInt در گلوگاه مشترک IPC است تا مقدار bigint هرگز به renderer
+         * نرسد و نتیجه‌ی queryهای جدید هم از قلم نیفتد.
+         */
+        return { ok: true, data: stripBigInts(await fn(payload), channel) }
+      })
     } catch (err: any) {
-      console.error(`[ipc:${channel}]`, err)
-      return { ok: false, error: toUserMessage(err) }
+      // کدهای ساختاریافته‌ی کسب‌وکاری (مثل SESSION_REQUIRED) برای رفتار UI به رندرر عبور می‌کنند
+      const code =
+        err?.printCancelled === true
+          ? 'PRINT_CANCELLED'
+          : err?.printOutcomeUnknown === true
+            ? 'PRINT_OUTCOME_UNKNOWN'
+            : err?.isBusinessError === true && typeof err?.code === 'string'
+              ? err.code
+              : undefined
+      if (!code) console.error(`[ipc:${channel}]`, err)
+      return { ok: false, error: toUserMessage(err), ...(code ? { code } : {}) }
     }
   })
 }
@@ -144,21 +183,53 @@ async function canReadProductPurchasePrice(): Promise<boolean> {
  * `withUser` برای سازگاری با مسیرهای قدیمی عمداً userId ارسالی را نگه می‌دارد،
  * اما این رفتار برای پرداخت، ابطال پرداخت و پاس‌کردن چک یک شکاف امنیتی است:
  * renderer می‌توانست نام کارمند دیگری را داخل Audit بنویسد. این مسیر فقط actor
- * نشست باز را می‌پذیرد و نبود نشست را به خطای قابل‌فهم تبدیل می‌کند.
+ * نشست باز را می‌پذیرد و نبود نشست را به خطای قابل‌فهم تبدیل می‌کند — وضعیت‌محور
+ * (سه حالت: نشست نداریم / کارمند نامعلوم / نشست جامانده) و با کد
+ * SESSION_REQUIRED تا رندرر همان‌جا ریکاوریِ بدون خروج از صفحه را پیشنهاد دهد.
  */
 async function withSessionActor<T extends Record<string, any> | null | undefined>(
   payload: T,
   operation = 'ثبت یا تغییر پرداخت'
 ): Promise<any> {
+  /**
+   * custody.v2 is opt-in.  When enabled, the server state (not renderer
+   * userId/shiftId) supplies a fenced actor.  With the flag off this branch
+   * returns exactly to the established legacy behaviour below.
+   */
+  const safePayload: any = { ...(payload ?? {}) }
+  delete safePayload.custodyFence
+  delete safePayload.epoch
+  delete safePayload.afterCloseInTx
+  delete safePayload.custodyEffectiveTo
+  const fence = await custodyService.actorForFinancialOperation()
+  if (fence) return { ...safePayload, userId: fence.expectedActorUserId, shiftId: fence.expectedShiftId, custodyFence: fence }
   const actorId = await shiftService.currentStaffId()
-  if (actorId == null) {
-    const message =
-      operation === 'ثبت یا تغییر پرداخت'
-        ? 'برای ثبت یا تغییر پرداخت، ابتدا یک نشست بازِ کارمند لازم است.'
-        : `برای ${operation}، ابتدا یک نشست بازِ کارمند لازم است.`
-    throw new Error(message)
-  }
-  return { ...(payload ?? {}), userId: actorId }
+  if (actorId != null) return { ...safePayload, userId: actorId }
+  /**
+   * پیام وضعیت‌محور + کد SESSION_REQUIRED (برای بنر قابل‌اقدام در رندرر):
+   * سه حالت ممکن هرکدام راهنمای متفاوت می‌خواهند — نشست نداریم، کارمند
+   * نامعلوم (staffPending)، یا نشست جامانده‌ی روز دیگر که پولش شمرده نشده.
+   */
+  const st = await shiftService.status()
+  const message =
+    st.state === 'STALE' && st.stale
+      ? `نشست «${st.stale.sessionLabel}» از روز ${faDigits(st.stale.dayJalali)}` +
+        (st.stale.userName ? ` (کارمند: ${st.stale.userName})` : '') +
+        ` هنوز باز و پولش شمرده نشده است. ` +
+        // نشست ۳۱۰ · فاز ۲ — اگر اضافه‌کاری ممکن است، همان جایگزین اول معرفی می‌شود
+        (st.overtimeUntilLabel
+          ? `اگر هنوز مشغولید، کارمند همین نشست می‌تواند تا ساعت ${st.overtimeUntilLabel} «اضافه‌کاری» اعلام کند و ${operation} ادامه یابد؛` +
+            ' وگرنه برای شروع روز تازه باید نشست جامانده بسته شود.'
+          : `برای اینکه پول آن روز با فروش امروز قاطی نشود، باید همان نشست بسته و نشست تازه باز شود؛`) +
+        ` روی «نشست صندوق» (یا دکمه‌ی همین پیام) بزنید، سپس ${operation} را دوباره انجام دهید.`
+      : st.state === 'STAFF_PENDING'
+        ? `نشست باز است ولی هنوز معلوم نیست پشت صندوق کیست؛ چون هر فاکتور باید به یک نفر نسبت داده شود،` +
+          ` برای ${operation} اول از روی «نشست صندوق» کارمند را انتخاب و تأیید کنید.`
+        : operation === 'ثبت یا تغییر پرداخت'
+          ? // عبارت تحت‌اللفظی سازگار با قفل ساختاری s67
+            'برای ثبت یا تغییر پرداخت، ابتدا یک نشست بازِ کارمند لازم است؛ روی «نشست صندوق» بزنید و نشست را باز کنید.'
+          : `برای ${operation}، ابتدا یک نشست بازِ کارمند لازم است؛ روی «نشست صندوق» بزنید و نشست را باز کنید.`
+  throw new BusinessError(message, 'SESSION_REQUIRED')
 }
 
 /**
@@ -192,6 +263,18 @@ async function cardTransferActor<T extends Record<string, any> | null | undefine
 async function withOptionalSessionActor<T extends Record<string, any> | null | undefined>(payload: T): Promise<any> {
   const actorId = await shiftService.currentStaffId()
   return { ...(payload ?? {}), userId: actorId }
+}
+
+/** Inventory/cost mutations remain optional-session in legacy mode, but once
+ * custody is opted in they receive the same transaction-local fence as sales.
+ * Renderer-supplied fence/actor fields are always discarded. */
+async function withCustodyFenceOrOptionalActor<T extends Record<string, any> | null | undefined>(payload: T): Promise<any> {
+  const safe: any = { ...(payload ?? {}) }
+  delete safe.custodyFence
+  delete safe.epoch
+  const fence = await custodyService.actorForFinancialOperation()
+  if (fence) return { ...safe, userId: fence.expectedActorUserId, custodyFence: fence }
+  return withOptionalSessionActor(safe)
 }
 
 /**
@@ -334,10 +417,93 @@ export function registerIpcHandlers(): void {
   handle(IPC.variantSearch, (p) => productService.list({ search: p.search, take: 30 }))
   handle(IPC.categoryTree, () => productService.categoryTree())
   handle(IPC.categoryUpsert, (p) => productService.categoryUpsert(p))
-  handle(IPC.stockAdjust, async (p) => productService.adjustStock(await withOptionalSessionActor(p ?? {})))
+  handle(IPC.stockAdjust, async (p) => productService.adjustStock(await withCustodyFenceOrOptionalActor(p ?? {})))
   handle(IPC.stockMovements, (p) => productService.movements(p))
 
+  // ---- همگام‌سازی موجودی سایت WooCommerce (فقط stock_quantity) ----
+  handle(IPC.wooStatus, async () => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'دیدن وضعیت همگام‌سازی موجودی سایت')
+    return wooSyncService.status()
+  })
+  handle(IPC.wooSettingsSave, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'تغییر تنظیمات همگام‌سازی موجودی سایت')
+    return wooSyncService.saveSettings(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooTest, async () => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'تست اتصال سایت')
+    return wooSyncService.testConnection()
+  })
+  handle(IPC.wooCatalog, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'خواندن کاتالوگ موجودی سایت')
+    return wooSyncService.catalog(p ?? {})
+  })
+  handle(IPC.wooLinks, async () => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'دیدن اتصال‌های موجودی سایت')
+    return wooSyncService.links()
+  })
+  handle(IPC.wooLinkCreate, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'اتصال کالا به موجودی سایت')
+    const d = String((p ?? {}).decision ?? 'MAHAK_WINS')
+    if (d === 'WOO_WINS' || d === 'MAHAK_WINS') await assertManagerPassword((p ?? {}).managerPassword ?? null, 'اتصال اولیه با انتخاب مرجع موجودی')
+    return wooSyncService.linkCreate(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooLinksPause, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'قطع موقت اتصال موجودی سایت')
+    return wooSyncService.pause(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooLinksResumePreview, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'پیش‌نمایش وصل دوباره موجودی سایت')
+    return wooSyncService.resumePreview(p ?? {})
+  })
+  handle(IPC.wooLinksResumeApply, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'وصل دوباره موجودی سایت')
+    await assertManagerPassword((p ?? {}).managerPassword ?? null, 'وصل دوباره/حل اختلاف موجودی سایت')
+    return wooSyncService.resumeApply(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooLinksUnlink, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'قطع دائم اتصال موجودی سایت')
+    await assertManagerPassword((p ?? {}).managerPassword ?? null, 'قطع دائم اتصال موجودی سایت')
+    return wooSyncService.unlink(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooSyncNow, async () => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'اجرای همگام‌سازی موجودی سایت')
+    return wooSyncService.syncNow()
+  })
+  handle(IPC.wooParkedRetry, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'پردازش دوباره رویدادهای پارک‌شده سایت')
+    await assertManagerPassword((p ?? {}).managerPassword ?? null, 'پردازش دستی رویدادهای پارک‌شده سایت')
+    // actor نشست به service می‌رسد تا resolvedBy در approvalهای اعمال‌شده ثبت شود.
+    const actor = await withOptionalSessionActor(p ?? {})
+    return wooSyncService.retryParked(100, actor?.userId ?? null)
+  })
+  handle(IPC.wooApprovals, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'دیدن صف تأیید موجودی سایت')
+    return wooSyncService.approvals(p ?? {})
+  })
+  handle(IPC.wooApprovalResolve, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'تأیید/رد تصمیم موجودی سایت')
+    await assertManagerPassword((p ?? {}).managerPassword ?? null, 'تأیید/رد تصمیم موجودی سایت')
+    return wooSyncService.resolveApproval(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooLinksPauseProduct, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'قطع گروهی رنگ/سایزهای محصول')
+    return wooSyncService.pauseProductGroup(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooLinksResumeProductMahak, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'وصل گروهی رنگ/سایزهای محصول')
+    await assertManagerPassword((p ?? {}).managerPassword ?? null, 'وصل گروهی رنگ/سایز با مرجع MAHAK')
+    return wooSyncService.resumeProductGroupMahak(await withOptionalSessionActor(p ?? {}))
+  })
+  handle(IPC.wooLogs, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.wooSync, 'دیدن لاگ همگام‌سازی موجودی سایت')
+    return wooSyncService.logs(p ?? {})
+  })
+
   // ---- فروش ----
+  /** گزارشات مالی فقط‌خواندنی هم باید Main-side gate داشته باشند؛ ManagerGate رندرر امنیت نیست. */
+  const assertSalesReportsRead = (what: string) => assertPanelUnlocked(PANEL_KEYS.salesReports, what)
+  /** تب نسیه قفل مستقل خودش را درون گزارشات فروش دارد. */
+  const assertSalesCreditRead = (what: string) => assertPanelUnlocked(PANEL_KEYS.salesCredit, what)
   // نشست ۱۵۴ (S151-b) — actor فاکتور و Audit قیمت دستی از نشست باز، نه userId ارسالی رندرر
   /**
    * 🔴 نشست ۱۸۲ · بند ۴-۱ — فروش هم مثل برگشت و تعویض، نشست بازِ کارمند لازم دارد.
@@ -391,6 +557,18 @@ export function registerIpcHandlers(): void {
   handle(IPC.saleReturnGet, (p) => salesService.returnGet(p.id))
   handle(IPC.saleReturnUpdate, async (p) => salesService.returnUpdate(await withSessionActor(p ?? {}, 'ویرایش برگشت از فروش')))
   handle(IPC.saleReturnDelete, async (p) => salesService.returnDelete(await withSessionActor(p ?? {}, 'ابطال برگشت یا تعویض')))
+  handle(IPC.saleReturnCorrection, async (p) =>
+    salesService.returnReconcileVoid(await withSessionActor(p ?? {}, 'اصلاح جبرانی برگشت از فروش'))
+  )
+  /**
+   * دفتر جبرانی کنار گزارش فروش نمایش داده می‌شود و کاربر/شیفتِ مبدأ و اصلاح،
+   * مبلغ نقد/کارت و مغایرت را برمی‌گرداند. ManagerGate رندرر کافی نیست: invoke
+   * مستقیم نباید بتواند این history مالی را از پنل گزارشِ قفل‌شده بخواند.
+   */
+  handle(IPC.saleReturnCorrectionList, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.salesReports, 'دیدن دفتر اصلاحات جبرانی برگشت در گزارش فروش')
+    return salesService.returnCorrectionList(p ?? {})
+  })
   handle(IPC.salePurgePreview, (p) => salesService.purgePreview(p ?? {}))
   handle(IPC.salePurge, async (p) => {
     const payload = await withSessionActor(p ?? {})
@@ -399,6 +577,15 @@ export function registerIpcHandlers(): void {
   })
   // ---- فروش نسیه: پرداختی چندمرحله‌ای و چک ----
   handle(IPC.salePayments, (p) => salesService.payments(p ?? {}))
+  /**
+   * زنجیرهٔ مالی اعتبار فقط از داخل گزارش فروش خوانده می‌شود. DTO سرویس خودش
+   * code و PII دارنده را ندارد، اما gate main مانع invoke مستقیم از UI قفل‌شده
+   * هم هست؛ reveal کد همچنان مسیر جدا و manager-only خودش را دارد.
+   */
+  handle(IPC.saleCreditSettlementLineage, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.salesReports, 'دیدن زنجیرهٔ تسویه با اعتبار در گزارش فروش')
+    return salesService.creditSettlementLineage(p ?? {})
+  })
   // نشست ۶۷ — actor همه‌ی mutationهای Payment فقط از نشست باز می‌آید؛
   // userId ارسالی renderer در این مسیرها عمداً نادیده گرفته می‌شود.
   handle(IPC.salePaymentAdd, async (p) => salesService.addPayment(await withSessionActor(p)))
@@ -406,11 +593,20 @@ export function registerIpcHandlers(): void {
   handle(IPC.salePaymentUpdate, async (p) => salesService.updatePayment(await withSessionActor(p)))
   handle(IPC.salePaymentDelete, async (p) => salesService.deletePayment(await withSessionActor(p ?? {})))
   handle(IPC.saleChequeStatus, async (p) => salesService.setChequeStatus(await withSessionActor(p ?? {})))
-  handle(IPC.saleChequeList, (p) => salesService.chequeList(p ?? {}))
+  handle(IPC.saleChequeList, async (p) => {
+    await assertSalesReportsRead('دیدن فهرست چک‌های فروش در گزارشات')
+    return salesService.chequeList(p ?? {})
+  })
   // ---- تعویض کالا و بارکد اعتبار خرید بعدی (بخش ۶) ----
   handle(IPC.saleExchangeCreate, async (p) => salesService.createExchange(await withSessionActor(p ?? {}, 'ثبت تعویض کالا')))
-  handle(IPC.saleExchangeList, (p) => salesService.exchangeList(p ?? {}))
-  handle(IPC.saleExchangeGet, (p) => salesService.exchangeGet(p ?? {}))
+  handle(IPC.saleExchangeList, async (p) => {
+    await assertSalesReportsRead('دیدن فهرست تعویض‌های کالا در گزارشات')
+    return salesService.exchangeList(p ?? {})
+  })
+  handle(IPC.saleExchangeGet, async (p) => {
+    await assertSalesReportsRead('دیدن جزئیات تعویض کالا در گزارشات')
+    return salesService.exchangeGet(p ?? {})
+  })
   /**
    * چاپ «سند تعویض کالا» (بخش ۶ بند ۲).
    * داده‌اش کامل از `exchangeGet` می‌آید و بارکد اعتبار — اگر صادر شده باشد —
@@ -478,8 +674,14 @@ export function registerIpcHandlers(): void {
   handle(IPC.cashboxExpected, (p) => cashboxService.expected(p ?? {}))
   // نشست ۱۷۹ (S179-D2) — مرور خواندنی است و نشست باز نمی‌خواهد؛ ولی actor Audit فقط از نشست باز main
   // (بدون نشست ⇒ null)، و actorId ارسالی رندرر هرگز پذیرفته نمی‌شود. userId payload فیلتر کارمند می‌ماند.
-  handle(IPC.saleFraudReview, async (p) => fraudService.review({ ...(p ?? {}), actorId: await shiftService.currentStaffId() }))
-  handle(IPC.saleReceiptGaps, () => receiptGapReport(prisma as any))
+  handle(IPC.saleFraudReview, async (p) => {
+    await assertSalesReportsRead('دیدن هشدارهای ضدتقلب فروش')
+    return fraudService.review({ ...(p ?? {}), actorId: await shiftService.currentStaffId() })
+  })
+  handle(IPC.saleReceiptGaps, async () => {
+    await assertSalesReportsRead('دیدن شماره‌فیش‌های جاافتاده یا باطل‌شده')
+    return receiptGapReport(prisma as any)
+  })
   handle(IPC.settingsAccountingPolicy, () => settingsService.accountingPolicy())
   // نشست ۱۵۴ (S151-b، S153-D1) — گیت رمز مدیر در خود سرویس؛ actor از نشست
   handle(IPC.settingsAccountingPolicySet, async (p) =>
@@ -530,6 +732,13 @@ export function registerIpcHandlers(): void {
     await assertCreditRead('دیدن جزئیات یک اعتبار خرید')
     return storeCreditService.detail(p ?? {})
   })
+  /**
+   * افشای کد قابل‌مصرف عمداً از list/detail/report جداست. سرویس خودش فقط
+   * `MANAGER` session سمت main را می‌پذیرد؛ PANEL/OPEN حتی با IPC مستقیم رد می‌شوند.
+   */
+  handle(IPC.creditManagerCodeReveal, (p) =>
+    storeCreditService.revealManagerCode({ sourceId: p?.sourceId, sourceSubKind: p?.sourceSubKind })
+  )
   // نشست ۱۴۳ · بند ۴-۲۹ — actor صدور دستی/گروهی فقط از نشست باز main خوانده می‌شود، نه payload رندرر.
   handle(IPC.creditIssue, async (p) => storeCreditService.issueManual(await withSessionActor(p ?? {}, 'صدور دستی اعتبار خرید')))
   handle(IPC.creditBulkIssue, async (p) => storeCreditService.bulkIssue(await withSessionActor(p ?? {}, 'تولید گروهی اعتبار خرید')))
@@ -578,39 +787,79 @@ export function registerIpcHandlers(): void {
   })
   handle(IPC.creditSettingsGet, () => settingsService.creditSettings())
   handle(IPC.creditSettingsSet, async (p) => settingsService.saveCreditSettings(await withOptionalSessionActor(p ?? {})))
+  /** سند/PDF/پیش‌نمایش خودِ credential را دارد؛ فقط نشست واقعی مدیر مجاز است. */
   handle(IPC.printCredit, async (p) => {
-    await assertCreditRead('چاپ اعتبار خرید')
+    assertManagerSession('چاپ اعتبار خرید')
     return printService.printCredit(await withOptionalSessionActor(p ?? {}))
   })
   handle(IPC.printCreditBatch, async (p) => {
-    await assertCreditRead('چاپ دسته اعتبار خرید')
+    assertManagerSession('چاپ دسته اعتبار خرید')
     return printService.printCreditBatch(await withOptionalSessionActor(p ?? {}))
   })
   handle(IPC.creditPdf, async (p) => {
-    await assertCreditRead('خروجی PDF اعتبار خرید')
+    assertManagerSession('خروجی PDF اعتبار خرید')
     return printService.creditPdf(await withOptionalSessionActor(p ?? {}))
   })
   handle(IPC.creditPreviewHtml, async (p) => {
-    await assertCreditRead('پیش‌نمایش چاپی اعتبار خرید')
+    assertManagerSession('پیش‌نمایش چاپی اعتبار خرید')
     return printService.creditHtml(Number(p?.id ?? 0))
   })
+  // نشست ۳۱۷ — پیش‌نمایش/چاپ آزمایشی سند نمونه (کارت «چاپ سند اعتبار»)
+  handle(IPC.creditSampleHtml, async (p) => {
+    await assertCreditRead('پیش‌نمایش نمونه‌ی چاپ سند اعتبار خرید')
+    return creditSampleHtml(p ?? {})
+  })
+  handle(IPC.creditSamplePrint, async (p) => {
+    await assertCreditRead('چاپ آزمایشی سند اعتبار خرید')
+    return runCreditSamplePrint(p ?? {})
+  })
   // ---- تب «نسیه» گزارشات فروش (بخش ۷) ----
-  handle(IPC.saleCreditList, (p) => salesService.creditList(p ?? {}))
+  handle(IPC.saleCreditList, async (p) => {
+    await assertSalesCreditRead('دیدن فهرست بدهکاران و تسویه‌های نسیه')
+    return salesService.creditList(p ?? {})
+  })
   handle(IPC.saleReportSummary, (p) => salesService.summary(p ?? {}))
   handle(IPC.saleReportRows, (p) => salesService.reportRows(p ?? {}))
-  handle(IPC.saleReportByShift, (p) => salesService.reportByShift(p ?? {}))
-  handle(IPC.saleReportItems, (p) => salesService.reportItems(p ?? {}))
+  // ریزبین مالی: فقط‌خواندنی و با authorization سمت main، مستقل از gate ظاهری renderer.
+  handle(IPC.saleReportFinancialSources, (p) => financialInspectorService.sources(p))
+  handle(IPC.saleReportFinancialDocument, (p) => financialInspectorService.document(p))
+  // نشست ۳۱۸ — نمای تشخیص پل تطبیق (طرح برنده «کامیلا»، فاز ۲-۴)
+  // open همیشه رمز تازه می‌خواهد (strict)؛ بقیه با نشست باز همان پنل. actor از main.
+  handle(IPC.saleReportBridgeDiagOpen, (p) => bridgeDiagnosticsService.open((p as any)?.scope ?? {}, (p as any)?.password))
+  handle(IPC.saleReportBridgeDiagSources, (p) =>
+    bridgeDiagnosticsService.sources((p as any)?.scope ?? {}, (p as any)?.rowKey, (p as any)?.skip, (p as any)?.take))
+  handle(IPC.saleReportBridgeDiagNotes, (p) => bridgeDiagnosticsService.notes((p as any)?.scope ?? {}))
+  handle(IPC.saleReportBridgeDiagNoteAdd, (p) => bridgeDiagnosticsService.noteAdd((p as any)?.scope ?? {}, (p as any)?.text))
+  handle(IPC.saleReportBridgeDiagDoc, (p) =>
+    bridgeDiagnosticsService.documentDetail((p as any)?.scope ?? {}, (p as any)?.ref, (p as any)?.rowKey))
+  handle(IPC.saleReportByShift, async (p) => {
+    await assertSalesReportsRead('دیدن گزارش فروش بر اساس شیفت')
+    return salesService.reportByShift(p ?? {})
+  })
+  handle(IPC.saleReportItems, async (p) => {
+    await assertSalesReportsRead('دیدن ریز کالاهای فروش در گزارشات')
+    return salesService.reportItems(p ?? {})
+  })
   // ---- افزوده‌های جلسه ۱۵ ----
-  handle(IPC.saleReportLedger, (p) => salesLedger.ledger(p ?? {}))
+  handle(IPC.saleReportLedger, async (p) => {
+    await assertSalesReportsRead('دیدن دفتر رویدادهای مالی فروش')
+    return salesLedger.ledger(p ?? {})
+  })
   /** جلسه ۱۶ · بند ۵ — تعداد کل هر جدول در برابر سقف نمایشش (فقط شمارش) */
-  handle(IPC.saleReportLimits, (p) => reportLimitsService.limits(p ?? {}))
-  handle(IPC.salePeriodLock, (p) => periodLockService.status(p ?? {}))
+  handle(IPC.saleReportLimits, async (p) => {
+    await assertSalesReportsRead('دیدن سقف و هشدارهای گزارش فروش')
+    return reportLimitsService.limits(p ?? {})
+  })
+  handle(IPC.salePeriodLock, async (p) => {
+    await assertSalesReportsRead('دیدن وضعیت قفل دورهٔ مالی')
+    return periodLockService.status(p ?? {})
+  })
   handle(IPC.paymentMethods, () => prisma.paymentMethod.findMany({ where: { isActive: true }, orderBy: { sortOrder: 'asc' } }))
 
   // ---- خرید ----
   // نشست ۱۵۵ (S151-c1، بند ۴-۳۹ «ثبت خرید»): actor از نشست؛ گیت رمز پنل خرید در خود سرویس
-  handle(IPC.purchaseCreate, async (p) => purchaseService.create(await withOptionalSessionActor(p ?? {})))
-  handle(IPC.purchaseUpdate, async (p) => purchaseService.update(await withOptionalSessionActor(p ?? {})))
+  handle(IPC.purchaseCreate, async (p) => purchaseService.create(await withCustodyFenceOrOptionalActor(p ?? {})))
+  handle(IPC.purchaseUpdate, async (p) => purchaseService.update(await withCustodyFenceOrOptionalActor(p ?? {})))
   handle(IPC.purchaseList, async (p) => {
     await assertPanelUnlocked(PANEL_KEYS.purchase, 'دیدن فاکتورهای خرید')
     return purchaseService.list(p ?? {})
@@ -680,8 +929,66 @@ export function registerIpcHandlers(): void {
     stockAllocationService.summaryForInvoices(((p as any)?.invoiceIds ?? []) as number[])
   )
 
+  // ---- حضانت صندوق / credential شخصی کارکنان (feature flag پیش‌فرض خاموش) ----
+  handle(IPC.custodyStatus, () => custodyService.status())
+  handle(IPC.custodyConfigGet, () => {
+    assertManagerSession('دیدن تنظیمات ساختاری حضانت صندوق')
+    return custodyService.config()
+  })
+  handle(IPC.custodyConfigSet, (p) => {
+    assertManagerSession('تغییر تنظیمات ساختاری حضانت صندوق')
+    const { managerSession: _ignored, managerUserId: _managerId, managerPassword: _managerPassword, ...safe } = p ?? {}
+    return custodyService.setConfig({ ...safe, managerSession: true })
+  })
+  handle(IPC.custodyPinSet, (p) => {
+    /** self-change فقط با credential فعلی همان کارمند مجاز است؛ صدور/reset از
+     * نشست اصلی مدیر Main می‌آید و managerId/PIN قابل‌جعل renderer حذف می‌شود. */
+    const selfChange = !!p?.currentPassword && p?.managerUserId == null
+    if (selfChange) return custodyService.setPin(p ?? {})
+    assertManagerSession('صدور یا بازنشانی رمز حضانت کارمند')
+    const { managerSession: _ignored, managerUserId: _managerId, managerPassword: _managerPassword, ...safe } = p ?? {}
+    return custodyService.setPin({ ...safe, managerSession: true })
+  })
+  /** فهرست سبک و mask‌شده برای بازکردن/تحویل صندوق؛ داده بانکی یا credential ندارد. */
+  handle(IPC.custodyStaffList, () => custodyService.staffList())
+  handle(IPC.custodyReport, (p) => {
+    assertManagerSession('دیدن گزارش کنترل حضانت')
+    const { managerSession: _ignored, managerUserId: _managerId, managerPassword: _managerPassword, ...safe } = p ?? {}
+    return custodyService.report({ ...safe, managerSession: true })
+  })
+
+  handle(IPC.custodyOpen, (p) => custodyService.open(p ?? {}))
+  handle(IPC.custodyPlanList, () => {
+    assertManagerSession('دیدن برنامه‌های کاری حضانت')
+    return custodyPlanService.list()
+  })
+  handle(IPC.custodyPlanSave, (p) => {
+    assertManagerSession('ثبت یا ویرایش برنامه کاری حضانت')
+    const { managerSession: _ignored, managerUserId: _managerId, managerPassword: _managerPassword, ...safe } = p ?? {}
+    return custodyPlanService.save({ ...safe, managerSession: true })
+  })
+  handle(IPC.custodyPlanDelete, (p) => {
+    assertManagerSession('حذف برنامه کاری حضانت')
+    const { managerSession: _ignored, managerUserId: _managerId, managerPassword: _managerPassword, ...safe } = p ?? {}
+    return custodyPlanService.remove({ ...safe, managerSession: true })
+  })
+  handle(IPC.custodyHandoverStart, (p) => custodyService.handoverStart(p ?? {}))
+  handle(IPC.custodyHandoverAccept, (p) => custodyService.handoverAccept(p ?? {}))
+  handle(IPC.custodyHandoverCancel, (p) => custodyService.handoverCancel(p ?? {}))
+  handle(IPC.custodyFinalClose, (p) => custodyService.finalClose(p ?? {}))
+  handle(IPC.custodyDispositionConfirm, (p) => custodyService.confirmDisposition(p ?? {}))
+  handle(IPC.custodyDispositionReverse, (p) => custodyService.reverseDisposition(p ?? {}))
+  handle(IPC.custodyUnresolvedResolve, (p) => custodyService.resolveUnresolved(p ?? {}))
+
   // ---- شیفت (جلسه ۱۹: هر رکورد = یک «نشست») ----
   handle(IPC.shiftCurrent, (p) => shiftService.current(p?.userId ?? null))
+  /** وضعیت نشست برای UI: بدون خطا و بدون ساخت AUTO — مخصوص چیپ/بنر هشدار */
+  handle(IPC.shiftStatus, () => shiftService.status())
+  /**
+   * نشست ۳۱۰ · فاز ۲ — actor حسابرسی داخل سرویس از ردیفِ بازِ سرور (userId همان
+   * نشست) خوانده می‌شود؛ payload رندرر هیچ اختیار هویت‌سازی ندارد، پس فقط دلیل پاس می‌شود.
+   */
+  handle(IPC.shiftOvertimeDeclare, async (p) => shiftService.declareOvertime({ reason: p?.reason ?? null }))
   /**
    * نشست ۱۶۰ · Y9 (S160-D2) — مسیر قدیمی shift:open هم مثل کانال رسمی shiftSessionOpen:
    * actor فقط از نشست باز main؛ بدون نشست ⇒ null و openSession کارمند انتخاب‌شده (staffId) را
@@ -755,7 +1062,10 @@ export function registerIpcHandlers(): void {
         html: receiptHtml(data, tpl),
         deviceName,
         silent: p.silent ?? true,
-        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
       })
       return true
     }
@@ -835,36 +1145,59 @@ export function registerIpcHandlers(): void {
       savedName: tpl.printerName
     })
     /**
-     * نشست ۲۲۲ · فاز ۵ (بخش ۸.۲/۸.۳ طرح) — لیبل روی «دقیق (RAW)»: هر **ردیف** یک
-     * کار TSPL جدا می‌شود (یک تصویر ۱-بیتی + PRINT). برای هر ردیف همان `labelHtml`
-     * با همان ردیف صدا زده می‌شود، پس ظاهر لیبل با مسیر Chromium مو‌به‌مو یکی است؛
-     * `startColumn` همان تهی‌های ابتدای ردیف را بازتولید می‌کند.
-     * وگرنه مسیر امروز دست‌نخورده است.
+     * نشست ۲۲۲ · فاز ۵ (بخش ۸.۲/۸.۳ طرح) — لیبل روی «دقیق (RAW)»: برای هر ردیف
+     * همان `labelHtml` ردیف‌محور رستر می‌شود، ولی همه‌ی ردیف‌ها در **یک کار RAW**
+     * به spooler فرستاده می‌شوند تا هزینه‌ی PowerShell و خطای وسط دسته کمتر شود.
+     * `startColumn` همان تهی‌های ابتدای ردیف را بازتولید می‌کند؛ وگرنه مسیر
+     * Chromium امروز دست‌نخورده است.
      */
     if (isRawMethod(tpl.printMethod)) {
+      assertRawNotDialog(p?.silent)
       const startColumn = Number(p?.startColumn ?? 1)
       const rows = labelRows(labels, tpl.columns, startColumn)
+      /**
+       * offset در مسیر RAW دو بخش دارد:
+       *   • مقدار مثبت با TSPL `REFERENCE` اعمال می‌شود تا تصویر روی رول جابه‌جا شود.
+       *   • مقدار منفی را چون `REFERENCE` منفی نمی‌پذیرد، مثل Chromium داخل CSS نگه می‌داریم.
+       * این کار جلوی دوبار اعمال‌شدن offset مثبت را می‌گیرد و همچنان امکان اصلاح
+       * جزئی به چپ/بالا را حفظ می‌کند.
+       */
+      const rawTpl = {
+        ...tpl,
+        offsetXMm: Math.min(0, Number(tpl.offsetXMm) || 0),
+        offsetYMm: Math.min(0, Number(tpl.offsetYMm) || 0)
+      }
+      const htmlRows: string[] = []
       for (const row of rows) {
         const items = row.filter((i): i is (typeof labels)[number] => i !== null)
         if (!items.length) continue
         const firstFilled = row.findIndex((i) => i !== null) + 1
-        await printTsplRow({
-          html: labelHtml(items, tpl, { startColumn: firstFilled }),
-          printerName: deviceName,
-          widthMm: rowWidthMm,
-          heightMm: rowHeightMm,
-          dpi: tpl.rawDpi,
-          gapMm: tpl.gapYMm,
-          sensorType: tpl.sensorType,
-          direction: tpl.direction,
-          density: tpl.density,
-          speed: tpl.speed
-        })
+        htmlRows.push(labelHtml(items, rawTpl, { startColumn: firstFilled }))
       }
+      await printTsplRows({
+        htmlRows,
+        printerName: deviceName,
+        widthMm: rowWidthMm,
+        heightMm: rowHeightMm,
+        dpi: tpl.rawDpi,
+        gapMm: tpl.gapYMm,
+        sensorType: tpl.sensorType,
+        direction: tpl.direction,
+        density: tpl.density,
+        speed: tpl.speed,
+        referenceX: mmToPrinterDots(tpl.offsetXMm, tpl.rawDpi),
+        referenceY: mmToPrinterDots(tpl.offsetYMm, tpl.rawDpi),
+        invertBits: tpl.rawInvert
+      })
       return labels.length
     }
     await printHtml(labelHtml(labels, tpl, { startColumn: Number(p?.startColumn ?? 1) }), {
-      silent: tpl.askEachTime !== true,
+      /**
+       * بازبینی چاپ: اگر پنجره‌ی انتخاب چاپگرِ خود برنامه قبلاً انتخاب را گرفته
+       * باشد، renderer مقدار `silent` نمی‌فرستد و اینجا باید بی‌صدا چاپ شود؛
+       * فقط حالت «دیالوگ ویندوز» صریحاً `silent:false` می‌فرستد.
+       */
+      silent: p?.silent ?? true,
       deviceName,
       pageSize: { widthMm: rowWidthMm, heightMm: rowHeightMm }
     })
@@ -930,6 +1263,7 @@ export function registerIpcHandlers(): void {
   /** سوییچ «تعیین شیفت بر اساس ساعت» — ذخیره‌ی فوری، مستقل از فرم تنظیمات (مورد ۱) */
   // نشست ۱۵۷ (Y13، S157-D3) — actor از نشست باز، نه userId رندرر؛ گیت رمز مدیر در سرویس
   handle(IPC.settingsShiftByTime, async (p) => settingsService.setShiftByTime(await withOptionalSessionActor(p ?? { byTime: false })))
+  handle(IPC.settingsShiftOvertimeMax, async (p) => settingsService.setShiftOvertimeMax(await withOptionalSessionActor(p ?? { minutes: 0 })))
   /** بند ۹ — «تاریخ و ساعت رسمی»: افست دستی + بررسی ساعت سیستم (بدون اینترنت) */
   handle(IPC.settingsOfficialTime, () => settingsService.officialTime())
   handle(IPC.settingsOfficialTimeSet, async (p) => settingsService.saveOfficialTime(await withOptionalSessionActor(p ?? {})))
@@ -943,10 +1277,17 @@ export function registerIpcHandlers(): void {
     if (res?.ok) notePanelUnlocked('__manager__', 'MANAGER')
     return res
   })
+  /**
+   * خروج سراسری پنجره: تمام scopeهای محدود همان window هم پاک می‌شوند. این
+   * endpoint idempotent است تا قفل بی‌کاری یا پاسخ گم‌شده نتواند دسترسی باقی
+   * بگذارد؛ حضانت صندوق عمداً این‌جا لمس نمی‌شود.
+   */
   handle(IPC.managerLogout, () => {
     clearPanelSessions()
-    return { ok: true as const }
+    return { ok: true as const, session: panelSessionStatus() }
   })
+  /** Renderer بعد از startup یا پاسخ گم‌شده، فقط حقیقت Main را می‌خواند. */
+  handle(IPC.managerSessionStatus, () => panelSessionStatus())
   handle(IPC.managerChangePassword, async (p) => authService.changePassword(await withOptionalSessionActor(p ?? {})))
   handle(IPC.managerInfo, () => authService.info())
   /**
@@ -1061,6 +1402,11 @@ export function registerIpcHandlers(): void {
    * خواندن قالب و اندازه‌ی کاغذ همه سمت main انجام می‌شود.
    */
   handle(IPC.printTestPage, (p) => runPrintTestPage(p ?? {}))
+  /**
+   * «چاپ فاکتور نمونه» کارت‌های تکی/عمده — فاکتور واقعی با داده‌ی نمونه (نه برگه‌ی
+   * کالیبراسیون). resolver، روش ذخیره‌شده و موتور همان مسیر فاکتور واقعی است.
+   */
+  handle(IPC.printSampleInvoice, (p) => runPrintSampleInvoice(p ?? {}))
 
   // =======================================================================
   // جلسه ۱۷ — بندهای ۱ تا ۶
@@ -1119,8 +1465,21 @@ export function registerIpcHandlers(): void {
   // صندوق است» حالا کارمند همان *نشست* است (بند ۳)، نه یک تنظیم سراسری.
   // =======================================================================
   handle(IPC.staffDirectory, (p) => staffService.list(p ?? {}))
-  // نشست ۱۶۰ · Y9 (S160-D3) — ثبت/ویرایش/غیرفعال‌سازی کارمند: actor نشست main، نه userId رندرر (بند ۴-۳۰)
-  handle(IPC.staffSave, async (p) => staffService.save(await withOptionalSessionActor(p ?? {})))
+  /** داده‌های هویتی و بانکی عمداً کانال جدا دارند: هیچ خواندن عادیِ staff list،
+   * گزارش، export یا رمز دوم پنل اجازهٔ دیدن/ثبت آن‌ها را ندارد. */
+  handle(IPC.staffPersonnelGet, (p) => {
+    assertManagerSession('دیدن پروندهٔ حساس پرسنلی')
+    return staffService.personnel(p ?? {})
+  })
+  handle(IPC.staffPersonnelSave, (p) => {
+    assertManagerSession('ویرایش پروندهٔ حساس پرسنلی')
+    return staffService.savePersonnel(p ?? {})
+  })
+  handle(IPC.staffPersonnelSaveComplete, (p) => {
+    assertManagerSession('ثبت یا ویرایش کامل کارمند')
+    const { managerSession: _ignored, panelPassword: _panelPassword, userId: _userId, ...safe } = p ?? {}
+    return staffService.saveComplete(safe)
+  })
 
   const assertMgmt = (what: string) => assertPanelUnlocked(PANEL_KEYS.managementReports, what)
   const canSeeMgmtProfit = async () => {

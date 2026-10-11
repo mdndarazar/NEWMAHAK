@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — کارت‌های چاپگر و بخش پیشرفته‌ی تب چاپ
@@ -10,6 +10,8 @@ import { useManagerSession } from '../hooks/useManagerSession'
 import Modal from '../components/Modal'
 import JalaliDateInput from '../components/JalaliDateInput'
 import PasswordField from '../components/PasswordField'
+import { CustodyChip } from '../components/CustodyChip'
+import { CustodyAdminChip } from '../components/CustodyAdminChip'
 import { exportTable } from '../lib/exportCsv'
 /** کار الف — سه ستون مقصد پول در جدول «حذف گزارشات/واریانت» (همان تابع مشترک) */
 import { destinationCells, DESTINATION_HEADERS_SHORT } from '../lib/destinationCells'
@@ -153,6 +155,8 @@ type Tab =
    * دست‌نخورده سر جایش است.
    */
   | 'staff'
+  /** پیکربندی ساختاری حضانت؛ عملیات روزانه فقط در Header می‌ماند. */
+  | 'custody'
   /** جلسه ۱۹ · بند ۹ — «تاریخ و ساعت رسمی» (افست دستی + بررسی ساعت سیستم) */
   | 'time'
 
@@ -192,9 +196,44 @@ type TextKey = {
   [K in keyof ReceiptTemplate]: ReceiptTemplate[K] extends string ? K : never
 }[keyof ReceiptTemplate]
 
+type StaffDraft = {
+  id: number | null
+  name: string
+  role: string
+  isActive: boolean
+  jobTitle: string
+  phone: string
+  nationalId: string
+  employmentStartJalali: string
+  employmentEndJalali: string
+  employmentStatus: 'ACTIVE' | 'LEAVE' | 'SUSPENDED' | 'TERMINATED'
+  bankName: string
+  bankAccountNo: string
+  bankIban: string
+  bankAccountHolder: string
+}
+
+const blankStaffDraft = (): StaffDraft => ({
+  id: null,
+  name: '',
+  role: 'CASHIER',
+  isActive: true,
+  jobTitle: '',
+  phone: '',
+  nationalId: '',
+  employmentStartJalali: '',
+  employmentEndJalali: '',
+  employmentStatus: 'ACTIVE',
+  bankName: '',
+  bankAccountNo: '',
+  bankIban: '',
+  bankAccountHolder: ''
+})
+
 export default function Settings() {
   const nav = useNavigate()
-  const { logout } = useManagerSession()
+  /** رمز دوم Settings فقط بخش‌های غیرحساس را می‌بیند؛ پرونده کارکنان و حضانت مدیر اصلی می‌خواهند. */
+  const { logout, isManager } = useManagerSession()
   const [tab, setTab] = useState<Tab>('receipt')
   // ---- رمز مدیریتی ----
   const [curPw, setCurPw] = useState('')
@@ -240,9 +279,11 @@ export default function Settings() {
   // نشست ۱۵۷ (Y13) — رمز مدیر برای دو کانال فوری: افست ساعت رسمی و سوییچ «شیفت بر اساس ساعت»
   const [timePw, setTimePw] = useState('')
   const [byTimePw, setByTimePw] = useState('')
+  /** نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت؛ ذخیره‌ی فوری با همان فیلد رمز مدیر */
+  const [overtimeCap, setOvertimeCap] = useState('0')
   const [custDelPw, setCustDelPw] = useState('')
-  /** نشست ۱۶۵ (S165-D4) — رمز پنل تنظیمات برای ثبت/ویرایش کارمند (سمت main هم سنجیده می‌شود) */
-  const [staffPw, setStaffPw] = useState('')
+  /** رمز شخصی مدیر برای تأیید اصلاح/ابطال دیرهنگام؛ هرگز از سرور خوانده نمی‌شود. */
+  const [staffCorrectionApprovalPw, setStaffCorrectionApprovalPw] = useState('')
   const [printers, setPrinters] = useState<string[]>([])
   /**
    * نشست ۲۲۲ · فاز ۳ — فهرست «کامل» چاپگرها (پیش‌فرض ویندوز + نوع حدسی) برای
@@ -302,6 +343,13 @@ export default function Settings() {
   const [lockBusy, setLockBusy] = useState('')
   const [busy, setBusy] = useState(false)
   const [dirty, setDirty] = useState(false)
+  /**
+   * نام چاپگرِ رسید/لیبل در لحظه‌ی بارگذاری (یا آخرین ذخیره‌ی موفق) صفحه. save() با مقایسه‌ی نام فعلیِ
+   * فرم با این مقدار می‌فهمد کاربر *خودش* چاپگر را روی همین صفحه عوض کرده یا نه (ضد‌کهنگیِ mergeFreshPrinter
+   * فقط برای حالت «دست‌نخورده» می‌ماند).
+   */
+  const receiptPrinterAtLoad = useRef('')
+  const labelPrinterAtLoad = useRef('')
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   // ---- بکاپ و بازگردانی ----
@@ -385,15 +433,18 @@ export default function Settings() {
 
   // ---------------- جلسه ۱۸ · بند ۲ — کارمندان ----------------
   const [staffRows, setStaffRows] = useState<
-    { id: number; username: string; name: string; role: string; roleLabel: string; isActive: boolean }[]
+    {
+      id: number
+      username: string
+      name: string
+      role: string
+      roleLabel: string
+      isActive: boolean
+      hasCorrectionApprovalPassword?: boolean
+    }[]
   >([])
 
-  const [staffDraft, setStaffDraft] = useState<{ id: number | null; name: string; role: string; isActive: boolean }>({
-    id: null,
-    name: '',
-    role: 'CASHIER',
-    isActive: true
-  })
+  const [staffDraft, setStaffDraft] = useState<StaffDraft>(blankStaffDraft)
   const [staffBusy, setStaffBusy] = useState(false)
   const [delMessage, setDelMessage] = useState('')
 
@@ -417,10 +468,16 @@ export default function Settings() {
         /** جلسه ۱۹ · بند ۹ — افست دستی ساعت رسمی */
         time: OfficialTimeConfig
       }>(CH.settingsBundle)
-      setReceipt({ ...DEFAULT_RECEIPT_TEMPLATE, ...b.receipt })
+      const loadedReceipt = { ...DEFAULT_RECEIPT_TEMPLATE, ...b.receipt }
+      const loadedLabel = parseLabelTemplate(b.label)
+      receiptPrinterAtLoad.current = loadedReceipt.printerName
+      labelPrinterAtLoad.current = loadedLabel.printerName
+      setReceipt(loadedReceipt)
       setSale({ ...DEFAULT_SALE_DEFAULTS, ...b.sale })
-      setShift(parseShiftConfig(b.shift))
-      setLabel(parseLabelTemplate(b.label))
+      const loadedShift = parseShiftConfig(b.shift)
+      setShift(loadedShift)
+      setOvertimeCap(String(loadedShift.overtimeMaxMinutes ?? 0))
+      setLabel(loadedLabel)
       setSecurity(parseSecurityConfig(b.security))
       // مقدار خراب یا نبودِ کلید ⇒ پیش‌فرض FREE (رفتار نسخه‌های قبل)، بدون کرش
       setDiscount(parseDiscountPolicy(b.discount))
@@ -774,6 +831,31 @@ export default function Settings() {
   }
 
   /**
+   * نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری هم *فوری* ذخیره می‌شود (مثل خودِ سوییچ):
+   * رمز مدیر همان فیلد byTimePw است و خودِ سرویس باز هم رمز را و محدوده‌ی
+   * ۰..۲۴۰ را سروری بازبینی می‌کند.
+   */
+  const saveOvertimeMax = async () => {
+    const mins = Math.trunc(Number(toLatinDigits(overtimeCap).replace(/[^0-9-]/g, '')))
+    if (!Number.isFinite(mins) || mins < 0 || mins > 240) {
+      return setErr('سقف اضافه‌کاری باید عددی صحیح بین ۰ تا ۲۴۰ دقیقه باشد (۰ یعنی خاموش).')
+    }
+    try {
+      const next = await call<ShiftConfig>(CH.settingsShiftOvertimeMax, { minutes: mins, managerPassword: byTimePw })
+      setShift(next)
+      flash(
+        mins > 0
+          ? `ذخیره شد · اضافه‌کاری شیفت شب تا ${faDigits(mins)} دقیقه بعد از پایان بازه فعال است.`
+          : 'ذخیره شد · اضافه‌کاری خاموش است؛ نشستِ بازِ دیروز بیرون از بازه همیشه باید بسته شود.'
+      )
+    } catch (e: any) {
+      setErr(`ذخیره‌ی سقف اضافه‌کاری انجام نشد: ${e.message}`)
+    } finally {
+      setByTimePw('')
+    }
+  }
+
+  /**
    * بانک شماره مشتریان (مورد ۶): همه‌ی مشتری‌های ثبت‌شده — از پنل فروش، فاکتور
    * عمده یا هر جای دیگر — با تعداد و جمع خریدشان. فعلاً فقط نمایش + کپی همه‌ی
    * شماره‌ها در حافظه (برای چسباندن در پنل پیامک).
@@ -1006,14 +1088,22 @@ export default function Settings() {
        * در پنجره‌ی انتخاب چاپگر «ذخیره به‌عنوان پیش‌فرض» زده، این ذخیره‌ی کهنه
        * آن انتخاب را برنگرداند (همان نقش mergeFreshPosToggles برای چاپگر).
        */
-      const receiptToSave = mergeFreshPrinter(receipt, { ...DEFAULT_RECEIPT_TEMPLATE, ...fresh.receipt })
-      const labelToSave = mergeFreshPrinter(label, { ...DEFAULT_LABEL_TEMPLATE, ...fresh.label })
+      const receiptToSave =
+        receipt.printerName !== receiptPrinterAtLoad.current
+          ? receipt // کاربر خودش روی همین صفحه چاپگر را عوض کرده ⇒ انتخاب صفحه ذخیره شود
+          : mergeFreshPrinter(receipt, { ...DEFAULT_RECEIPT_TEMPLATE, ...fresh.receipt })
+      const labelToSave =
+        label.printerName !== labelPrinterAtLoad.current
+          ? label
+          : mergeFreshPrinter(label, { ...DEFAULT_LABEL_TEMPLATE, ...fresh.label })
       /**
        * ⚠️ این خط عمداً یک‌خطی و با همین کلیدها/ترتیب می‌ماند: تست
        * `fix-s168-settings-stale-pos-toggles` این payload را به‌صورت متن دقیق
        * بررسی می‌کند (قرارداد «صفحه‌ی کهنه نباید مقدار POS را برگرداند»).
        */
       await call(CH.settingsSaveBundle, { receipt: receiptToSave, sale: saleToSave, shift, label: labelToSave, security, time, managerPassword: bundlePw })
+      receiptPrinterAtLoad.current = receiptToSave.printerName
+      labelPrinterAtLoad.current = labelToSave.printerName
       setReceipt(receiptToSave)
       setLabel(labelToSave)
       setSale(saleToSave)
@@ -1121,10 +1211,19 @@ export default function Settings() {
     }
   }
 
-  /** خروج مدیر: وضعیت به «کارمند» برمی‌گردد و پنل‌های موجودی قفل می‌شوند. */
-  const exitManager = () => {
-    logout()
-    nav('/')
+  /**
+   * Main-first: تا وقتی Main خروج را تأیید نکرده، صفحه ظاهراً «کارمند» نمی‌شود.
+   * در خطا، hook پنل‌های حساس را fail-closed نگه می‌دارد و پیام همین صفحه دیده
+   * می‌شود؛ حضانت و فروش جاری در هیچ‌حالتی دست‌کاری نمی‌شوند.
+   */
+  const exitManager = async () => {
+    setErr(null)
+    try {
+      await logout()
+      nav('/')
+    } catch (error: any) {
+      setErr(error?.message || 'خروج مدیر قابل تأیید نیست؛ دوباره تلاش کنید.')
+    }
   }
 
   /** پیش‌نمایش بازه: چه فاکتورهایی حذف می‌شوند و در حالت «بله» چه چیزی برمی‌گردد. */
@@ -1565,7 +1664,15 @@ export default function Settings() {
   const loadStaff = useCallback(async () => {
     try {
       const res = await call<{
-        rows: { id: number; username: string; name: string; role: string; roleLabel: string; isActive: boolean }[]
+        rows: {
+          id: number
+          username: string
+          name: string
+          role: string
+          roleLabel: string
+          isActive: boolean
+          hasCorrectionApprovalPassword?: boolean
+        }[]
         activeUserId: number | null
       }>(CH.staffDirectory, {})
       setStaffRows(res?.rows ?? [])
@@ -1576,23 +1683,72 @@ export default function Settings() {
 
   const saveStaff = async () => {
     if (!staffDraft.name.trim()) return setErr('نام کارمند را وارد کنید.')
+    const requiredPersonnel: Array<[keyof StaffDraft, string]> = [
+      ['jobTitle', 'عنوان شغلی'], ['phone', 'شماره تماس'], ['nationalId', 'کد ملی'],
+      ['employmentStartJalali', 'تاریخ شروع همکاری'], ['bankName', 'نام بانک'],
+      ['bankAccountNo', 'شماره حساب'], ['bankIban', 'شماره شبا'], ['bankAccountHolder', 'نام صاحب حساب']
+    ]
+    const missing = requiredPersonnel.filter(([key]) => !String(staffDraft[key] ?? '').trim()).map(([, label]) => label)
+    if (missing.length) return setErr(`تکمیل پروندهٔ پرسنلی لازم است: ${missing.join('، ')}.`)
+    if (staffDraft.employmentStatus === 'TERMINATED' && !staffDraft.employmentEndJalali.trim())
+      return setErr('برای وضعیت «پایان همکاری»، تاریخ پایان همکاری لازم است.')
     setStaffBusy(true)
     try {
-      await call(CH.staffSave, {
+      /** یک IPC تراکنشی: User پایه و پروندهٔ محرمانه یا هر دو ثبت می‌شوند یا هیچ‌کدام. */
+      await call(CH.staffPersonnelSaveComplete, {
         id: staffDraft.id,
         name: staffDraft.name.trim(),
         role: staffDraft.role,
         isActive: staffDraft.isActive,
-        panelPassword: staffPw
+        correctionApprovalPassword: staffCorrectionApprovalPw || undefined,
+        jobTitle: staffDraft.jobTitle,
+        phone: staffDraft.phone,
+        nationalId: staffDraft.nationalId,
+        employmentStartJalali: staffDraft.employmentStartJalali,
+        employmentEndJalali: staffDraft.employmentEndJalali,
+        employmentStatus: staffDraft.employmentStatus,
+        bankName: staffDraft.bankName,
+        bankAccountNo: staffDraft.bankAccountNo,
+        bankIban: staffDraft.bankIban,
+        bankAccountHolder: staffDraft.bankAccountHolder
       })
-      setStaffDraft({ id: null, name: '', role: 'CASHIER', isActive: true })
+      setStaffDraft(blankStaffDraft())
       await loadStaff()
-      flash(staffDraft.id ? 'کارمند ویرایش شد.' : 'کارمند تازه ثبت شد.')
+      flash(staffDraft.id ? 'پروندهٔ کارمند ویرایش شد.' : 'کارمند و پروندهٔ اولیه ثبت شد.')
     } catch (e: any) {
       setErr(e.message)
     } finally {
       setStaffBusy(false)
-      setStaffPw('')
+      setStaffCorrectionApprovalPw('')
+    }
+  }
+
+  const editStaff = async (row: { id: number; name: string; role: string; isActive: boolean }) => {
+    setStaffBusy(true)
+    setErr(null)
+    try {
+      const result = await call<{ profile: Partial<StaffDraft> }>(CH.staffPersonnelGet, { userId: row.id })
+      const p = result.profile
+      setStaffDraft({
+        id: row.id,
+        name: row.name,
+        role: row.role,
+        isActive: row.isActive,
+        jobTitle: p.jobTitle ?? '',
+        phone: p.phone ?? '',
+        nationalId: p.nationalId ?? '',
+        employmentStartJalali: p.employmentStartJalali ?? '',
+        employmentEndJalali: p.employmentEndJalali ?? '',
+        employmentStatus: p.employmentStatus ?? 'ACTIVE',
+        bankName: p.bankName ?? '',
+        bankAccountNo: p.bankAccountNo ?? '',
+        bankIban: p.bankIban ?? '',
+        bankAccountHolder: p.bankAccountHolder ?? ''
+      })
+    } catch (e: any) {
+      setErr(e.message)
+    } finally {
+      setStaffBusy(false)
     }
   }
 
@@ -1603,6 +1759,17 @@ export default function Settings() {
    */
 
   useEffect(() => {
+    /** نشست مدیر منقضی/خارج شد: دادهٔ خامی که فقط برای فرم محرمانه خوانده شده
+     * نباید در state زنده بماند تا در remount یا ورود بعدی نشان داده شود. */
+    if (!isManager) {
+      setStaffDraft(blankStaffDraft())
+      setStaffRows([])
+      setStaffCorrectionApprovalPw('')
+    }
+    if (!isManager && (tab === 'staff' || tab === 'custody')) {
+      setTab('receipt')
+      return
+    }
     if (tab === 'backup') {
       void loadBackups()
       void loadBackupConfig()
@@ -1615,10 +1782,11 @@ export default function Settings() {
     }
     if (tab === 'staff') void loadStaff()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab])
+  }, [tab, isManager])
 
   const resetReceipt = () => {
-    setReceipt(DEFAULT_RECEIPT_TEMPLATE)
+    // نام چاپگر جزو «قالب» نیست؛ ریست قالب نباید آن را خالی کند (همان رفتار قبلِ ذخیره: چاپگر دست‌نخورده)
+    setReceipt((p) => ({ ...DEFAULT_RECEIPT_TEMPLATE, printerName: p.printerName }))
     setDirty(true)
     flash('قالب رسید به حالت پیش‌فرض برگشت (برای اعمال، ذخیره کنید).')
   }
@@ -1779,13 +1947,24 @@ export default function Settings() {
           >
             سیاست حسابداری
           </button>
-          <button
-            className={`btn ${tab === 'staff' ? 'btn-primary' : ''}`}
-            onClick={() => setTab('staff')}
-            title="ثبت، ویرایش و غیرفعال‌سازی کارمندان فروشگاه — مبنای تب عملکرد کارمندان"
-          >
-            کارمندان
-          </button>
+          {isManager ? (
+            <>
+              <button
+                className={`btn ${tab === 'staff' ? 'btn-primary' : ''}`}
+                onClick={() => setTab('staff')}
+                title="ثبت، ویرایش و غیرفعال‌سازی کارمندان فروشگاه — مبنای تب عملکرد کارمندان"
+              >
+                کارمندان
+              </button>
+              <button
+                className={`btn ${tab === 'custody' ? 'btn-primary' : ''}`}
+                onClick={() => setTab('custody')}
+                title="پیکربندی کارکنانِ حضانت، برنامه‌ها و تنظیمات ساختاری صندوق"
+              >
+                حضانت صندوق
+              </button>
+            </>
+          ) : null}
           {/* ---------------- جلسه ۱۹ · بند ۹ ---------------- */}
           <button
             className={`btn ${tab === 'time' ? 'btn-primary' : ''}`}
@@ -2444,6 +2623,21 @@ export default function Settings() {
                     </div>
                   </span>
                 </label>
+                <label className="flex items-start gap-2 cursor-pointer mt-2">
+                  <input
+                    type="checkbox"
+                    className="mt-1 w-4 h-4"
+                    checked={sale.splitStoreCreditPayment !== false}
+                    onChange={(e) => setS({ splitStoreCreditPayment: e.target.checked })}
+                  />
+                  <span>
+                    <div className="font-bold">پرداخت ترکیبی اعتبار خرید در پنل فروش فعال باشد</div>
+                    <div className="kbd leading-6">
+                      روشن: فروشنده می‌تواند مشخص کند چه مقدار از اعتبار خرید مصرف و باقی فاکتور نقدی یا کارتی دریافت شود.
+                      خاموش: اعتبار معتبر فقط تا سقف مجاز کامل مصرف می‌شود. این محدودیت در سرور هم اعمال می‌شود.
+                    </div>
+                  </span>
+                </label>
               </section>
 
               <section className="space-y-2">
@@ -2510,7 +2704,8 @@ export default function Settings() {
                   دور» را می‌زند و مهلت برگشت همان فاکتور از این عدد حساب می‌شود، نه از مهلت عادی. با چک‌باکس «نمایش
                   مهلت برگشت روی فاکتور» در تب «قالب فاکتور چاپی» هم می‌توانید کل بلوک برگشت (کد، بارکد و مهلت) را از
                   رسید بردارید — برای فروشگاهی که مرجوعی قبول نمی‌کند. کد همچنان داخل سیستم ساخته می‌شود، پس اگر بعداً
-                  نظرتان عوض شد فاکتورهای همان بازه هم قابل برگشت‌اند.
+                  نظرتان عوض شد فاکتورهای همان بازه هم قابل برگشت‌اند. <b>این مهلت فقط مهلت کد/فرایند برگشت فاکتور است؛
+                  مدت اعتبار خرید را از «مدیریت اعتبار خرید → قواعد پیش‌فرض» تنظیم کنید.</b>
                 </div>
                 {/* ---------- مورد ۷: همان تنظیمات، برای فاکتور فروش عمده ---------- */}
                 <div className="border-2 border-emerald-300 rounded p-2 space-y-2 bg-emerald-50/40">
@@ -3365,6 +3560,33 @@ export default function Settings() {
                 </div>
               </div>
 
+              {/* ---------- نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت شب ---------- */}
+              <div className="rounded p-2 border bg-slate-50 space-y-1">
+                <div className="font-bold">سقف اضافه‌کاری شیفت شب</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="flex items-center gap-2">
+                    <span className="kbd">سقف (دقیقه، ۰ تا ۲۴۰؛ ۰ = خاموش):</span>
+                    <input
+                      className="inp w-24"
+                      type="text"
+                      inputMode="numeric"
+                      value={overtimeCap}
+                      onChange={(e) => setOvertimeCap(e.target.value)}
+                    />
+                  </label>
+                  <button className="btn" disabled={!byTimePw.trim()} onClick={() => void saveOvertimeMax()}>
+                    ذخیره‌ی فوری (با رمز مدیر بالا)
+                  </button>
+                </div>
+                <div className="kbd leading-6">
+                  خاموش (پیش‌فرض ۰): نشستِ بازِ دیروز که از بازه‌اش گذشته باشد، همیشه باید با دلیل و رمز مدیر بسته
+                  شود. روشن: کارمند همان نشست از مودال «نشست صندوق» می‌تواند <b>فقط یک‌بار</b> و تا «پایان بازه +
+                  این سقف» اضافه‌کاری اعلام کند — با دلیلِ اجباری که برای همیشه در حسابرسی می‌ماند (رمز مدیر لازم
+                  نیست، چون فاکتورها به کارمند همان نشست نسبت داده می‌شوند). این گزینه فقط وقتی اثر دارد که «تعیین
+                  شیفت بر اساس ساعت» روشن باشد.
+                </div>
+              </div>
+
               {/* ---------- جلسه ۱۹ · بند ۷ — فرمت نمایش ساعت شروع/پایان ---------- */}
               <div className="rounded p-2 border bg-slate-50 space-y-1">
                 <div className="font-bold">فرمت نمایش ساعت شروع/پایان شیفت‌ها</div>
@@ -3938,13 +4160,13 @@ export default function Settings() {
           )}
 
           {/* ==================== جلسه ۱۸ · بند ۲ — کارمندان ==================== */}
-          {tab === 'staff' && (
+          {isManager && tab === 'staff' && (
             <>
               <h2 className="font-bold text-lg">کارمندان فروشگاه</h2>
               <div className="rounded border-2 border-sky-300 bg-sky-50 p-3 leading-7">
-                این بخش <b>سیستم ورود کاربر نیست</b> و هیچ قفل تازه‌ای نمی‌سازد؛ قفل‌های برنامه همان رمز مدیر و رمزهای دوم
-                پنل‌ها هستند و دست‌نخورده‌اند. اینجا فقط کارمندان فروشگاه ثبت، ویرایش یا غیرفعال می‌شوند — همان فهرستی که
-                تب <b>عملکرد کارمندان</b> رویش کار می‌کند.
+                این بخش <b>سیستم ورود کاربر نیست</b>. ثبت کارمند و پروندهٔ او فقط با نشست اصلی مدیر انجام می‌شود؛ رمز دوم
+                پنل تنظیمات به این بخش دسترسی نمی‌دهد. اطلاعات هویتی و بانکی از فهرست عمومی کارکنان و تب
+                <b>عملکرد کارمندان</b> جدا هستند.
               </div>
 
               {/* ---------- جلسه ۱۹ · بند ۳ — «کارمند فعال» حذف شد ---------- */}
@@ -3980,7 +4202,11 @@ export default function Settings() {
                     <select
                       className="inp min-w-[200px]"
                       value={staffDraft.role}
-                      onChange={(e) => setStaffDraft({ ...staffDraft, role: e.target.value })}
+                      onChange={(e) => {
+                        const role = e.target.value
+                        setStaffDraft({ ...staffDraft, role })
+                        if (role !== 'MANAGER') setStaffCorrectionApprovalPw('')
+                      }}
                     >
                       {STAFF_ROLES.map((r) => (
                         <option key={r} value={r}>
@@ -3998,26 +4224,49 @@ export default function Settings() {
                     />
                     فعال
                   </label>
-                  <label title="ثبت یا ویرایش کارمند (نام/نقش/فعال‌بودن) رمز مدیر یا رمز دوم پنل تنظیمات می‌خواهد">
-                    <div className="mb-1 font-bold">رمز مدیر / رمز تنظیمات</div>
-                    <PasswordField value={staffPw} onChange={(e) => setStaffPw(e.target.value)} />
-                  </label>
-                  <button className="btn btn-primary" onClick={() => void saveStaff()} disabled={staffBusy || !staffPw.trim()}>
+                  {staffDraft.role === 'MANAGER' && (
+                    <label title="فقط هنگام اصلاح/ابطال دیرهنگام یا دوره‌بسته استفاده می‌شود؛ خالی گذاشتن آن رمز قبلی مدیر را تغییر نمی‌دهد.">
+                      <div className="mb-1 font-bold">رمز شخصی تأیید اصلاح دیرهنگام</div>
+                      <PasswordField
+                        value={staffCorrectionApprovalPw}
+                        onChange={(e) => setStaffCorrectionApprovalPw(e.target.value)}
+                        placeholder={staffDraft.id ? 'خالی = بدون تغییر' : 'حداقل ۴ نویسه'}
+                      />
+                    </label>
+                  )}
+                  <button className="btn btn-primary" onClick={() => void saveStaff()} disabled={staffBusy}>
                     {staffBusy ? 'در حال ذخیره…' : staffDraft.id ? 'ذخیره‌ی ویرایش' : 'ثبت کارمند'}
                   </button>
                   {staffDraft.id && (
                     <button
                       className="btn"
-                      onClick={() => setStaffDraft({ id: null, name: '', role: 'CASHIER', isActive: true })}
+                      onClick={() => setStaffDraft(blankStaffDraft())}
                       disabled={staffBusy}
                     >
                       انصراف
                     </button>
                   )}
                 </div>
+                <fieldset className="rounded border border-rose-200 bg-rose-50/50 p-3 space-y-3">
+                  <legend className="px-1 font-bold text-rose-950">پروندهٔ پرسنلی محرمانه — فقط مدیر</legend>
+                  <p className="text-sm leading-6 text-slate-700">این اطلاعات در فهرست کارکنان، گزارش‌ها، خروجی‌ها و لاگ‌های عادی نشان داده نمی‌شوند. فقط نشست اصلی مدیر در همین پنجره اجازهٔ مشاهده یا تغییر دارد.</p>
+                  <div className="grid md:grid-cols-3 gap-3">
+                    <label><div className="mb-1">عنوان شغلی</div><input className="inp w-full" value={staffDraft.jobTitle} onChange={(e) => setStaffDraft({ ...staffDraft, jobTitle: e.target.value })} /></label>
+                    <label><div className="mb-1">شماره تماس</div><input className="inp w-full" inputMode="tel" value={staffDraft.phone} onChange={(e) => setStaffDraft({ ...staffDraft, phone: e.target.value })} /></label>
+                    <label><div className="mb-1">کد ملی</div><input className="inp w-full" inputMode="numeric" value={staffDraft.nationalId} onChange={(e) => setStaffDraft({ ...staffDraft, nationalId: e.target.value })} /></label>
+                    <label><div className="mb-1">شروع همکاری (۱۴۰۳/۰۱/۳۱)</div><input className="inp w-full" value={staffDraft.employmentStartJalali} onChange={(e) => setStaffDraft({ ...staffDraft, employmentStartJalali: e.target.value })} /></label>
+                    <label><div className="mb-1">پایان همکاری</div><input className="inp w-full" value={staffDraft.employmentEndJalali} onChange={(e) => setStaffDraft({ ...staffDraft, employmentEndJalali: e.target.value })} /></label>
+                    <label><div className="mb-1">وضعیت استخدام</div><select className="inp w-full" value={staffDraft.employmentStatus} onChange={(e) => setStaffDraft({ ...staffDraft, employmentStatus: e.target.value as StaffDraft['employmentStatus'] })}><option value="ACTIVE">فعال</option><option value="LEAVE">مرخصی / غیبت</option><option value="SUSPENDED">تعلیق</option><option value="TERMINATED">پایان همکاری</option></select></label>
+                  </div>
+                  <div className="grid md:grid-cols-2 gap-3 border-t border-rose-200 pt-3">
+                    <label><div className="mb-1">نام بانک</div><input className="inp w-full" value={staffDraft.bankName} onChange={(e) => setStaffDraft({ ...staffDraft, bankName: e.target.value })} /></label>
+                    <label><div className="mb-1">نام صاحب حساب</div><input className="inp w-full" value={staffDraft.bankAccountHolder} onChange={(e) => setStaffDraft({ ...staffDraft, bankAccountHolder: e.target.value })} /></label>
+                    <label><div className="mb-1">شماره حساب</div><input className="inp w-full" inputMode="numeric" value={staffDraft.bankAccountNo} onChange={(e) => setStaffDraft({ ...staffDraft, bankAccountNo: e.target.value })} /></label>
+                    <label><div className="mb-1">شماره شبا (IR…)</div><input className="inp w-full uppercase" value={staffDraft.bankIban} onChange={(e) => setStaffDraft({ ...staffDraft, bankIban: e.target.value })} /></label>
+                  </div>
+                </fieldset>
                 <div className="kbd leading-6">
-                  کارمند هیچ‌وقت <b>حذف</b> نمی‌شود، فقط «غیرفعال» می‌شود؛ وگرنه سابقه‌ی فروش و برگشتِ گذشته‌اش بی‌صاحب
-                  می‌شد.
+                  ثبت ساختاری کارمند و این پرونده فقط با <b>نشست اصلی مدیر</b> انجام می‌شود؛ رمز دوم Settings کافی نیست. کارمند هیچ‌وقت <b>حذف</b> نمی‌شود، فقط «غیرفعال» می‌شود؛ وگرنه سابقه‌ی فروش و برگشتِ گذشته‌اش بی‌صاحب می‌شد.
                 </div>
               </div>
 
@@ -4028,6 +4277,7 @@ export default function Settings() {
                     <th>شماره</th>
                     <th>نام</th>
                     <th>نقش</th>
+                    <th>رمز تأیید اصلاح</th>
                     <th>وضعیت</th>
                     <th>ویرایش</th>
                   </tr>
@@ -4038,11 +4288,14 @@ export default function Settings() {
                       <td className="tabular-nums">{faDigits(r.id)}</td>
                       <td className="font-bold">{r.name}</td>
                       <td>{r.roleLabel}</td>
+                      <td>
+                        {r.role === 'MANAGER' ? (r.hasCorrectionApprovalPassword ? 'تعریف شده' : 'تعریف نشده') : '—'}
+                      </td>
                       <td>{r.isActive ? 'فعال' : 'غیرفعال'}</td>
                       <td>
                         <button
                           className="btn"
-                          onClick={() => setStaffDraft({ id: r.id, name: r.name, role: r.role, isActive: r.isActive })}
+                          onClick={() => void editStaff(r)}
                         >
                           ویرایش
                         </button>
@@ -4051,7 +4304,7 @@ export default function Settings() {
                   ))}
                   {!staffRows.length && (
                     <tr>
-                      <td colSpan={5} className="text-center py-4 text-slate-500">
+                      <td colSpan={6} className="text-center py-4 text-slate-500">
                         هنوز کارمندی ثبت نشده است.
                       </td>
                     </tr>
@@ -4059,6 +4312,37 @@ export default function Settings() {
                 </tbody>
               </table>
             </>
+          )}
+
+          {/* ==================== حضانت صندوق — فقط پیکربندی ساختاری ==================== */}
+          {isManager && tab === 'custody' && (
+            <section className="space-y-4" dir="rtl">
+              <div>
+                <h2 className="font-bold text-lg">تنظیمات حضانت صندوق</h2>
+                <p className="text-sm text-slate-600 mt-1 leading-7">
+                  ساخت کارکنان، تعریف رمز موقت، برنامه‌های کاری و روشن/خاموش‌کردن حضانت فقط از این بخش انجام می‌شود.
+                  نوار بالای برنامه فقط برای عملیات روزانهٔ صندوق، تحویل و بستن نهایی است.
+                </p>
+              </div>
+              <div className="rounded border-2 border-sky-300 bg-sky-50 p-3 leading-7 text-sm">
+                برنامهٔ شیفت فقط انتظار حضور است؛ مسئول مالی صندوق تنها پس از احراز رمز شخصی و بازشدن واقعی صندوق تعیین می‌شود.
+                نبود برنامه یا کارمند برنامه‌ریزی‌شده، فروش را متوقف نمی‌کند.
+              </div>
+              <div className="rounded border p-4 space-y-3 bg-white">
+                <div className="font-bold">راه‌اندازی اولیه</div>
+                <p className="text-sm text-slate-600">
+                  اگر حضانت هنوز فعال نشده، مدیر ابتدا رمز شخصی حضانت خود را تعریف و سپس ماژول را فعال می‌کند. این کار فروش یا نشست‌های قدیمی را تغییر نمی‌دهد.
+                </p>
+                <CustodyChip showOperations={false} />
+              </div>
+              <div className="rounded border p-4 space-y-3 bg-white">
+                <div className="font-bold">کارکنان، رمزهای موقت و برنامه‌های کاری</div>
+                <p className="text-sm text-slate-600">
+                  پس از فعال‌سازی، همهٔ تنظیمات ساختاری در همین پنجرهٔ مدیریتی انجام می‌شود؛ رمز خام قبلی هیچ کارمندی نمایش داده نمی‌شود.
+                </p>
+                <CustodyAdminChip />
+              </div>
+            </section>
           )}
 
           {/* ==================== جلسه ۱۹ · بند ۹ — تاریخ و ساعت رسمی ==================== */}

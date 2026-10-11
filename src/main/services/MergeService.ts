@@ -146,7 +146,9 @@ const norm = (v: unknown): string => str(v).replace(/\s+/g, ' ').trim().toLowerC
 
 /** ساخت کلاینت موقت روی یک فایل SQLite دلخواه. */
 function clientFor(file: string): PrismaClient {
-  return new PrismaClient({ datasources: { db: { url: `file:${file}` } }, log: ['error'] })
+  // connection_limit=1: اجراکننده‌ی migration با BEGIN/COMMIT خام کار می‌کند و همه‌ی
+  // جمله‌ها باید روی یک اتصال فیزیکی باشند (همان باگ startup قفل SQLite روی فایل بکاپ).
+  return new PrismaClient({ datasources: { db: { url: `file:${file}?connection_limit=1` } }, log: ['error'] })
 }
 
 async function tableExists(client: PrismaClient, table: string): Promise<boolean> {

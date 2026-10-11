@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 import { faDigits, money } from '@shared/jalali'
-import type { ShiftInfo, ShiftSessionForm } from '@shared/types'
+import type { ShiftInfo, ShiftSessionForm, ShiftStatusInfo } from '@shared/types'
+import { useTopmostModalKey } from './Modal'
 
 /**
  * ===========================================================================
@@ -59,6 +61,32 @@ export function useCurrentShift(everyMs = 30_000): { shift: ShiftInfo | null; re
   return { shift, reload }
 }
 
+/**
+ * وضعیت زنده‌ی نشست (کانال shift:status) — خواندنیِ خالص: برخلاف shift:current
+ * نه خطا پرتاب می‌کند نه نشست AUTO می‌سازد؛ در حالت «نشست جامانده» که
+ * useCurrentShift ساکت می‌ماند، این هوک دقیقاً دلیل همین سکوت را برمی‌گرداند.
+ */
+export function useShiftGate(everyMs = 30_000): { gate: ShiftStatusInfo | null; reload: () => Promise<void> } {
+  const [gate, setGate] = useState<ShiftStatusInfo | null>(null)
+
+  const reload = useCallback(async () => {
+    try {
+      setGate(await call<ShiftStatusInfo>(CH.shiftStatus, {}))
+    } catch {
+      /* خرابی موقت IPC نباید چیپ را بخواباند؛ آخرین وضعیت شناخته‌شده می‌ماند */
+    }
+  }, [])
+
+  useEffect(() => {
+    void reload()
+    if (!everyMs) return
+    const t = window.setInterval(() => void reload(), everyMs)
+    return () => window.clearInterval(t)
+  }, [reload, everyMs])
+
+  return { gate, reload }
+}
+
 export default function ShiftSessionModal({
   open,
   mode,
@@ -78,6 +106,8 @@ export default function ShiftSessionModal({
   const [form, setForm] = useState<ShiftSessionForm | null>(null)
   const [name, setName] = useState('')
   const [reason, setReason] = useState('')
+  /** نشست ۳۱۰ · فاز ۲ — دلیل کارت «اعلام اضافه‌کاری» (با قانون ≥۳ حرفِ سرور) */
+  const [overtimeReason, setOvertimeReason] = useState('')
   const [staffId, setStaffId] = useState<number | null>(null)
   const [note, setNote] = useState('')
   const [managerPassword, setManagerPassword] = useState('')
@@ -110,15 +140,39 @@ export default function ShiftSessionModal({
     if (open) void load()
   }, [open, load])
 
+  /**
+   * ثبت در پشته‌ی مودالها (useTopmostModalKey): قبلاً این مودال ثبت نمی‌شد و
+   * هات‌کی‌های F2–F11 شل (isAnyModalOpen) پشتش فعال بودند. با ثبت‌شدن، فقط
+   * topmost به Esc جواب می‌دهد. Esc در حالت عادی مثل ✕ می‌بندد و در حالت
+   * اجباری فقط بلعیده می‌شود — همان قرارداد کلیک پس‌زمینه و ✕.
+   */
+  useTopmostModalKey(open, (e) => {
+    if (e.key !== 'Escape') return
+    e.preventDefault()
+    e.stopPropagation()
+    e.stopImmediatePropagation()
+    if (!mandatory) onClose()
+  })
+
   const suggestion = form?.suggestion
   const overridden = !!suggestion && mode !== 'staff' && name.trim() !== suggestion.name
   const needsReason = overridden && !reason.trim()
   const noStaff = !!form && !form.staff.length
-  const requiresManagerHandover =
-    mode !== 'staff' &&
-    !!form?.current?.userId &&
-    !!staffId &&
-    form.current.userId !== staffId
+  /**
+   * نشست جامانده‌ی روزِ دیگر: از دید openShift (یعنی current) پنهان است ولی
+   * openSession بستنش را با دلیل ≥۳ حرف + رمز مدیر می‌خواهد (staleOvernight).
+   * مقدار از سرور می‌آید تا شرط UI مو‌به‌مو با قاعده‌ی سرور یکی باشد.
+   */
+  const staleOpen = mode !== 'staff' ? (form?.staleOpen ?? null) : null
+  /**
+   * نشست ۳۱۰ · فاز ۲ — کارت «اعلام اضافه‌کاری»: سرور همه‌ی گیت‌ها را در
+   * blockReason/overtimePreview پوشیده ساخته؛ این کارت فقط دلیل می‌گیرد و
+   * خودِ declareOvertime باز هم همه‌ی گیت‌ها را سروری بازبینی می‌کند.
+   */
+  const overtimePreview = mode !== 'staff' && form?.blockReason === 'OVERTIME_ELIGIBLE' ? (form.overtimePreview ?? null) : null
+  const otherStaffOpen =
+    mode !== 'staff' && !!form?.current?.userId && !!staffId && form.current.userId !== staffId
+  const requiresManagerHandover = mode !== 'staff' && !!staffId && (otherStaffOpen || !!staleOpen)
   const windowOf = (n: string): string | null =>
     suggestion?.templates.find((t) => t.name === n)?.windowLabel ?? null
 
@@ -172,9 +226,30 @@ export default function ShiftSessionModal({
     }
   }
 
+  /**
+   * نشست ۳۱۰ · فاز ۲ — اعلام اضافه‌کاری از خودِ مودال (بدون رمز مدیر، با دلیل
+   * اجباری): بعد از موفق، جریان عادی به‌روزرسانی همان مسیر قبلی است (چیپ
+   * reload می‌کند و رویداد mahak:shift-changed بنر POS را جمع می‌کند).
+   */
+  const submitOvertime = async () => {
+    if (overtimeReason.trim().length < 3)
+      return setErr('برای اعلام اضافه‌کاری، دلیل کوتاه و روشن بنویسید (حداقل ۳ حرف)؛ این اعلام در حسابرسی می‌ماند.')
+    setBusy(true)
+    setErr(null)
+    try {
+      await call(CH.shiftOvertimeDeclare, { reason: overtimeReason.trim() })
+      onDone?.(null)
+      onClose()
+    } catch (e: any) {
+      setErr(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (!open) return null
 
-  return (
+  const modalUi = (
     <div
       className="fixed inset-0 z-[60] bg-black/50 overflow-auto p-4 flex items-start justify-center"
       onMouseDown={(e) => {
@@ -182,7 +257,7 @@ export default function ShiftSessionModal({
         if (!mandatory && e.target === e.currentTarget) onClose()
       }}
     >
-      <div dir="rtl" className="w-full max-w-3xl bg-white rounded shadow-lg my-4">
+      <div dir="rtl" className="w-full max-w-3xl bg-white text-slate-800 rounded shadow-lg my-4">
         <div className="flex items-center justify-between px-4 h-11 bg-brand text-white rounded-t">
           <div className="font-bold">{title}</div>
           {!mandatory && (
@@ -338,13 +413,75 @@ export default function ShiftSessionModal({
             </label>
           )}
 
+          {overtimePreview && (
+            <div className="rounded border-2 border-emerald-500 bg-emerald-50 p-3 space-y-2">
+              <div className="font-bold text-emerald-800">⏱ اضافه‌کاری شیفت شب</div>
+              <div className="leading-6">
+                نشست «{staleOpen?.sessionLabel}» از {faDigits(staleOpen?.dayJalali ?? '')} هنوز باز است و از پایان
+                بازه‌اش گذشته‌اید. اگر هنوز مشغولید، <b>کارمند همان نشست</b> می‌تواند تا ساعت{' '}
+                <b>{overtimePreview.untilLabel}</b> اضافه‌کاری اعلام کند و فروش ادامه یابد (سقف:{' '}
+                {faDigits(overtimePreview.capMinutes)} دقیقه). این اعلام <b>فقط یک‌بار</b> ممکن است و با دلیلِ شما
+                برای همیشه در حسابرسی می‌ماند. اگر کارِ این نشست تمام شده، همان «تعویض اجباری» پایین همین فرم آن را
+                با دلیل و رمز مدیر می‌بندد.
+              </div>
+              <label className="block">
+                <div className="kbd">
+                  <b className="text-emerald-800">دلیل اجباری اضافه‌کاری:</b>
+                </div>
+                <input
+                  className={`inp ${overtimeReason.trim().length < 3 ? 'bg-rose-50 border-rose-500' : ''}`}
+                  value={overtimeReason}
+                  onChange={(e) => setOvertimeReason(e.target.value)}
+                  placeholder="مثلاً: مشتری آخر شب دیر رسید؛ حسابش باید از پول امروز جدا بماند"
+                />
+              </label>
+              <button
+                className="btn btn-primary !bg-emerald-700 !border-emerald-800"
+                onClick={() => void submitOvertime()}
+                disabled={busy || overtimeReason.trim().length < 3}
+              >
+                {busy ? 'در حال اعلام…' : `اعلام اضافه‌کاری تا ${overtimePreview.untilLabel}`}
+              </button>
+            </div>
+          )}
+
           {requiresManagerHandover && (
             <div className="rounded border-2 border-rose-400 bg-rose-50 p-3 space-y-2">
               <div className="font-bold text-rose-800">تعویض اجباری نشست</div>
-              <div className="leading-6">
-                نشست فعلی متعلق به کارمند دیگری است. بستن آن فقط با <b>رمز مدیر</b> و دلیل ثبت‌شده مجاز است؛ این
-                عملیات با برچسب «HANDOVER_FORCED» در حسابرسی می‌ماند.
-              </div>
+              {otherStaffOpen && (
+                <div className="leading-6">
+                  نشست فعلی متعلق به کارمند دیگری است. بستن آن فقط با <b>رمز مدیر</b> و دلیل ثبت‌شده مجاز است؛ این
+                  عملیات با برچسب «HANDOVER_FORCED» در حسابرسی می‌ماند.
+                </div>
+              )}
+              {staleOpen && (
+                <div className="leading-6">
+                  نشست «{staleOpen.sessionLabel}» از {faDigits(staleOpen.dayJalali)} (
+                  {staleOpen.userName ? `کارمند: ${staleOpen.userName}` : 'کارمند: تعیین نشده'}) هنوز باز است و بسته
+                  نشده. برای شروع نشست تازه باید دلیل بنویسید و رمز مدیر وارد کنید تا معلوم شود پول آن نشست چه
+                  شد؛ آن نشست با کارمند خودش بسته می‌ماند.
+                </div>
+              )}
+              {/**
+                * فیلد دلیل با فیلد دلیلِ override نام مشترک است: سرور
+                * overrideReason ?? reason می‌خواند و overrideReason را فقط وقتی نام
+                * عوض شده ذخیره می‌کند؛ پس بدون override، همان دلیل را اینجا می‌گیریم.
+                */}
+              {overridden ? (
+                <div className="kbd leading-6">همان «دلیل اجباری»‌ی بالا برای این تعویض هم ثبت می‌شود.</div>
+              ) : (
+                <label className="block">
+                  <div className="kbd">
+                    <b className="text-rose-700">دلیل اجباری:</b>
+                  </div>
+                  <input
+                    className={`inp ${reason.trim().length < 3 ? 'bg-rose-50 border-rose-500' : ''}`}
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    placeholder="مثلاً: نشست دیروز بسته نشده بود؛ پولش شمرده و تحویل شد"
+                  />
+                </label>
+              )}
               <label className="block">
                 <div className="kbd">رمز مدیر</div>
                 <input
@@ -378,6 +515,14 @@ export default function ShiftSessionModal({
       </div>
     </div>
   )
+
+  /**
+   * الگوی PrinterPickerModal — بدون portal این مودال فرزندِ headerِ text-white
+   * (Shell) می‌ماند و رنگ متن سفید را به ارث می‌برد؛ یعنی همه‌ی متن‌ها (دکمه‌های
+   * کارمند، راهنما، باکس خطا) سفید-روی-سفید می‌شدند. با portal، ارث‌بری از body
+   * می‌آید و text-slate-800 روی باکس سفید دفاع دولایه است.
+   */
+  return typeof document === 'undefined' ? modalUi : createPortal(modalUi, document.body)
 }
 
 /**
@@ -392,6 +537,19 @@ export default function ShiftSessionModal({
  */
 export function ShiftSessionChip() {
   const { shift, reload } = useCurrentShift(30_000)
+  const [custodyEnabled, setCustodyEnabled] = useState(false)
+  useEffect(() => {
+    let live = true
+    void call<{ enabled: boolean }>(CH.custodyStatus, {}).then((row) => { if (live) setCustodyEnabled(!!row.enabled) }).catch(() => undefined)
+    return () => { live = false }
+  }, [])
+  /**
+   * وضعیت بدون‌خطای نشست — «نشست جامانده» در shift:current خطا می‌شود و
+   * useCurrentShift آن را قورت می‌دهد (چیپ ساکت می‌ماند)؛ shift:status همان
+   * دلیل سکوت را برمی‌گرداند تا چیپ با برچسب واضح قرمز شود.
+   */
+  const { gate, reload: reloadGate } = useShiftGate(30_000)
+  const stale = gate?.state === 'STALE' ? gate.stale ?? null : null
   const [form, setForm] = useState<{ open: boolean; mode: SessionMode }>({ open: false, mode: 'handover' })
   /** «فعلاً ببند» فقط تا تازه‌سازی بعدی؛ هشدار خودش برمی‌گردد تا تعیین تکلیف شود. */
   const [snoozed, setSnoozed] = useState(false)
@@ -413,26 +571,51 @@ export function ShiftSessionChip() {
     return () => window.clearTimeout(t)
   }, [snoozed])
 
+  /**
+   * رویداد سراسری «باز کردن مودال نشست» — بنر SESSION_REQUIRED در صفحه‌های
+   * فروش (POS/فاکتور عمده) ریکاوری را بدون خروج از صفحه و از دست رفتن سبد
+   * همین‌جا شروع می‌کند؛ حالت از روی وضعیت فعلی نشست خودش تعیین می‌شود.
+   */
+  useEffect(() => {
+    const onOpen = () =>
+      setForm((f) =>
+        f.open ? f : { open: true, mode: pending || gate?.state === 'STAFF_PENDING' ? 'staff' : 'handover' }
+      )
+    window.addEventListener('mahak:open-shift-modal', onOpen)
+    return () => window.removeEventListener('mahak:open-shift-modal', onOpen)
+  }, [pending, gate?.state])
+
+  // Legacy session controls must not offer a second way to change custody.
+  if (custodyEnabled) return null
+
   return (
     <>
       <button
         className={`text-xs px-2 py-1 rounded whitespace-nowrap font-bold ${
-          pending
-            ? 'bg-rose-500 hover:bg-rose-600'
-            : multiDay
-              ? 'bg-amber-500 hover:bg-amber-600'
-              : 'bg-white/20 hover:bg-white/30'
+          stale
+            ? 'bg-red-600 hover:bg-red-700'
+            : pending
+              ? 'bg-rose-500 hover:bg-rose-600'
+              : multiDay
+                ? 'bg-amber-500 hover:bg-amber-600'
+                : 'bg-white/20 hover:bg-white/30'
         }`}
         onClick={() => setForm({ open: true, mode: pending ? 'staff' : 'handover' })}
-        title="نشست جاری صندوق · تعویض کارمند یا ثبت نشست جدید"
+        title={
+          stale
+            ? 'نشست روز قبل هنوز باز و پولش شمرده نشده است — برای بستن آن و شروع نشست امروز کلیک کنید'
+            : 'نشست جاری صندوق · تعویض کارمند یا ثبت نشست جدید'
+        }
       >
-        {shift
-          ? pending
-            ? `⚠ کارمند نشست تعیین نشده — ${shift.sessionLabel ?? shift.name}`
-            : multiDay
-              ? `⚠ نشست چندروزه — ${shift.sessionLabel ?? shift.name}`
-            : `${shift.sessionLabel ?? shift.name} · ${shift.userName ?? 'بدون کارمند'}`
-          : 'نشست صندوق'}
+        {stale
+          ? `⚠ نشست جامانده — ${faDigits(stale.dayJalali)} · ${stale.sessionLabel}`
+          : shift
+            ? pending
+              ? `⚠ کارمند نشست تعیین نشده — ${shift.sessionLabel ?? shift.name}`
+              : multiDay
+                ? `⚠ نشست چندروزه — ${shift.sessionLabel ?? shift.name}`
+              : `${shift.sessionLabel ?? shift.name} · ${shift.userName ?? 'بدون کارمند'}`
+            : 'نشست صندوق'}
       </button>
 
       {/* پنجره‌ی اجباری «کارمند این نشست کیست؟» */}
@@ -447,6 +630,9 @@ export function ShiftSessionChip() {
         onDone={() => {
           setSnoozed(false)
           void reload()
+          void reloadGate()
+          /** صفحه‌های فروش با بنر SESSION_REQUIRED، با این رویداد بنر را جمع و پیام «دوباره ثبت کنید» را می‌آورند */
+          window.dispatchEvent(new Event('mahak:shift-changed'))
         }}
       />
     </>

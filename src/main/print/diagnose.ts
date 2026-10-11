@@ -23,6 +23,7 @@ import { BusinessError } from '../errors'
 import { barcodePng } from '../services/BarcodeService'
 import { faDigits } from '@shared/jalali'
 import { pdfFromHtml, printHtml } from './printer'
+import { resolvePrintTargetName } from './target'
 import { PAGE_SIZE_LIMITS } from '@shared/printSpec'
 import { DIAGNOSE_MODES, diagnoseModeInfo, type DiagnoseMode } from '@shared/printDiagnose'
 
@@ -241,7 +242,11 @@ export async function runPrintDiagnose(input: DiagnoseInput = {}): Promise<Diagn
   const heightMm = clamp(num(input.heightMm, defaults.heightMm), PAGE_SIZE_LIMITS.minHeightMm, PAGE_SIZE_LIMITS.maxHeightMm)
   const columns = clamp(Math.round(num(input.columns, defaults.columns)) || 1, 1, 3)
   const gapXMm = clamp(num(input.gapXMm, defaults.gapXMm), 0, 20)
-  const deviceName = String(input.deviceName ?? '').trim()
+  const requestedDeviceName = String(input.deviceName ?? '').trim()
+  const targetDeviceName =
+    mode === 'D'
+      ? requestedDeviceName
+      : (await resolvePrintTargetName({ requestedDeviceName: requestedDeviceName || undefined, savedName: '' })).deviceName
   const silent = input.silent !== false
 
   // بارکد عمداً اختیاری است: اگر تولیدش شکست خورد، برگه بدون بارکد هم برای
@@ -270,7 +275,7 @@ export async function runPrintDiagnose(input: DiagnoseInput = {}): Promise<Diagn
     gapXMm,
     // در حالت الف عمداً هیچ اندازه‌ای در CSS نیست (رفتار امروز): فقط @page{margin:0}
     cssPageSize: mode !== 'A' && mode !== 'C',
-    printerName: deviceName,
+    printerName: targetDeviceName,
     pageSizeLabel,
     barcodeDataUrl
   })
@@ -289,7 +294,7 @@ export async function runPrintDiagnose(input: DiagnoseInput = {}): Promise<Diagn
 
   const sent = await printHtml(html, {
     silent,
-    deviceName: deviceName || undefined,
+    deviceName: targetDeviceName,
     pageSize:
       mode === 'A'
         ? undefined

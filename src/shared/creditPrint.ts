@@ -118,3 +118,92 @@ export function applyCreditPrintCap(ids: number[]): { ids: number[]; requested: 
     capped: clean.length > CREDIT_PRINT_MAX_DOCS
   }
 }
+
+/**
+ * ===========================================================================
+ * نشست ۳۱۷ · طرح کلاد (برنده‌ی داوری) — «مشخصات طرح چاپ سند اعتبار»
+ *
+ * تنظیمات تازه (printFontPx ۶..۲۲، حاشیه ۰..۲۰، پیش‌فرض‌ها ۱۱/۴/۵) به‌جای
+ * دست‌زدن به `creditCss` تاریخی، این‌جا به یک layout حساب‌شده تبدیل می‌شوند:
+ *   • نقش‌های تایپو = مقدار تاریخی × (پایه ÷ ۱۱) — ۱۴/۱۲/۱۷/۱۵/۹/۱۰
+ *   • ضریب برای پایه‌ی ۱۱ دقیقاً ۱ است ⇒ اعداد تاریخی عیناً برمی‌گردند
+ *   • حاشیه در دو مرحله clamp می‌شود: تنظیمات (۰..۲۰) و بعد «حداکثر نصفِ
+ *     (بُعد کاغذ − ۳۰mm)» تا روی کاغذ کوچک هم عرض محتوا کمتر از ۳۰mm نشود
+ *   • `isLegacy` (هر سه = پیش‌فرض) یعنی قالب باید رشته‌ی CSS تاریخی را
+ *     بایت‌به‌بایت برگرداند — صفر رگرسیون برای مشتریانِ بدون اکشن
+ *
+ * این فایل خالص می‌ماند: نه Electron، نه Prisma، نه import از credit.ts
+ * (الفبای تنظیمات را فراخوان خودش کلمپ می‌کند؛ دو بار کلمپ = یک نتیجه).
+ * ===========================================================================
+ */
+
+export const CREDIT_PRINT_LEGACY_FONT_PX = 11
+
+export interface CreditPrintLayout {
+  /** اندازه‌ی فونت پایه (px) */
+  fontPx: number
+  /** ضریب نسبت به CSS تاریخی = fontPx / ۱۱ (برای ۱۱ دقیقاً ۱) */
+  scale: number
+  /** حاشیه‌های نهاییِ قابل‌چاپ بعد از هر دو clamp (mm) */
+  marginXMm: number
+  marginYMm: number
+  /** اندازه‌ی نهایی هر نقش تایپوگرافی (گرد به ۰٫۱px) */
+  px: { h1: number; kind: number; amount: number; code: number; rules: number; reprint: number }
+  letterSpacingPx: number
+  /** همه‌ی سه تنظیم بر روی پیش‌فرض‌اند ⇒ مسیر بایت‌به‌بایت قدیمی */
+  isLegacy: boolean
+}
+
+const creditPxLegacyRoles = { h1: 14, kind: 12, amount: 17, code: 15, rules: 9, reprint: 10 } as const
+const creditPxLegacyLetterSpacing = 1.5
+
+const clampInt = (v: unknown, fallback: number, min: number, max: number): number => {
+  const n = Math.round(Number(v))
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, n))
+}
+const round1px = (n: number): number => Math.round(n * 10) / 10
+
+export function creditLayout(
+  settings: { printFontPx?: unknown; printMarginXMm?: unknown; printMarginYMm?: unknown },
+  paper: CreditPaper
+): CreditPrintLayout {
+  const fontPx = clampInt(settings?.printFontPx, CREDIT_PRINT_LEGACY_FONT_PX, 6, 22)
+  const marginXSet = clampInt(settings?.printMarginXMm, 4, 0, 20)
+  const marginYSet = clampInt(settings?.printMarginYMm, 5, 0, 20)
+  const isLegacy = fontPx === CREDIT_PRINT_LEGACY_FONT_PX && marginXSet === 4 && marginYSet === 5
+  const scale = fontPx / CREDIT_PRINT_LEGACY_FONT_PX
+  // clamp دوم: عرض محتوا (کاغذ − دو حاشیه) هرگز زیر ۳۰mm نرود؛ رول حرارتی فقط عرض clamp دارد
+  const marginXMm = Math.min(marginXSet, Math.max(0, round1px((paper.widthMm - 30) / 2)))
+  const marginYMm =
+    paper.heightMm != null ? Math.min(marginYSet, Math.max(0, round1px((paper.heightMm - 30) / 2))) : marginYSet
+  const px = {
+    h1: round1px(creditPxLegacyRoles.h1 * scale),
+    kind: round1px(creditPxLegacyRoles.kind * scale),
+    amount: round1px(creditPxLegacyRoles.amount * scale),
+    code: round1px(creditPxLegacyRoles.code * scale),
+    rules: round1px(creditPxLegacyRoles.rules * scale),
+    reprint: round1px(creditPxLegacyRoles.reprint * scale)
+  }
+  return {
+    fontPx,
+    scale,
+    marginXMm,
+    marginYMm,
+    px,
+    letterSpacingPx: round1px(creditPxLegacyLetterSpacing * scale),
+    isLegacy
+  }
+}
+
+/**
+ * سند بزرگ‌تر ⇒ در هر صفحه‌ی batch کمتر جا می‌شود (بدون آن، صفحه‌ها می‌شکنند).
+ * با فونت کوچک‌تر هرگز تعداد بیشتر نمی‌شود: گارد ضدتله «افزایش بی‌صدا» (همان
+ * قانعت‌های جلسه ۲۱). سقف/کف‌ها همان CREDIT_PER_PAGE_MAX و ۱.
+ */
+export function creditEffectivePerPage(perPage: number, layout: CreditPrintLayout): number {
+  const n = Math.round(Number(perPage))
+  const base = Number.isFinite(n) && n > 0 ? Math.min(CREDIT_PER_PAGE_MAX, n) : 1
+  if (layout.scale <= 1) return base
+  return Math.max(1, Math.floor(base / layout.scale))
+}

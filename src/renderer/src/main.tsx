@@ -11,6 +11,7 @@ import SalesInvoice from './pages/SalesInvoice'
 import SalesReports from './pages/SalesReports'
 import ManagementReports from './pages/ManagementReports'
 import SmsPanel from './pages/SmsPanel'
+import WooSync from './pages/WooSync'
 import CashClose from './pages/CashClose'
 import Consolidation from './pages/Consolidation'
 import SalesReturn from './pages/SalesReturn'
@@ -24,6 +25,7 @@ import PriceAdjust from './pages/PriceAdjust'
 import CreditManagement from './pages/CreditManagement'
 import { enableRowResize } from './lib/rowResize'
 import { enableColResize } from './lib/colResize'
+import { enableTableLayoutFab } from './lib/tableLayoutFab'
 import { PANEL_KEYS, type PanelKey } from '@shared/panels'
 
 /**
@@ -143,6 +145,18 @@ const router = createHashRouter([
         )
       },
       {
+        path: 'woo-sync',
+        element: (
+          <ManagerGate
+            panel={PANEL_KEYS.wooSync}
+            title="همگام‌سازی موجودی سایت"
+            reason="این بخش موجودی فروشگاه را به stock_quantity سایت WooCommerce وصل می‌کند و می‌تواند موجودی هر دو طرف را تغییر دهد؛ پس با رمز اختصاصی خودش باز می‌شود."
+          >
+            <WooSync />
+          </ManagerGate>
+        )
+      },
+      {
         path: 'cash-close',
         element: (
           <ManagerGate panel={PANEL_KEYS.cashClose} title="بستن صندوق" reason="بستن صندوق پایان شیفت را ثبت می‌کند و دریافتی‌های شیفت را نشان می‌دهد، پس با رمز باز می‌شود.">
@@ -255,6 +269,11 @@ const router = createHashRouter([
  */
 enableColResize()
 enableRowResize()
+/**
+ * دکمه‌ی شناور «↺ برگشت به پیش‌فرض» برای هر جدولی که چیدمان دستی دارد
+ * (ستون با colResize، ردیف با rowResize) — بدون دست‌زدن به هیچ صفحه‌ای.
+ */
+enableTableLayoutFab()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

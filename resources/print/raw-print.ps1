@@ -92,6 +92,10 @@ try {
       [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $unmanaged, $bytes.Length)
       $written = 0
       if (-not [MahakRawPrint]::WritePrinter($handle, $unmanaged, $bytes.Length, [ref]$written)) { exit 3 }
+      if ($written -ne $bytes.Length) {
+        [Console]::Error.WriteLine("WritePrinter wrote $written of $($bytes.Length) bytes")
+        exit 3
+      }
     } finally {
       [System.Runtime.InteropServices.Marshal]::FreeHGlobal($unmanaged)
     }

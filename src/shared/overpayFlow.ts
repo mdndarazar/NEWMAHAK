@@ -128,23 +128,24 @@ export function overpayFlowPassword(state: OverpayFlowState, password: string): 
 }
 
 export interface OverpayCreditLike {
-  code: string
+  /** فقط پاسخ‌های legacy ممکن است داشته باشند؛ UI هرگز آن را نمایش نمی‌دهد. */
+  code?: string
+  id?: number
+  publicReference?: string
   amount: number
   expiresAtJalali?: string | null
   notice?: string | null
 }
 
-/** متن نتیجه‌ی صدور (پیام صفحه) — همیشه با کد، مبلغ و «غیرقابل نقد شدن». */
+/** متن نتیجهٔ صدور بدون credential؛ خودِ برگهٔ چاپ‌شده حامل کد است. */
 export function overpayCreditFlash(
   credit: OverpayCreditLike,
   money: (n: number) => string,
   faDigits: (s: string) => string
 ): string {
   const expiry = credit?.expiresAtJalali ? ` · مهلت تا ${faDigits(String(credit.expiresAtJalali))}` : ' · بدون انقضا'
-  return (
-    `کد اعتبار خرید «${String(credit?.code ?? '')}» به مبلغ ${money(Math.round(Number(credit?.amount) || 0))} ریال ` +
-    `از مبلغ اضافه‌ی دریافتی صادر شد${expiry} · ${OVERPAY_NOT_CASHABLE}`
-  )
+  const reference = credit?.publicReference ?? (credit?.id ? `اعتبار #${credit.id}` : 'اعتبار خرید')
+  return `${reference} به مبلغ ${money(Math.round(Number(credit?.amount) || 0))} ریال از مبلغ اضافه‌ی دریافتی صادر شد${expiry} · ${OVERPAY_NOT_CASHABLE}`
 }
 
 /** دکمه‌ی «صدور اعتبار از اضافه‌دریافت» کنار «مبلغ اضافه‌ی دریافتی» (بند ۴-۵۵). */

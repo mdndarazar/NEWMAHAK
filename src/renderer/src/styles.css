@@ -2,18 +2,40 @@
 @tailwind components;
 @tailwind utilities;
 
-/* فونت فارسی: فایل woff2 را در resources/fonts بگذارید */
+/*
+ * Vazirmatn 5.3.0 — bundled for Electron/offline use (SIL OFL 1.1 in
+ * assets/fonts/Vazirmatn-OFL.txt). Relative Vite URLs are emitted with the
+ * application, unlike the old non-existent /fonts absolute paths.
+ */
 @font-face {
-  font-family: 'Vazirmatn';
-  src: url('/fonts/Vazirmatn-Regular.woff2') format('woff2');
-  font-weight: 400;
-  font-display: swap;
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 400; font-display: swap;
+  src: url('./assets/fonts/Vazirmatn-Arabic-400.woff2') format('woff2');
+  unicode-range: U+0600-06FF,U+0750-077F,U+0870-08FF,U+200C-200E,U+FB50-FDFF,U+FE70-FEFC;
 }
 @font-face {
-  font-family: 'Vazirmatn';
-  src: url('/fonts/Vazirmatn-Bold.woff2') format('woff2');
-  font-weight: 700;
-  font-display: swap;
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 400; font-display: swap;
+  src: url('./assets/fonts/Vazirmatn-Latin-400.woff2') format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face {
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 500; font-display: swap;
+  src: url('./assets/fonts/Vazirmatn-Arabic-500.woff2') format('woff2');
+  unicode-range: U+0600-06FF,U+0750-077F,U+0870-08FF,U+200C-200E,U+FB50-FDFF,U+FE70-FEFC;
+}
+@font-face {
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 500; font-display: swap;
+  src: url('./assets/fonts/Vazirmatn-Latin-500.woff2') format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face {
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 700; font-display: swap;
+  src: url('./assets/fonts/Vazirmatn-Arabic-700.woff2') format('woff2');
+  unicode-range: U+0600-06FF,U+0750-077F,U+0870-08FF,U+200C-200E,U+FB50-FDFF,U+FE70-FEFC;
+}
+@font-face {
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 700; font-display: swap;
+  src: url('./assets/fonts/Vazirmatn-Latin-700.woff2') format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
 }
 
 html, body, #root { height: 100%; }
@@ -57,6 +79,26 @@ body.col-resizing * { cursor: col-resize !important; }
 body.col-resizing-hot, body.col-resizing-hot * { cursor: col-resize !important; }
 /* سرستونِ جدولی که عرض دستی دارد، متن بلندش را با «…» کوتاه می‌کند (نه شکستن) */
 .tbl[data-colw] th { overflow: hidden; text-overflow: ellipsis; }
+
+/* دکمه‌ی شناور «↺ پیش‌فرض» (lib/tableLayoutFab.ts) — گوشه‌ی جدولِ دارای
+   چیدمان دستی می‌نشیند و با یک کلیک عرض ستون‌ها و ارتفاع ردیف‌ها را خودکار
+   می‌کند. متن‌دار و خواناست تا با فلشِ کوچکِ قبلی اشتباه گرفته نشود. */
+.tbl-fab {
+  position: fixed;
+  padding: 2px 10px;
+  border: none;
+  border-radius: 8px;
+  background: #b91c1c;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 20px;
+  white-space: nowrap;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+.tbl-fab:hover { background: #991b1b; }
 
 /* ===========================================================================
    بند ۵ — «جدول گزارش کامل، با اسکرول ماوس»

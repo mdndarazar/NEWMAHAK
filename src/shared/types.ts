@@ -69,6 +69,10 @@ export interface CreateSaleInput {
    * نمی‌شود. تنها حالتی که پنل فروش صریح می‌فرستد، «به حساب مدیر» است.
    */
   payments: { methodId: number; amount: number; reference?: string; destination?: string | null }[]
+  /** UI صریحِ نقد + کارت؛ فقط در این حالت گارد افزایشی split فعال می‌شود. */
+  splitPayment?: boolean
+  /** فقط همراه splitPayment: کمبود مبلغ آگاهانه به نسیه تبدیل شود. */
+  allowPartial?: boolean
   note?: string
   /** تاریخ شمسی دلخواه (yyyy/MM/dd). خالی = امروز. */
   issuedAtJalali?: string
@@ -275,6 +279,40 @@ export interface InvoicePaymentRow {
    */
   chequeNeedsReview?: boolean
   chequeReviewNote?: string | null
+}
+
+/**
+ * زنجیره‌ی فقط‌خواندنیِ «تسویه با اعتبار» که از گزارش فروش باز می‌شود.
+ *
+ * این قرارداد عمداً از InvoicePaymentsView جداست: فقط شناسه/مرجع امن اعتبار،
+ * رویداد صدور، رویداد مصرف و مانده‌ی مالی را دارد. کد قابل‌مصرف، legacyCode،
+ * اطلاعات دارنده (تلفن/نشانی/شناسه ملی/یادداشت) و reference آزادانه هرگز اینجا
+ * نیستند. نمایش کد تنها مسیر مستقل و manager-authorized خودش را دارد.
+ */
+export interface CreditSettlementLineageRow {
+  redemptionId: number | null
+  paymentId: number | null
+  paymentSeq: number | null
+  amount: number
+  redeemedAtJalali: string
+  redeemedAtTime: string
+  credit: {
+    id: number
+    publicReference: string
+    issuedAtJalali: string
+    expiresAtJalali: string | null
+    sourceLabel: string
+    status: string
+    statusLabel: string
+    remaining: number
+  }
+}
+
+export interface CreditSettlementLineageView {
+  invoiceId: number
+  receiptNo: number
+  totalAmount: number
+  rows: CreditSettlementLineageRow[]
 }
 
 /** نمای کامل پرداختی‌های یک فاکتور (مودال «پرداختی‌ها / اقساط»). */
@@ -541,6 +579,14 @@ export interface ReturnSaleInput {
   confirmOverpay?: boolean
   /** صدور کد اعتبار OVERPAY از همان اضافه‌دریافتِ ساخته‌شده با این برگشت */
   overpayAsCredit?: boolean
+  /** نشست ۳۱۹ — تأیید و رمز مدیر برای بازپرداخت با کارت‌خوان (کارت) */
+  cardPosOverride?: CardPosOverrideInput | null
+}
+
+export interface CardPosOverrideInput {
+  managerPassword: string
+  reason: string
+  acknowledgedNoReverse: true
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +662,30 @@ export interface ReturnLookup {
   items: ReturnLookupItem[]
   /** هشدارهای سطح فاکتور (مثلاً «۲ قلم از انبار حذف شده‌اند») */
   warnings: string[]
+  /** نشست ۳۱۹ — پروفایل تسویه‌ی فاکتور مرجع (فقط‌خواندنی) */
+  settlementProfile?: InvoiceSettlementProfile
+}
+
+/** ترکیب پرداختی فاکتور مرجع، از دید «پول واقعی» (F1). همه ریال، همه از سرور. */
+export interface InvoiceSettlementProfile {
+  /** کد قاعده‌ی غالب برای هدایت */
+  kind: 'CREDIT_ONLY' | 'PAID_CASHLIKE' | 'MIXED' | 'STORE_CREDIT_FUNDED' | 'EXCHANGE_DOC'
+  /** پول نقد/کارت/کارت‌به‌کارتِ واقعی فاکتور (همان cashLikeReceivedOf) */
+  cashLikeReceived: number
+  /** سقف فعلی خروج پول برای برگشت ساده (همان cashLikeRefundableOf بعد از بازپرداخت‌های قبلی) */
+  cashLikeRefundableNow: number
+  /** بدهی باقی‌مانده‌ی فعلی فاکتور (settlement.ts) */
+  remainingDebt: number
+  /** مصرف‌های کد اعتبار روی این فاکتور (برگشت‌نخورده) */
+  creditRedemptions: Array<{
+    creditId: number
+    code: string // ماسک‌شده برای نمایش: ****-1234
+    amount: number
+    creditStatus: string // ACTIVE | USED | EXPIRED | CANCELED
+  }>
+  /** آیا این فاکتور سند تعویض است؟ (زنجیره‌ی sourceInvoiceId) */
+  isExchangeDoc: boolean
+  sourceReceiptNo: number | null
 }
 
 // ---------------------------------------------------------------------------
@@ -677,6 +747,8 @@ export interface UpdateReturnInput {
    * نشست ۱۸۲/۲۰۱ — اثر مالی (بازپرداخت/اعتبار/کاهش بدهی) هم همین رمز + دلیل؛
    * سنجش رمز بیرون از تراکنش است.
    */
+  /** رمز مدیر یا رمز دومِ قفل اختصاصی «اصلاح و ابطال برگشت/تعویض». */
+  panelPassword?: string | null
   managerPassword?: string | null
   overrideReason?: string | null
 }
@@ -738,6 +810,8 @@ export interface SaleReportFilter {
   productSearch?: string | null
   /** فقط فاکتورهای تجمیع‌نشده (برای پنل تجمیع و انتقال) */
   onlyNotConsolidated?: boolean
+  /** درخواست صریح بازهٔ کامل؛ گزارش عادیِ بی‌تاریخ همچنان «امروز» است. */
+  fullRange?: boolean
   /** پیش‌نمایش/عملیات مدیریتی روی همین فاکتورهای مشخص، مستقل از صفحه‌ی گزارش */
   invoiceIds?: number[] | null
   /**
@@ -1092,12 +1166,15 @@ export interface SaleChequeBlock {
 /** بلوک ۵ — اعتبار خرید (همیشه، حتی صفر). */
 /** یک مصرف اعتبار در بازه — جملهٔ خط کنترل صندوق (نشست ۱۸۷). */
 export interface StoreCreditUsageStory {
-  code: string
+  /**
+   * شرح امنِ مسیر اعتبار. کد قابل مصرف عمداً در قرارداد گزارش وجود ندارد؛
+   * نمایش محرمانهٔ مدیر، اگر لازم شد، باید از کانال جدا و مجوزدار بیاید.
+   */
+  safeText: string
   amount: number
   issuedAtJalali: string
   usedAtJalali: string
   reason: 'RETURN' | 'EXCHANGE' | 'OVERPAY' | 'MANUAL' | 'OTHER'
-  text: string
 }
 
 export interface SaleStoreCreditBlock {
@@ -1110,9 +1187,22 @@ export interface SaleStoreCreditBlock {
   issuedRemainder?: number
   /** نشست ۱۷۱ · S170-D3 — باقی‌مانده‌ی اعتبار اضافه‌دریافت (داخل issuedFromOverpay) */
   issuedOverpayRemainder?: number
+  /**
+   * خاستگاه‌های متقابلاً مجزای اعتبار صادرشده؛ قرارداد کارت «گردش اعتبار» و
+   * ریزبین مالی. هیچ‌یک کد قابل‌مصرف اعتبار را حمل نمی‌کند.
+   */
+  issuedLifecycleReturn?: number
+  issuedLifecycleExchange?: number
+  issuedLifecycleManual?: number
+  issuedLifecycleOverpay?: number
+  issuedLifecycleRemainder?: number
+  issuedLifecycleOther?: number
   used: number
   active: number
+  /** ماندهٔ منقضی تا پایان بازه (snapshot/حسابداری). */
   expired: number
+  /** مانده‌ای که تاریخ انقضایش دقیقاً در بازهٔ انتخاب‌شده است. */
+  expiredInRange?: number
   canceled: number
   issuedCount: number
   usageCount: number
@@ -1168,6 +1258,11 @@ export interface SaleBridgeRow {
 
 export interface SaleBridgeSource {
   kind: 'INVOICE' | 'RETURN' | 'PAYMENT' | 'STORE_CREDIT' | 'CASH_MOVEMENT'
+  /**
+   * نوع صریح سند اعتبار؛ Financial Inspector نباید از متن label (که برای
+   * مدیر و امنیت redacted شده) نوع منبع را حدس بزند.
+   */
+  subKind?: 'STORE_CREDIT_ISSUANCE' | 'STORE_CREDIT_REDEMPTION'
   id: number
   label: string
   amount: number
@@ -1175,6 +1270,173 @@ export interface SaleBridgeSource {
   /** شناسه‌ای که UI با آن می‌تواند سند مبدأ را باز کند */
   invoiceId: number | null
   receiptNo: number | null
+}
+
+/**
+ * تنها پاسخِ صریحِ افشای کد اعتبار برای مدیر. این type هرگز عضو گزارش، ریزبین،
+ * چاپ یا export عمومی نیست و فقط از IPC مجوزدار `creditManagerCodeReveal` برمی‌گردد.
+ */
+export interface ManagerStoreCreditCodeReveal {
+  creditId: number
+  code: string
+}
+
+/**
+ * ===========================================================================
+ * ریزبین مالی گزارش فروش — قرارداد فقط‌خواندنی.
+ *
+ * `FINANCIAL_SOURCE_KEYS` ردیف‌های رسمی پل تطبیق‌اند. کلیدهای جزء در آرایهٔ
+ * جدا نگه داشته می‌شوند: آن‌ها فرمول جدیدی نیستند، فقط اسنادِ همان اجزای رسمی
+ * کاشی‌های کشو/پوز/سایر را با predicate سمت سرور نشان می‌دهند.
+ * ===========================================================================
+ */
+export const FINANCIAL_SOURCE_KEYS = [
+  'realCash',
+  'managerAccountReceived',
+  'destinationUnknownReceived',
+  'storeCreditIssued',
+  /** کل صدورِ چرخه، جدا از ردیفِ قدیمیِ فقط سنددارِ پل تطبیق. */
+  'storeCreditIssuedAll',
+  /** ریزِ امن چرخهٔ اعتبار؛ همه از همان صورت رسمی گزارش می‌آیند، نه جمع Renderer. */
+  'storeCreditIssuedReturn',
+  'storeCreditIssuedExchange',
+  'storeCreditIssuedManual',
+  'storeCreditIssuedOverpay',
+  'storeCreditIssuedRemainder',
+  'storeCreditIssuedOther',
+  'storeCreditExpired',
+  /** ماندهٔ اعتبارهایی که تاریخ انقضایشان داخل بازهٔ انتخاب‌شده است. */
+  'storeCreditExpiredInRange',
+  'storeCreditCanceled',
+  'priorCreditSettlements',
+  'priorClearedCheques',
+  'priorManagerAccountReceived',
+  'priorDestinationUnknownReceived',
+  'storeCreditUsed',
+  'uncollectedCredit',
+  'cashRefunds',
+  'cardRefunds',
+  'cardToCardRefunds',
+  'exchangeCashRefunds',
+  'exchangeCardRefunds',
+  'exchangeCardToCardRefunds',
+  'priorDebtReturns',
+  'overpayReceived'
+] as const
+export type FinancialSourceKey = (typeof FINANCIAL_SOURCE_KEYS)[number]
+
+/**
+ * اجزای قابل‌ردیابی کاشی‌ها. هر کدام فقط یک فیلتر خواندنی روی سندهای موجود است؛
+ * مبلغ رسمی از صورت حسابداری ساخته‌شده می‌آید، نه از جمع Renderer.
+ */
+export const FINANCIAL_COMPONENT_KEYS = [
+  'drawerCashReceived',
+  'posCardReceived',
+  'otherMethodReceived'
+] as const
+export type FinancialComponentKey = (typeof FINANCIAL_COMPONENT_KEYS)[number]
+export type FinancialInspectorKey = FinancialSourceKey | FinancialComponentKey
+
+export type FinancialSourceSort =
+  | 'DATE_DESC'
+  | 'DATE_ASC'
+  | 'AMOUNT_DESC'
+  | 'AMOUNT_ASC'
+  | 'DOCUMENT_DESC'
+  | 'DOCUMENT_ASC'
+
+export interface FinancialSourceRequest {
+  scope: SaleReportFilter
+  key: FinancialInspectorKey
+  skip?: number
+  take?: number
+  search?: string
+  sort?: FinancialSourceSort
+}
+
+export interface FinancialSourceRow {
+  /** subKind فقط metadata امنِ مسیر افشای مدیر است؛ کد اعتبار نیست. */
+  ref: Pick<SaleBridgeSource, 'kind' | 'id' | 'subKind'>
+  /** متن سرور، از همان سند سازنده؛ برای نمایش و جست‌وجوی امن. */
+  documentLabel: string
+  amount: number
+  dateJalali: string | null
+  invoiceId: number | null
+  receiptNo: number | null
+  /** اثر این سند در ردیف پل؛ منابع فعلی همگی سهم مثبت دارند و جهت در خود ردیف پل است. */
+  effect: 'IN' | 'OUT' | 'NON_CASH' | 'BALANCE'
+}
+
+export interface FinancialSourceResult {
+  key: FinancialInspectorKey
+  label: string
+  hint: string
+  /** مبنای مبلغ رسمی؛ RANGE یعنی کل بازه و CURRENT_PAGE یعنی همان صفحهٔ گزارش اجراشده. */
+  basis: 'RANGE' | 'CURRENT_PAGE'
+  /** فقط برای CURRENT_PAGE: آیا صفحهٔ گزارش واقعاً همهٔ بازه را پوشش می‌دهد؟ */
+  pageCoversRange: boolean
+  /** مبلغ رسمی ردیف پل یا جزء کاشی، مستقل از صفحه/جست‌وجوی منابع. */
+  totalAmount: number
+  /** جمع اسناد منطبق با search جاری؛ هرگز جای مبلغ رسمی نمی‌نشیند. */
+  sourceAmount: number
+  totalCount: number
+  filteredCount: number
+  page: SaleReportPage
+  sort: FinancialSourceSort
+  search: string
+  /** اگر false باشد UI نباید تیک هم‌خوانی سبز نمایش دهد. */
+  reconciles: boolean
+  difference: number
+  sources: FinancialSourceRow[]
+}
+
+export interface FinancialSourceResponse {
+  ok: boolean
+  result?: FinancialSourceResult
+  message?: string
+}
+
+export interface FinancialDocumentRequest {
+  scope: SaleReportFilter
+  key: FinancialInspectorKey
+  ref: Pick<SaleBridgeSource, 'kind' | 'id'>
+}
+
+/** شناسنامهٔ فقط‌خواندنیِ سندی که عضویت آن در منبع مالی سمت سرور تأیید شده است. */
+export interface FinancialDocumentDetail {
+  /** subKind از source اثبات‌شدهٔ server می‌آید و فقط برای reveal جداگانهٔ مدیر است. */
+  ref: Pick<SaleBridgeSource, 'kind' | 'id' | 'subKind'>
+  title: string
+  /** سهم همین سند در عدد مالی بازشده، نه لزوماً کل مبلغ سند. */
+  sourceAmount: number
+  documentAmount: number
+  documentLabel: string
+  occurredAt: { dateJalali: string | null; time: string | null }
+  invoice: { id: number; receiptNo: number; issuedAtJalali: string | null } | null
+  customer: { id: number | null; name: string }
+  actor: { id: number | null; name: string }
+  shift: { id: number | null; name: string | null }
+  settlement: { method: string; methodLabel: string; reference: string | null; status: string | null }
+  /**
+   * فقط در شناسنامهٔ امنِ اعتبار: وضعیتِ مؤثر و تاریخ واقعی انقضا.
+   * این بلوک هیچ‌گاه کد قابل‌مصرف را حمل نمی‌کند؛ reveal کد مسیر جداگانهٔ مدیر است.
+   */
+  creditValidity?: {
+    status: string
+    statusLabel: string
+    expiresAtJalali: string | null
+    issuedDays: number | null
+    remaining: number
+  }
+  items: Array<{ name: string; code: string; qty: number; unitPrice: number; lineTotal: number }>
+  note: string | null
+  voided: boolean
+}
+
+export interface FinancialDocumentResponse {
+  ok: boolean
+  detail?: FinancialDocumentDetail
+  message?: string
 }
 
 /** بلوک ۷ — پل تطبیق. */
@@ -1356,6 +1618,19 @@ export interface ShiftSuggestion {
   templates: { number: number; name: string; startTime: string; endTime: string; windowLabel: string }[]
 }
 
+/**
+ * نشستِ بازِ روزِ دیگر (جامانده) که از دید openShift پنهان می‌ماند؛ بستنش در
+ * openSession دلیل و رمز مدیر می‌خواهد و مودال باید از قبل فیلدهایش را نشان دهد.
+ */
+export interface ShiftStaleOpen {
+  id: number
+  name: string
+  sessionLabel: string
+  dayJalali: string
+  userId: number | null
+  userName: string | null
+}
+
 /** داده‌ی فرم «باز کردن نشست / تعویض کارمند». */
 export interface ShiftSessionForm {
   suggestion: ShiftSuggestion
@@ -1363,7 +1638,34 @@ export interface ShiftSessionForm {
   /** آخرین کارمند نشست قبلی — فقط پیش‌فرضِ highlight‌شده، بدون تأیید خودکار */
   defaultStaffId: number | null
   current: ShiftInfo | null
+  /** نشست جامانده‌ی روزِ دیگر (در صورت وجود) — بستنش در مودال دلیل + رمز مدیر می‌خواهد */
+  staleOpen: ShiftStaleOpen | null
+  /** چرا ثبت فاکتور/پرداخت الان ممکن نیست (در صورت وجود مانع) — OVERTIME_ELIGIBLE از فاز اضافه‌کاری */
+  blockReason: 'NONE' | 'STAFF_PENDING' | 'STALE_OPEN' | 'OVERTIME_ELIGIBLE'
+  /**
+   * نشست ۳۱۰ — چون blockReason === OVERTIME_ELIGIBLE: پیش‌نمایش کارت اعلام
+   * اضافه‌کاری (ساعت پایان مجاز = پایان بازه + سقف تنظیمی، با ارقام فارسی).
+   * سرور همه‌ی گیت‌ها را پوشیده ساخته است؛ modal فقط دلیل می‌گیرد و اعلام می‌کند.
+   */
+  overtimePreview: { untilLabel: string; capMinutes: number } | null
   guide: string
+}
+
+/**
+ * وضعیت زنده‌ی نشست برای UI (کانال shift:status) — خواندنیِ خالص؛ برخلاف
+ * shift:current هیچ خطایی پرتاب نمی‌کند و هیچ نشست AUTOای نمی‌سازد.
+ */
+export type ShiftGateState = 'OK' | 'STAFF_PENDING' | 'STALE' | 'NONE'
+export interface ShiftStatusInfo {
+  state: ShiftGateState
+  shift?: ShiftInfo | null
+  stale?: ShiftStaleOpen | null
+  /**
+   * نشست ۳۱۰ — وقتی state === 'STALE' ولی نشست بازِ دیروز واجد اضافه‌کاری است:
+   * ساعت پایان مجاز (ارقام فارسی) تا پیام خطا/چیپ بتوانند جایگزین اعلام اضافه‌کاری
+   * را هم نشان دهند. در بقیه‌ی حالت‌ها null/غایب است.
+   */
+  overtimeUntilLabel?: string | null
 }
 
 /** یک ردیف «انبار مرکزی» (مورد ۵) — کاملاً مستقل از موجودی فروشگاه. */
@@ -1680,6 +1982,12 @@ export interface ExchangeSaleInput {
   /** روش پرداخت مابه‌التفاوت (وقتی مشتری باید بپردازد) */
   methodId?: number | null
   /**
+   * پرداخت ترکیبیِ مابه‌التفاوت مثبت تعویض. فقط CASH + CARD با مقصدهای متناظر
+   * پذیرفته می‌شود؛ هر سهم Payment مستقل می‌سازد.
+   */
+  splitPayment?: boolean
+  payments?: { methodId: number; amount: number; destination?: string | null }[]
+  /**
    * مقصد پول مابه‌التفاوت مثبت. برای نقد/کارت از `kind` روش قابل استنتاج است؛
    * روش CUSTOM بدون این فیلد رد می‌شود (همان قاعده‌ی `addPayment`).
    */
@@ -1729,6 +2037,8 @@ export interface ExchangeSaleInput {
   managerPassword?: string | null
   /** جلسه ۱۵ (بند ۱۷) — دلیل اجباری وقتی سند در دوره‌ی بسته‌شده ثبت می‌شود */
   overrideReason?: string | null
+  /** نشست ۳۱۹ — تأیید و رمز مدیر برای بازپرداخت با کارت‌خوان (کارت) */
+  cardPosOverride?: CardPosOverrideInput | null
 }
 
 /** «بارکد اعتبار خرید بعدی» آماده‌ی نمایش/چاپ. */
@@ -1814,11 +2124,26 @@ export interface StoreCreditRow {
   userId: number | null
 }
 
+/**
+ * ردیف امن اعتبار برای گزارش، فهرست و جزئیات عادی.
+ *
+ * این DTO هرگز credential قابل‌مصرف یا legacyCode را حمل نمی‌کند. `publicReference`
+ * فقط شناسهٔ غیرقابل‌مصرف برای ردیابی/چاپ/Excel است؛ افشای کد فقط از مسیر جدا و
+ * server-authorized مدیر انجام می‌شود.
+ */
+export type StoreCreditSafeRow = Omit<StoreCreditRow, 'code' | 'legacyCode'> & {
+  publicReference: string
+}
+
+/** نام سازگارِ قرارداد امن تب legacy «اعتبار خرید» گزارش فروش. */
+export type StoreCreditReportRow = StoreCreditSafeRow
+
 /** یک ردیف «دفتر مصرف» (§۴ و §۱۶) — هر مصرف، مبلغ و فاکتور و کاربر خودش را دارد. */
 export interface CreditRedemptionRow {
   id: number
   creditId: number
-  code: string
+  /** شناسهٔ امن اعتبار؛ کد قابل‌مصرف در دفتر عادی نیست. */
+  publicReference: string
   amount: number
   remainderAfter: number
   seq: number
@@ -1857,7 +2182,8 @@ export interface CreditTimelineEvent {
 export interface CreditReminderLogRow {
   id: number
   creditId: number
-  code: string
+  /** شناسهٔ امن اعتبار؛ متن پیام هم نباید credential را نگه دارد. */
+  publicReference: string
   kind: string
   kindLabel: string
   status: string
@@ -1873,7 +2199,7 @@ export interface CreditReminderLogRow {
 
 /** یک نامزد یادآوری + دلیل فارسیِ «باید/نباید» (§۱۴). */
 export interface CreditReminderCandidateRow {
-  credit: StoreCreditRow
+  credit: StoreCreditSafeRow
   holderName: string | null
   phone: string | null
   should: boolean
@@ -1911,12 +2237,12 @@ export interface CreditBulkResult {
   lengthGrown: boolean
   lengthMessage: string | null
   warnings: string[]
-  credits: StoreCreditRow[]
+  credits: StoreCreditSafeRow[]
 }
 
 /** صفحه‌ی جزئیات یک اعتبار (§۱۶). */
 export interface CreditDetail {
-  credit: StoreCreditRow
+  credit: StoreCreditSafeRow
   redemptions: CreditRedemptionRow[]
   reminders: CreditReminderLogRow[]
   /** صفحه‌ی واقعی لاگ یادآوری؛ آرایه‌ی reminders برای callerهای قدیمی حفظ شده است. */
@@ -1929,7 +2255,7 @@ export interface CreditDetail {
   issuedByName: string | null
   batch: CreditBatchRow | null
   /** اعتبار جدیدی که باقی‌مانده‌ی این اعتبار به آن رفت (مسیر یک‌بارمصرف) */
-  remainderCredit: { id: number; code: string; amount: number } | null
+  remainderCredit: { id: number; publicReference: string; amount: number } | null
 }
 
 /** داشبورد اعتبار خرید (§۱۵). */
@@ -1975,8 +2301,8 @@ export interface ExchangeSaleResult {
   /** CASH | CREDIT | NONE */
   settlement: string
   settlementLabel: string
-  /** بارکد اعتبار صادرشده (فقط وقتی ما بدهکار شدیم) */
-  storeCredit: StoreCreditRow | null
+  /** اعتبار صادرشده (فقط وقتی ما بدهکار شدیم)؛ کد فقط از reveal مدیر. */
+  storeCredit: StoreCreditSafeRow | null
   /** تعدادی که به موجودی فروشگاه برگشت */
   restockedQty: number
   /** هشدارهای موجودی کالای جایگزین */
@@ -2022,10 +2348,12 @@ export interface ExchangeReportRow {
   diff: number
   settlement: string
   settlementLabel: string
-  /** مابه‌التفاوتی که نقد/کارت دریافت شد */
+  /** مابه‌التفاوتی که واقعاً نقد دریافت شد (فقط مقصد CASH). */
   cashReceived: number
-  /** بارکد اعتبار صادرشده روی همین تعویض */
-  storeCreditCode: string | null
+  /** مابه‌التفاوتی که واقعاً با کارت دریافت شد (فقط مقصد CARD). */
+  cardReceived: number
+  /** شناسهٔ امن اعتبارِ صادرشده روی همین تعویض؛ کد قابل‌مصرف در گزارش نیست. */
+  storeCreditReference: string | null
   storeCreditAmount: number
   storeCreditStatus: string | null
   storeCreditStatusLabel: string | null
@@ -2088,8 +2416,8 @@ export interface ReturnListRow {
   invoiceUserName: string
   /** کاربری که برگشت را ثبت کرد (چه کسی برگرداند) */
   returnUserName: string
-  /** بارکد اعتبار صادرشده برای این برگشت (اگر صادر شد) */
-  storeCreditCode: string | null
+  /** شناسهٔ امن اعتبارِ صادرشده برای این برگشت (اگر صادر شد)؛ کد قابل‌مصرف نیست. */
+  storeCreditReference: string | null
   /** مابه‌التفاوت تعویض و نحوه‌ی تسویه‌اش */
   exchangeDiff: number
   exchangeSettlement: string | null
@@ -2105,6 +2433,7 @@ export interface ExchangeReportResult {
     exchangeTotal: number
     diffTotal: number
     cashReceivedTotal: number
+    cardReceivedTotal: number
     creditIssuedTotal: number
     creditUsedTotal: number
   }
@@ -3101,3 +3430,156 @@ export interface SaleReportLimits {
  * ===========================================================================
  */
 export type { PendingRestockItem, PendingRestockSummary } from './pendingRestock'
+
+
+/**
+ * ===========================================================================
+ * نشست ۳۱۸-۱ · نمای تشخیص پل تطبیق (طرح برنده «کامیلا») — DTOهای IPC.
+ *
+ *   • نشان (BridgeDiagFlag) فقط خواص نمایشی است؛ همیشه «TENTATIVE» و هرگز در
+ *     حسابِ گزارش اثر ندارد. منطق ساختنش در src/shared/bridgeDiagnostics.ts است.
+ *   • BridgeDiagRow ≈ SaleBridgeRow + flags و hasMoreSources — هیچ فیلد عددی
+ *     گزارش را بازنویسی نمی‌کند (amount/sign/explainedTotal/unexplained همان‌اند).
+ *   • BridgeDiagView خروجی سرویس «sale:report:bridgeDiag:open» است؛ یادداشت‌ها
+ *     (فاز ۴) به‌صورت append-only از AuditLog می‌آیند.
+ * ===========================================================================
+ */
+
+export interface BridgeDiagFlag {
+  code:
+    | 'sign'               // جهت علامت unexplained — راهنمای کلی بالای نما
+    | 'largest'            // جزو بزرگ‌ترین ردیف‌های غیرصفر — پیشنهاد نقطه‌ی شروع
+    | 'equals-unexplained' // مبلغ ردیف دقیقاً برابر |باقیمانده‌ی بی‌توضیح| است
+    | 'date'               // تاریخ سند بیرون از بازه است / تاریخی ثبت نشده
+  text: string
+  certainty: 'TENTATIVE'
+}
+
+/** ردیف پل + نشان‌های تشخیصی (بدون هیچ تغییر عددی نسبت به گزارش پایه). */
+export interface BridgeDiagRow extends SaleBridgeRow {
+  flags: BridgeDiagFlag[]
+}
+
+/** یادداشت مدیر درباره‌ی نابرابری پل — append-only، متن خالص (فاز ۴). */
+export interface BridgeDiagNote {
+  id: number
+  createdAtIso: string
+  actorLabel: string
+  text: string
+}
+
+/** خروجی کامل نمای تشخیصی پل برای یک scope. */
+export interface BridgeDiagView {
+  period: SaleReportPeriod
+  /** لحظه‌ی محاسبه‌ی همین نما (برای بنر staleness در مودال). */
+  computedAtIso: string
+  bridge: {
+    target: number
+    explainedTotal: number
+    unexplained: number
+    balanced: boolean
+  }
+  /** راهنمای کلی بالای نما (جهت علامت و غیره). */
+  guide: BridgeDiagFlag[]
+  rows: BridgeDiagRow[]
+  notes: BridgeDiagNote[]
+  /** نشست ۳۱۹ — مظنونین اصلی پل تطبیق (حداکثر ۳ مظنون) */
+  suspects?: BridgeSuspect[]
+}
+
+export type SuspectReason =
+  | 'ROW_EQUALS_UNEXPLAINED' // ردیف = |باقیمانده|
+  | 'SOURCE_EQUALS_UNEXPLAINED' // یک سند تکی = |باقیمانده| (قوی‌تر از ردیف)
+  | 'SOURCE_OUT_OF_PERIOD' // flagSourceDate
+  | 'CASH_OUT_ON_CREDIT' // سند خروج پول روی فاکتور با cashLike=0 (از documentDetail)
+  | 'LARGEST_ROW'
+
+export interface BridgeSuspect {
+  rank: number // ۱ = قوی‌ترین
+  rowKey: string
+  rowLabel: string
+  reasons: SuspectReason[]
+  /** اسناد مظنون همین ردیف (اگر سند مشخص است)، با ارجاع برای documentDetail */
+  documents: Array<{
+    kind: SaleBridgeSource['kind']
+    id: number
+    amount: number
+    dateJalali: string | null
+    receiptNo: number | null
+  }>
+  certainty: 'TENTATIVE'
+}
+
+/** شناسنامه‌ی کامل سند — فقط خواندنی */
+export interface BridgeDocDetail {
+  ref: { kind: SaleBridgeSource['kind']; id: number }
+  docType: 'SIMPLE_RETURN' | 'EXCHANGE' | 'CREDIT_PAYMENT' | 'STORE_CREDIT' | 'OVERPAY' | 'CASH_MOVEMENT' | 'INVOICE'
+  docNo: string
+  parent: {
+    invoiceId: number
+    receiptNo: number
+    dateJalali: string
+    settlementKind: InvoiceSettlementProfile['kind']
+  } | null
+  at: { dateJalali: string; time: string }
+  actor: { userId: number | null; name: string }
+  shift: { id: number | null; name: string | null }
+  customer: { id: number | null; name: string }
+  items: Array<{ name: string; code: string; qty: number; unitPrice: number; lineTotal: number }>
+  settlement: {
+    method: 'CASH' | 'CARD' | 'CARD_TO_CARD' | 'STORE_CREDIT' | 'NONE' | 'DEBT_CUT' | 'MIXED'
+    methodLabel: string
+    amount: number
+    reference: string | null
+    cardTransferStatus?: 'PENDING' | 'PAID' | 'CANCELED' | null
+    storeCreditCodeMasked?: string | null
+  }
+  voided: boolean
+}
+
+export interface BridgeRootCause {
+  narrative: string // «چه ثبت شده»
+  accountingRoot: string // «چرا پل را باز کرد»
+  lesson: string // «دفعه‌ی بعد کدام گزینه»
+  lessonMethod?: string
+  ruleId: string // برای تست و آمار آموزشی
+}
+
+export interface BridgeDocDetailResponse {
+  ok: boolean
+  message?: string
+  detail?: BridgeDocDetail
+  rootCause?: BridgeRootCause
+}
+
+/** منابع یک ردیف پل در نمای تشخیص + نشان تاریخِ بیرون‌بازه. */
+export interface BridgeDiagRowSources {
+  rowKey: string
+  rowLabel: string
+  sources: Array<SaleBridgeSource & { flags: BridgeDiagFlag[] }>
+  totalCount: number | null
+}
+
+export interface BridgeDiagOpenResponse {
+  ok: boolean
+  view?: BridgeDiagView
+  message?: string
+}
+
+export interface BridgeDiagSourcesResponse {
+  ok: boolean
+  result?: BridgeDiagRowSources
+  message?: string
+}
+
+export interface BridgeDiagNotesResponse {
+  ok: boolean
+  notes?: BridgeDiagNote[]
+  message?: string
+}
+
+export interface BridgeDiagNoteAddResponse {
+  ok: boolean
+  note?: BridgeDiagNote
+  message?: string
+}

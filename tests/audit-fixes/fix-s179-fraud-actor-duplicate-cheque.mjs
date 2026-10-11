@@ -28,16 +28,27 @@ process.env.HARNESS_DB = join(DIR, 'shop.db')
 const electron = await import('electron')
 const handlers = new Map()
 electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
+/**
+ * نشست Main-first owner را فقط از webContents معتبر می‌گیرد. این harness قبلاً
+ * event=null می‌داد، بنابراین پیش از رسیدن به سنجش actor به‌درستی رد می‌شد و
+ * دیگر رفتار واقعی IPC را نمی‌سنجید.
+ */
+const owner = 17901
+const sender = { id: owner, isDestroyed: () => false, once: () => {} }
+electron.BrowserWindow.fromWebContents = () => ({ isDestroyed: () => false })
 const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
 const db = harnessClient()
 const seed = makeSeeder(db)
 const { registerIpcHandlers } = await import('../../src/main/ipc/index.ts')
 const { IPC } = await import('@shared/ipc')
+const { notePanelUnlocked, runWithPanelSessionOwner } = await import('../../src/main/services/panelSession.ts')
 const { fraudService } = await import('../../src/main/services/FraudService.ts')
 const { jalaliToday, jalaliStartOfDay, jalaliAddDays: addDaysJalali } = await import('@shared/jalali')
 registerIpcHandlers()
-const ipc = (ch, payload) => handlers.get(ch)(null, payload)
+/** گزارش ضدتقلب فقط از پنل گزارشات همان webContents خوانده می‌شود. */
+runWithPanelSessionOwner(owner, () => notePanelUnlocked('sales-reports', 'PANEL'))
+const ipc = (ch, payload) => handlers.get(ch)({ sender }, payload)
 
 let ok = 0
 let bad = 0

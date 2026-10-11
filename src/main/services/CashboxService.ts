@@ -649,7 +649,18 @@ export const cashboxService = {
    * صندوقشان را ببندند ولی کسر انبار روز، یک‌جا و در پایان روز قطعی شود.
    * ==================================================================
    */
-  async close(input: CashCloseInput & { from?: string; to?: string }) {
+  async close(
+    input: CashCloseInput & {
+      from?: string
+      to?: string
+      /** Internal server-only custody hook; never comes from renderer IPC. */
+      afterCloseInTx?: (tx: Prisma.TransactionClient, session: any, closedShiftRow: any | null) => Promise<void>
+      custodyEffectiveTo?: Date
+    }
+  ) {
+    /** Legacy IPC receives this marker only when custody is enabled. */
+    if ((input as any).custodyFence)
+      throw new BusinessError('در حالت حضانت صندوق، بستن نهایی فقط از مسیر رسمی حضانت انجام می‌شود.', 'CUSTODY_LEGACY_PATH')
     validateCashCloseInput(input)
     /**
      * ==================== مورد ۴: شیفتِ درست هنگام بستن صندوق ====================
@@ -927,7 +938,7 @@ export const cashboxService = {
       data: {
         shiftId: shift?.id ?? null,
         fromDate: shift?.openedAt ?? range.from,
-        toDate: new Date(),
+        toDate: input.custodyEffectiveTo ?? new Date(),
         dayJalali: shift?.dayJalali || range.fromJalali,
         cashTotal: s.cashTotal,
         cardTotal: s.cardTotal,
@@ -1025,6 +1036,7 @@ export const cashboxService = {
           })
         }
       }
+      if (input.afterCloseInTx) await input.afterCloseInTx(tx, session, closedShiftRow)
       return { session, closedShiftRow }
     }, TX_OPTIONS)
 
