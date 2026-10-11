@@ -8508,8 +8508,9 @@ export const salesService = {
    * می‌شوند؛ بنابراین گزارش شیفت مبدأ حقیقت تاریخی خود را حفظ می‌کند و صندوق
    * و شمارش موجودیِ شیفت اصلاح‌کننده اثر واقعیِ امروز را می‌بینند.
    *
-   * فاز نخست عمداً فقط `kind === RETURN` را می‌پذیرد. تعویض گراف پرداخت/فاکتور
-   * جایگزین دارد و نباید با حدس زدن مثل برگشت ساده اصلاح شود.
+   * برای تعویض، هر دو سمت موجودی (کالای برگشتی و کالای جایگزین) و همچنین هر
+   * پرداخت/بازیافت نقد و کارت با effect جدا ثبت می‌شود؛ بنابراین تعویض هرگز
+   * برگشت ساده فرض نمی‌شود.
    */
   async returnReconcileVoid(input: {
     id?: number | null
@@ -8523,6 +8524,10 @@ export const salesService = {
     /** آنچه واقعاً به کارت/بانک برگشته است (دفتر مستقل، نه پول کشو). */
     cardRecovered?: number | null
     cardReference?: string | null
+    /** فقط تعویضِ مثبت: آنچه واقعاً امروز به مشتری پس داده شده است. */
+    cashPaidOut?: number | null
+    cardPaidOut?: number | null
+    cardPayoutReference?: string | null
     /** NONE | CANCELED_UNUSED | REMAINS_ACTIVE | CONSUMED */
     creditOutcome?: string | null
     note?: string | null
@@ -8539,9 +8544,14 @@ export const salesService = {
     }
     const cashRecovered = toSafeNonnegativeAmount(input?.cashRecovered, 'مبلغ نقدِ بازیافتی')
     const cardRecovered = toSafeNonnegativeAmount(input?.cardRecovered, 'مبلغ کارت/بانکِ بازیافتی')
+    const cashPaidOut = toSafeNonnegativeAmount(input?.cashPaidOut, 'مبلغ نقدِ پرداختیِ جبرانی')
+    const cardPaidOut = toSafeNonnegativeAmount(input?.cardPaidOut, 'مبلغ کارت/بانکِ پرداختیِ جبرانی')
     const cardReference = String(input?.cardReference ?? '').trim()
+    const cardPayoutReference = String(input?.cardPayoutReference ?? '').trim()
     if (cardRecovered > 0 && cardReference.length < 3)
       throw new BusinessError('برای مبلغ بازیافتی کارت/بانک، شماره پیگیری یا توضیح قابل‌ردیابی بنویسید (حداقل ۳ نویسه).')
+    if (cardPaidOut > 0 && cardPayoutReference.length < 3)
+      throw new BusinessError('برای مبلغ پرداختی کارت/بانک، شماره پیگیری یا توضیح قابل‌ردیابی بنویسید (حداقل ۳ نویسه).')
 
     const pre = await prisma.saleReturn.findUnique({
       where: { id },
@@ -8558,12 +8568,12 @@ export const salesService = {
     })
     if (!pre) throw new BusinessError('این برگشت از فروش پیدا نشد؛ فهرست را تازه کنید.')
     assertReturnNotVoided(pre as any, 'ابطال')
-    /** مقدار ناآشنا هرگز برگشت ساده فرض نمی‌شود. */
-    if (pre.kind !== ReturnKind.RETURN)
+    /** مقدار ناآشنا هرگز برگشت ساده یا تعویض فرض نمی‌شود. */
+    if (pre.kind !== ReturnKind.RETURN && pre.kind !== ReturnKind.EXCHANGE)
       throw new BusinessError(
-        `اصلاح جبرانیِ خودکار فقط برای «برگشت ساده» مجاز است؛ نوع سند ${String(pre.kind ?? 'نامشخص')} است` +
+        `نوع سند ${String(pre.kind ?? 'نامشخص')} برای اصلاح جبرانی شناخته‌شده نیست` +
           (pre.exchangeReceiptNo ? ` (سند تعویض ${faDigits(pre.exchangeReceiptNo)})` : '') +
-          '. تعویض کالا باید با دفتر جبرانی کاملِ گراف تعویض رسیدگی شود.'
+          '. برای جلوگیری از اثر مالی نادرست، رسیدگی دستی مدیر لازم است.'
       )
 
     const correctionAuthScope = await assertPanelPassword(
@@ -8607,8 +8617,16 @@ export const salesService = {
       })
       if (!ret) throw new BusinessError('این برگشت از فروش پیدا نشد؛ فهرست را تازه کنید.')
       assertReturnNotVoided(ret as any, 'ابطال')
-      if ((ret.kind ?? ReturnKind.RETURN) !== ReturnKind.RETURN)
-        throw new BusinessError('نوع این سند دیگر برگشت ساده نیست؛ اصلاح جبرانی انجام نشد.')
+      const isExchange = ret.kind === ReturnKind.EXCHANGE
+      if (!isExchange && ret.kind !== ReturnKind.RETURN)
+        throw new BusinessError('نوع این سند دیگر شناخته‌شده نیست؛ اصلاح جبرانی انجام نشد.')
+      const exchangeInvoice = isExchange
+        ? ret.exchangeInvoiceId
+          ? await tx.saleInvoice.findUnique({ where: { id: ret.exchangeInvoiceId }, include: { items: true } })
+          : null
+        : null
+      if (isExchange && !exchangeInvoice)
+        throw new BusinessError('سند تعویض جایگزین پیدا نشد؛ موجودی یا پرداخت را حدس نمی‌زنیم و اصلاح جبرانی انجام نشد.')
       const existing = await (tx as any).returnCorrection.findUnique({ where: { returnId: ret.id }, select: { id: true } })
       if (existing)
         throw new BusinessError(`برای برگشت ${faDigits(ret.id)} قبلاً اصلاح جبرانی شماره ${faDigits(existing.id)} ثبت شده است؛ ثبت دوباره ممنوع است.`)
@@ -8629,29 +8647,76 @@ export const salesService = {
       const now = new Date()
       const refundAmount = Math.max(0, toNumberRial(ret.refundAmount ?? 0))
       let originalCashOrCardOut = 0
+      let originalCashOrCardIn = 0
+      /** درخواست معلق پول هنوز جابه‌جا نشده است؛ با اصلاح گراف باید صریحاً لغو شود. */
+      let pendingCardTransfer: { id: number; amount: number | bigint } | null = null
       const refundMethod = String(ret.refundMethod ?? '')
-      const knownRefundMethods = [RefundMethod.NONE, RefundMethod.CASH, RefundMethod.CARD, RefundMethod.STORE_CREDIT, RefundMethod.CARD_TO_CARD]
-      if (!knownRefundMethods.includes(refundMethod))
-        throw new BusinessError(
-          refundMethod
-            ? 'روش بازپرداخت این برگشت برای اصلاح جبرانی شناخته‌شده نیست؛ برای جلوگیری از مخفی‌شدن پول، رسیدگی دستی مدیر لازم است.'
-            : 'روش بازپرداخت این برگشت قدیمی ثبت نشده است؛ مبلغ آن را صفر فرض نمی‌کنیم. ابتدا رسیدگی دستی و تکمیل تسویه لازم است.'
-        )
-      if (refundMethod === RefundMethod.CASH || refundMethod === RefundMethod.CARD) originalCashOrCardOut = refundAmount
-      if (refundMethod === RefundMethod.CARD_TO_CARD) {
-        const request = await tx.cardTransferRequest.findFirst({
-          where: { returnId: ret.id },
-          select: { id: true, status: true, amount: true }
-        })
-        if (!request)
-          throw new BusinessError('برای بازپرداخت کارت‌به‌کارتِ این برگشت، درخواست مرجع پیدا نشد؛ مبلغ را صفر فرض نمی‌کنیم و رسیدگی دستی مدیر لازم است.')
-        if (request.status !== CardTransferStatus.PENDING && request.status !== CardTransferStatus.CANCELED)
-          originalCashOrCardOut = Math.max(0, toNumberRial(request.amount))
+      if (isExchange) {
+        const exchangeDiff = toNumberRial(ret.exchangeDiff ?? 0)
+        const exchangeSettlement = String(ret.exchangeSettlement ?? '')
+        const exchangeRefund = exchangeRefundPartOf({ exchangeDiff, debtReduction: ret.debtReduction ?? 0 })
+        const knownExchangeSettlements = [
+          ExchangeSettlement.CASH,
+          ExchangeSettlement.CREDIT,
+          ExchangeSettlement.CASH_REFUND,
+          ExchangeSettlement.CARD_REFUND,
+          ExchangeSettlement.CARD_TO_CARD,
+          ExchangeSettlement.DEBT_REDUCTION,
+          ExchangeSettlement.NONE
+        ]
+        if (!knownExchangeSettlements.includes(exchangeSettlement as any))
+          throw new BusinessError('روش تسویه‌ی این تعویض شناخته‌شده نیست؛ هیچ مبلغی را صفر فرض نمی‌کنیم و رسیدگی دستی مدیر لازم است.')
+        if (exchangeDiff > 0) {
+          // مشتری در تعویض مابه‌التفاوت داده بود؛ اصلاح امروز فقط به اندازه‌ی همان مبلغ می‌تواند پرداخت معکوس ثبت کند.
+          if (exchangeSettlement !== ExchangeSettlement.CASH)
+            throw new BusinessError('مابه‌التفاوت مثبت این تعویض با روش نامعتبر ثبت شده است؛ پرداخت جبرانی حدس زده نمی‌شود.')
+          originalCashOrCardIn = exchangeDiff
+        } else if (exchangeRefund > 0) {
+          if (exchangeSettlement === ExchangeSettlement.CASH_REFUND || exchangeSettlement === ExchangeSettlement.CARD_REFUND) {
+            originalCashOrCardOut = exchangeRefund
+          } else if (exchangeSettlement === ExchangeSettlement.CARD_TO_CARD) {
+            const request = await tx.cardTransferRequest.findFirst({
+              where: { returnId: ret.id },
+              select: { id: true, status: true, amount: true }
+            })
+            if (!request)
+              throw new BusinessError('برای کارت‌به‌کارتِ این تعویض، درخواست مرجع پیدا نشد؛ مبلغ را صفر فرض نمی‌کنیم و رسیدگی دستی مدیر لازم است.')
+            if (request.status === CardTransferStatus.PENDING) pendingCardTransfer = { id: request.id, amount: request.amount }
+            else if (request.status !== CardTransferStatus.CANCELED)
+              originalCashOrCardOut = Math.max(0, toNumberRial(request.amount))
+          } else if (exchangeSettlement !== ExchangeSettlement.CREDIT)
+            throw new BusinessError('مابه‌التفاوت منفی این تعویض با روش تسویه‌ی ناسازگار ثبت شده است؛ اصلاح جبرانی انجام نشد.')
+        }
+      } else {
+        const knownRefundMethods = [RefundMethod.NONE, RefundMethod.CASH, RefundMethod.CARD, RefundMethod.STORE_CREDIT, RefundMethod.CARD_TO_CARD]
+        if (!knownRefundMethods.includes(refundMethod as RefundMethod))
+          throw new BusinessError(
+            refundMethod
+              ? 'روش بازپرداخت این برگشت برای اصلاح جبرانی شناخته‌شده نیست؛ برای جلوگیری از مخفی‌شدن پول، رسیدگی دستی مدیر لازم است.'
+              : 'روش بازپرداخت این برگشت قدیمی ثبت نشده است؛ مبلغ آن را صفر فرض نمی‌کنیم. ابتدا رسیدگی دستی و تکمیل تسویه لازم است.'
+          )
+        if (refundMethod === RefundMethod.CASH || refundMethod === RefundMethod.CARD) originalCashOrCardOut = refundAmount
+        if (refundMethod === RefundMethod.CARD_TO_CARD) {
+          const request = await tx.cardTransferRequest.findFirst({
+            where: { returnId: ret.id },
+            select: { id: true, status: true, amount: true }
+          })
+          if (!request)
+            throw new BusinessError('برای بازپرداخت کارت‌به‌کارتِ این برگشت، درخواست مرجع پیدا نشد؛ مبلغ را صفر فرض نمی‌کنیم و رسیدگی دستی مدیر لازم است.')
+          if (request.status !== CardTransferStatus.PENDING && request.status !== CardTransferStatus.CANCELED)
+            originalCashOrCardOut = Math.max(0, toNumberRial(request.amount))
+        }
       }
       if (cashRecovered + cardRecovered > originalCashOrCardOut)
         throw new BusinessError(
-          `جمع مبلغ بازیافتی (${money(cashRecovered + cardRecovered)} ریال) از بازپرداخت واقعی این برگشت (${money(originalCashOrCardOut)} ریال) بیشتر است.`
+          `جمع مبلغ بازیافتی (${money(cashRecovered + cardRecovered)} ریال) از بازپرداخت واقعی این سند (${money(originalCashOrCardOut)} ریال) بیشتر است.`
         )
+      if (cashPaidOut + cardPaidOut > originalCashOrCardIn)
+        throw new BusinessError(
+          `جمع مبلغ پرداختیِ جبرانی (${money(cashPaidOut + cardPaidOut)} ریال) از مابه‌التفاوتی که مشتری در تعویض داده بود (${money(originalCashOrCardIn)} ریال) بیشتر است.`
+        )
+      if (!isExchange && (cashPaidOut > 0 || cardPaidOut > 0))
+        throw new BusinessError('پرداخت جبرانی فقط برای تعویضِ دارای مابه‌التفاوت مثبت مجاز است؛ برای برگشت ساده فقط مبلغ بازیافتی را ثبت کنید.')
 
       const credit = ret.storeCreditId
         ? await tx.storeCredit.findUnique({
@@ -8673,7 +8738,10 @@ export const salesService = {
       if (creditOutcome === 'REMAINS_ACTIVE' && creditRemaining <= 0)
         throw new BusinessError('اعتبارِ مانده‌دار وجود ندارد؛ وضعیت «مصرف‌شده» را انتخاب کنید.')
 
-      const unrecoveredAmount = Math.max(0, originalCashOrCardOut - cashRecovered - cardRecovered)
+      const unrecoveredRefundAmount = Math.max(0, originalCashOrCardOut - cashRecovered - cardRecovered)
+      const unpaidExchangePayoutAmount = Math.max(0, originalCashOrCardIn - cashPaidOut - cardPaidOut)
+      /** یک عددِ قابل گزارش برای مغایرت باز؛ نوع اثر مشخص می‌کند «بازیافت نشده» است یا «به مشتری پرداخت نشده». */
+      const unrecoveredAmount = unrecoveredRefundAmount + unpaidExchangePayoutAmount
       const originalSnapshot = {
         returnId: ret.id,
         invoiceId: ret.invoiceId,
@@ -8682,6 +8750,11 @@ export const salesService = {
         total: toNumberRial(ret.total),
         refundMethod: ret.refundMethod ?? null,
         refundAmount,
+        kind: ret.kind,
+        exchangeInvoiceId: ret.exchangeInvoiceId ?? null,
+        exchangeReceiptNo: ret.exchangeReceiptNo ?? null,
+        exchangeDiff: isExchange ? toNumberRial(ret.exchangeDiff ?? 0) : 0,
+        exchangeSettlement: isExchange ? ret.exchangeSettlement ?? null : null,
         originalUserId: ret.userId ?? null,
         originalShiftId: ret.shiftId ?? null,
         credit: credit ? { id: credit.id, amount: creditAmount, usedAmount: creditUsed, status: credit.status } : null
@@ -8690,7 +8763,13 @@ export const salesService = {
         cashRecovered,
         cardRecovered,
         cardReference: cardRecovered > 0 ? cardReference : null,
+        cashPaidOut,
+        cardPaidOut,
+        cardPayoutReference: cardPaidOut > 0 ? cardPayoutReference : null,
         originalCashOrCardOut,
+        originalCashOrCardIn,
+        unrecoveredRefundAmount,
+        unpaidExchangePayoutAmount,
         unrecoveredAmount,
         creditOutcome,
         creditAmount,
@@ -8713,6 +8792,8 @@ export const salesService = {
           reconciliationJson: JSON.stringify(reconciliation),
           cashRecovered,
           cardRecovered,
+          cashPaidOut,
+          cardPaidOut,
           unrecoveredAmount,
           creditOutcome,
           creditAffectedAmount: creditAmount,
@@ -8723,6 +8804,43 @@ export const salesService = {
       })
 
       const effectRows: any[] = []
+      /**
+       * درخواست کارت‌به‌کارتِ معلق «پول پرداخت‌شده» نیست، اما تعهد باز است.
+       * اگر با اصلاح تعویض زنده بماند، مدیر بعداً برای معامله‌ای که برگردانده
+       * شده پول می‌پردازد؛ پس آن را با دلیلِ خودِ اثر جبرانی لغو و ثبت می‌کنیم.
+       */
+      if (pendingCardTransfer) {
+        await tx.cardTransferRequest.update({
+          where: { id: pendingCardTransfer.id },
+          data: {
+            status: CardTransferStatus.CANCELED,
+            canceledAt: now,
+            cancelReason: `اصلاح جبرانی تعویض ${faDigits(ret.id)} · اصلاح ${faDigits(correction.id)} · ${reason}`
+          }
+        })
+        const pendingAmount = Math.max(0, toNumberRial(pendingCardTransfer.amount))
+        effectRows.push({
+          correctionId: correction.id,
+          type: 'CARD_TO_CARD_CANCELED',
+          amount: pendingAmount,
+          referenceType: 'CardTransferRequest',
+          referenceId: pendingCardTransfer.id,
+          detailsJson: JSON.stringify({ returnId: ret.id, exchangeInvoiceId: exchangeInvoice?.id ?? null, statusBefore: CardTransferStatus.PENDING }),
+          occurredAt: now,
+          occurredAtJalali: toJalaliDate(now),
+          occurredAtTime: toClock(now),
+          shiftId: correctingShiftId,
+          userId: correctingUserId
+        })
+        await audit(tx, {
+          action: AuditAction.CARD_TRANSFER_CANCEL,
+          entity: 'CardTransferRequest',
+          entityId: pendingCardTransfer.id,
+          userId: correctingUserId,
+          after: JSON.stringify({ returnId: ret.id, correctionId: correction.id, amount: pendingAmount, status: CardTransferStatus.CANCELED }),
+          note: `درخواست کارت‌به‌کارت ${faDigits(pendingCardTransfer.id)} با اصلاح جبرانی تعویض ${faDigits(ret.id)} لغو شد · دلیل: ${reason}`
+        })
+      }
       const stockLines = ret.items
         .filter((item: any) => Number(item.restockedQty ?? 0) > 0)
         .map((item: any) => ({ variantId: Number(item.variantId), qty: Number(item.restockedQty) }))
@@ -8757,6 +8875,43 @@ export const salesService = {
             })
         }
       }
+      /** تعویض دو جهت موجودی دارد: کالای اولیه از انبار خارج و کالای جایگزین به انبار فعلی برمی‌گردد. */
+      if (isExchange && exchangeInvoice?.deductInventory) {
+        const replacementLines = exchangeInvoice.items
+          .filter((item: any) => Number(item.qty ?? 0) > 0)
+          .map((item: any) => ({ variantId: Number(item.variantId), qty: Number(item.qty) }))
+        if (replacementLines.length) {
+          await inventoryService.increase(
+            replacementLines,
+            {
+              reason: 'RETURN_CORRECTION',
+              refType: 'ReturnCorrection',
+              refId: correction.id,
+              userId: correctingUserId,
+              note: `بازگشت جبرانی کالای جایگزینِ تعویض ${faDigits(ret.id)} · سند ${faDigits(exchangeInvoice.receiptNo)} · ${reason}`
+            },
+            tx
+          )
+          for (const item of exchangeInvoice.items) {
+            const qty = Number(item.qty ?? 0)
+            if (qty > 0)
+              effectRows.push({
+                correctionId: correction.id,
+                type: 'EXCHANGE_REPLACEMENT_IN',
+                qty,
+                variantId: item.variantId,
+                referenceType: 'SaleInvoiceItem',
+                referenceId: item.id,
+                detailsJson: JSON.stringify({ returnId: ret.id, exchangeInvoiceId: exchangeInvoice.id }),
+                occurredAt: now,
+                occurredAtJalali: toJalaliDate(now),
+                occurredAtTime: toClock(now),
+                shiftId: correctingShiftId,
+                userId: correctingUserId
+              })
+          }
+        }
+      }
       if (cashRecovered > 0) {
         const movement = await recordCashMovement(tx, {
           amount: cashRecovered,
@@ -8783,6 +8938,32 @@ export const salesService = {
           userId: correctingUserId
         })
       }
+      if (cashPaidOut > 0) {
+        const movement = await recordCashMovement(tx, {
+          amount: cashPaidOut,
+          type: CashMovementType.CASH_OUT,
+          shiftId: correctingShiftId,
+          userId: correctingUserId,
+          description: `پرداخت نقدِ جبرانیِ ابطال تعویض ${faDigits(ret.id)} · اصلاح ${faDigits(correction.id)} · ${reason}`,
+          refType: 'ReturnCorrection',
+          refId: correction.id,
+          occurredAt: now
+        })
+        effectRows.push({
+          correctionId: correction.id,
+          type: 'CASH_PAID_OUT',
+          amount: cashPaidOut,
+          cashMovementId: movement.id,
+          referenceType: 'CashMovement',
+          referenceId: movement.id,
+          detailsJson: JSON.stringify({ returnId: ret.id, exchangeInvoiceId: exchangeInvoice?.id ?? null }),
+          occurredAt: now,
+          occurredAtJalali: toJalaliDate(now),
+          occurredAtTime: toClock(now),
+          shiftId: correctingShiftId,
+          userId: correctingUserId
+        })
+      }
       if (cardRecovered > 0)
         effectRows.push({
           correctionId: correction.id,
@@ -8795,12 +8976,36 @@ export const salesService = {
           shiftId: correctingShiftId,
           userId: correctingUserId
         })
-      if (unrecoveredAmount > 0)
+      if (cardPaidOut > 0)
+        effectRows.push({
+          correctionId: correction.id,
+          type: 'CARD_PAID_OUT',
+          amount: cardPaidOut,
+          detailsJson: JSON.stringify({ returnId: ret.id, exchangeInvoiceId: exchangeInvoice?.id ?? null, cardPayoutReference }),
+          occurredAt: now,
+          occurredAtJalali: toJalaliDate(now),
+          occurredAtTime: toClock(now),
+          shiftId: correctingShiftId,
+          userId: correctingUserId
+        })
+      if (unrecoveredRefundAmount > 0)
         effectRows.push({
           correctionId: correction.id,
           type: 'UNRECOVERED_REFUND',
-          amount: unrecoveredAmount,
+          amount: unrecoveredRefundAmount,
           detailsJson: JSON.stringify({ returnId: ret.id, originalCashOrCardOut }),
+          occurredAt: now,
+          occurredAtJalali: toJalaliDate(now),
+          occurredAtTime: toClock(now),
+          shiftId: correctingShiftId,
+          userId: correctingUserId
+        })
+      if (unpaidExchangePayoutAmount > 0)
+        effectRows.push({
+          correctionId: correction.id,
+          type: 'UNPAID_EXCHANGE_PAYOUT',
+          amount: unpaidExchangePayoutAmount,
+          detailsJson: JSON.stringify({ returnId: ret.id, originalCashOrCardIn }),
           occurredAt: now,
           occurredAtJalali: toJalaliDate(now),
           occurredAtTime: toClock(now),
@@ -8863,8 +9068,9 @@ export const salesService = {
           invoiceRemaining: settleAfter.remaining
         }),
         note:
-          `اصلاح جبرانی برگشت ${faDigits(ret.id)} (فاکتور ${faDigits(ret.invoice?.receiptNo ?? 0)}) ثبت شد` +
+          `اصلاح جبرانی ${isExchange ? 'تعویض' : 'برگشت'} ${faDigits(ret.id)} (فاکتور ${faDigits(ret.invoice?.receiptNo ?? 0)}) ثبت شد` +
           ` · شیفت اصلاح ${faDigits(correctingShiftId)} / کاربر ${faDigits(correctingUserId)}` +
+          (cashPaidOut || cardPaidOut ? ` · پرداخت جبرانی به مشتری: ${money(cashPaidOut + cardPaidOut)} ریال` : '') +
           (managerApproval ? ` · تأیید مدیر «${managerApproval.displayName}» (#${faDigits(managerApproval.userId)})` : '') +
           ` · دلیل: ${reason}` +
           (unrecoveredAmount ? ` · مغایرت بازیافت‌نشده: ${money(unrecoveredAmount)} ریال` : '')
@@ -8877,6 +9083,8 @@ export const salesService = {
         status: 'POSTED' as const,
         cashRecovered,
         cardRecovered,
+        cashPaidOut,
+        cardPaidOut,
         unrecoveredAmount,
         creditOutcome,
         correctedShiftId: correctingShiftId,
@@ -8915,6 +9123,8 @@ export const salesService = {
         reason: row.reason,
         cashRecovered: toNumberRial(row.cashRecovered),
         cardRecovered: toNumberRial(row.cardRecovered),
+        cashPaidOut: toNumberRial(row.cashPaidOut ?? 0),
+        cardPaidOut: toNumberRial(row.cardPaidOut ?? 0),
         unrecoveredAmount: toNumberRial(row.unrecoveredAmount),
         creditOutcome: row.creditOutcome,
         originalUser: row.originalUserId ? userName.get(row.originalUserId) ?? `کاربر #${row.originalUserId}` : 'نامشخص',

@@ -883,6 +883,9 @@ model ReturnCorrection {
   reconciliationJson    String     @default("{}")
   cashRecovered         BigInt     @default(0)
   cardRecovered         BigInt     @default(0)
+  /// بازپرداختِ واقعی در شیفت اصلاح، برای برگرداندن پولی که مشتری در تعویض داده بود.
+  cashPaidOut           BigInt     @default(0)
+  cardPaidOut           BigInt     @default(0)
   unrecoveredAmount     BigInt     @default(0)
   creditOutcome         String     @default("NONE")
   creditAffectedAmount  BigInt     @default(0)

@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
+import { digitsOnly, groupThousands } from '../lib/moneyInput'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
 import { isPrintCancelledError } from '../lib/printErrors'
@@ -1852,6 +1853,22 @@ export default function SalesReports() {
   >([])
   const [exVoidErr, setExVoidErr] = useState<string | null>(null)
   const [exVoidBusy, setExVoidBusy] = useState(false)
+  /** دفتر جبرانیِ تعویض؛ سندهای مبدأ و جایگزین سر جای خود می‌مانند. */
+  const [exCorrectionTarget, setExCorrectionTarget] = useState<ExchangeReportResult['rows'][number] | null>(null)
+  const [exCorrectionReason, setExCorrectionReason] = useState('')
+  const [exCorrectionAuthPassword, setExCorrectionAuthPassword] = useState('')
+  const [exCorrectionApproverUserId, setExCorrectionApproverUserId] = useState<number | null>(null)
+  const [exCorrectionApproverPassword, setExCorrectionApproverPassword] = useState('')
+  const [exCorrectionCashRecovered, setExCorrectionCashRecovered] = useState('')
+  const [exCorrectionCardRecovered, setExCorrectionCardRecovered] = useState('')
+  const [exCorrectionCashPaidOut, setExCorrectionCashPaidOut] = useState('')
+  const [exCorrectionCardPaidOut, setExCorrectionCardPaidOut] = useState('')
+  const [exCorrectionCardReference, setExCorrectionCardReference] = useState('')
+  const [exCorrectionPayoutReference, setExCorrectionPayoutReference] = useState('')
+  const [exCorrectionCreditOutcome, setExCorrectionCreditOutcome] = useState('NONE')
+  const [exCorrectionNote, setExCorrectionNote] = useState('')
+  const [exCorrectionErr, setExCorrectionErr] = useState<string | null>(null)
+  const [exCorrectionBusy, setExCorrectionBusy] = useState(false)
   const doExchangeVoid = async () => {
     const target = exVoidTarget
     if (!target) return
@@ -1890,6 +1907,54 @@ export default function SalesReports() {
       setExVoidErr(String(e?.message ?? 'ابطال تعویض انجام نشد.'))
     } finally {
       setExVoidBusy(false)
+    }
+  }
+
+  const doExchangeCorrection = async () => {
+    const target = exCorrectionTarget
+    if (!target) return
+    const reason = exCorrectionReason.trim()
+    if (reason.length < 3) {
+      setExCorrectionErr('دلیل اصلاح جبرانی را بنویسید (حداقل ۳ حرف).')
+      return
+    }
+    const amount = (raw: string) => Number(digitsOnly(raw) || '0')
+    const cashRecovered = amount(exCorrectionCashRecovered)
+    const cardRecovered = amount(exCorrectionCardRecovered)
+    const cashPaidOut = amount(exCorrectionCashPaidOut)
+    const cardPaidOut = amount(exCorrectionCardPaidOut)
+    if (![cashRecovered, cardRecovered, cashPaidOut, cardPaidOut].every(Number.isSafeInteger)) {
+      setExCorrectionErr('یکی از مبالغ واردشده معتبر نیست.')
+      return
+    }
+    setExCorrectionBusy(true)
+    try {
+      const res = await call<any>(CH.saleReturnCorrection, {
+        id: target.returnId,
+        reason,
+        panelPassword: exCorrectionAuthPassword || undefined,
+        approverUserId: exCorrectionApproverUserId ?? undefined,
+        approverPassword: exCorrectionApproverPassword || undefined,
+        cashRecovered,
+        cardRecovered,
+        cashPaidOut,
+        cardPaidOut,
+        cardReference: exCorrectionCardReference.trim() || undefined,
+        cardPayoutReference: exCorrectionPayoutReference.trim() || undefined,
+        creditOutcome: exCorrectionCreditOutcome,
+        note: exCorrectionNote.trim() || undefined
+      })
+      setExCorrectionTarget(null)
+      flash(
+        `اصلاح جبرانی تعویض شماره ${faDigits(res.id)} ثبت شد` +
+          (res.cashRecovered || res.cardRecovered ? ` · بازیافتی: ${money((res.cashRecovered ?? 0) + (res.cardRecovered ?? 0))} ریال` : '') +
+          (res.cashPaidOut || res.cardPaidOut ? ` · پرداخت جبرانی: ${money((res.cashPaidOut ?? 0) + (res.cardPaidOut ?? 0))} ریال` : '')
+      )
+      void load()
+    } catch (e: any) {
+      setExCorrectionErr(String(e?.message ?? 'اصلاح جبرانی تعویض انجام نشد.'))
+    } finally {
+      setExCorrectionBusy(false)
     }
   }
 
@@ -2422,6 +2487,28 @@ export default function SalesReports() {
                 .then((res) => setExVoidManagers((res?.rows ?? []).filter((u) => u.role === 'MANAGER' && u.isActive)))
                 .catch(() => setExVoidManagers([]))
             }}
+            onCorrection={(r) => {
+              setExCorrectionReason('')
+              setExCorrectionAuthPassword('')
+              setExCorrectionApproverUserId(null)
+              setExCorrectionApproverPassword('')
+              setExCorrectionCashRecovered('')
+              setExCorrectionCardRecovered('')
+              setExCorrectionCashPaidOut('')
+              setExCorrectionCardPaidOut('')
+              setExCorrectionCardReference('')
+              setExCorrectionPayoutReference('')
+              setExCorrectionCreditOutcome(r.storeCreditReference ? 'REMAINS_ACTIVE' : 'NONE')
+              setExCorrectionNote('')
+              setExCorrectionErr(null)
+              setExCorrectionTarget(r)
+              void call<{ rows?: { id: number; name: string; role: string; isActive: boolean; hasCorrectionApprovalPassword?: boolean }[] }>(
+                CH.staffDirectory,
+                { includeInactive: false }
+              )
+                .then((res) => setExVoidManagers((res?.rows ?? []).filter((u) => u.role === 'MANAGER' && u.isActive)))
+                .catch(() => setExVoidManagers([]))
+            }}
             pending={pending}
           />
         )}
@@ -2522,6 +2609,44 @@ export default function SalesReports() {
           setExVoidApproverPassword('')
           setExVoidErr(null)
         }}
+      />
+
+      <ConfirmDialog
+        open={!!exCorrectionTarget}
+        title="اصلاح جبرانی تعویض کالا"
+        busy={exCorrectionBusy}
+        confirmLabel="ثبت اثرهای جبرانی تعویض"
+        message={
+          <div className="space-y-2">
+            <p className="text-amber-800">
+              این مسیر سند برگشت و سند تعویض اصلی را حذف یا باطل نمی‌کند. خروج کالای برگشتی، بازگشت کالای جایگزین، پول کشو و کارت/بانک همگی در شیفت فعلی به‌عنوان اثر جبرانی مستقل ثبت می‌شوند.
+            </p>
+            <p>
+              فاکتور مبدأ <b>{faDigits(exCorrectionTarget?.receiptNo ?? '—')}</b> · سند تعویض <b>{faDigits(exCorrectionTarget?.exchangeReceiptNo ?? '—')}</b> · مابه‌التفاوت اولیه <b>{money(exCorrectionTarget?.diff ?? 0)}</b> ریال
+            </p>
+            <label className="block"><span className="font-bold">دلیل اصلاح جبرانی (اجباری)</span><input className="inp w-full" autoFocus value={exCorrectionReason} onChange={(e) => { setExCorrectionReason(e.target.value); setExCorrectionErr(null) }} /></label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <label><span>نقد بازیافتی از مشتری</span><input dir="ltr" inputMode="numeric" className="inp w-full" value={groupThousands(exCorrectionCashRecovered)} onChange={(e) => { setExCorrectionCashRecovered(digitsOnly(e.target.value)); setExCorrectionErr(null) }} placeholder="۰" /></label>
+              <label><span>کارت/بانک بازیافتی از مشتری</span><input dir="ltr" inputMode="numeric" className="inp w-full" value={groupThousands(exCorrectionCardRecovered)} onChange={(e) => { setExCorrectionCardRecovered(digitsOnly(e.target.value)); setExCorrectionErr(null) }} placeholder="۰" /></label>
+              <label><span>نقدی که امروز به مشتری پرداخت شد</span><input dir="ltr" inputMode="numeric" className="inp w-full" value={groupThousands(exCorrectionCashPaidOut)} onChange={(e) => { setExCorrectionCashPaidOut(digitsOnly(e.target.value)); setExCorrectionErr(null) }} placeholder="۰" /></label>
+              <label><span>کارت/بانکی که امروز به مشتری پرداخت شد</span><input dir="ltr" inputMode="numeric" className="inp w-full" value={groupThousands(exCorrectionCardPaidOut)} onChange={(e) => { setExCorrectionCardPaidOut(digitsOnly(e.target.value)); setExCorrectionErr(null) }} placeholder="۰" /></label>
+            </div>
+            <label className="block"><span>پیگیری بازیافت کارت/بانک (اگر مبلغ دارد)</span><input className="inp w-full" value={exCorrectionCardReference} onChange={(e) => setExCorrectionCardReference(e.target.value)} /></label>
+            <label className="block"><span>پیگیری پرداخت کارت/بانک (اگر مبلغ دارد)</span><input className="inp w-full" value={exCorrectionPayoutReference} onChange={(e) => setExCorrectionPayoutReference(e.target.value)} /></label>
+            <label className="block"><span className="font-bold">وضعیت اعتبار صادرشده از همین تعویض</span><select className="inp w-full" value={exCorrectionCreditOutcome} onChange={(e) => setExCorrectionCreditOutcome(e.target.value)}><option value="NONE">اعتباری صادر نشده است</option><option value="CANCELED_UNUSED">اعتبار مصرف‌نشده لغو شد</option><option value="REMAINS_ACTIVE">اعتبار هنوز باقی است</option><option value="CONSUMED">اعتبار کامل مصرف شده است</option></select></label>
+            <label className="block"><span>یادداشت تسویه/مغایرت</span><input className="inp w-full" value={exCorrectionNote} onChange={(e) => setExCorrectionNote(e.target.value)} /></label>
+            <label className="block"><span>رمز قفل اختیاری عملیات (در صورت فعال‌بودن)</span><input type="password" dir="ltr" className="inp w-full" value={exCorrectionAuthPassword} onChange={(e) => { setExCorrectionAuthPassword(e.target.value); setExCorrectionErr(null) }} /></label>
+            <div className="rounded border border-amber-300 bg-amber-50 p-2 space-y-2">
+              <p className="font-bold">تأیید شخصی مدیر — فقط روز بعد یا دوره‌ی بسته</p>
+              <select className="inp w-full" value={exCorrectionApproverUserId ?? ''} onChange={(e) => { setExCorrectionApproverUserId(e.target.value ? Number(e.target.value) : null); setExCorrectionErr(null) }}><option value="">انتخاب مدیر تأییدکننده…</option>{exVoidManagers.map((manager) => <option key={manager.id} value={manager.id}>{manager.name}{manager.hasCorrectionApprovalPassword ? '' : ' — رمز شخصی تعریف نشده'}</option>)}</select>
+              <input type="password" dir="ltr" className="inp w-full" value={exCorrectionApproverPassword} onChange={(e) => { setExCorrectionApproverPassword(e.target.value); setExCorrectionErr(null) }} placeholder="رمز شخصی مدیر انتخاب‌شده" />
+            </div>
+            {exCorrectionErr && <p className="text-red-600 whitespace-pre-line">{exCorrectionErr}</p>}
+            <p className="kbd">برای تعویضِ مثبت فقط پرداختی جبرانی تا سقف مابه‌التفاوت اصلی مجاز است؛ برای تعویضِ منفی فقط مبلغ واقعاً بازیافتی ثبت می‌شود. مقادیر خارج از سقف رد می‌شوند.</p>
+          </div>
+        }
+        onConfirm={() => void doExchangeCorrection()}
+        onCancel={() => { setExCorrectionTarget(null); setExCorrectionErr(null) }}
       />
 
       {/* ===================== جلسه ۱۸ — سه تب تازه ===================== */}
@@ -3476,6 +3601,7 @@ function ExchangeTable({
   cols,
   onPrint,
   onVoid,
+  onCorrection,
   pending
 }: {
   data: ExchangeReportResult
@@ -3483,6 +3609,8 @@ function ExchangeTable({
   onPrint: (returnId: number) => void
   /** نشست ۶۵ · بند ۴-۲۲ — ابطال اتمیک کل گراف تعویض (با دلیل اجباری) */
   onVoid?: (row: ExchangeReportResult['rows'][number]) => void
+  /** دفتر جبرانی، برای وقتی که پول/اعتبار/کالا واقعاً جابه‌جا شده و void ساده امن نیست. */
+  onCorrection?: (row: ExchangeReportResult['rows'][number]) => void
   /** خلاصه‌ی معلقِ مشترک — همان شیئی که تب برگشت و سه صفحه‌ی دیگر مصرف می‌کنند */
   pending: PendingRestockView
 }) {
@@ -3549,6 +3677,15 @@ function ExchangeTable({
                   title="ابطال کل تعویض (سند برگشت، سند تعویض، اعتبار و اثر انبار با هم؛ سندها با مهر «باطل» و دلیل می‌مانند)"
                 >
                   ابطال
+                </button>
+              )}
+              {onCorrection && (
+                <button
+                  className="text-amber-700 mr-2"
+                  onClick={() => onCorrection(r)}
+                  title="ثبت اثرهای جبرانی تعویض بدون حذف یا تغییر اسناد مبدأ"
+                >
+                  اصلاح جبرانی
                 </button>
               )}
             </td>

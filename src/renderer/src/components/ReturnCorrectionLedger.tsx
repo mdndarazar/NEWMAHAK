@@ -13,6 +13,8 @@ type CorrectionRow = {
   reason: string
   cashRecovered: number
   cardRecovered: number
+  cashPaidOut: number
+  cardPaidOut: number
   unrecoveredAmount: number
   creditOutcome: string
   originalUser: string
@@ -28,7 +30,12 @@ const effectLabel = (type: string) =>
     INVENTORY_OUT: 'خروج جبرانی از موجودی',
     CASH_RECOVERED: 'نقد بازیافتیِ کشو',
     CARD_RECOVERED: 'کارت/بانک بازیافتی',
+    CASH_PAID_OUT: 'پرداخت نقدی جبرانی',
+    CARD_PAID_OUT: 'پرداخت کارت/بانک جبرانی',
+    CARD_TO_CARD_CANCELED: 'لغو درخواست کارت‌به‌کارتِ معلق',
+    EXCHANGE_REPLACEMENT_IN: 'بازگشت کالای جایگزین به موجودی',
     UNRECOVERED_REFUND: 'مغایرت بازیافت‌نشده',
+    UNPAID_EXCHANGE_PAYOUT: 'مابه‌التفاوتِ پرداخت‌نشده به مشتری',
     CREDIT_CANCELED_UNUSED: 'اعتبار مصرف‌نشده لغو شد',
     CREDIT_REMAINS_ACTIVE: 'اعتبار همچنان باقی است',
     CREDIT_CONSUMED: 'اعتبار مصرف شده است'
@@ -77,7 +84,8 @@ export default function ReturnCorrectionLedger({ fromJalali, toJalali }: { fromJ
                 <th>سمت جبرانی</th>
                 <th>تأیید مدیر</th>
                 <th>نقد بازیافتی</th>
-                <th>کارت/بانک</th>
+                <th>کارت/بانک بازیافتی</th>
+                <th>پرداخت جبرانی</th>
                 <th>مغایرت</th>
                 <th>اعتبار</th>
                 <th>اثرها / دلیل</th>
@@ -89,10 +97,11 @@ export default function ReturnCorrectionLedger({ fromJalali, toJalali }: { fromJ
                   <td>#{faDigits(row.id)}<br /><span className="kbd">{faDigits(row.createdAtJalali)} {faDigits(row.createdAtTime)}</span></td>
                   <td>برگشت #{faDigits(row.returnId)}<br /><span className="kbd">روز {faDigits(row.originalDayJalali)}</span></td>
                   <td>{row.originalUser}<br /><span className="kbd">شیفت {row.originalShiftId == null ? '—' : faDigits(row.originalShiftId)}</span></td>
-                  <td>{row.correctingUser}<br /><span className="kbd">روز {faDigits(row.operationalDayJalali)} · شیفت {faDigits(row.correctingShiftId)}</span></td>
+                  <td>{row.correctingUser}<br /><span className="kbd">روز {faDigits(row.operationalDayJalali)} · شیفت {row.correctingShiftId == null ? '—' : faDigits(row.correctingShiftId)}</span></td>
                   <td>{row.approvingManager ?? 'همان روز عملیاتی'}</td>
                   <td>{money(row.cashRecovered)}</td>
                   <td>{money(row.cardRecovered)}</td>
+                  <td className={row.cashPaidOut || row.cardPaidOut ? 'text-rose-700 font-bold' : ''}>{money(row.cashPaidOut + row.cardPaidOut)}</td>
                   <td className={row.unrecoveredAmount ? 'text-red-700 font-bold' : ''}>{money(row.unrecoveredAmount)}</td>
                   <td>{row.creditOutcome}</td>
                   <td>
@@ -102,7 +111,7 @@ export default function ReturnCorrectionLedger({ fromJalali, toJalali }: { fromJ
                 </tr>
               ))}
               {!busy && !rows.length && (
-                <tr><td colSpan={10} className="text-center py-4 text-slate-500">در این بازه اصلاح جبرانی ثبت نشده است.</td></tr>
+                <tr><td colSpan={11} className="text-center py-4 text-slate-500">در این بازه اصلاح جبرانی ثبت نشده است.</td></tr>
               )}
             </tbody>
           </table>

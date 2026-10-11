@@ -216,7 +216,102 @@ const exH = await safe('تعویض با اعتبار', () => exchange(H.inv.id, 
 await throwsWith('ویرایش رد می‌شود و راه ابطال را می‌گوید', () => salesService.returnUpdate({ id: exH?.returnId, lines: [{ saleItemId: H.items[0].id, qty: 0 }], userId }), 'ابطال')
 
 // ===========================================================================
-console.log('\n۹) ساختاری')
+console.log('\n۹) اصلاح جبرانی تعویض: دو جهت انبار + پرداخت فعلی')
+const repE = itemsOf(exE?.exchangeInvoiceId ?? -1)[0]?.variantId
+truthy('کالای جایگزین تعویض پیدا شد', Number.isFinite(repE))
+eq('کالای برگشتی پس از تعویض داخل انبار است', stockOf(E.a), 100)
+eq('کالای جایگزین پس از تعویض خارج از انبار است', stockOf(repE), 99)
+const corrE = await safe('ثبت پرداخت نقدی جبرانیِ ناقص برای تعویض مثبت', () =>
+  salesService.returnReconcileVoid({
+    id: exE?.returnId,
+    userId,
+    reason: 'اصلاح تعویض با مابه‌التفاوت دریافتی',
+    cashRecovered: 0,
+    cardRecovered: 0,
+    cashPaidOut: 200,
+    cardPaidOut: 0,
+    creditOutcome: 'NONE'
+  })
+)
+truthy('سند برگشت تعویض سر جای خود ماند', retRow(exE?.returnId ?? -1)?.voidedAt == null)
+truthy('سند جایگزین تعویض سر جای خود ماند', invRow(exE?.exchangeInvoiceId ?? -1)?.voidedAt == null)
+eq('اثر جبرانی، کالای برگشتی را از انبار فعلی خارج کرد', stockOf(E.a), 99)
+eq('اثر جبرانی، کالای جایگزین را به انبار فعلی برگرداند', stockOf(repE), 100)
+eq('بخش پرداخت‌نشده به مشتری به‌عنوان مغایرت ماند', corrE?.unrecoveredAmount, 100)
+truthy('پرداخت نقدی جبرانی روی کشوی فعلی ثبت شد', !!seed.one(`SELECT id FROM "CashMovement" WHERE refType = 'ReturnCorrection' AND refId = ? AND type = 'CASH_OUT'`, corrE?.id))
+const corrETypes = seed.rows('SELECT type FROM "ReturnCorrectionEffect" WHERE correctionId = ? ORDER BY id', corrE?.id).map((x) => x.type)
+truthy('دفتر تعویض هر دو جهت انبار و پول/مغایرت را جدا دارد', corrETypes.join(',') === 'INVENTORY_OUT,EXCHANGE_REPLACEMENT_IN,CASH_PAID_OUT,UNPAID_EXCHANGE_PAYOUT')
+await throwsWith('اصلاح جبرانی تعویض دوباره ثبت نمی‌شود', () =>
+  salesService.returnReconcileVoid({ id: exE?.returnId, userId, reason: 'تلاش دوباره تعویض', cashRecovered: 0, cardRecovered: 0, cashPaidOut: 0, cardPaidOut: 0, creditOutcome: 'NONE' }),
+  'قبلاً اصلاح جبرانی'
+)
+
+// ===========================================================================
+console.log('\n۱۰) اصلاح جبرانی تعویض با کاهش بدهی: بدهی مبدأ دوباره قابل‌مطالبه است')
+const J = await safe('فاکتور نسیه‌ی ۱٬۰۰۰ برای اصلاح کاهش بدهی', () => twoItems(0))
+const repJ = variant(200)
+const exJ = await safe('تعویض ۶۰۰ با ۲۰۰ که ۴۰۰ از بدهی کم می‌کند', () => exchange(J.inv.id, J.items[0].id, repJ, 'CASH'))
+eq('پس از تعویض، بدهی مبدأ ۶۰۰ است', await remainingOf(J.inv.id), 600)
+const corrJ = await safe('اصلاح جبرانی تعویضِ کاهش‌دهنده‌ی بدهی', () =>
+  salesService.returnReconcileVoid({
+    id: exJ?.returnId,
+    userId,
+    reason: 'اصلاح تعویض کاهنده‌ی بدهی',
+    cashRecovered: 0,
+    cardRecovered: 0,
+    cashPaidOut: 0,
+    cardPaidOut: 0,
+    creditOutcome: 'NONE'
+  })
+)
+truthy('اصلاح تعویضِ کاهش‌دهنده‌ی بدهی ثبت شد', !!corrJ?.id)
+eq('اصلاح، بدهی ۴۰۰ ریالیِ حذف‌شده را در گزارش بدهی مبدأ برگرداند', await remainingOf(J.inv.id), 1000)
+eq('کالای برگشتی از موجودی فعلی خارج شد', stockOf(J.a), 99)
+eq('کالای جایگزین به موجودی فعلی برگشت', stockOf(repJ), 100)
+
+// ===========================================================================
+console.log('\n۱۱) اصلاح جبرانی تعویضِ مثبت با پرداخت کارت: رد مستقل کارت/بانک')
+const K = await safe('فاکتور پرداخت‌شده‌ی ۱٬۰۰۰ برای پرداخت کارتی جبرانی', () => twoItems(1000))
+const repK = variant(900)
+const exK = await safe('تعویض ۶۰۰ با ۹۰۰', () => exchange(K.inv.id, K.items[0].id, repK, 'CASH'))
+await throwsWith('پرداخت کارتیِ بی‌مرجع رد می‌شود', () =>
+  salesService.returnReconcileVoid({
+    id: exK?.returnId, userId, reason: 'اصلاح کارت بدون مرجع',
+    cashRecovered: 0, cardRecovered: 0, cashPaidOut: 0, cardPaidOut: 300, creditOutcome: 'NONE'
+  }),
+  'شماره پیگیری'
+)
+const corrK = await safe('پرداخت کارتی جبرانی با مرجع', () =>
+  salesService.returnReconcileVoid({
+    id: exK?.returnId, userId, reason: 'اصلاح کارت با مرجع',
+    cashRecovered: 0, cardRecovered: 0, cashPaidOut: 0, cardPaidOut: 300,
+    cardPayoutReference: 'POS-EX-300', creditOutcome: 'NONE'
+  })
+)
+eq('پرداخت کارتی جبرانی مغایرت باز ندارد', corrK?.unrecoveredAmount, 0)
+const cardPayoutEffect = seed.one(`SELECT detailsJson FROM "ReturnCorrectionEffect" WHERE correctionId = ? AND type = 'CARD_PAID_OUT'`, corrK?.id)
+truthy('دفتر کارت، مرجع پرداخت جبرانی را نگه می‌دارد', String(cardPayoutEffect?.detailsJson ?? '').includes('POS-EX-300'))
+eq('پرداخت کارت، گردش نقدیِ کشو نمی‌سازد', seed.rows(`SELECT id FROM "CashMovement" WHERE refType = 'ReturnCorrection' AND refId = ?`, corrK?.id).length, 0)
+
+// ===========================================================================
+console.log('\n۱۲) اصلاح جبرانی تعویض کارت‌به‌کارتِ معلق: تعهد پرداخت لغو می‌شود')
+const L = await safe('فاکتور پرداخت‌شده‌ی ۱٬۰۰۰ برای کارت‌به‌کارت معلق', () => twoItems(1000))
+const repL = variant(200)
+const exL = await safe('تعویض ۶۰۰ با ۲۰۰ کارت‌به‌کارت', () => exchange(L.inv.id, L.items[0].id, repL, 'CARD_TO_CARD'))
+const pendingL = seed.one('SELECT id, status FROM "CardTransferRequest" WHERE returnId = ?', exL?.returnId ?? -1)
+eq('درخواست کارت‌به‌کارت تعویض قبل از اصلاح معلق است', pendingL?.status, 'PENDING')
+const corrL = await safe('اصلاح جبرانی کارت‌به‌کارت معلق', () =>
+  salesService.returnReconcileVoid({
+    id: exL?.returnId, userId, reason: 'اصلاح تعویض کارت به کارت معلق',
+    cashRecovered: 0, cardRecovered: 0, cashPaidOut: 0, cardPaidOut: 0, creditOutcome: 'NONE'
+  })
+)
+eq('اصلاح جبرانی، درخواست پرداخت معلق را لغو کرد', seed.one('SELECT status FROM "CardTransferRequest" WHERE id = ?', pendingL?.id)?.status, 'CANCELED')
+truthy('دفتر، لغو تعهد کارت‌به‌کارت را اثر مستقل نگه می‌دارد', !!seed.one(`SELECT id FROM "ReturnCorrectionEffect" WHERE correctionId = ? AND type = 'CARD_TO_CARD_CANCELED'`, corrL?.id))
+eq('کالای جایگزینِ تعویض معلق به موجودی برگشت', stockOf(repL), 100)
+
+// ===========================================================================
+console.log('\n۱۳) ساختاری')
 truthy('migration ستون‌های ابطال فاکتور', existsSync(join(ROOT, 'prisma/migrations/20270928100000_sale_invoice_void/migration.sql')))
 const invModel = (src('prisma/schema.prisma').match(/model SaleInvoice \{[\s\S]*?\n\}/) ?? [''])[0]
 truthy('schema: SaleInvoice.voidedAt/voidedByUserId/voidReason', /voidedAt\s+DateTime\?/.test(invModel) && /voidedByUserId\s+Int\?/.test(invModel) && /voidReason\s+String\?/.test(invModel))
@@ -229,6 +324,8 @@ eq('گزارش کارمندان: هر ۴ کوئری فاکتور voidedAt: null 
 truthy('جزئیات شیفت فاکتور باطل را نمی‌شمارد', /saleInvoice\.findMany\(\{\s*where: \{ shiftId, voidedAt: null \}/.test(src('src/main/services/ShiftService.ts')))
 const ui = src('src/renderer/src/pages/SalesReports.tsx')
 truthy('تب تعویض گزارش دکمه‌ی ابطال با دلیل دارد', /saleReturnDelete,\s*\{[^}]*reason/.test(ui) && ui.includes('exchangeVoided') && ui.includes('onVoid'))
+truthy('تعویض، اصلاح جبرانیِ جدا و فرم تسویه‌ی دوطرفه دارد', ui.includes('onCorrection') && ui.includes('cashPaidOut') && svc.includes('CARD_PAID_OUT'))
+truthy('migration پرداخت جبرانی تعویض وجود دارد', existsSync(join(ROOT, 'prisma/migrations/20271018100000_exchange_correction_settlement/migration.sql')))
 
 console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
 process.exit(bad === 0 ? 0 : 1)
