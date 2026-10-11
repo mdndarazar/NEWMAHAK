@@ -109,7 +109,7 @@ export async function runBackup(opts: { scheduled?: boolean } = {}): Promise<str
   const { dir } = await resolveAutoDir(config)
   const target = join(dir, `shop-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.db`)
   // WAL را داخل فایل اصلی بنویس تا کپی، یک دیتابیس کامل باشد
-  await prisma.$executeRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => 0)
+  await prisma.$queryRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => null)
   await copyFile(databaseFile(), target)
 
   // نگه‌داشتن فقط n نسخه‌ی آخر (در همان پوشه‌ای که بکاپ آنجا ساخته شد)
@@ -211,7 +211,7 @@ export const backupService = {
 
     // چک‌پوینت: اگر WAL فعال باشد، هر چیزی که در ژورنال مانده اول داخل فایل اصلی
     // نوشته شود تا کپی، یک دیتابیس *کامل* باشد.
-    await prisma.$executeRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => 0)
+    await prisma.$queryRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => null)
     await copyFile(databaseFile(), target)
     const info = await stat(target)
 
@@ -505,7 +505,7 @@ export const backupService = {
     const dir = backupsDir()
     await mkdir(dir, { recursive: true })
     const safety = join(dir, `before-restore-${stamp()}.db`)
-    await prisma.$executeRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => 0)
+    await prisma.$queryRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => null)
     await copyFile(databaseFile(), safety)
 
     await this.markApplied(input.id, 'replace')

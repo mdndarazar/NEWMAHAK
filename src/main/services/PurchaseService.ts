@@ -10,6 +10,7 @@ import { PANEL_KEYS } from '@shared/panels'
 import { toJalaliDate, jalaliToDateTime, isValidJalaliDate, faDigits } from '@shared/jalali'
 import type { CreatePurchaseInput, UpdatePurchaseInput } from '@shared/types'
 import { partyService } from './PartyService'
+import { custodyService } from './CustodyService'
 
 async function resolveSupplierId(input: { supplierId?: number | null; supplierName?: string | null }) {
   if (input.supplierId != null && Number(input.supplierId) > 0) return Number(input.supplierId)
@@ -83,7 +84,7 @@ export const purchaseService = {
    * فاکتور + اقلام + حرکات انبار همه در یک $transaction هستند؛ نوشتن موجودی
    * فقط از طریق InventoryService انجام می‌شود (قاعده‌ی ۱ README).
    */
-  async create(input: CreatePurchaseInput & { panelPassword?: string | null; supplierName?: string | null }) {
+  async create(input: CreatePurchaseInput & { panelPassword?: string | null; supplierName?: string | null; custodyFence?: any }) {
     const lines = cleanLines(input)
     /**
      * نشست ۱۵۵ (S151-c1، بند ۴-۳۹ «ثبت خرید» و بند ۵ «هر گیت در main») — قفل پنل خرید فقط در
@@ -102,6 +103,7 @@ export const purchaseService = {
       throw new BusinessError('مبلغ پرداخت‌شده‌ی فاکتور خرید نمی‌تواند منفی باشد.')
 
     return prisma.$transaction(async (tx) => {
+      if (input.custodyFence) await custodyService.assertFenceInTx(tx, input.custodyFence)
       const invoice = await tx.purchaseInvoice.create({
         data: {
           invoiceNo: await nextInvoiceNo(tx),
@@ -181,7 +183,7 @@ export const purchaseService = {
    * همه‌چیز در یک $transaction اتمیک، با ثبت before/after در AuditLog.
    * ---------------------------------------------------------------------
    */
-  async update(input: UpdatePurchaseInput & { panelPassword?: string | null; supplierName?: string | null }) {
+  async update(input: UpdatePurchaseInput & { panelPassword?: string | null; supplierName?: string | null; custodyFence?: any }) {
     const lines = cleanLines(input)
     if (!input.id) throw new BusinessError('فاکتوری برای ویرایش مشخص نشده است')
     // نشست ۱۵۵ (S151-c1) — همان گیت ثبت خرید، پیش از تراکنش
@@ -189,6 +191,7 @@ export const purchaseService = {
     const supplierId = await resolveSupplierId(input)
 
     const invoice = await prisma.$transaction(async (tx) => {
+      if (input.custodyFence) await custodyService.assertFenceInTx(tx, input.custodyFence)
       const current = await tx.purchaseInvoice.findUnique({
         where: { id: input.id },
         include: { items: true }

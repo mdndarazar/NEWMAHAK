@@ -10,6 +10,7 @@ import { faDigits } from '@shared/jalali'
 import { PANEL_KEYS } from '@shared/panels'
 import type { PagedRows } from '@shared/types'
 import { toRial } from '@shared/money'
+import { custodyService } from './CustodyService'
 
 export interface VariantInput {
   id?: number
@@ -57,6 +58,8 @@ export interface StockAdjustInput {
   /** actor؛ در IPC همیشه از نشست باز main بازنویسی می‌شود، نه از renderer. */
   userId?: number | null
   managerPassword?: string | null
+  /** Server-injected only when opt-in custody is active. */
+  custodyFence?: any
 }
 
 /**
@@ -621,6 +624,12 @@ export const productService = {
           where: { id: { in: chunk } },
           data: { isActive: false, deletedAt }
         })
+        try {
+          const { markWooLinksBrokenLocal } = await import('./WooSyncService')
+          await markWooLinksBrokenLocal(chunk, tx as any)
+        } catch (e) {
+          console.error('[wooSync] mark deleted variants failed', e)
+        }
         count += r.count
       }
       return { before, count }
@@ -727,8 +736,9 @@ export const productService = {
     const scope = await assertPanelPassword(PANEL_KEYS.products, input?.managerPassword ?? null, 'اصلاح دستی موجودی')
     const note = input?.note == null ? undefined : String(input.note)
     await prisma.$transaction(
-      (tx) =>
-        inventoryService.setStock(
+      async (tx) => {
+        if (input.custodyFence) await custodyService.assertFenceInTx(tx, input.custodyFence)
+        return inventoryService.setStock(
           variantId,
           newQty,
           {
@@ -739,7 +749,8 @@ export const productService = {
             auditNote: productApprovalNote(scope)
           },
           tx
-        ),
+        )
+      },
       TX_OPTIONS
     )
   },

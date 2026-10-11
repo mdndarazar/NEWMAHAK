@@ -25,9 +25,24 @@ async function loadEsbuild() {
   process.exit(0)
 }
 const { transformSync } = await loadEsbuild()
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
+
+function findTsFiles(dir) {
+  let list = []
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === 'node_modules' || e.name === '.git' || e.name === 'out' || e.name === 'dist') continue
+    const p = join(dir, e.name)
+    if (e.isDirectory()) list = list.concat(findTsFiles(p))
+    else if (e.name.endsWith('.ts') || e.name.endsWith('.tsx') || e.name.endsWith('.js')) list.push(p)
+  }
+  return list
+}
+
+const targetFiles = process.argv.length > 2 ? process.argv.slice(2) : findTsFiles('src')
+
 let ok = 0, bad = 0
-for (const f of process.argv.slice(2)) {
+for (const f of targetFiles) {
   const loader = f.endsWith('.tsx') ? 'tsx' : f.endsWith('.ts') ? 'ts' : 'js'
   try { transformSync(readFileSync(f, 'utf8'), { loader, format: 'esm', jsx: 'preserve' }); ok++; console.log('PARSE-OK ' + f) }
   catch (e) { bad++; console.log('PARSE-FAIL ' + f + '\n' + String(e.message).split('\n').slice(0, 6).join('\n')) }

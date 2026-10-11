@@ -28,7 +28,7 @@ import { remainingOf, isSimpleReturn, refundFromReceivedOf, exchangeRefundPartOf
 import { debtAdjustmentsByInvoice, adjustmentsOrEmpty } from './invoiceDebt'
 import { creditIdsForReportScope } from './creditReportScope'
 import { bridgeDrillPager } from '@shared/reportExtraOutput'
-import { eventInvoiceContextWhere, paymentEventOwnerWhere, resolveReportEventShiftIds, returnEventOwnerWhere, reportEventInvoiceStatusWhere, financialStatementInvoiceWhere, excludedStatusStatementWarning } from './SalesService'
+import { eventInvoiceContextWhere, paymentEventOwnerWhere, resolveReportEventShiftIds, resolveReportPeriod, returnEventOwnerWhere, reportEventInvoiceStatusWhere, financialStatementInvoiceWhere, excludedStatusStatementWarning, saleWhere } from './SalesService'
 import type {
   SaleAccountingStatements,
   SaleBridgeRow,
@@ -86,6 +86,32 @@ export interface StatementScope {
   /** گردش نقدی خارج از فروش (برداشت/واریز) — از CashMovement */
   withdrawals?: number
   deposits?: number
+}
+
+/**
+ * اسکوپ فقط‌خواندنیِ ریزبین مالی. این helper همان تاریخ مؤثر، دروازهٔ وضعیت و
+ * مالک رویدادِ `buildStatements` را نگه می‌دارد تا هیچ سندی بیرون از معنای عدد
+ * گزارش به مدیر نمایش داده نشود. حرکت‌های خارج از فروش برای خواندن منابع پل
+ * لازم نیستند و صفر هستند؛ SalesService هنگام ساخت خود گزارش مقدار واقعی را
+ * تزریق می‌کند.
+ */
+export async function resolveAccountingReadScope(filter: SaleReportFilter): Promise<StatementScope> {
+  const where = saleWhere(filter)
+  const period = await resolveReportPeriod(filter, where)
+  const gatedScope: StatementScope = {
+    where: financialStatementInvoiceWhere(where, filter),
+    from: period.from,
+    to: period.to,
+    period: {
+      fromJalali: period.from ? toJalaliDate(period.from) : null,
+      toJalali: period.to ? toJalaliDate(period.to) : null,
+      source: period.source
+    },
+    filter,
+    withdrawals: 0,
+    deposits: 0
+  }
+  return { ...gatedScope, eventShiftIds: await resolveReportEventShiftIds(filter) }
 }
 
 /**
@@ -902,6 +928,23 @@ async function storeCreditBridgeSplit(issuedWhere: any, issuedIds: number[] | nu
   remainderCount: number
   overpayRemainder: number
   overpayRemainderCount: number
+  /** شناسه‌های سبدهای مانعةالجمع کارت گردش اعتبار، به ترتیب پایدار id نزولی. */
+  lifecycleIds: {
+    return: number[]
+    exchange: number[]
+    manual: number[]
+    overpay: number[]
+    remainder: number[]
+    other: number[]
+  }
+  lifecycle: {
+    return: number
+    exchange: number
+    manual: number
+    overpay: number
+    remainder: number
+    other: number
+  }
 }> {
   /**
    * نشست ۱۷۱ · S170-D3 — ردیف‌های OVERPAY هم خوانده می‌شوند، فقط برای جدا کردن «باقی‌مانده»ی
@@ -909,9 +952,15 @@ async function storeCreditBridgeSplit(issuedWhere: any, issuedIds: number[] | nu
    * اعتبار اضافه‌دریافتِ تازه. OVERPAY هرگز وارد backed/unbacked/remainder نمی‌شود (S61-2).
    */
   /** نشست ۱۷۴ · S173-D3 — روی دسته‌های شناسه (issuedIds) و یکتا، به ترتیب id نزولی */
-  const rows = await liteRowsByIdChunks<{ id: number; amount: any; returnId: number | null; source: string }>(
+  const rows = await liteRowsByIdChunks<{
+    id: number
+    amount: any
+    returnId: number | null
+    exchangeInvoiceId: number | null
+    source: string
+  }>(
     'storeCredit', { ...issuedWhere }, issuedIds,
-    { amount: true, returnId: true, source: true },
+    { amount: true, returnId: true, exchangeInvoiceId: true, source: true },
     (a, b) => Number(b.id) - Number(a.id)
   )
   const remainderIds = new Set<number>()
@@ -925,10 +974,37 @@ async function storeCreditBridgeSplit(issuedWhere: any, issuedIds: number[] | nu
   }
   const out = {
     backedIds: [] as number[], backed: 0, unbacked: 0, unbackedCount: 0, remainder: 0, remainderCount: 0,
-    overpayRemainder: 0, overpayRemainderCount: 0
+    overpayRemainder: 0, overpayRemainderCount: 0,
+    lifecycleIds: {
+      return: [] as number[], exchange: [] as number[], manual: [] as number[],
+      overpay: [] as number[], remainder: [] as number[], other: [] as number[]
+    },
+    lifecycle: { return: 0, exchange: 0, manual: 0, overpay: 0, remainder: 0, other: 0 }
   }
   for (const r of rows) {
     const amount = n(r.amount)
+
+    /**
+     * کارت گردش نباید یک صدور را دوبار نشان دهد. «باقی‌مانده» همیشه اول تشخیص
+     * داده می‌شود، بعد خاستگاه صدور با اولویت اضافه‌دریافت، تعویض، برگشت، دستی
+     * و در پایان نامشخص تعیین می‌گردد. این ترتیب با تعریف مورد توافق گزارش یکی
+     * است و به جمع issued دقیقاً reconcile می‌شود.
+     */
+    const lifecycleKey = remainderIds.has(r.id)
+      ? 'remainder'
+      : r.source === CreditSource.OVERPAY
+        ? 'overpay'
+        : r.exchangeInvoiceId != null
+          ? 'exchange'
+          : r.returnId != null
+            ? 'return'
+            : r.source === CreditSource.MANUAL
+              ? 'manual'
+              : 'other'
+    out.lifecycleIds[lifecycleKey].push(r.id)
+    out.lifecycle[lifecycleKey] += amount
+
+    // این بخش، رفتار پیشینِ پل تطبیق را بدون تغییر نگه می‌دارد.
     if (r.source === CreditSource.OVERPAY) {
       if (remainderIds.has(r.id)) { out.overpayRemainder += amount; out.overpayRemainderCount++ }
       continue
@@ -967,16 +1043,19 @@ async function storeCreditUsageStories(
     const issuedAtJalali = String(credit?.issuedAtJalali ?? '') || (credit?.issuedAt ? toJalaliDate(credit.issuedAt) : '—')
     const usedAtJalali = String(r.atJalali ?? '') || (r.at ? toJalaliDate(r.at) : '—')
     const amount = n(r.amount)
-    const code = String(r.code || credit?.code || '').trim() || '—'
+    /**
+     * کد اعتبار ممکن است پس از برگشت/ابطالِ فاکتور مصرف دوباره فعال شود؛ پس
+     * گزارش عمومی هرگز آن را حمل نمی‌کند. مشاهدهٔ محرمانهٔ مدیر باید از کانال
+     * مجوزدارِ جدا انجام شود، نه از متن داستان یا HTML این گزارش.
+     */
     stories.push({
-      code,
       amount,
       issuedAtJalali,
       usedAtJalali,
       reason,
-      text:
-        `بارکد ${code} در تاریخ ${faDigits(issuedAtJalali)} به مشتری بابت ${CREDIT_ISSUE_REASON_LABELS[reason]} ` +
-        `داده شد و در تاریخ ${faDigits(usedAtJalali)} خرج شد (${money(amount)} ریال).`
+      safeText:
+        `اعتبار خرید در تاریخ ${faDigits(issuedAtJalali)} به مشتری بابت ${CREDIT_ISSUE_REASON_LABELS[reason]} ` +
+        `داده شد و در تاریخ ${faDigits(usedAtJalali)} مصرف شد (${money(amount)} ریال).`
     })
   }
   return stories
@@ -1085,6 +1164,29 @@ async function storeCreditStatement(
     )
     return Math.max(0, agg.sum.amount - agg.sum.usedAmount)
   }
+  /**
+   * «منقضی‌شده در بازه» یک رویدادِ تاریخ‌محور است، نه snapshot پایان بازه:
+   * فقط ماندهٔ اعتبارهای دارای expiresAt در دو سرِ شاملِ بازه شمرده می‌شود.
+   * بنابراین اعتباری که سال قبل منقضی شده، در گزارش ماه جاری دوباره ظاهر نمی‌شود.
+   */
+  const expiredInRangeSum = async () => {
+    if (!range) return 0
+    const agg = await aggregateByIdChunks(
+      'storeCredit',
+      {
+        OR: [
+          {
+            status: { in: [StoreCreditStatus.ACTIVE, StoreCreditStatus.PARTIALLY_USED, StoreCreditStatus.SUSPENDED] },
+            expiresAt: range
+          },
+          { status: StoreCreditStatus.EXPIRED, expiresAt: range }
+        ]
+      },
+      scopedIds,
+      ['amount', 'usedAmount']
+    )
+    return Math.max(0, agg.sum.amount - agg.sum.usedAmount)
+  }
   const statusSum = async (status: string) =>
     (
       await aggregateByIdChunks(
@@ -1116,6 +1218,13 @@ async function storeCreditStatement(
     /** نشست ۱۷۱ · S170-D3 — باقی‌مانده‌ی اعتبار اضافه‌دریافت (داخل issuedFromOverpay) */
     issuedOverpayRemainder: split.overpayRemainder,
     issuedOverpayRemainderCount: split.overpayRemainderCount,
+    /** سبدهای مانعةالجمع کارت گردش اعتبار؛ جمع شش‌تایی = issued. */
+    issuedLifecycleReturn: split.lifecycle.return,
+    issuedLifecycleExchange: split.lifecycle.exchange,
+    issuedLifecycleManual: split.lifecycle.manual,
+    issuedLifecycleOverpay: split.lifecycle.overpay,
+    issuedLifecycleRemainder: split.lifecycle.remainder,
+    issuedLifecycleOther: split.lifecycle.other,
     issuedCount: issued.count,
     used: used.sum.amount,
     usageCount: used.count,
@@ -1125,7 +1234,10 @@ async function storeCreditStatement(
       StoreCreditStatus.PARTIALLY_USED,
       StoreCreditStatus.SUSPENDED
     ]),
+    // snapshot تعهد/انقضای پایان بازه، برای خواندن حسابداری تاریخی حفظ می‌شود.
     expired: await expiredSum(),
+    // کارت دوره‌ای فقط این رویداد را نشان می‌دهد: expiresAt داخل بازهٔ انتخاب‌شده.
+    expiredInRange: await expiredInRangeSum(),
     canceled: await statusSum(StoreCreditStatus.CANCELED)
   }
 }
@@ -1496,6 +1608,128 @@ async function bridgeSources(
   const isRealMoney = (r: PayLite, b: string) =>
     r.kind === PaymentEntryKind.CHEQUE ? r.chequeStatus === ChequeStatus.CLEARED : !isCredit(b)
   try {
+    /**
+     * ریزهای چرخهٔ اعتبار از همان مجموعهٔ issued / scoped صورت حسابداری خوانده
+     * می‌شوند. برچسب‌ها deliberately فاقد کد یا بخشی از کد اعتبار هستند؛ بازکردن
+     * سند تنها metadata امن می‌دهد و reveal کد مسیر جداگانهٔ مدیر است.
+     */
+    if (key === 'storeCreditIssuedAll') {
+      const { issuedWhere, issuedIds } = await storeCreditScopes(scope, [])
+      const all = await liteRowsByIdChunks<{ id: number }>(
+        'storeCredit', issuedWhere, issuedIds, {}, (a, b) => Number(b.id) - Number(a.id)
+      )
+      const rows = await rowsForIdsInOrder('storeCredit', all.slice(skip, skip + take).map((row) => row.id))
+      for (const r of rows) {
+        out.push({
+          kind: 'STORE_CREDIT', subKind: 'STORE_CREDIT_ISSUANCE', id: Number(r.id), amount: n(r.amount),
+          label: 'اعتبار خرید صادرشده' + (r.customerName ? ` · ${r.customerName}` : ''),
+          dateJalali: r.issuedAtJalali || toJalaliDate(r.issuedAt),
+          invoiceId: r.exchangeInvoiceId ?? r.sourceInvoiceId ?? null, receiptNo: null
+        })
+      }
+      return { sources: out, page: makePage(all.length) }
+    }
+
+    const lifecycleIssueKeys = {
+      storeCreditIssuedReturn: 'return',
+      storeCreditIssuedExchange: 'exchange',
+      storeCreditIssuedManual: 'manual',
+      storeCreditIssuedOverpay: 'overpay',
+      storeCreditIssuedRemainder: 'remainder',
+      storeCreditIssuedOther: 'other'
+    } as const
+    const lifecycleBucket = lifecycleIssueKeys[key as keyof typeof lifecycleIssueKeys]
+    if (lifecycleBucket) {
+      const { issuedWhere, issuedIds } = await storeCreditScopes(scope, [])
+      const split = await storeCreditBridgeSplit(issuedWhere, issuedIds)
+      const ids = split.lifecycleIds[lifecycleBucket]
+      const rows = await rowsForIdsInOrder('storeCredit', ids.slice(skip, skip + take))
+      const labels: Record<typeof lifecycleBucket, string> = {
+        return: 'صدور اعتبار بابت برگشت',
+        exchange: 'صدور اعتبار بابت تعویض',
+        manual: 'صدور دستی اعتبار',
+        overpay: 'صدور اعتبار بابت اضافه‌دریافت',
+        remainder: 'اعتبار باقی‌ماندهٔ مصرف جزئی',
+        other: 'صدور اعتبار با خاستگاه ثبت‌نشده'
+      }
+      for (const r of rows) {
+        out.push({
+          kind: 'STORE_CREDIT', subKind: 'STORE_CREDIT_ISSUANCE', id: Number(r.id), amount: n(r.amount),
+          label: labels[lifecycleBucket] + (r.customerName ? ` · ${r.customerName}` : ''),
+          dateJalali: r.issuedAtJalali || toJalaliDate(r.issuedAt),
+          invoiceId: r.exchangeInvoiceId ?? r.sourceInvoiceId ?? null, receiptNo: null
+        })
+      }
+      return { sources: out, page: makePage(ids.length) }
+    }
+
+    if (key === 'storeCreditExpired' || key === 'storeCreditExpiredInRange' || key === 'storeCreditCanceled') {
+      const { range: creditRange, scopedIds } = await storeCreditScopes(scope, [])
+      const asOf = (creditRange && scope.to) || new Date()
+      const issuedBeforeEnd = creditRange && scope.to ? { issuedAt: { lte: scope.to } } : {}
+      const isExpired = { expiresAt: { not: null, lte: asOf } }
+      const isExpiredKey = key === 'storeCreditExpired'
+      const isExpiredInRangeKey = key === 'storeCreditExpiredInRange'
+      const statusWhere: any = isExpiredKey
+        ? {
+            OR: [
+              {
+                status: { in: [StoreCreditStatus.ACTIVE, StoreCreditStatus.PARTIALLY_USED, StoreCreditStatus.SUSPENDED] },
+                ...isExpired
+              },
+              { status: StoreCreditStatus.EXPIRED }
+            ],
+            ...issuedBeforeEnd
+          }
+        : isExpiredInRangeKey
+          ? creditRange
+            ? {
+                OR: [
+                  {
+                    status: { in: [StoreCreditStatus.ACTIVE, StoreCreditStatus.PARTIALLY_USED, StoreCreditStatus.SUSPENDED] },
+                    expiresAt: creditRange
+                  },
+                  { status: StoreCreditStatus.EXPIRED, expiresAt: creditRange }
+                ]
+              }
+            : { id: { in: [] } }
+          : { status: StoreCreditStatus.CANCELED, ...issuedBeforeEnd }
+      const all = await liteRowsByIdChunks<{
+        id: number
+        amount: any
+        usedAmount: any
+        issuedAt: Date
+        issuedAtJalali: string | null
+        expiresAt: Date | null
+        expiresAtJalali: string | null
+        customerName: string | null
+        exchangeInvoiceId: number | null
+        sourceInvoiceId: number | null
+      }>(
+        'storeCredit', statusWhere, scopedIds,
+        { amount: true, usedAmount: true, issuedAt: true, issuedAtJalali: true, expiresAt: true, expiresAtJalali: true, customerName: true, exchangeInvoiceId: true, sourceInvoiceId: true },
+        (a, b) => Number(b.id) - Number(a.id)
+      )
+      const rows = all.slice(skip, skip + take)
+      for (const r of rows) {
+        /** انقضا در صورت رسمی فقط ماندهٔ خرج‌نشده است، اما ابطال مبلغ اولیه را می‌سنجد. */
+        const isExpiryRow = isExpiredKey || isExpiredInRangeKey
+        const amount = isExpiryRow ? Math.max(0, n(r.amount) - n(r.usedAmount)) : n(r.amount)
+        out.push({
+          kind: 'STORE_CREDIT', subKind: 'STORE_CREDIT_ISSUANCE', id: r.id, amount,
+          label:
+            (isExpiredInRangeKey ? 'اعتبار منقضی‌شده در بازه' : isExpiredKey ? 'اعتبار منقضی‌شده' : 'اعتبار لغوشده') +
+            (r.customerName ? ` · ${r.customerName}` : ''),
+          // کارت دوره‌ای باید تاریخ خودِ انقضا را نشان دهد، نه تاریخ صدور اعتبار.
+          dateJalali: isExpiredInRangeKey
+            ? (r.expiresAtJalali || (r.expiresAt ? toJalaliDate(r.expiresAt) : '—'))
+            : (r.issuedAtJalali || toJalaliDate(r.issuedAt)),
+          invoiceId: r.exchangeInvoiceId ?? r.sourceInvoiceId ?? null, receiptNo: null
+        })
+      }
+      return { sources: out, page: makePage(all.length) }
+    }
+
     if (key === 'storeCreditIssued') {
       // نشست ۶۱ — اعتبار اضافه‌دریافت در ردیف overpayReceived است.
       // ممیزی A108-02 — همان where ردیف (مالک رویداد/هویت A97-01)، نه کل بازه.
@@ -1520,8 +1754,8 @@ async function bridgeSources(
       rows.sort((a, b) => Number(b.id) - Number(a.id))
       for (const r of rows)
         out.push({
-          kind: 'STORE_CREDIT', id: r.id, amount: n(r.amount),
-          label: `اعتبار «${r.code}»` + (r.customerName ? ` · ${r.customerName}` : ''),
+          kind: 'STORE_CREDIT', subKind: 'STORE_CREDIT_ISSUANCE', id: r.id, amount: n(r.amount),
+          label: 'اعتبار خرید صادرشده' + (r.customerName ? ` · ${r.customerName}` : ''),
           dateJalali: r.issuedAtJalali || toJalaliDate(r.issuedAt),
           invoiceId: r.exchangeInvoiceId ?? r.sourceInvoiceId ?? null, receiptNo: null
         })
@@ -1551,8 +1785,8 @@ async function bridgeSources(
       }
       for (const r of rows)
         out.push({
-          kind: 'STORE_CREDIT', id: r.id, amount: n(r.amount),
-          label: `مصرف اعتبار «${r.code}» (نوبت ${r.seq})` + (r.receiptNo ? ` روی فاکتور ${r.receiptNo}` : ''),
+          kind: 'STORE_CREDIT', subKind: 'STORE_CREDIT_REDEMPTION', id: r.id, amount: n(r.amount),
+          label: `مصرف اعتبار خرید (نوبت ${r.seq})` + (r.receiptNo ? ` روی فاکتور ${r.receiptNo}` : ''),
           dateJalali: r.atJalali || toJalaliDate(r.at), invoiceId: r.invoiceId ?? null, receiptNo: r.receiptNo ?? null
         })
       return { sources: out, page: makePage(totalCount) }
@@ -1584,6 +1818,31 @@ async function bridgeSources(
           if (isChequeKey) return 0
           return isCredit(b) || b === 'managerAccount' ? 0 : n(r.amount)
         },
+        payLabel
+      )
+    } else if (key === 'drawerCashReceived' || key === 'posCardReceived' || key === 'otherMethodReceived') {
+      /**
+       * ریزِ فقط‌خواندنیِ اجزای کاشی‌ها. این سه کلید فرمول تازه نیستند؛ تنها
+       * همان پرداخت‌های `paymentStatement` را با bucket دقیق جدا می‌کنند تا
+       * تاریخچهٔ کشو/پوز هیچ‌وقت با realCash مخلوط نشود. برخلاف realCash، چک
+       * پاس‌شده در این سه جزء نمی‌آید، چون cashReceived/cardReceived/otherReceived
+       * در صورت وجه واقعی نیز فقط پرداخت غیرچکی‌اند.
+       *
+       * `paymentEventWindowWhere` عمداً همان predicate aggregate است؛ استفاده از
+       * paidAt ساده در گزارش شیفت، وصول ثبت‌شده در شیفت را پنهان می‌کرد.
+       */
+      const events: any = {
+        invoice: eventWhere(scope),
+        voidedAt: null,
+        amount: { gt: 0 },
+        ...paymentEventWindowWhere(scope, range)
+      }
+      const wanted = key === 'drawerCashReceived' ? 'cash'
+        : key === 'posCardReceived' ? 'card'
+          : 'other'
+      return await paymentDrill(
+        [events],
+        (r, bucket) => r.kind !== PaymentEntryKind.CHEQUE && bucket === wanted ? n(r.amount) : 0,
         payLabel
       )
     } else if (key === 'realCash' || key === 'managerAccountReceived' || key === 'destinationUnknownReceived') {
@@ -1675,6 +1934,33 @@ async function bridgeSources(
     return { sources: out, page: { ...makePage(0), failed: true } }
   }
   return { sources: out, page: makePage(out.length) }
+}
+
+/**
+ * درگاه فقط‌خواندنیِ منابع یک ردیف پل برای ریزبین مالی. از همان تابع داخلی
+ * استفاده می‌شود تا predicate/تقسیم مبلغِ aggregate و source-list هرگز دو بار
+ * نوشته نشود. اعتبارسنجی دسترسی و ورودی IPC عمداً در سرویس بالادست می‌ماند.
+ */
+export async function readBridgeSources(
+  scope: StatementScope,
+  key: string,
+  skip = 0,
+  take = 200
+): Promise<{ sources: SaleBridgeSource[]; page: SaleReportPage }> {
+  return bridgeSources(scope, key, skip, take)
+}
+
+/**
+ * اجزای قابل‌ردیابی کاشی‌ها از همان source builder داخلی می‌آیند. این wrapper
+ * فقط مرز نام‌گذاری است؛ هیچ عدد یا predicate تازه‌ای نمی‌سازد.
+ */
+export async function readFinancialComponentSources(
+  scope: StatementScope,
+  key: 'drawerCashReceived' | 'posCardReceived' | 'otherMethodReceived',
+  skip = 0,
+  take = 200
+): Promise<{ sources: SaleBridgeSource[]; page: SaleReportPage }> {
+  return bridgeSources(scope, key, skip, take)
 }
 
 /** نام خالی / «مشتری عمومی» در خط کنترل وصول نسیه نشان داده نمی‌شود. */
@@ -2098,7 +2384,16 @@ export async function buildStatements(
       issuedBacked: sc.issuedBacked, issuedUnbacked: sc.issuedUnbacked, issuedRemainder: sc.issuedRemainder,
       /** نشست ۱۷۱ · S170-D3 — داخل issuedFromOverpay */
       issuedOverpayRemainder: sc.issuedOverpayRemainder,
-      expired: sc.expired, canceled: sc.canceled,
+      /** خاستگاه‌های مانعةالجمع؛ هر عدد فقط از صورت حسابداری main آمده است. */
+      issuedLifecycleReturn: sc.issuedLifecycleReturn,
+      issuedLifecycleExchange: sc.issuedLifecycleExchange,
+      issuedLifecycleManual: sc.issuedLifecycleManual,
+      issuedLifecycleOverpay: sc.issuedLifecycleOverpay,
+      issuedLifecycleRemainder: sc.issuedLifecycleRemainder,
+      issuedLifecycleOther: sc.issuedLifecycleOther,
+      expired: sc.expired,
+      expiredInRange: sc.expiredInRange,
+      canceled: sc.canceled,
       issuedCount: sc.issuedCount, usageCount: sc.usageCount,
       usedStories: sc.usedStories ?? []
     },

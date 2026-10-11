@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
 import PasswordField from './PasswordField'
+// نشست ۳۱۷ — کارت چاپ سند اعتبار (فونت/حاشیه/پیش‌نمایش/چاپ آزمایشی)
+import CreditPrintCard from './CreditPrintCard'
 import JalaliDateInput from './JalaliDateInput'
 import { CheckField, HolderFields, NumberField, ScopePicker, SelectField, TextField } from './CreditPickers'
 import type { Party } from './PartyPicker'
@@ -22,7 +24,7 @@ import {
   type IssueDraft,
   type OpDraft
 } from '@shared/creditUi'
-import { CREDIT_PLACEHOLDERS, CREDIT_SOURCE_LABELS, CreditPaper, type CreditSettings } from '@shared/credit'
+import { CREDIT_PLACEHOLDERS, CREDIT_RULE_LABELS, CreditPaper, type CreditSettings } from '@shared/credit'
 
 /**
  * ===========================================================================
@@ -380,13 +382,24 @@ export function SettingsForm({
         </div>
       </Section>
 
-      <Section title="قواعد پیش‌فرض هر نوع اعتبار (§۳)">
+      <Section title="قواعد پیش‌فرض هر نوع اعتبار (§۳)" hint="تغییر این قواعد فقط روی اعتبارهای آینده اثر دارد؛ snapshot تاریخ/مدت اعتبارهای قبلی دست‌نخورده می‌ماند.">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
           {Object.keys(settings.types).map((k) => (
             <div key={k} className="border rounded p-2 space-y-1">
-              <b>{CREDIT_SOURCE_LABELS[k] ?? k}</b>
+              <b>{CREDIT_RULE_LABELS[k] ?? k}</b>
+              {k === 'EXCHANGE' && (
+                <div className="kbd leading-5">
+                  این قاعده برای اعتبار صادرشده از برگشت فروش و مابه‌التفاوت تعویض مشترک است. تا زمانی که قاعدهٔ مستقلی برای
+                  اضافه‌دریافت تعریف نشده، اعتبار اضافه‌دریافت نیز از همین قاعده ارث می‌برد.
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-2">
-                <NumberField label="مدت (روز · ۰ = بدون انقضا)" value={settings.types[k].days} onChange={(v) => setRule(k, { days: v })} />
+                <NumberField
+                  label="مدت (روز · ۰ = بدون انقضا)"
+                  value={settings.types[k].days}
+                  onChange={(v) => setRule(k, { days: v })}
+                  hint="برای بدون انقضا، عدد ۰ را صریح وارد کنید. خالی‌کردن این فیلد نیز در نسخهٔ فعلی ۰ ذخیره می‌کند."
+                />
                 <NumberField label="حداکثر دفعات" value={settings.types[k].maxUses} onChange={(v) => setRule(k, { maxUses: v })} min={1} />
               </div>
               <CheckField
@@ -451,6 +464,9 @@ export function SettingsForm({
           <textarea className="inp h-20" value={settings.rulesText} onChange={(e) => set({ rulesText: e.target.value })} />
         </label>
       </Section>
+
+      {/* نشست ۳۱۷ — کارت چاپ سند اعتبار (فونت/حاشیه/پیش‌نمایش/چاپ آزمایشی) */}
+      <CreditPrintCard settings={settings} set={set} />
 
       <Section title="یادآوری (§۱۴)" hint="هیچ ارسال واقعی‌ای انجام نمی‌شود؛ پیام آماده و در لاگ ثبت می‌شود.">
         <CheckField label="یادآوری فعال باشد" checked={settings.reminder.enabled} onChange={(v) => setReminder({ enabled: v })} />

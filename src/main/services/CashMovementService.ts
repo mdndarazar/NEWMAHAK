@@ -137,6 +137,8 @@ export const cashMovementService = {
     shiftId?: number | null
     userId?: number | null
     description?: string | null
+    /** سرور در حالت حضانت می‌سازد؛ renderer هرگز نباید آن را جعل کند. */
+    custodyFence?: any
   } = {}) {
     const allowed: readonly string[] = [
       CashMovementType.OPENING_FLOAT,
@@ -168,7 +170,7 @@ export const cashMovementService = {
        * می‌افتاد و از «نقد مورد انتظار» هر دو نشست غایب می‌شد (برداشت ۵۰۰٬۰۰۰ ⇒ کسری کاذب نشست
        * باز؛ واریز ⇒ اضافه‌ی پنهان). بند ۳: بدون نشست باز هیچ حرکت صندوقی مجاز نیست.
        */
-      const open = await shiftService.shiftForNow(tx)
+      const open = await shiftService.shiftForNow(tx, { custodyFence: (input as any).custodyFence ?? null })
       if (!open)
         throw new BusinessError('برای ثبت گردش نقدی (واریز/برداشت/موجودی اول) ابتدا یک نشست باز لازم است.')
       if (input.shiftId != null && Number(input.shiftId) !== Number(open.id))

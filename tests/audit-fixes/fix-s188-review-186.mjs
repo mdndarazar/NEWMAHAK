@@ -81,6 +81,8 @@ const variant = (price) => {
   return id
 }
 const itemsOf = (invoiceId) => seed.rows('SELECT id FROM "SaleInvoiceItem" WHERE invoiceId = ? ORDER BY id', invoiceId)
+/** کد قابل‌مصرف فقط برای آماده‌سازی سناریوی تست از دیتابیس harness خوانده می‌شود؛ DTO امن آن را پس نمی‌دهد. */
+const fixtureCreditCode = (id) => seed.one('SELECT code FROM "StoreCredit" WHERE id = ?', id)?.code ?? null
 
 console.log('\n۰) قرارداد: مورد ۴ و ۱۳ دست نخورده‌اند')
 const CREDIT = read('src/main/services/StoreCreditService.ts')
@@ -98,8 +100,8 @@ console.log('\n۱) تعویض اعتبار را نقد نمی‌کند')
     payments: [],
     storeCreditCode: code
   })
-  const saleA = issuedA ? await safe('فروش الف فقط با بارکد', () => saleOf(issuedA.code)) : null
-  const saleB = issuedB ? await safe('فروش ب فقط با بارکد', () => saleOf(issuedB.code)) : null
+  const saleA = issuedA ? await safe('فروش الف فقط با بارکد', () => saleOf(fixtureCreditCode(issuedA.id))) : null
+  const saleB = issuedB ? await safe('فروش ب فقط با بارکد', () => saleOf(fixtureCreditCode(issuedB.id))) : null
   if (saleA) {
     eq('فاکتور الف باقی‌مانده ندارد (اعتبار مصرف شد)', Number(saleA.remaining ?? 0), 0)
     await throwsWith(

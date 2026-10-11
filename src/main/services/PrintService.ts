@@ -1,5 +1,6 @@
 import { prisma } from '../db/client'
 import { barcodePng } from './BarcodeService'
+import { PANEL_KEYS } from '@shared/panels'
 import { settingsService } from './SettingsService'
 import { salesService } from './SalesService'
 import { printHtml, listPrinters, pdfFromHtml, isPrintOutcomeUnknown } from '../print/printer'
@@ -10,6 +11,8 @@ import { printHtml, listPrinters, pdfFromHtml, isPrintOutcomeUnknown } from '../
 import { receiptPageSpec, type ReceiptProfile } from '@shared/printSpec'
 // نشست ۲۲۲ · فاز ۳ — resolver مشترک چاپگر (نام فقط در main اعتبارسنجی می‌شود)
 import { resolvePrintTargetName } from '../print/target'
+// نشست ۳۱۷ — مشخصات چاپ اعتبار (کاغذ + layout) از یک نقطه‌ی واحد (گارد ایستا در سوت s317)
+import { creditRenderSpec, creditPerPageWith } from '../print/creditSpec'
 // نشست ۲۲۲ · فاز ۵ — انتخاب موتور چاپ (Chromium یا خام/RAW) در یک نقطه
 import { printMaybeRaw } from '../print/raw/route'
 import {
@@ -23,24 +26,21 @@ import {
   type CreditDocData,
   type ExchangeReceiptData,
   type ReturnReceiptData,
-  type ReceiptData,
-  /** جلسه ۵۳ · مرحله ۴ — بلوک «مبدأ کسر» رسید */
-  type ReceiptStockSource
+  type ReceiptData
 } from '../print/templates'
 import { readCreditSettings, storeCreditService } from './StoreCreditService'
 /**
- * جلسه ۵۳ · مرحله ۴ — خواندنِ «مبدأ کسر» یک فاکتور ثبت‌شده. فقط `summaryOf`
- * استفاده می‌شود که خودش فقط `findMany` می‌زند؛ هیچ نوشتنی در مسیر چاپ نیست.
+ * نشست ۳۱۶ · خواسته‌ی مالک — «مبدأ کسر» (جلسه ۵۳) از رسید مشتری حذف شد؛ پس
+ * `summaryOf` این‌جا دیگر صدا زده نمی‌شود. داده‌ی مبدأ فقط برای فهرست/گزارش
+ * داخلی باقی است (StockAllocationService همچنان جریان فروش را تغذیه می‌کند).
  */
-import { stockAllocationService } from './StockAllocationService'
-import { summaryHasNegative } from '@shared/stockSource'
 import {
   CREDIT_MARK_PRINTED_NONE,
   CREDIT_SCOPE_LABELS,
   CreditRestrictScope,
+  CreditSource,
   CreditStatus,
   creditCopyPlan,
-  creditPaperSize,
   creditPdfAuditOnly,
   creditPdfMarkPlan,
   creditPdfRenderPlan,
@@ -54,7 +54,6 @@ import {
   applyCreditPrintCap,
   CREDIT_PRINT_MAX_DOCS,
   cleanCreditIds,
-  creditBatchPerPage,
   creditPrintPlan
 } from '@shared/creditPrint'
 import { audit } from './AuditService'
@@ -68,11 +67,12 @@ import { dialogParentWindow, writeFileAtomic } from './ExportService'
 import {
   AuditAction,
   ChequeStatus,
+  EXCHANGE_SETTLEMENT_LABELS,
   ORDER_TYPE_LABELS,
   PaymentEntryKind,
   refundMethodLabel
 } from '@shared/enums'
-import { toJalaliDate, toClock, jalaliToday, faDigits } from '@shared/jalali'
+import { toJalaliDate, toClock, jalaliToday, faDigits, money } from '@shared/jalali'
 import { resolveLabelBrand, type LabelTemplate, type ReceiptTemplate } from '@shared/receipt'
 import { toNumberRial } from '@shared/money'
 import { remainingOf, debtAdjustmentsOf } from '@shared/settlement'
@@ -99,6 +99,79 @@ async function loadPrintVariantsByIds(ids: readonly number[]) {
     )
   }
   return rows
+}
+
+/**
+ * نشست ۳۱۶ · خواسته‌ی مالک — سطرهای «جزئیات صدور» سند اعتبار (تنها مدرک مشتری
+ * برای خرید بعدی): داستان کاملِ اینکه این اعتبار از کجا آمده — برگشتِ کدام
+ * فاکتور چه اقلامی، چقدر نقد/کارت تسویه شد، یا در تعویض مبلغ کالای برگشتی/
+ * جایگزین و مابه‌التفاوت و تسویه‌اش. هر خطایی فقط ثبت می‌شود و چاپ سند هرگز
+ * به‌خاطر جزئیات متوقف نمی‌ماند (سیاست همان «چاپ هرگز قربانی داده‌ی فرعی نمی‌شود»).
+ */
+async function creditIssueLinesForDoc(c: any): Promise<string[]> {
+  const lines: string[] = []
+  const joinNames = (names: string[]): string =>
+    names.slice(0, 6).join('، ') + (names.length > 6 ? ` و ${faDigits(names.length - 6)} قلم دیگر` : '')
+  const namesOfItems = async (items: { variantId: number; qty: number; variantName?: string | null; name?: string | null }[]) => {
+    const variants = await loadPrintVariantsByIds(items.map((i) => i.variantId))
+    const vmap = new Map(variants.map((v) => [v.id, v]))
+    return items.map((i) => `${saleLineTitle(i as any, vmap.get(i.variantId))} ×${faDigits(i.qty)}`)
+  }
+  try {
+    const returnId = Number(c.returnId ?? 0)
+    if (returnId > 0) {
+      const ret = await prisma.saleReturn.findUnique({
+        where: { id: returnId },
+        include: { items: true, invoice: { select: { receiptNo: true } } }
+      })
+      if (!ret) return lines
+      const isExchange = ret.kind === 'EXCHANGE'
+      const receiptNo = ret.invoice?.receiptNo ?? 0
+      const itemNames = await namesOfItems(ret.items)
+      if (!isExchange) {
+        lines.push(`بابت برگشت از فروش فاکتور ${faDigits(receiptNo)} (سند برگشت ${faDigits(ret.id)})`)
+        if (itemNames.length) lines.push(`اقلام برگشتی: ${joinNames(itemNames)}`)
+        lines.push(`مبلغ کل برگشت: ${money(toNumberRial(ret.total))} ریال`)
+        const refunded = toNumberRial(ret.refundAmount)
+        if (refunded > 0 && ret.refundMethod !== 'STORE_CREDIT')
+          lines.push(`تسویه در همان لحظه: ${money(refunded)} ریال (${refundMethodLabel(ret.refundMethod)})`)
+        lines.push(
+          c.source === CreditSource.OVERPAY
+            ? `باقیمانده‌ی ${money(c.amount)} ریال به‌صورت اعتبار خرید (همین سند) صادر شد`
+            : `مبلغ ${money(c.amount)} ریال به‌صورت اعتبار خرید (همین سند) صادر شد`
+        )
+      } else {
+        lines.push(`بابت تعویض کالای فاکتور ${faDigits(receiptNo)} (سند تعویض ${faDigits(ret.id)})`)
+        if (itemNames.length) lines.push(`اقلام برگشتی: ${joinNames(itemNames)}`)
+        lines.push(`مبلغ کالاهای برگشتی: ${money(toNumberRial(ret.total))} ریال`)
+        if (ret.exchangeReceiptNo) lines.push(`فاکتور کالای جایگزین: ${faDigits(ret.exchangeReceiptNo)}`)
+        if (ret.exchangeInvoiceId) {
+          const exInv = await prisma.saleInvoice.findUnique({
+            where: { id: ret.exchangeInvoiceId },
+            include: { items: true }
+          })
+          if (exInv?.items?.length) {
+            const replacementNames = await namesOfItems(exInv.items)
+            lines.push(`کالای جایگزین: ${joinNames(replacementNames)}`)
+          }
+        }
+        lines.push(`مبلغ کالای جایگزین: ${money(toNumberRial(ret.exchangeTotal))} ریال`)
+        const diff = toNumberRial(ret.exchangeDiff)
+        if (diff !== 0 || ret.exchangeSettlement)
+          lines.push(
+            `مابه‌التفاوت: ${money(Math.abs(diff))} ریال — ${EXCHANGE_SETTLEMENT_LABELS[String(ret.exchangeSettlement)] ?? 'تسویه شد'}`
+          )
+        lines.push(`مبلغ ${money(c.amount)} ریال به‌صورت اعتبار خرید (همین سند) صادر شد`)
+      }
+    } else if (c.source === CreditSource.OVERPAY && c.sourceReceiptNo) {
+      lines.push(`بابت باقیمانده‌ی پرداخت بیش از مبلغ فاکتور ${faDigits(c.sourceReceiptNo)} (اضافه‌دریافت)`)
+    } else if (c.source === CreditSource.EXCHANGE && c.exchangeReceiptNo) {
+      lines.push(`بابت مابه‌التفاوت تعویض · فاکتور تعویض ${faDigits(c.exchangeReceiptNo)}`)
+    }
+  } catch (e) {
+    console.error('[print] credit issue lines failed', e)
+  }
+  return lines
 }
 
 /**
@@ -132,6 +205,14 @@ async function receiptTargetDevice(input: {
   return deviceName
 }
 
+function printMarkWarning(scope: string): string {
+  return `چاپ انجام شد، اما ثبت شمارنده/سابقه‌ی چاپ ${scope} کامل نشد؛ برای بررسی Audit Log و جلوگیری از نسخه‌ی تکراری با مدیر هماهنگ کنید.`
+}
+
+function logCreditMarkFailure(scope: string, err: unknown): void {
+  console.error(`[print-credit] ${scope} markPrinted failed`, err)
+}
+
 export const printService = {
   /** داده‌ی رسید یک فاکتور ثبت‌شده، مستقیم از دیتابیس. */
   async receiptDataFor(invoiceId: number): Promise<ReceiptData> {
@@ -155,20 +236,11 @@ export const printService = {
     const sale = await settingsService.saleDefaults()
 
     /**
-     * ---------- جلسه ۵۳ · مرحله ۴ — «مبدأ کسر» روی رسید ----------
-     * `summaryOf` **فقط می‌خواند** (`saleItemStockAllocation.findMany`) و برای
-     * فاکتور بی‌دفتر آرایه‌ی خالی می‌دهد ⇒ `stockSource = null` ⇒ رسید مو‌به‌مو
-     * مثل قبل. عمداً داخل try است: نبودن دفتر یا هر خطای خواندن **نباید** جلوی
-     * چاپ رسید فروش را بگیرد (همان سیاست بارکد در `withBarcode`).
+     * نشست ۳۱۶ · خواسته‌ی مالک — «مشتری لازم نیست مبدأ کسر انبار و منفی شدن
+     * موجودی را روی فاکتور ببیند.» خواندنِ `summaryOf` (جلسه ۵۳) همین‌جا حذف
+     * شد؛ قالب هم دیگر بلوک مبدأ را رندر نمی‌کند. ستون فهرست/گزارش داخلی با
+     * همان سرویس تغذیه می‌شود و دست‌نخورده است.
      */
-    let stockSource: ReceiptStockSource | null = null
-    try {
-      const sum = await stockAllocationService.summaryOf(invoiceId)
-      if (sum.groups.length && sum.lines.length)
-        stockSource = { lines: sum.lines, short: sum.short, hasNegative: summaryHasNegative(sum.groups) }
-    } catch (e) {
-      console.error('[print] stock source summary failed', e)
-    }
 
     const issuedAt = inv.issuedAt instanceof Date ? inv.issuedAt : new Date(inv.issuedAt)
     return {
@@ -221,9 +293,7 @@ export const printService = {
         amount: toNumberRial(p.amount)
       })),
       returnCode: inv.returnCode,
-      returnCodeExpiresJalali: inv.returnCodeExpiresAt ? toJalaliDate(inv.returnCodeExpiresAt) : null,
-      // جلسه ۵۳ — `null` برای هر فاکتوری که دفتر مبدأ ندارد (رسید مثل قبل)
-      stockSource
+      returnCodeExpiresJalali: inv.returnCodeExpiresAt ? toJalaliDate(inv.returnCodeExpiresAt) : null
     }
   },
 
@@ -294,8 +364,20 @@ export const printService = {
     /** فاز ۳ — نام چاپگر از resolver (بدون fallback)؛ صفحه‌ی عمده نام خودش را دارد. */
     const deviceName = await receiptTargetDevice({ requestedDeviceName: input.deviceName, tpl, profile })
     const copies = Math.min(Math.max(Math.round(input.copies ?? tpl.copies ?? 1), 1), 5)
-    for (let i = 0; i < copies; i++) {
-      await printMaybeRaw({ method: tpl.printMethod, html, deviceName, silent: input.silent ?? true, pageSize })
+    const singleDialogJob = input.silent === false && tpl.printMethod !== 'RAW' && copies > 1
+    const jobs = singleDialogJob ? 1 : copies
+    for (let i = 0; i < jobs; i++) {
+      await printMaybeRaw({
+        method: tpl.printMethod,
+        html,
+        deviceName,
+        silent: input.silent ?? true,
+        copies: singleDialogJob ? copies : 1,
+        pageSize,
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
+      })
     }
     return { copies }
   },
@@ -314,10 +396,8 @@ export const printService = {
     const row = await salesService.exchangeGet({ id: returnId })
     const sale = await settingsService.saleDefaults()
 
-    // انقضای بارکد اعتبار در ExchangeReportRow نیست؛ از خود رکورد خوانده می‌شود.
-    const credit = row.storeCreditCode
-      ? await prisma.storeCredit.findFirst({ where: { returnId }, orderBy: { id: 'desc' } })
-      : null
+    // گزارش ExchangeReportRow عمداً کد ندارد؛ چاپ از رکورد اصلی در main می‌خواند.
+    const credit = await prisma.storeCredit.findFirst({ where: { returnId }, orderBy: { id: 'desc' } })
 
     let storeCreditBarcodeDataUrl: string | null = null
     if (credit?.code && tpl.showReturnBarcode) {
@@ -363,7 +443,7 @@ export const printService = {
       diff: row.diff,
       settlementLabel: row.settlementLabel,
       cashReceived: row.cashReceived,
-      storeCreditCode: row.storeCreditCode,
+      storeCreditCode: credit?.code ?? null,
       storeCreditAmount: row.storeCreditAmount,
       storeCreditStatusLabel: row.storeCreditStatusLabel,
       storeCreditExpiresJalali: credit?.expiresAtJalali ?? null,
@@ -401,13 +481,19 @@ export const printService = {
     /** فاز ۳ — نام چاپگر از resolver (بدون fallback خودکار). */
     const deviceName = await receiptTargetDevice({ requestedDeviceName: input.deviceName, tpl, profile: 'RETAIL' })
     const copies = Math.min(Math.max(Math.round(input.copies ?? tpl.copies ?? 1), 1), 5)
-    for (let i = 0; i < copies; i++) {
+    const singleDialogJob = input.silent === false && tpl.printMethod !== 'RAW' && copies > 1
+    const jobs = singleDialogJob ? 1 : copies
+    for (let i = 0; i < jobs; i++) {
       await printMaybeRaw({
         method: tpl.printMethod,
         html,
         deviceName,
         silent: input.silent ?? true,
-        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+        copies: singleDialogJob ? copies : 1,
+        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
       })
     }
     return { copies, returnId }
@@ -445,18 +531,39 @@ export const printService = {
     const variants = await loadPrintVariantsByIds(variantIds)
     const vmap = new Map(variants.map((v) => [v.id, v]))
 
-    const credit = ret.storeCreditId
-      ? await prisma.storeCredit.findUnique({ where: { id: ret.storeCreditId } })
-      : null
-    let storeCreditBarcodeDataUrl: string | null = null
-    if (credit?.code && tpl.showReturnBarcode) {
-      try {
-        storeCreditBarcodeDataUrl = await barcodePng(credit.code, { scale: 2, height: 10 })
-      } catch (e) {
-        // نبودن تصویر بارکد نباید جلوی چاپ سند را بگیرد (کد به‌صورت متن چاپ است)
-        console.error('[print] return store credit barcode failed', e)
-      }
-    }
+    /**
+     * نشست ۳۱۶ · خواسته‌ی مالک — «رسید برگشت سند حسابداری شیفت است و نباید
+     * *اصلاً* بارکد/کد اعتبار داخلش باشد.»
+     *
+     * پس دیگر بارکد ساخته نمی‌شود و کد اعتبار هم در payload نمی‌رود؛ فقط
+     * فهرستِ «مبلغ + نوع + تاریخ اعتبارِ» اعتبارهایِ لینک‌شده به این برگشت
+     * (هم اعتبار تسویه‌ی روش بازپرداختِ STORE_CREDIT — `ret.storeCreditId` —
+     * و هم اعتبار باقیمانده‌ی اضافه‌دریافت — `returnId` که نشست ۳۱۶ هنگام
+     * صدور سوار شد) برای سطرهای مبلغیِ رسید ساخته می‌شود. سند اعتبارِ خودمشتری
+     * (با کد/بارکد) از کانال خودش جدا چاپ می‌شود.
+     *
+     * اسناد قدیمی‌تر که returnId ندارند کمترین‌حالت را می‌بینند: اعتبارِ روش
+     * بازپرداخت از `storeCreditId` — بدون کد.
+     */
+    const credits = await prisma.storeCredit.findMany({
+      where: {
+        OR: [
+          { returnId: ret.id },
+          ...(ret.storeCreditId != null ? [{ id: ret.storeCreditId }] : [])
+        ]
+      },
+      select: { id: true, amount: true, source: true, expiresAtJalali: true, status: true },
+      orderBy: { id: 'asc' }
+    })
+    const storeCredits = credits.map((c) => ({
+      label:
+        c.source === CreditSource.OVERPAY
+          ? 'اعتبار باقیمانده (اضافه‌دریافت)'
+          : 'اعتبار تسویه‌ی برگشت',
+      amount: toNumberRial(c.amount),
+      expiresJalali: c.expiresAtJalali ?? null,
+      status: c.status ?? null
+    }))
 
     return {
       returnId: ret.id,
@@ -486,10 +593,7 @@ export const printService = {
       restocked: ret.items.some((i) => i.restockedQty > 0),
       restockedQty: ret.items.reduce((s, i) => s + i.restockedQty, 0),
       hasRemovedItems: ret.hasRemovedItems,
-      storeCreditCode: credit?.code ?? ret.storeCreditCode ?? null,
-      storeCreditAmount: toNumberRial(credit?.amount ?? 0),
-      storeCreditExpiresJalali: credit?.expiresAtJalali ?? null,
-      storeCreditBarcodeDataUrl,
+      storeCredits,
       note: ret.note ?? undefined
     }
   },
@@ -511,13 +615,19 @@ export const printService = {
     /** فاز ۳ — نام چاپگر از resolver (بدون fallback خودکار). */
     const deviceName = await receiptTargetDevice({ requestedDeviceName: input.deviceName, tpl, profile: 'RETAIL' })
     const copies = Math.min(Math.max(Math.round(input.copies ?? tpl.copies ?? 1), 1), 5)
-    for (let i = 0; i < copies; i++) {
+    const singleDialogJob = input.silent === false && tpl.printMethod !== 'RAW' && copies > 1
+    const jobs = singleDialogJob ? 1 : copies
+    for (let i = 0; i < jobs; i++) {
       await printMaybeRaw({
         method: tpl.printMethod,
         html,
         deviceName,
         silent: input.silent ?? true,
-        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+        copies: singleDialogJob ? copies : 1,
+        pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+        rawDpi: tpl.rawDpi,
+        rawInvert: tpl.rawInvert,
+        cutMode: tpl.cutMode
       })
     }
     return { copies, returnId }
@@ -599,7 +709,7 @@ export const printService = {
     return debtPaymentReceiptHtml({ ...data, reprint: opts?.reprint === true }, tpl)
   },
 
-  async printDebtPayment(input: { paymentId?: number; reprint?: boolean; deviceName?: string }) {
+  async printDebtPayment(input: { paymentId?: number; reprint?: boolean; silent?: boolean; deviceName?: string }) {
     const paymentId = Number(input?.paymentId ?? 0)
     if (!paymentId) throw new BusinessError('پرداختی برای چاپ فیش مشخص نشده است.')
     const tpl = await settingsService.receiptTemplate()
@@ -612,15 +722,22 @@ export const printService = {
       method: tpl.printMethod,
       html,
       deviceName,
-      silent: true,
-      pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm }
+      silent: input.silent ?? true,
+      pageSize: { widthMm: spec.widthMm, heightMm: spec.heightMm, heightSafetyMm: tpl.heightSafetyMm },
+      rawDpi: tpl.rawDpi,
+      rawInvert: tpl.rawInvert,
+      cutMode: tpl.cutMode
     })
     return { paymentId }
   },
 
-  /** نمونه‌ی رسید برای پیش‌نمایش زنده‌ی پنل تنظیمات (بدون نیاز به فاکتور واقعی). */
-  sampleData(tpl: ReceiptTemplate): ReceiptData {
-    return {
+  /**
+   * نمونه‌ی رسید برای پیش‌نمایش زنده‌ی پنل تنظیمات (بدون نیاز به فاکتور واقعی).
+   * پروفایل `WHOLESALE` همان نمونه است به‌اضافه‌ی پرداخت جزئی، تا سطرهای «مبلغ
+   * پرداختی» و «مانده حساب» فاکتور عمده هم دیده/چاپ شوند. غایب ⇒ همان نمونه‌ی قبلی.
+   */
+  sampleData(tpl: ReceiptTemplate, profile: ReceiptProfile = 'RETAIL'): ReceiptData {
+    const base: ReceiptData = {
       receiptNo: 1024,
       dateJalali: jalaliToday(),
       time: toClock(new Date()),
@@ -645,6 +762,13 @@ export const printService = {
       returnCode: 'K7M4QP',
       returnCodeExpiresJalali: jalaliToday()
     }
+    if (profile !== 'WHOLESALE') return base
+    return {
+      ...base,
+      customerName: 'مشتری عمده‌ی نمونه',
+      payments: [{ label: 'نقدی', amount: 10000000 }],
+      paidTotal: 10000000
+    }
   },
 
   /**
@@ -653,12 +777,19 @@ export const printService = {
    * قبل از ذخیره ببیند.
    */
   async previewHtml(
-    input: { template?: Partial<ReceiptTemplate>; invoiceId?: number | null; paidTotal?: number | null } = {}
+    input: {
+      template?: Partial<ReceiptTemplate>
+      invoiceId?: number | null
+      paidTotal?: number | null
+      /** پروفایل نمونه (کارت «فاکتور عمده»)؛ غایب ⇒ `RETAIL` مثل قبل. */
+      profile?: 'RETAIL' | 'WHOLESALE'
+    } = {}
   ) {
     const tpl = { ...(await settingsService.receiptTemplate()), ...(input.template ?? {}) }
     if (input.invoiceId) return this.invoiceHtml(input.invoiceId, input.template, input.paidTotal ?? null)
-    const data = await this.withBarcode(this.sampleData(tpl), tpl)
-    return receiptHtml(data, tpl)
+    const profile: ReceiptProfile = input.profile === 'WHOLESALE' ? 'WHOLESALE' : 'RETAIL'
+    const data = await this.withBarcode(this.sampleData(tpl, profile), tpl)
+    return receiptHtml(data, tpl, profile)
   },
 
   /**
@@ -684,11 +815,14 @@ export const printService = {
     const settings = await readCreditSettings()
     const detail = await storeCreditService.detail({ id })
     const c = detail.credit
+    // DTO جزئیات عمداً credential ندارد؛ فقط ساخت سند در main رکورد اصلی را می‌خواند.
+    const credit = await prisma.storeCredit.findUnique({ where: { id }, select: { code: true } })
+    const code = credit?.code ?? ''
     const scope = normalizeRestrictScope(c.restrictScope)
     let barcodeDataUrl: string | null = null
     try {
       // §۷ — بارکد فقط *کد* را حمل می‌کند؛ هیچ مبلغی داخلش نیست، پس قابل جعل نیست.
-      barcodeDataUrl = await barcodePng(c.code, {
+      barcodeDataUrl = await barcodePng(code, {
         scale: 2,
         height: Math.round(settings.barcodeHeightMm),
         includetext: settings.barcodeIncludeText
@@ -697,7 +831,7 @@ export const printService = {
       barcodeDataUrl = null
     }
     return {
-      code: c.code,
+      code,
       amount: c.amount,
       usedAmount: c.usedAmount,
       remaining: c.remaining,
@@ -737,6 +871,8 @@ export const printService = {
       voided: c.status === CreditStatus.CANCELED,
       printCount: c.printCount + 1,
       linkedReceiptNo: c.exchangeReceiptNo ?? c.sourceReceiptNo ?? null,
+      // نشست ۳۱۶ — داستان کامل صدور، روی تنها مدرکی که مشتری نگه می‌دارد
+      issueLines: await creditIssueLinesForDoc(c),
       note: c.note
     }
   },
@@ -746,7 +882,7 @@ export const printService = {
     const tpl = { ...(await settingsService.receiptTemplate()), ...(override ?? {}) }
     const settings = await readCreditSettings()
     const data = await this.creditDocDataFor(id, tpl)
-    return creditDocHtml(data, tpl, creditPaperSize(settings.paper, settings.customWidthMm, settings.customHeightMm))
+    return creditDocHtml(data, tpl, creditRenderSpec(settings))
   },
 
   /**
@@ -761,12 +897,35 @@ export const printService = {
     deviceName?: string
     markPrinted?: boolean
     userId?: number | null
+    /** نشست ۳۱۶ — چاپ دوباره: درخواستِ صریحِ renderer برای چاپِ غیرنخست است */
+    reprint?: boolean
+    /** نشست ۳۱۶ — رمز مدیر/رمز دوم/رمز سومِ ماژول اعتبار برای آزاد کردن چاپ دوباره */
+    password?: string | null
   }) {
     const id = Math.round(Number(input?.id ?? 0))
     if (!id) throw new BusinessError('اعتباری برای چاپ مشخص نشده است.')
+    /**
+     * نشست ۳۱۶ · خواسته‌ی مالک — «چاپ دوباره‌ی کد اعتبار یعنی پول چاپ کردن:
+     * باید زیر نظر مدیر باشد.» پس هر چاپی که renderer صریحاً «دوباره» اعلام
+     * کند، قبل از هر رندر با strict تأیید می‌شود (رمز مدیر یا رمز دوم/سومِ
+     * همین ماژول؛ حتی اگر قفلِ نمایشیِ ماژول خاموش باشد). چاپِ نخستِ لحظه‌ی
+     * صدور — که مشتری همان‌جا برگه‌اش را می‌گیرد — مثل قبل بدون رمز است و
+     * اگر چاپِ اول خراب شود، فروشنده بدون رمز چاپ دوباره ندارد: به مدیر خبر
+     * می‌دهد تا خودش از «مدیریت اعتبار خرید» کد صادر/چاپ کند.
+     */
+    if (input?.reprint === true) {
+      /**
+       * import تنبل: AuthService را وارد گرافِ ایستای این ماژول نکنیم — وارد
+       * شدنِ ایستا آن رفتارِ سوت‌های ممیزی چاپ (audit-s129، شمارش markPrinted)
+       * را تغییر می‌داد. رفتارِ اجرایی یکسان است: هر چاپ «دوباره» همین‌جا قبل
+       * از رندر سنجیده می‌شود.
+       */
+      const { assertPanelPasswordStrict } = await import('./AuthService')
+      await assertPanelPasswordStrict(PANEL_KEYS.creditManagement, input?.password, 'چاپ دوباره‌ی سند اعتبار خرید')
+    }
     const tpl = await settingsService.receiptTemplate()
     const settings = await readCreditSettings()
-    const paper = creditPaperSize(settings.paper, settings.customWidthMm, settings.customHeightMm)
+    const paper = creditRenderSpec(settings)
     const data = await this.creditDocDataFor(id, tpl)
     /**
      * بند ۷ (جلسه ۳۱) — §۱۳: هر کاغذ *دوباره* رندر می‌شود.
@@ -783,15 +942,25 @@ export const printService = {
      */
     const plan = creditCopyPlan(data.printCount - 1, input.copies)
     /**
-     * نشست ۲۲۲ · فاز ۶ (بخش ۱۰) — فقط نام چاپگر: از resolver مشترک و با فهرست
-     * زنده (بدون fallback خودکار). سیاست دیالوگ (`silent`) و شمارنده‌ی چاپ
-     * (`markPrinted`) **دست‌نخورده** است.
+     * چاپ اعتبار کاغذ A6/A5/A4 خودش را دارد و نباید به چاپگر حرارتی رسید گره
+     * بخورد. نام صریح renderer همچنان اعتبارسنجی می‌شود؛ اگر نامی نیامده باشد
+     * رفتار امن/قدیمی یعنی چاپگر پیش‌فرض ویندوز انتخاب می‌شود (بدون fallback به
+     * چاپگر اول).
      */
-    const deviceName = await receiptTargetDevice({
+    const { deviceName } = await resolvePrintTargetName({
       requestedDeviceName: input.deviceName,
-      tpl,
-      profile: 'RETAIL'
+      savedName: ''
     })
+    const warnings: string[] = []
+    let markFailed = false
+    /**
+     * نشست ۲۲۲ · فاز ۶ (بخش ۱۰) — هر کاغذ یک job جدا: ممیزی AUDIT-S129-01 قراردادِ
+     * «crash روی نسخه‌ی ۱ از ۳ ⇒ فقط همان یک نسخه شمرده شد و بقیه چاپ نشدند» را با
+     * job تک‌نسخه‌ای حذف قفل کرده بود؛ ادغامِ چند نسخه در یک job (نسخه‌ی میانیِ این
+     * نشست) آن قرارداد را می‌شکست و سوت audit-s129 را قرمز می‌کرد. پس حلقه‌ی
+     * per-copy برگشت؛ افزوده‌های نشست ۲۲۵ (تحملِ خطای markPrinted + warnings)
+     * حفظ شده‌اند.
+     */
     for (const copy of plan) {
       const html = creditDocHtml({ ...data, printCount: copy.printCount, reprint: copy.reprint }, tpl, paper)
       try {
@@ -804,16 +973,33 @@ export const printService = {
          * ممیزی AUDIT-S129-01 — نتیجه‌ی نامعلوم (پنجره بسته/crash یا مهلت) یعنی شاید کاغذ
          * بیرون آمده باشد. احتیاطاً شمرده می‌شود تا کاغذ بعدی «نسخه‌ی مجدد» بخورد، نه
          * «اصل» دوم؛ Audit صریحاً «نتیجه‌ی نامعلوم» را می‌گوید. لغو/رد قطعی شمرده نمی‌شود.
+         *
+         * نشست ۲۲۵ · M3 — اگر خودِ ثبت شمارنده خطا بدهد نباید خطای اصلیِ outcome
+         * نامعلوم را بپوشاند؛ renderer باید همچنان `PRINT_OUTCOME_UNKNOWN` را ببیند.
          */
-        if (isPrintOutcomeUnknown(err) && creditShouldMarkPrinted(input.markPrinted))
-          await storeCreditService.markPrinted({ id, userId: input.userId ?? null, uncertain: true })
+        if (isPrintOutcomeUnknown(err) && creditShouldMarkPrinted(input.markPrinted)) {
+          try {
+            await storeCreditService.markPrinted({ id, userId: input.userId ?? null, uncertain: true })
+          } catch (markErr) {
+            logCreditMarkFailure('single unknown', markErr)
+          }
+        }
         throw err
       }
       // بعدِ *هر* کاغذ، تا شمارنده و AuditLog تعداد واقعی کاغذها را بدانند.
       // «پیش‌فرض روشن» یک قاعده است (بخش ۹.۳ · §۲۴)، نه یک `!== false`ِ محلی.
-      if (creditShouldMarkPrinted(input.markPrinted)) await storeCreditService.markPrinted({ id, userId: input.userId ?? null })
+      // نشست ۲۲۵ · M3 — خطای ثبت شمارنده، چاپِ انجام‌شده را throw نمی‌کند؛ warning می‌شود.
+      if (creditShouldMarkPrinted(input.markPrinted)) {
+        try {
+          await storeCreditService.markPrinted({ id, userId: input.userId ?? null })
+        } catch (markErr) {
+          markFailed = true
+          logCreditMarkFailure('single success', markErr)
+        }
+      }
     }
-    return { copies: plan.length, id }
+    if (markFailed) warnings.push(printMarkWarning('اعتبار'))
+    return { copies: plan.length, id, markFailed: warnings.length > 0, warnings }
   },
 
   /**
@@ -889,10 +1075,11 @@ export const printService = {
   }> {
     const tpl = await settingsService.receiptTemplate()
     const settings = await readCreditSettings()
-    const paper = creditPaperSize(settings.paper, settings.customWidthMm, settings.customHeightMm)
+    const paper = creditRenderSpec(settings)
     const { docs, ids, total, capped } = await this.creditBatchDocs(input)
     // رسید حرارتی (ارتفاع آزاد) در هر صفحه فقط یک سند می‌گیرد — §۲۱: ورودی کلمپ می‌شود
-    const perPage = creditBatchPerPage(paper, input?.perPage)
+    // نشست ۳۱۷ — با فونت درشت‌تر، creditEffectivePerPage تعداد صفحه‌جا را کم می‌کند
+    const perPage = creditPerPageWith(paper, input?.perPage)
     return { html: creditBatchHtml(docs, tpl, paper, perPage), ids, total, capped, perPage }
   },
 
@@ -919,36 +1106,50 @@ export const printService = {
   }) {
     const tpl = await settingsService.receiptTemplate()
     const { html, ids, total, capped } = await this.creditBatchRender(input)
-    /** فاز ۶ — فقط نام چاپگر از resolver؛ `silent` و شمارنده‌ی دسته دست‌نخورده. */
-    const deviceName = await receiptTargetDevice({
+    /**
+     * چاپ گروهی اعتبار هم مثل چاپ تکی اعتبار به چاپگر رسید وابسته نیست؛ نام صریح
+     * renderer معتبر می‌شود و در نبود آن چاپگر پیش‌فرض ویندوز استفاده می‌شود.
+     */
+    const { deviceName } = await resolvePrintTargetName({
       requestedDeviceName: input.deviceName,
-      tpl,
-      profile: 'RETAIL'
+      savedName: ''
     })
+    const warnings: string[] = []
     try {
       await printHtml(html, { silent: input.silent ?? false, deviceName })
     } catch (err) {
       // ممیزی AUDIT-S129-01 — همان قاعده‌ی چاپ تکی: نتیجه‌ی نامعلوم احتیاطاً شمرده می‌شود
-      if (isPrintOutcomeUnknown(err) && creditShouldMarkPrinted(input.markPrinted))
-        await storeCreditService.markPrintedMany({
-          ids,
-          userId: input.userId ?? null,
-          batchId: input.batchId ?? null,
-          channel: 'PRINT',
-          uncertain: true
-        })
+      if (isPrintOutcomeUnknown(err) && creditShouldMarkPrinted(input.markPrinted)) {
+        try {
+          await storeCreditService.markPrintedMany({
+            ids,
+            userId: input.userId ?? null,
+            batchId: input.batchId ?? null,
+            channel: 'PRINT',
+            uncertain: true
+          })
+        } catch (markErr) {
+          logCreditMarkFailure('batch unknown', markErr)
+        }
+      }
       throw err
     }
-    const marked = creditShouldMarkPrinted(input.markPrinted)
-      ? await storeCreditService.markPrintedMany({
+    let marked = { ...CREDIT_MARK_PRINTED_NONE }
+    if (creditShouldMarkPrinted(input.markPrinted)) {
+      try {
+        marked = await storeCreditService.markPrintedMany({
           ids,
           userId: input.userId ?? null,
           batchId: input.batchId ?? null,
           channel: 'PRINT'
         })
-      : { ...CREDIT_MARK_PRINTED_NONE }
+      } catch (markErr) {
+        logCreditMarkFailure('batch success', markErr)
+        warnings.push(printMarkWarning('اعتبارهای گروهی'))
+      }
+    }
     /** بخش ۹.۳ — شکلِ خروجی (و رسیدنِ `capped` تا خودِ UI) یک تصمیم مشترک است. */
-    return creditPrintBatchResult({ ids, total, capped, marked })
+    return { ...creditPrintBatchResult({ ids, total, capped, marked }), markFailed: warnings.length > 0, warnings }
   },
 
   /**
@@ -973,7 +1174,7 @@ export const printService = {
     userId?: number | null
   }): Promise<{ saved: boolean; file: string | null; count: number; total: number; capped: boolean }> {
     const settings = await readCreditSettings()
-    const paper = creditPaperSize(settings.paper, settings.customWidthMm, settings.customHeightMm)
+    const paper = creditRenderSpec(settings)
     const plan = creditPrintPlan(input, paper)
     const single = plan.mode === 'single'
     /**

@@ -3,7 +3,11 @@ import { SETTING_KEYS } from '@shared/receipt'
 import { STAFF_ROLES, STAFF_ROLE_LABELS, normalizeStaffRole } from '@shared/enums'
 import { faDigits } from '@shared/jalali'
 import { PANEL_KEYS } from '@shared/panels'
-import { assertPanelPassword } from './AuthService'
+import {
+  assertPanelPassword,
+  hasManagerCorrectionApprovalSecret,
+  setManagerCorrectionApprovalPassword
+} from './AuthService'
 
 /**
  * ===========================================================================
@@ -36,16 +40,19 @@ const shape = (u: {
   displayName: string
   role: string
   isActive: boolean
+  passwordHash?: string
 }) => ({
   id: u.id,
   username: u.username,
   name: u.displayName || u.username,
   role: u.role,
   roleLabel: STAFF_ROLE_LABELS[u.role] ?? u.role,
-  isActive: u.isActive
+  isActive: u.isActive,
+  /** فقط وضعیت؛ هش یا رمز شخصی هرگز از IPC بیرون نمی‌رود. */
+  hasCorrectionApprovalPassword: u.role === 'MANAGER' && hasManagerCorrectionApprovalSecret(u.passwordHash)
 })
 
-const SELECT = { id: true, username: true, displayName: true, role: true, isActive: true } as const
+const SELECT = { id: true, username: true, displayName: true, role: true, isActive: true, passwordHash: true } as const
 
 /** نام ⇒ یک `username` یکتا و بی‌فاصله (فقط یک شناسه‌ی داخلی است). */
 async function uniqueUsername(name: string): Promise<string> {
@@ -91,11 +98,16 @@ export const staffService = {
     isActive?: boolean
     userId?: number | null
     panelPassword?: string | null
+    /** فقط برای نقش MANAGER؛ خالی = رمز فعلی دست‌نخورده بماند. */
+    correctionApprovalPassword?: string | null
   }) {
     const name = String(input?.name ?? '').trim()
     if (!name) throw new Error('نام کارمند را وارد کنید.')
     const role = normalizeStaffRole(input?.role)
     const id = Math.round(Number(input?.id ?? 0))
+    const correctionApprovalPassword = String(input?.correctionApprovalPassword ?? '').trim()
+    if (correctionApprovalPassword && role !== 'MANAGER')
+      throw new Error('رمز شخصی تأیید اصلاح فقط برای کارمند با نقش «مدیر» قابل ثبت است.')
 
     /**
      * نشست ۱۶۵ · S165-D4 (بند ۴-۲۹ مورد ۱، بند ۴-۳۰، بند ۵ «هر گیت در main») — فهرست کارمندان داخل پنل
@@ -116,9 +128,19 @@ export const staffService = {
     if (id > 0 && before) {
       const updated = await prisma.user.update({
         where: { id },
-        data: { displayName: name, role, isActive: input?.isActive !== false },
+        // خروج نقش مدیر ⇒ راز شخصی مربوط به اختیار مدیرانه هم باقی نمی‌ماند.
+        data: { displayName: name, role, isActive: input?.isActive !== false, ...(role === 'MANAGER' ? {} : { passwordHash: '' }) },
         select: SELECT
       })
+      if (correctionApprovalPassword)
+        await setManagerCorrectionApprovalPassword({
+          userId: updated.id,
+          password: correctionApprovalPassword,
+          actorUserId: input?.userId ?? null
+        })
+      const finalUpdated = correctionApprovalPassword
+        ? await prisma.user.findUniqueOrThrow({ where: { id: updated.id }, select: SELECT })
+        : updated
       await prisma.auditLog.create({
         data: {
           action: 'STAFF_UPDATE',
@@ -126,13 +148,13 @@ export const staffService = {
           entityId: id,
           userId: input?.userId ?? null,
           before: JSON.stringify(shape(before)),
-          after: JSON.stringify(shape(updated)),
-          note: `ویرایش کارمند «${name}» · نقش ${STAFF_ROLE_LABELS[role]} · ${updated.isActive ? 'فعال' : 'غیرفعال'}`
+          after: JSON.stringify(shape(finalUpdated)),
+          note: `ویرایش کارمند «${name}» · نقش ${STAFF_ROLE_LABELS[role]} · ${finalUpdated.isActive ? 'فعال' : 'غیرفعال'}`
         }
       })
       // کارمندی که غیرفعال شد، نباید «کارمند فعال» بماند
-      if (!updated.isActive && (await readActiveId()) === id) await this.setActive({ userId: null })
-      return shape(updated)
+      if (!finalUpdated.isActive && (await readActiveId()) === id) await this.setActive({ userId: null })
+      return shape(finalUpdated)
     }
 
     const created = await prisma.user.create({
@@ -146,17 +168,26 @@ export const staffService = {
       },
       select: SELECT
     })
+    if (correctionApprovalPassword)
+      await setManagerCorrectionApprovalPassword({
+        userId: created.id,
+        password: correctionApprovalPassword,
+        actorUserId: input?.userId ?? null
+      })
+    const finalCreated = correctionApprovalPassword
+      ? await prisma.user.findUniqueOrThrow({ where: { id: created.id }, select: SELECT })
+      : created
     await prisma.auditLog.create({
       data: {
         action: 'STAFF_CREATE',
         entity: 'User',
         entityId: created.id,
         userId: input?.userId ?? null,
-        after: JSON.stringify(shape(created)),
+        after: JSON.stringify(shape(finalCreated)),
         note: `ثبت کارمند تازه «${name}» · نقش ${STAFF_ROLE_LABELS[role]}`
       }
     })
-    return shape(created)
+    return shape(finalCreated)
   },
 
   /** «چه کسی همین حالا پشت سیستم است؟» — `null` = مثل قبل، بدون کارمند. */

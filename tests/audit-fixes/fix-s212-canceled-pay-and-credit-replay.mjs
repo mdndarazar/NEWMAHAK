@@ -86,8 +86,9 @@ eq('هیچ پرداختی ثبت نشد', Number(sql.prepare('SELECT COUNT(*) AS
 
 console.log('\\n۲) کلید idempotency اعتبار بین دو فاکتور')
 const issued = await storeCreditService.issueManual({ amount: 2000, userId, managerPassword: PW })
-const code = issued?.code ?? issued?.credit?.code
-truthy('اعتبار ۲۰۰۰ صادر شد', !!code)
+// پاسخ صدور عمومی امن است؛ credential فقط در fixture مستقیم خوانده می‌شود.
+const code = issued?.id == null ? null : sql.prepare('SELECT code FROM "StoreCredit" WHERE id = ?').get(issued.id)?.code ?? null
+truthy('اعتبار ۲۰۰۰ با DTO امن صادر شد', !!issued?.id && !('code' in issued) && !!code)
 const KEY = 'replay-key-212'
 const a = await salesService.create({
   userId,

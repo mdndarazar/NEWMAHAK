@@ -450,7 +450,7 @@ export const maintenanceService = {
     const sizeBefore = await stat(file)
       .then((s) => s.size)
       .catch(() => 0)
-    await prisma.$executeRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => 0)
+    await prisma.$queryRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => null)
     await prisma.$executeRawUnsafe('VACUUM')
     const sizeAfter = await stat(file)
       .then((s) => s.size)

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — کارت‌های چاپگر و بخش پیشرفته‌ی تب چاپ
@@ -240,9 +240,13 @@ export default function Settings() {
   // نشست ۱۵۷ (Y13) — رمز مدیر برای دو کانال فوری: افست ساعت رسمی و سوییچ «شیفت بر اساس ساعت»
   const [timePw, setTimePw] = useState('')
   const [byTimePw, setByTimePw] = useState('')
+  /** نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت؛ ذخیره‌ی فوری با همان فیلد رمز مدیر */
+  const [overtimeCap, setOvertimeCap] = useState('0')
   const [custDelPw, setCustDelPw] = useState('')
   /** نشست ۱۶۵ (S165-D4) — رمز پنل تنظیمات برای ثبت/ویرایش کارمند (سمت main هم سنجیده می‌شود) */
   const [staffPw, setStaffPw] = useState('')
+  /** رمز شخصی مدیر برای تأیید اصلاح/ابطال دیرهنگام؛ هرگز از سرور خوانده نمی‌شود. */
+  const [staffCorrectionApprovalPw, setStaffCorrectionApprovalPw] = useState('')
   const [printers, setPrinters] = useState<string[]>([])
   /**
    * نشست ۲۲۲ · فاز ۳ — فهرست «کامل» چاپگرها (پیش‌فرض ویندوز + نوع حدسی) برای
@@ -302,6 +306,13 @@ export default function Settings() {
   const [lockBusy, setLockBusy] = useState('')
   const [busy, setBusy] = useState(false)
   const [dirty, setDirty] = useState(false)
+  /**
+   * نام چاپگرِ رسید/لیبل در لحظه‌ی بارگذاری (یا آخرین ذخیره‌ی موفق) صفحه. save() با مقایسه‌ی نام فعلیِ
+   * فرم با این مقدار می‌فهمد کاربر *خودش* چاپگر را روی همین صفحه عوض کرده یا نه (ضد‌کهنگیِ mergeFreshPrinter
+   * فقط برای حالت «دست‌نخورده» می‌ماند).
+   */
+  const receiptPrinterAtLoad = useRef('')
+  const labelPrinterAtLoad = useRef('')
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   // ---- بکاپ و بازگردانی ----
@@ -385,7 +396,15 @@ export default function Settings() {
 
   // ---------------- جلسه ۱۸ · بند ۲ — کارمندان ----------------
   const [staffRows, setStaffRows] = useState<
-    { id: number; username: string; name: string; role: string; roleLabel: string; isActive: boolean }[]
+    {
+      id: number
+      username: string
+      name: string
+      role: string
+      roleLabel: string
+      isActive: boolean
+      hasCorrectionApprovalPassword?: boolean
+    }[]
   >([])
 
   const [staffDraft, setStaffDraft] = useState<{ id: number | null; name: string; role: string; isActive: boolean }>({
@@ -417,10 +436,16 @@ export default function Settings() {
         /** جلسه ۱۹ · بند ۹ — افست دستی ساعت رسمی */
         time: OfficialTimeConfig
       }>(CH.settingsBundle)
-      setReceipt({ ...DEFAULT_RECEIPT_TEMPLATE, ...b.receipt })
+      const loadedReceipt = { ...DEFAULT_RECEIPT_TEMPLATE, ...b.receipt }
+      const loadedLabel = parseLabelTemplate(b.label)
+      receiptPrinterAtLoad.current = loadedReceipt.printerName
+      labelPrinterAtLoad.current = loadedLabel.printerName
+      setReceipt(loadedReceipt)
       setSale({ ...DEFAULT_SALE_DEFAULTS, ...b.sale })
-      setShift(parseShiftConfig(b.shift))
-      setLabel(parseLabelTemplate(b.label))
+      const loadedShift = parseShiftConfig(b.shift)
+      setShift(loadedShift)
+      setOvertimeCap(String(loadedShift.overtimeMaxMinutes ?? 0))
+      setLabel(loadedLabel)
       setSecurity(parseSecurityConfig(b.security))
       // مقدار خراب یا نبودِ کلید ⇒ پیش‌فرض FREE (رفتار نسخه‌های قبل)، بدون کرش
       setDiscount(parseDiscountPolicy(b.discount))
@@ -774,6 +799,31 @@ export default function Settings() {
   }
 
   /**
+   * نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری هم *فوری* ذخیره می‌شود (مثل خودِ سوییچ):
+   * رمز مدیر همان فیلد byTimePw است و خودِ سرویس باز هم رمز را و محدوده‌ی
+   * ۰..۲۴۰ را سروری بازبینی می‌کند.
+   */
+  const saveOvertimeMax = async () => {
+    const mins = Math.trunc(Number(toLatinDigits(overtimeCap).replace(/[^0-9-]/g, '')))
+    if (!Number.isFinite(mins) || mins < 0 || mins > 240) {
+      return setErr('سقف اضافه‌کاری باید عددی صحیح بین ۰ تا ۲۴۰ دقیقه باشد (۰ یعنی خاموش).')
+    }
+    try {
+      const next = await call<ShiftConfig>(CH.settingsShiftOvertimeMax, { minutes: mins, managerPassword: byTimePw })
+      setShift(next)
+      flash(
+        mins > 0
+          ? `ذخیره شد · اضافه‌کاری شیفت شب تا ${faDigits(mins)} دقیقه بعد از پایان بازه فعال است.`
+          : 'ذخیره شد · اضافه‌کاری خاموش است؛ نشستِ بازِ دیروز بیرون از بازه همیشه باید بسته شود.'
+      )
+    } catch (e: any) {
+      setErr(`ذخیره‌ی سقف اضافه‌کاری انجام نشد: ${e.message}`)
+    } finally {
+      setByTimePw('')
+    }
+  }
+
+  /**
    * بانک شماره مشتریان (مورد ۶): همه‌ی مشتری‌های ثبت‌شده — از پنل فروش، فاکتور
    * عمده یا هر جای دیگر — با تعداد و جمع خریدشان. فعلاً فقط نمایش + کپی همه‌ی
    * شماره‌ها در حافظه (برای چسباندن در پنل پیامک).
@@ -1006,14 +1056,22 @@ export default function Settings() {
        * در پنجره‌ی انتخاب چاپگر «ذخیره به‌عنوان پیش‌فرض» زده، این ذخیره‌ی کهنه
        * آن انتخاب را برنگرداند (همان نقش mergeFreshPosToggles برای چاپگر).
        */
-      const receiptToSave = mergeFreshPrinter(receipt, { ...DEFAULT_RECEIPT_TEMPLATE, ...fresh.receipt })
-      const labelToSave = mergeFreshPrinter(label, { ...DEFAULT_LABEL_TEMPLATE, ...fresh.label })
+      const receiptToSave =
+        receipt.printerName !== receiptPrinterAtLoad.current
+          ? receipt // کاربر خودش روی همین صفحه چاپگر را عوض کرده ⇒ انتخاب صفحه ذخیره شود
+          : mergeFreshPrinter(receipt, { ...DEFAULT_RECEIPT_TEMPLATE, ...fresh.receipt })
+      const labelToSave =
+        label.printerName !== labelPrinterAtLoad.current
+          ? label
+          : mergeFreshPrinter(label, { ...DEFAULT_LABEL_TEMPLATE, ...fresh.label })
       /**
        * ⚠️ این خط عمداً یک‌خطی و با همین کلیدها/ترتیب می‌ماند: تست
        * `fix-s168-settings-stale-pos-toggles` این payload را به‌صورت متن دقیق
        * بررسی می‌کند (قرارداد «صفحه‌ی کهنه نباید مقدار POS را برگرداند»).
        */
       await call(CH.settingsSaveBundle, { receipt: receiptToSave, sale: saleToSave, shift, label: labelToSave, security, time, managerPassword: bundlePw })
+      receiptPrinterAtLoad.current = receiptToSave.printerName
+      labelPrinterAtLoad.current = labelToSave.printerName
       setReceipt(receiptToSave)
       setLabel(labelToSave)
       setSale(saleToSave)
@@ -1565,7 +1623,15 @@ export default function Settings() {
   const loadStaff = useCallback(async () => {
     try {
       const res = await call<{
-        rows: { id: number; username: string; name: string; role: string; roleLabel: string; isActive: boolean }[]
+        rows: {
+          id: number
+          username: string
+          name: string
+          role: string
+          roleLabel: string
+          isActive: boolean
+          hasCorrectionApprovalPassword?: boolean
+        }[]
         activeUserId: number | null
       }>(CH.staffDirectory, {})
       setStaffRows(res?.rows ?? [])
@@ -1583,7 +1649,8 @@ export default function Settings() {
         name: staffDraft.name.trim(),
         role: staffDraft.role,
         isActive: staffDraft.isActive,
-        panelPassword: staffPw
+        panelPassword: staffPw,
+        correctionApprovalPassword: staffCorrectionApprovalPw || undefined
       })
       setStaffDraft({ id: null, name: '', role: 'CASHIER', isActive: true })
       await loadStaff()
@@ -1593,6 +1660,7 @@ export default function Settings() {
     } finally {
       setStaffBusy(false)
       setStaffPw('')
+      setStaffCorrectionApprovalPw('')
     }
   }
 
@@ -1618,7 +1686,8 @@ export default function Settings() {
   }, [tab])
 
   const resetReceipt = () => {
-    setReceipt(DEFAULT_RECEIPT_TEMPLATE)
+    // نام چاپگر جزو «قالب» نیست؛ ریست قالب نباید آن را خالی کند (همان رفتار قبلِ ذخیره: چاپگر دست‌نخورده)
+    setReceipt((p) => ({ ...DEFAULT_RECEIPT_TEMPLATE, printerName: p.printerName }))
     setDirty(true)
     flash('قالب رسید به حالت پیش‌فرض برگشت (برای اعمال، ذخیره کنید).')
   }
@@ -2444,6 +2513,21 @@ export default function Settings() {
                     </div>
                   </span>
                 </label>
+                <label className="flex items-start gap-2 cursor-pointer mt-2">
+                  <input
+                    type="checkbox"
+                    className="mt-1 w-4 h-4"
+                    checked={sale.splitStoreCreditPayment !== false}
+                    onChange={(e) => setS({ splitStoreCreditPayment: e.target.checked })}
+                  />
+                  <span>
+                    <div className="font-bold">پرداخت ترکیبی اعتبار خرید در پنل فروش فعال باشد</div>
+                    <div className="kbd leading-6">
+                      روشن: فروشنده می‌تواند مشخص کند چه مقدار از اعتبار خرید مصرف و باقی فاکتور نقدی یا کارتی دریافت شود.
+                      خاموش: اعتبار معتبر فقط تا سقف مجاز کامل مصرف می‌شود. این محدودیت در سرور هم اعمال می‌شود.
+                    </div>
+                  </span>
+                </label>
               </section>
 
               <section className="space-y-2">
@@ -2510,7 +2594,8 @@ export default function Settings() {
                   دور» را می‌زند و مهلت برگشت همان فاکتور از این عدد حساب می‌شود، نه از مهلت عادی. با چک‌باکس «نمایش
                   مهلت برگشت روی فاکتور» در تب «قالب فاکتور چاپی» هم می‌توانید کل بلوک برگشت (کد، بارکد و مهلت) را از
                   رسید بردارید — برای فروشگاهی که مرجوعی قبول نمی‌کند. کد همچنان داخل سیستم ساخته می‌شود، پس اگر بعداً
-                  نظرتان عوض شد فاکتورهای همان بازه هم قابل برگشت‌اند.
+                  نظرتان عوض شد فاکتورهای همان بازه هم قابل برگشت‌اند. <b>این مهلت فقط مهلت کد/فرایند برگشت فاکتور است؛
+                  مدت اعتبار خرید را از «مدیریت اعتبار خرید → قواعد پیش‌فرض» تنظیم کنید.</b>
                 </div>
                 {/* ---------- مورد ۷: همان تنظیمات، برای فاکتور فروش عمده ---------- */}
                 <div className="border-2 border-emerald-300 rounded p-2 space-y-2 bg-emerald-50/40">
@@ -3365,6 +3450,33 @@ export default function Settings() {
                 </div>
               </div>
 
+              {/* ---------- نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت شب ---------- */}
+              <div className="rounded p-2 border bg-slate-50 space-y-1">
+                <div className="font-bold">سقف اضافه‌کاری شیفت شب</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="flex items-center gap-2">
+                    <span className="kbd">سقف (دقیقه، ۰ تا ۲۴۰؛ ۰ = خاموش):</span>
+                    <input
+                      className="inp w-24"
+                      type="text"
+                      inputMode="numeric"
+                      value={overtimeCap}
+                      onChange={(e) => setOvertimeCap(e.target.value)}
+                    />
+                  </label>
+                  <button className="btn" disabled={!byTimePw.trim()} onClick={() => void saveOvertimeMax()}>
+                    ذخیره‌ی فوری (با رمز مدیر بالا)
+                  </button>
+                </div>
+                <div className="kbd leading-6">
+                  خاموش (پیش‌فرض ۰): نشستِ بازِ دیروز که از بازه‌اش گذشته باشد، همیشه باید با دلیل و رمز مدیر بسته
+                  شود. روشن: کارمند همان نشست از مودال «نشست صندوق» می‌تواند <b>فقط یک‌بار</b> و تا «پایان بازه +
+                  این سقف» اضافه‌کاری اعلام کند — با دلیلِ اجباری که برای همیشه در حسابرسی می‌ماند (رمز مدیر لازم
+                  نیست، چون فاکتورها به کارمند همان نشست نسبت داده می‌شوند). این گزینه فقط وقتی اثر دارد که «تعیین
+                  شیفت بر اساس ساعت» روشن باشد.
+                </div>
+              </div>
+
               {/* ---------- جلسه ۱۹ · بند ۷ — فرمت نمایش ساعت شروع/پایان ---------- */}
               <div className="rounded p-2 border bg-slate-50 space-y-1">
                 <div className="font-bold">فرمت نمایش ساعت شروع/پایان شیفت‌ها</div>
@@ -3980,7 +4092,11 @@ export default function Settings() {
                     <select
                       className="inp min-w-[200px]"
                       value={staffDraft.role}
-                      onChange={(e) => setStaffDraft({ ...staffDraft, role: e.target.value })}
+                      onChange={(e) => {
+                        const role = e.target.value
+                        setStaffDraft({ ...staffDraft, role })
+                        if (role !== 'MANAGER') setStaffCorrectionApprovalPw('')
+                      }}
                     >
                       {STAFF_ROLES.map((r) => (
                         <option key={r} value={r}>
@@ -3998,6 +4114,16 @@ export default function Settings() {
                     />
                     فعال
                   </label>
+                  {staffDraft.role === 'MANAGER' && (
+                    <label title="فقط هنگام اصلاح/ابطال دیرهنگام یا دوره‌بسته استفاده می‌شود؛ خالی گذاشتن آن رمز قبلی مدیر را تغییر نمی‌دهد.">
+                      <div className="mb-1 font-bold">رمز شخصی تأیید اصلاح دیرهنگام</div>
+                      <PasswordField
+                        value={staffCorrectionApprovalPw}
+                        onChange={(e) => setStaffCorrectionApprovalPw(e.target.value)}
+                        placeholder={staffDraft.id ? 'خالی = بدون تغییر' : 'حداقل ۴ نویسه'}
+                      />
+                    </label>
+                  )}
                   <label title="ثبت یا ویرایش کارمند (نام/نقش/فعال‌بودن) رمز مدیر یا رمز دوم پنل تنظیمات می‌خواهد">
                     <div className="mb-1 font-bold">رمز مدیر / رمز تنظیمات</div>
                     <PasswordField value={staffPw} onChange={(e) => setStaffPw(e.target.value)} />
@@ -4028,6 +4154,7 @@ export default function Settings() {
                     <th>شماره</th>
                     <th>نام</th>
                     <th>نقش</th>
+                    <th>رمز تأیید اصلاح</th>
                     <th>وضعیت</th>
                     <th>ویرایش</th>
                   </tr>
@@ -4038,6 +4165,9 @@ export default function Settings() {
                       <td className="tabular-nums">{faDigits(r.id)}</td>
                       <td className="font-bold">{r.name}</td>
                       <td>{r.roleLabel}</td>
+                      <td>
+                        {r.role === 'MANAGER' ? (r.hasCorrectionApprovalPassword ? 'تعریف شده' : 'تعریف نشده') : '—'}
+                      </td>
                       <td>{r.isActive ? 'فعال' : 'غیرفعال'}</td>
                       <td>
                         <button
@@ -4051,7 +4181,7 @@ export default function Settings() {
                   ))}
                   {!staffRows.length && (
                     <tr>
-                      <td colSpan={5} className="text-center py-4 text-slate-500">
+                      <td colSpan={6} className="text-center py-4 text-slate-500">
                         هنوز کارمندی ثبت نشده است.
                       </td>
                     </tr>

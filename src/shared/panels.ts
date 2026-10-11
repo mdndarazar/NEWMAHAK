@@ -63,10 +63,18 @@ export const PANEL_KEYS = {
   pos: 'pos',
   /** گزارشات فروش */
   salesReports: 'sales-reports',
+  /** نشست ۳۱۸ — نمای تشخیص پل تطبیق (مودال داخل گزارشات فروش) */
+  bridgeDiagnostics: 'bridge-diagnostics',
   /** تب «نسیه» داخل گزارشات فروش (فهرست بدهکاران و ثبت پرداختی) */
   salesCredit: 'sales-credit',
   /** برگشت از فروش (و تعویض کالا) */
   salesReturn: 'sales-return',
+  /**
+   * فقط عمل «اصلاح/ابطال» برگشت یا تعویض؛ جدا از بازکردن خودِ پنل برگشت.
+   * سیاست مالک: این قفل عملیاتی در نصب تازه خاموش است، اما اگر روشن شود
+   * رمز مدیر/دومِ همین عمل را لازم می‌کند.
+   */
+  salesReturnCorrection: 'sales-return-correction',
   /** بستن صندوق */
   cashClose: 'cash-close',
   /** تجمیع و انتقال */
@@ -170,6 +178,8 @@ export const PANEL_KEYS = {
   creditBulkIssue: 'credit-bulk-issue',
   /** ابطال / تعلیق / فعال‌سازی مجدد / تغییر مبلغ‌-تاریخ‌-دفعات یک اعتبار (§۸ و §۱۱) */
   creditVoid: 'credit-void',
+  /** همگام‌سازی موجودی سایت WooCommerce با انبار فروشگاه (فقط موجودی). */
+  wooSync: 'woo-sync',
   /** صفحهٔ جدا «گزارش مدیریت» — نمودار و مانده؛ گزارشات فروش را لمس نمی‌کند */
   managementReports: 'management-reports',
   /** تب «سود و تورم» داخل گزارش مدیریت — قفل جدا از خودِ صفحه */
@@ -253,9 +263,22 @@ export const LOCKED_PANELS: readonly PanelDef[] = [
   },
   { key: PANEL_KEYS.salesReports, title: 'گزارشات فروش', hint: 'سرجمع و جزئیات فروش، برگشت‌ها و تعویض‌ها — مثلاً برای حسابدار.' },
   {
+    key: PANEL_KEYS.bridgeDiagnostics,
+    title: 'نمای تشخیص پل تطبیق',
+    hint:
+      'نمای تحلیلی «پل تطبیق» گزارشات فروش (ردیف منبع مغایرت و یادداشت مدیر). ' +
+      'باز کردنش همیشه رمز می‌خواهد و چیزی را تغییر نمی‌دهد.'
+  },
+  {
     key: PANEL_KEYS.managementReports,
     title: 'گزارش مدیریت',
     hint: 'نمودار روند، مقایسهٔ فروشنده، کالای مانده و کم‌فروش — جدا از گزارشات فروش. رمز دومش را به صاحب مغازه بدهید.'
+  },
+  {
+    key: PANEL_KEYS.wooSync,
+    title: 'همگام‌سازی موجودی سایت',
+    hint:
+      'اتصال WooCommerce فقط برای stock_quantity. این قفل اجازه‌ی اتصال/قطع و اعمال موجودی سایت را می‌دهد؛ قیمت، سفارش، مشتری و گزارش فروش سایت وارد برنامه نمی‌شود.'
   },
   {
     key: PANEL_KEYS.managementProfit,
@@ -270,6 +293,12 @@ export const LOCKED_PANELS: readonly PanelDef[] = [
     hint: 'فهرست فاکتورهای تسویه‌نشده و ثبت پرداختی نسیه — قفل جدا از خود گزارشات.'
   },
   { key: PANEL_KEYS.salesReturn, title: 'برگشت از فروش و تعویض کالا', hint: 'ثبت برگشت و تعویض کالا (حساس؛ مستقیم روی موجودی و پول اثر دارد).' },
+  {
+    key: PANEL_KEYS.salesReturnCorrection,
+    title: 'اصلاح و ابطال برگشت / تعویض',
+    hint:
+      'قفل ریزِ عملیات اصلاح یا ابطال، جدا از خود پنل برگشت. در نصب تازه خاموش است؛ با روشن‌کردنش رمز مدیر یا رمز دوم اختصاصی این عمل لازم می‌شود. اصلاح روزهای گذشته همچنان گیت سخت مدیر خودش را دارد.'
+  },
   { key: PANEL_KEYS.cashClose, title: 'بستن صندوق', hint: 'بستن صندوق و پایان شیفت؛ رمز دومش را به سرشیفت بدهید.' },
   { key: PANEL_KEYS.consolidation, title: 'تجمیع و انتقال', hint: 'قطعی‌کردن کسر انبار روز — معمولاً فقط مدیر یا انباردار مسئول.' },
   { key: PANEL_KEYS.settings, title: 'تنظیمات', hint: 'کل تنظیمات برنامه (قالب فاکتور، چاپ، بکاپ، رمزها).' },
@@ -471,10 +500,18 @@ export function isAlwaysLocked(panel: string): boolean {
  */
 export type PanelLockConfig = Record<string, boolean>
 
-/** همه‌چیز قفل — همان پیش‌فرض برنامه و همان چیزی که بعد از نصب تازه برمی‌گردد. */
+/**
+ * استثنای صریحِ سیاست پیش‌فرض: خود پنل‌ها قفل‌اند، اما مالک خواسته عملیات
+ * «اصلاح/ابطال برگشت و تعویض» در روز جاری تا وقتی خودش قفلش را روشن نکرده
+ * آزاد باشد. این استثنا هرگز گیت سخت دوره‌ی بسته یا گیت‌های مالی دیگر را باز
+ * نمی‌کند؛ آن‌ها مستقل و سمت سرورند.
+ */
+const DEFAULT_OPEN_PANEL_KEYS = new Set<string>([PANEL_KEYS.salesReturnCorrection])
+
+/** پیکربندی پیش‌فرض قفل‌ها؛ همه قفل‌اند، مگر استثنای صریح بالا. */
 export function allLockedConfig(): PanelLockConfig {
   const out: PanelLockConfig = {}
-  for (const p of LOCKED_PANELS) out[p.key] = true
+  for (const p of LOCKED_PANELS) out[p.key] = !DEFAULT_OPEN_PANEL_KEYS.has(p.key)
   return out
 }
 

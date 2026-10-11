@@ -153,15 +153,18 @@ export async function sendRaw(printerName: string, bytes: Buffer, opts: SendRawO
         windowsHide: true,
         stdio: ['ignore', 'ignore', 'pipe']
       })
-      const timer = setTimeout(
-        () =>
-          done(
-            new PrintOutcomeUnknownError(
-              'چاپگر در مهلت مقرر پاسخی نداد؛ ممکن است برگه چاپ شده باشد. تا وقتی خروجی چاپگر را ندیده‌اید دوباره چاپ نکنید.'
-            )
-          ),
-        Math.max(1, waitMs)
-      )
+      const timer = setTimeout(() => {
+        try {
+          child.kill()
+        } catch {
+          // اگر پروسه همین لحظه تمام شده باشد، close بعدی توسط `settled` نادیده گرفته می‌شود.
+        }
+        done(
+          new PrintOutcomeUnknownError(
+            'چاپگر در مهلت مقرر پاسخی نداد؛ ممکن است برگه چاپ شده باشد. تا وقتی خروجی چاپگر را ندیده‌اید دوباره چاپ نکنید.'
+          )
+        )
+      }, Math.max(1, waitMs))
       child.stderr?.on('data', (chunk: Buffer) => {
         stderr += chunk.toString('utf8')
       })

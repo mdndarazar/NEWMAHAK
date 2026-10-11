@@ -12,6 +12,7 @@ import { schedulePriceAdjust } from './services/PriceAdjustService'
 import { smsService, smsNotificationSender, setSmsReminderSource, setSmsOutcomeHook } from './services/sms'
 import { storeCreditService } from './services/StoreCreditService'
 import { setNotificationSender } from './services/NotificationSender'
+import { startWooSyncScheduler } from './services/WooSyncService'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -137,6 +138,8 @@ app.whenReady().then(async () => {
   }
   registerIpcHandlers()
   scheduleBackup()
+  // همگام‌سازی خودکار موجودی سایت WooCommerce (فقط stock_quantity؛ خطایش فروشگاه را نمی‌خواباند)
+  startWooSyncScheduler()
   // زمان‌بندی خودکار تغییر قیمت گروهی (شروع/پایان سر وقت)
   schedulePriceAdjust()
   /**

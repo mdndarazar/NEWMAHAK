@@ -1,0 +1,181 @@
+import { useCallback, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { call, CH } from '../lib/api'
+import { money } from '@shared/jalali'
+import { useTopmostModalKey } from './Modal'
+import { useManagerSession } from '../hooks/useManagerSession'
+
+type Staff = { id: number; name: string; role: string; isActive: boolean; hasCustodyPin: boolean; mustChangePin: boolean }
+type Status = {
+  enabled: boolean
+  state: 'NO_SESSION' | 'ACTIVE' | 'HANDOVER_PENDING' | string
+  epoch: number
+  custodian: { id: number; name: string | null } | null
+  shift: { id: number; name: string; openedAt: string } | null
+  pendingHandover: { id: number; fromUserId: number; selectedRecipientUserId: number; startedAt: string } | null
+  schedule: { planId: number; title: string; scheduledEndAt: string } | null
+  reminder: { due: boolean; bucket: number | null; repeatMinutes: number; scheduledEndAt: string | null }
+  unresolvedCount: number
+  unresolved: Array<{ id: number; shiftId: number; openedAt: string; nightExpectedCash: number | null }>
+}
+
+type View = 'main' | 'open' | 'handover' | 'accept' | 'close' | 'resolve'
+
+/**
+ * Small, opt-in custody control surface. The old ShiftSessionChip remains the
+ * entire UI when the feature is off; therefore an installation can enable this
+ * module only after staff credentials have been deliberately configured.
+ */
+export function CustodyChip() {
+  const [status, setStatus] = useState<Status | null>(null)
+  const [staff, setStaff] = useState<Staff[]>([])
+  const [visible, setVisible] = useState(false)
+  const [view, setView] = useState<View>('main')
+  const [selectedUserId, setSelectedUserId] = useState<number | ''>('')
+  const [recipientId, setRecipientId] = useState<number | ''>('')
+  const [password, setPassword] = useState('')
+  const [managerId, setManagerId] = useState<number | ''>('')
+  const [managerPassword, setManagerPassword] = useState('')
+  const [countedCash, setCountedCash] = useState('')
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [dismissedReminderBucket, setDismissedReminderBucket] = useState<number | null>(null)
+  const { isManager } = useManagerSession()
+
+  const reload = useCallback(async () => {
+    try {
+      const next = await call<Status>(CH.custodyStatus, {})
+      setStatus(next)
+      setStaff(await call<Staff[]>(CH.custodyStaffList, {}))
+    } catch {
+      // The established shift chip remains usable if an old database has not
+      // migrated yet. No renderer fallback may silently create a shift here.
+    }
+  }, [])
+
+  useEffect(() => {
+    void reload()
+    const timer = window.setInterval(() => void reload(), 30_000)
+    return () => window.clearInterval(timer)
+  }, [reload])
+
+  useTopmostModalKey(visible, (event) => {
+    if (event.key !== 'Escape') return
+    event.preventDefault()
+    if (!busy) setVisible(false)
+  })
+
+  if (!status) return null
+  if (!status.enabled) return isManager ? <CustodySetup staff={staff} onReady={reload} /> : null
+  const eligible = staff.filter((row) => row.isActive && row.hasCustodyPin && !row.mustChangePin && (row.role === 'CASHIER' || row.role === 'MANAGER'))
+  const managers = eligible.filter((row) => row.role === 'MANAGER')
+  const nameOf = (id: number | null | undefined) => staff.find((row) => row.id === id)?.name ?? 'کارمند انتخاب‌شده'
+  const reset = (next: View = 'main') => {
+    setView(next)
+    setPassword('')
+    setManagerPassword('')
+    setCountedCash('')
+    setNote('')
+    setError(null)
+  }
+  const amount = () => {
+    const value = Number(countedCash)
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error('شمارش نقدی را به‌صورت عدد صحیحِ صفر یا بیشتر وارد کنید.')
+    return value
+  }
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await fn()
+      reset()
+      await reload()
+      window.dispatchEvent(new Event('mahak:shift-changed'))
+    } catch (e: any) {
+      setError(e?.message ?? 'عملیات انجام نشد.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const showReminder = !!status.reminder?.due && status.reminder.bucket !== dismissedReminderBucket
+  const title =
+    status.state === 'HANDOVER_PENDING'
+      ? `تحویل در انتظار تأیید ${nameOf(status.pendingHandover?.selectedRecipientUserId)}`
+      : status.state === 'ACTIVE'
+        ? `صندوق: ${status.custodian?.name ?? 'مسئول نامشخص'}`
+        : 'صندوق بدون مسئول فعال'
+
+  return (
+    <>
+      <button
+        className={`text-xs px-2 py-1 rounded whitespace-nowrap font-bold ${status.state === 'HANDOVER_PENDING' ? 'bg-rose-600 hover:bg-rose-700' : status.state === 'ACTIVE' ? 'bg-emerald-700 hover:bg-emerald-800' : 'bg-amber-500 hover:bg-amber-600'}`}
+        onClick={() => { setVisible(true); reset() }}
+        title="حضانت صندوق: مسئول فعلی، تحویل احرازشده و بستن نهایی"
+      >
+        {status.state === 'HANDOVER_PENDING' ? '⚠ تحویل صندوق در انتظار تأیید' : status.state === 'ACTIVE' ? `صندوق · ${status.custodian?.name ?? 'فعال'}` : 'صندوق · نیازمند ورود'}
+      </button>
+      {visible ? createPortal(
+        <div className="fixed inset-0 z-[80] bg-black/55 flex justify-center items-start overflow-auto p-4" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) setVisible(false) }}>
+          <section className="w-full max-w-xl bg-white rounded-lg shadow-xl p-5 mt-8 text-slate-800" dir="rtl">
+            <div className="flex items-start gap-3 border-b pb-3 mb-4">
+              <div className="flex-1"><h2 className="font-bold text-lg">حضانت صندوق</h2><p className="text-xs text-slate-500 mt-1">{title} · تغییر مسئول فقط با رمز شخصی و شمارش کور انجام می‌شود.</p></div>
+              <button className="text-slate-500 hover:text-slate-900 px-2" onClick={() => !busy && setVisible(false)} aria-label="بستن">×</button>
+            </div>
+            {showReminder ? <div className="mb-3 p-3 rounded border border-amber-300 bg-amber-50 text-sm"><b>یادآوری پایان برنامهٔ شیفت</b><br />برنامهٔ «{status.schedule?.title ?? 'شیفت'}» به پایان رسیده است. فروش متوقف نمی‌شود و همچنان به مسئول فعلی منتسب است؛ در زمان مناسب تحویل یا بستن نهایی را ثبت کنید.<button className="block mt-2 underline" onClick={() => setDismissedReminderBucket(status.reminder.bucket)}>فعلاً بستن این یادآوری</button></div> : null}
+            {error ? <div className="mb-3 p-2 rounded bg-red-50 text-red-700 text-sm">{error}</div> : null}
+            {view === 'main' ? <>
+              {status.unresolvedCount ? <div className="mb-3 p-3 bg-amber-50 border border-amber-300 text-sm rounded">{status.unresolvedCount} بستنِ شبِ بی‌پاسخ دارید. تا زمانی که مدیر آن را تعیین تکلیف کند، اختلافِ شب به مسئول صبح نسبت داده نمی‌شود. <button className="underline font-bold" onClick={() => reset('resolve')}>تعیین تکلیف مدیر</button></div> : null}
+              {status.state === 'NO_SESSION' ? <button className="w-full btn-primary py-3" onClick={() => reset('open')}>ورود مسئول و باز کردن صندوق</button> : null}
+              {status.state === 'ACTIVE' ? <div className="grid grid-cols-2 gap-3"><button className="btn-secondary py-3" onClick={() => reset('handover')}>تحویل به کارمند دیگر</button><button className="btn-primary py-3" onClick={() => reset('close')}>بستن نهایی صندوق</button></div> : null}
+              {status.state === 'HANDOVER_PENDING' ? <div className="grid grid-cols-2 gap-3"><button className="btn-primary py-3" onClick={() => reset('accept')}>تأیید تحویل‌گیرنده</button><button className="btn-secondary py-3" onClick={() => reset('handover')}>لغو با رمز تحویل‌دهنده</button></div> : null}
+            </> : null}
+            {view === 'open' ? <CredentialForm staff={eligible} selected={selectedUserId} setSelected={setSelectedUserId} password={password} setPassword={setPassword} amount={countedCash} setAmount={setCountedCash} label="موجودی فیزیکی اول صندوق" submit="باز کردن صندوق" busy={busy} onBack={() => reset()} onSubmit={() => run(async () => { if (!selectedUserId) throw new Error('مسئول صندوق را انتخاب کنید.'); await call(CH.custodyOpen, { userId: selectedUserId, password, countedCash: amount() }) })} /> : null}
+            {view === 'handover' ? status.state === 'HANDOVER_PENDING' ? <PasswordOnly label="برای لغو تحویل، مسئول قبلی رمز خودش را وارد می‌کند" password={password} setPassword={setPassword} busy={busy} onBack={() => reset()} submit="لغو تحویل" onSubmit={() => run(() => call(CH.custodyHandoverCancel, { handoverId: status.pendingHandover?.id, password }))} /> : <CredentialForm staff={eligible.filter((row) => row.id !== status.custodian?.id)} selected={recipientId} setSelected={setRecipientId} password={password} setPassword={setPassword} amount={countedCash} setAmount={setCountedCash} label="شمارش کور پیش از تحویل" submit="شروع تحویل" busy={busy} onBack={() => reset()} selectLabel="تحویل‌گیرنده" onSubmit={() => run(async () => { if (!recipientId) throw new Error('تحویل‌گیرنده را انتخاب کنید.'); await call(CH.custodyHandoverStart, { toUserId: recipientId, password, countedCash: amount(), note: note.trim() || undefined }) })} /> : null}
+            {view === 'accept' ? <PasswordOnly label={`فقط ${nameOf(status.pendingHandover?.selectedRecipientUserId)} با رمز شخصی خود می‌تواند این تحویل را بپذیرد.`} password={password} setPassword={setPassword} busy={busy} onBack={() => reset()} submit="پذیرش تحویل" onSubmit={() => run(() => call(CH.custodyHandoverAccept, { handoverId: status.pendingHandover?.id, password }))} /> : null}
+            {view === 'close' ? <PasswordOnly label="شمارش نقدی و رمز مسئول فعلی لازم است. پول می‌تواند در کشو بماند؛ در این نسخه ثبت تحویل به مدیر/بانک از تنظیمات تکمیلی انجام می‌شود." password={password} setPassword={setPassword} amount={countedCash} setAmount={setCountedCash} note={note} setNote={setNote} busy={busy} onBack={() => reset()} submit="ثبت بستن نهایی" onSubmit={() => run(() => call(CH.custodyFinalClose, { password, countedCash: amount(), note: note.trim() || undefined, dispositions: [{ kind: 'KEEP_IN_DRAWER', amount: amount() }] }))} /> : null}
+            {view === 'resolve' ? <ResolveForm resolutions={status.unresolved} managers={managers} managerId={managerId} setManagerId={setManagerId} password={managerPassword} setPassword={setManagerPassword} amount={countedCash} setAmount={setCountedCash} note={note} setNote={setNote} busy={busy} onBack={() => reset()} onSubmit={(id) => run(async () => { if (!managerId) throw new Error('مدیر تصمیم‌گیرنده را انتخاب کنید.'); await call(CH.custodyUnresolvedResolve, { resolutionId: id, managerUserId: managerId, managerPassword, countedCash: amount(), reason: note.trim(), attribution: 'UNASSIGNED' }) })} /> : null}
+          </section>
+        </div>, document.body) : null}
+    </>
+  )
+}
+
+/** Initial activation is visible only inside the established manager session.
+ * The main process still verifies the existing manager secret before it creates
+ * the first personal manager credential, so this convenience UI is never the
+ * security boundary. */
+function CustodySetup({ staff, onReady }: { staff: Staff[]; onReady: () => Promise<void> }) {
+  const [open, setOpen] = useState(false)
+  const [managerId, setManagerId] = useState<number | ''>('')
+  const [managerPassword, setManagerPassword] = useState('')
+  const [personalPin, setPersonalPin] = useState('')
+  const [repeatPin, setRepeatPin] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const managers = staff.filter((row) => row.isActive && row.role === 'MANAGER')
+  const activate = async () => {
+    if (!managerId) return setError('مدیر راه‌انداز را انتخاب کنید.')
+    if (personalPin.length < 6) return setError('رمز شخصی مدیر باید دست‌کم ۶ کاراکتر باشد.')
+    if (personalPin !== repeatPin) return setError('تکرار رمز شخصی با آن یکسان نیست.')
+    setBusy(true); setError(null)
+    try {
+      await call(CH.custodyPinSet, { userId: managerId, currentPassword: managerPassword, newPassword: personalPin })
+      await call(CH.custodyConfigSet, { config: { enabled: true, mode: 'SINGLE_SHIFT' }, managerUserId: managerId, managerPassword: personalPin })
+      await onReady()
+      setOpen(false)
+    } catch (e: any) { setError(e?.message ?? 'راه‌اندازی انجام نشد.') } finally { setBusy(false) }
+  }
+  return <><button className="text-xs px-2 py-1 rounded whitespace-nowrap font-bold bg-amber-500 hover:bg-amber-600" onClick={() => setOpen(true)}>راه‌اندازی حضانت صندوق</button>{open ? createPortal(<div className="fixed inset-0 z-[80] bg-black/55 flex justify-center items-start overflow-auto p-4"><section className="w-full max-w-lg bg-white rounded-lg shadow-xl p-5 mt-8 text-slate-800" dir="rtl"><h2 className="font-bold text-lg border-b pb-3">راه‌اندازی حضانت صندوق</h2><p className="text-sm leading-6 mt-3">این مرحله اختیاری است. فروشگاه بدون تعریف برنامه هم در حالت تک‌شیفت کار می‌کند؛ پس از فعال‌سازی، هر فروش به مسئول احرازشدهٔ صندوق منتسب می‌ماند.</p>{error ? <div className="my-3 p-2 rounded bg-red-50 text-red-700 text-sm">{error}</div> : null}<div className="space-y-3 mt-4"><label className="block text-sm">مدیر راه‌انداز<select className="input mt-1 w-full" value={managerId} onChange={(e) => setManagerId(e.target.value ? Number(e.target.value) : '')}><option value="">انتخاب کنید…</option>{managers.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="block text-sm">رمز فعلی مدیر<input className="input mt-1 w-full" type="password" value={managerPassword} onChange={(e) => setManagerPassword(e.target.value)} autoComplete="current-password" /></label><label className="block text-sm">رمز شخصی جدید مدیر (حداقل ۶ کاراکتر)<input className="input mt-1 w-full" type="password" value={personalPin} onChange={(e) => setPersonalPin(e.target.value)} autoComplete="new-password" /></label><label className="block text-sm">تکرار رمز شخصی<input className="input mt-1 w-full" type="password" value={repeatPin} onChange={(e) => setRepeatPin(e.target.value)} autoComplete="new-password" /></label><div className="flex gap-2"><button className="btn-secondary flex-1" disabled={busy} onClick={() => setOpen(false)}>انصراف</button><button className="btn-primary flex-1" disabled={busy} onClick={() => void activate()}>{busy ? 'در حال راه‌اندازی…' : 'فعال‌سازی و ادامه'}</button></div></div></section></div>, document.body) : null}</>
+}
+
+function CredentialForm({ staff, selected, setSelected, password, setPassword, amount, setAmount, label, submit, busy, onBack, onSubmit, selectLabel = 'مسئول صندوق' }: any) {
+  return <div className="space-y-3"><label className="block text-sm">{selectLabel}<select className="input mt-1 w-full" value={selected} onChange={(e) => setSelected(e.target.value ? Number(e.target.value) : '')}><option value="">انتخاب کنید…</option>{staff.map((row: Staff) => <option key={row.id} value={row.id}>{row.name} ({row.role === 'MANAGER' ? 'مدیر' : 'صندوقدار'})</option>)}</select></label><label className="block text-sm">رمز شخصی<input className="input mt-1 w-full" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" /></label><label className="block text-sm">{label}<input className="input mt-1 w-full" inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ''))} placeholder="۰" /></label><div className="flex gap-2"><button className="btn-secondary flex-1" onClick={onBack} disabled={busy}>بازگشت</button><button className="btn-primary flex-1" onClick={onSubmit} disabled={busy}>{busy ? 'در حال ثبت…' : submit}</button></div></div>
+}
+function PasswordOnly({ label, password, setPassword, amount, setAmount, note, setNote, submit, busy, onBack, onSubmit }: any) {
+  return <div className="space-y-3"><p className="text-sm leading-6 bg-slate-50 p-3 rounded">{label}</p><label className="block text-sm">رمز شخصی<input className="input mt-1 w-full" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" /></label>{setAmount ? <label className="block text-sm">شمارش نقدی<input className="input mt-1 w-full" inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ''))} placeholder="۰" /></label> : null}{setNote ? <label className="block text-sm">یادداشت (برای بستن خالی ضروری است)<textarea className="input mt-1 w-full" value={note} onChange={(e) => setNote(e.target.value)} /></label> : null}<div className="flex gap-2"><button className="btn-secondary flex-1" onClick={onBack} disabled={busy}>بازگشت</button><button className="btn-primary flex-1" onClick={onSubmit} disabled={busy}>{busy ? 'در حال ثبت…' : submit}</button></div></div>
+}
+function ResolveForm({ resolutions, managers, managerId, setManagerId, password, setPassword, amount, setAmount, note, setNote, busy, onBack, onSubmit }: any) {
+  const [resolutionId, setResolutionId] = useState<number | ''>(resolutions[0]?.id ?? '')
+  return <div className="space-y-3"><p className="text-sm bg-amber-50 p-3 rounded">این تصمیم صرفاً شب گذشته را می‌بندد و مسئولیت صندوق فعال صبح را تغییر نمی‌دهد.</p><label className="block text-sm">پرونده شب<select className="input mt-1 w-full" value={resolutionId} onChange={(e) => setResolutionId(Number(e.target.value))}>{resolutions.map((row: any) => <option key={row.id} value={row.id}>نشست {row.shiftId}{row.nightExpectedCash != null ? ` · انتظار ${money(row.nightExpectedCash)}` : ''}</option>)}</select></label><label className="block text-sm">مدیر تصمیم‌گیرنده<select className="input mt-1 w-full" value={managerId} onChange={(e) => setManagerId(e.target.value ? Number(e.target.value) : '')}><option value="">انتخاب کنید…</option>{managers.map((row: Staff) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label><label className="block text-sm">رمز مدیر<input className="input mt-1 w-full" type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label><label className="block text-sm">شمارش نقدی شب<input className="input mt-1 w-full" inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ''))} /></label><label className="block text-sm">دلیل تصمیم (حداقل ۱۰ حرف)<textarea className="input mt-1 w-full" value={note} onChange={(e) => setNote(e.target.value)} /></label><div className="flex gap-2"><button className="btn-secondary flex-1" onClick={onBack} disabled={busy}>بازگشت</button><button className="btn-primary flex-1" disabled={busy || !resolutionId} onClick={() => onSubmit(resolutionId)}>{busy ? 'در حال ثبت…' : 'ثبت تصمیم مدیر'}</button></div></div>
+}

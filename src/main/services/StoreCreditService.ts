@@ -34,6 +34,7 @@ import { SETTING_KEYS } from '@shared/receipt'
 import { cleanCreditIds } from '@shared/creditPrint'
 import { creditIdsForReportScope, CREDIT_SCOPE_MAX_IDS } from './creditReportScope'
 import { PANEL_KEYS } from '@shared/panels'
+import { assertManagerSession } from './panelSession'
 import {
   CREDIT_SCOPE_LABELS,
   CREDIT_SOURCE_LABELS,
@@ -108,7 +109,10 @@ import type {
   CreditReminderCandidateRow,
   CreditReminderLogRow,
   CreditTimelineEvent,
+  ManagerStoreCreditCodeReveal,
   StoreCreditRow,
+  StoreCreditSafeRow,
+  StoreCreditReportRow,
   PagedRows,
   SaleReportPage
 } from '@shared/types'
@@ -188,7 +192,7 @@ function attachPagedRows<T>(rows: T[], page: SaleReportPage, noun = 'ردیف'):
   return Object.assign(rows, { page, warnings }) as PagedRows<T>
 }
 
-function attachCreditPage(rows: StoreCreditRow[], page: SaleReportPage): PagedRows<StoreCreditRow> {
+function attachCreditPage<T>(rows: T[], page: SaleReportPage): PagedRows<T> {
   return attachPagedRows(rows, page)
 }
 
@@ -491,6 +495,15 @@ export function shapeStoreCredit(row: any, receiptNos?: Map<number, number>): St
     remainderCreditId: row.remainderCreditId ?? null,
     userId: row.userId ?? null
   }
+}
+
+/**
+ * شکلِ عمومیِ گزارش، فهرست و جزئیات اعتبار. credential و legacyCode پیش از
+ * عبور از IPC حذف می‌شوند؛ شناسه فقط برای ردیابی امن و غیرقابل‌مصرف است.
+ */
+function shapeStoreCreditSafe(row: StoreCreditRow): StoreCreditReportRow {
+  const { code: _redeemableCode, legacyCode: _legacyCode, ...safe } = row
+  return { ...safe, publicReference: `اعتبار #${safe.id}` }
 }
 
 /** شماره فیش فاکتورهای مرجع چند اعتبار، با یک رفت‌و‌برگشت. */
@@ -871,7 +884,9 @@ export async function issueStoreCredit(client: Client, input: IssueCreditInput):
     entityId: created.id,
     userId: input.userId ?? null,
     after: JSON.stringify({
-      code: created.code,
+      creditId: created.id,
+      publicReference: `اعتبار #${created.id}`,
+      codeLength: created.code.length,
       amount,
       source,
       status,
@@ -882,11 +897,10 @@ export async function issueStoreCredit(client: Client, input: IssueCreditInput):
       batchId: input.batchId ?? null,
       returnId: input.returnId ?? null,
       exchangeInvoiceId: input.exchangeInvoiceId ?? null,
-      codeLength: created.code.length,
       lengthGrown: growth.grown
     }),
     note:
-      `صدور اعتبار خرید «${created.code}» (${CREDIT_SOURCE_LABELS[source] ?? source}) به مبلغ ${money(amount)} ریال` +
+      `صدور اعتبار #${created.id} (${CREDIT_SOURCE_LABELS[source] ?? source}) به مبلغ ${money(amount)} ریال` +
       // §۶ — رشد خودکار طول کد باید در همان سند صدور دیده شود (مسیر گروهی هم همین را می‌نویسد)
       (growth.grown ? ` · طول کد خودکار از ${faDigits(growth.from)} به ${faDigits(growth.to)} افزایش یافت` : '') +
       (created.expiresAtJalali ? ` · اعتبار تا ${faDigits(created.expiresAtJalali)}` : ' · بدون انقضا') +
@@ -1025,8 +1039,8 @@ export async function guardCreditCode(rawCode: string, userId?: number | null): 
       action: AuditAction.CREDIT_REDEEM_BLOCKED,
       entity: 'StoreCredit',
       userId: userId ?? null,
-      after: JSON.stringify({ code: normalizeCreditCode(rawCode) }),
-      note: `تلاش ناموفق برای استفاده از کد اعتبار «${normalizeCreditCode(rawCode)}» · ${base.split('\n')[0]}`
+      after: JSON.stringify({ codeLength: normalizeCreditCode(rawCode).length, credentialRedacted: true }),
+      note: `تلاش ناموفق برای استفاده از کد اعتبار · ${base.split('\n')[0]}`
     })
     throw new BusinessError(message)
   }
@@ -1163,13 +1177,13 @@ export async function redeemStoreCredit(client: Client, input: RedeemCreditInput
       entityId: credit.id,
       userId: input.userId ?? null,
       before: JSON.stringify({
-        code: credit.code,
+        creditId: credit.id,
         status: credit.status,
         remaining: decision.remainingBefore,
         usesLeft: decision.usesLeft
       }),
       after: JSON.stringify({ invoiceId: input.invoiceId, receiptNo: input.receiptNo, requested: input.requested ?? null }),
-      note: `مصرف اعتبار «${credit.code}» رد شد · ${String(decision.error ?? '').split('\n')[0]}`
+      note: `مصرف اعتبار #${credit.id} رد شد · ${String(decision.error ?? '').split('\n')[0]}`
     })
     throw new BusinessError(decision.error ?? 'این اعتبار روی این فاکتور قابل استفاده نیست.')
   }
@@ -1305,7 +1319,7 @@ export async function redeemStoreCredit(client: Client, input: RedeemCreditInput
     entityId: credit.id,
     userId: input.userId ?? null,
     before: JSON.stringify({
-      code: credit.code,
+      creditId: credit.id,
       status: credit.status,
       usedAmount: usedAmountBefore,
       usedCount: usedCountBefore,
@@ -1321,12 +1335,12 @@ export async function redeemStoreCredit(client: Client, input: RedeemCreditInput
       receiptNo: input.receiptNo,
       paymentId: payment.id,
       idempotencyKey: key,
-      remainderCode: remainder?.code ?? null
+      remainderCreditId: remainder?.id ?? null
     }),
     note:
-      `مصرف اعتبار «${credit.code}» به مبلغ ${money(applied)} ریال روی فاکتور ${faDigits(input.receiptNo)}` +
+      `مصرف اعتبار #${credit.id} به مبلغ ${money(applied)} ریال روی فاکتور ${faDigits(input.receiptNo)}` +
       ` · باقی‌مانده ${money(remainderAfter)} ریال · دفعه‌ی ${faDigits(usedCountBefore + 1)}` +
-      (remainder ? ` · ${money(leftover)} ریال باقی‌مانده با بارکد جدید «${remainder.code}» به مشتری داده شد` : '') +
+      (remainder ? ` · ${money(leftover)} ریال باقی‌مانده به مشتری داده شد` : '') +
       ' · این مبلغ پول نقد نیست و در «خالص واقعی دریافتی» شمرده نمی‌شود'
   })
 
@@ -1432,7 +1446,7 @@ export async function reverseInvoiceRedemptions(
         transitionBlocked: plan.blocked
       }),
       note:
-        `برگشت مصرف اعتبار «${credit.code}» به مبلغ ${money(asNum(r.amount))} ریال، چون فاکتور مرجع برگشت/باطل شد` +
+        `برگشت مصرف اعتبار #${credit.id} به مبلغ ${money(asNum(r.amount))} ریال، چون فاکتور مرجع برگشت/باطل شد` +
         (input.reason ? ` · دلیل: ${input.reason}` : '') +
         (plan.blocked ? ` · ${plan.blocked}` : '')
     })
@@ -1508,7 +1522,7 @@ async function managerChange(
     toStatus?: string
     build: (row: any, reason: string) => { data: Record<string, unknown>; before: Record<string, unknown>; after: Record<string, unknown>; note: string }
   }
-): Promise<StoreCreditRow> {
+): Promise<StoreCreditSafeRow> {
   assertCreditId(input.id) // نشست ۱۵۰ — پیش از رمز
   /**
    * 🔴 نشست ۱۸۳ — از «فقط رمز مدیر» به «رمز مدیر یا رمز دوم/سوم همین پنل».
@@ -1559,11 +1573,11 @@ async function managerChange(
       entity: 'StoreCredit',
       entityId: row.id,
       userId: input.userId ?? null,
-      before: JSON.stringify(built.before),
-      after: JSON.stringify({ ...built.after, reason }),
-      note: `${built.note} · دلیل: ${reason}`
+      before: redactCreditAuditPayload(JSON.stringify(built.before), row.code),
+      after: redactCreditAuditPayload(JSON.stringify({ ...built.after, reason }), row.code),
+      note: redactCreditCodeText(`${built.note} · دلیل: ${reason}`, row.code)
     })
-    return shapeStoreCredit(updated)
+    return shapeStoreCreditSafe(shapeStoreCredit(updated))
   }, TX_OPTIONS)
 }
 
@@ -1573,7 +1587,7 @@ export async function voidCredit(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   return managerChange({
     ...input,
     actionTitle: 'ابطال اعتبار خرید',
@@ -1594,7 +1608,7 @@ export async function suspendCredit(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   return managerChange({
     ...input,
     actionTitle: 'تعلیق موقت اعتبار خرید',
@@ -1620,7 +1634,7 @@ export async function reactivateCredit(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   // نشست ۱۵۰ — خالی ⇒ ۰؛ اعشار/منفی/متن/بیش از ۳٬۶۵۰ روز ⇒ رد (قبلاً clamp بی‌صدا)
   const extend = input.extendDays == null ? 0 : assertCreditInt(input.extendDays, 'تعداد روز تمدید', 0, 3650, ' روز')
   return managerChange({
@@ -1664,7 +1678,7 @@ export async function changeCreditExpiry(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   const target = String(input.expiresAtJalali ?? '').trim()
   return managerChange({
     ...input,
@@ -1698,7 +1712,7 @@ export async function changeCreditAmount(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   // نشست ۱۵۰ — پیام قدیمی صفر/منفی حفظ شد؛ اعشار/متن/NaN/سقف ⇒ رد، نه گرد
   if (typeof input.amount === 'number' && Number.isFinite(input.amount) && input.amount <= 0)
     throw new BusinessError('مبلغ اعتبار باید بزرگ‌تر از صفر باشد.')
@@ -1733,7 +1747,7 @@ export async function changeCreditUses(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   // نشست ۱۵۰ — عددها پیش از رمز و بدون clamp (۵۰۰۰ دیگر بی‌صدا ۱۰۰۰ نمی‌شود)
   const reqMaxUses =
     input.maxUses == null ? null : assertCreditInt(input.maxUses, 'سقف دفعات مصرف', 1, MULTI_USE_UNLIMITED, ' بار')
@@ -1802,7 +1816,7 @@ export async function changeCreditHolder(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   return managerChange({
     ...input,
     actionTitle: 'تغییر دارنده‌ی اعتبار خرید',
@@ -1858,7 +1872,7 @@ export async function changeCreditRestrictions(input: {
   reason?: string | null
   managerPassword?: string | null
   userId?: number | null
-}): Promise<StoreCreditRow> {
+}): Promise<StoreCreditSafeRow> {
   // نشست ۱۵۰ — عددها پیش از رمز و بدون clamp
   const reqMinPurchase =
     input.minPurchase == null ? null : assertCreditInt(input.minPurchase, 'حداقل خرید', 0, CREDIT_INT_MAX, ' ریال')
@@ -1940,10 +1954,10 @@ export async function deleteCredit(input: {
         entity: 'StoreCredit',
         entityId: row.id,
         userId: input.userId ?? null,
-        before: JSON.stringify({ code: row.code, status: row.status, usedAmount: row.usedAmount, redemptions }),
+        before: JSON.stringify({ creditId: row.id, status: row.status, usedAmount: row.usedAmount, redemptions }),
         after: JSON.stringify({ deleted: false, archived: true, reason }),
         note:
-          `آرشیو (حذف نرم) اعتبار «${row.code}» چون ${faDigits(redemptions || 1)} مصرف ثبت‌شده دارد؛ ` +
+          `آرشیو (حذف نرم) اعتبار #${row.id} چون ${faDigits(redemptions || 1)} مصرف ثبت‌شده دارد؛ ` +
           `سابقه‌ی حسابداری دست‌نخورده ماند · دلیل: ${reason}`
       })
       return { mode: 'ARCHIVED' as const, code: row.code }
@@ -1956,7 +1970,7 @@ export async function deleteCredit(input: {
       entityId: row.id,
       userId: input.userId ?? null,
       before: JSON.stringify({
-        code: row.code,
+        creditId: row.id,
         amount: Math.round(asNum(row.amount)),
         status: row.status,
         source: row.source,
@@ -1964,7 +1978,7 @@ export async function deleteCredit(input: {
       }),
       after: JSON.stringify({ deleted: false, voided: true, archived: true, reason }),
       note:
-        `ابطال و آرشیو اعتبار بی‌مصرف «${row.code}» (${money(asNum(row.amount))} ریال)؛ ` +
+        `ابطال و آرشیو اعتبار بی‌مصرف #${row.id} (${money(asNum(row.amount))} ریال)؛ ` +
         `رکورد به‌عنوان مدرک ماند و دیگر قابل مصرف نیست · دلیل: ${reason}`
     })
     return { mode: 'DELETED' as const, code: row.code }
@@ -2248,8 +2262,8 @@ export async function bulkIssueCredits(input: BulkIssueInput): Promise<CreditBul
           entity: 'StoreCredit',
           entityId: r.id,
           userId: input.userId ?? null,
-          after: JSON.stringify({ code: r.code, amount: amountEach, batchId: batchRow.id, source }),
-          note: `صدور اعتبار «${r.code}» به مبلغ ${money(amountEach)} ریال در دسته‌ی گروهی ${faDigits(batchRow.id)}`
+          after: JSON.stringify({ creditId: r.id, codeLength: r.code.length, amount: amountEach, batchId: batchRow.id, source }),
+          note: `صدور اعتبار #${r.id} به مبلغ ${money(amountEach)} ریال در دسته‌ی گروهی ${faDigits(batchRow.id)}`
         })
       }
     }
@@ -2301,7 +2315,7 @@ export async function bulkIssueCredits(input: BulkIssueInput): Promise<CreditBul
           ]
         : [])
     ],
-    credits: rows.map((r) => shapeStoreCredit(r))
+    credits: rows.map((r) => shapeStoreCreditSafe(shapeStoreCredit(r)))
   }
 }
 
@@ -2437,7 +2451,12 @@ async function whereFromFilter(filter: ListFilter, now: Date = new Date()): Prom
 
 /** ممیزی A97-01 — نگاشت فیلتر نوار گزارش به ListFilter (وضعیت نوار = وضعیت فاکتور). */
 export async function reportCreditListFilter(filter: ListFilter): Promise<ListFilter> {
-  const { status, ...rest } = (filter ?? {}) as ListFilter
+  /**
+   * تب گزارش فروش نه کد برمی‌گرداند و نه باید آن را قابل جست‌وجو کند؛ در غیر این
+   * صورت تعداد نتایج خودش یک oracle برای حدس‌زدن کد می‌شد. جست‌وجوی کد فقط در
+   * جریان اختصاصیِ POS/مدیریت اعتبار می‌ماند.
+   */
+  const { status, search: _codeSearch, ...rest } = (filter ?? {}) as ListFilter
   return { ...rest, invoiceStatus: status ? String(status) : rest.invoiceStatus ?? null }
 }
 
@@ -2485,11 +2504,35 @@ async function userNameMap(ids: (number | null | undefined)[]): Promise<Map<numb
   return new Map(users.map((u) => [u.id, u.displayName]))
 }
 
+/** هر متن معمولیِ خروجی را از credential همان اعتبار پاک می‌کند. */
+function redactCreditCodeText(value: unknown, code: unknown): string {
+  const text = String(value ?? '')
+  const credential = String(code ?? '').trim()
+  return credential ? text.split(credential).join('[کد اعتبار پنهان است]') : text
+}
+
+/** payloadهای AuditLog ممکن است snapshot اعتبار داشته باشند؛ کلیدهای حساس حذف می‌شوند. */
+function redactCreditAuditPayload(value: unknown, code: unknown): string | null {
+  if (value == null || value === '') return null
+  try {
+    const redact = (input: any): any => {
+      if (Array.isArray(input)) return input.map(redact)
+      if (!input || typeof input !== 'object') return input
+      return Object.fromEntries(Object.entries(input)
+        .filter(([key]) => !['code', 'legacyCode', 'storeCreditCode'].includes(key))
+        .map(([key, nested]) => [key, redact(nested)]))
+    }
+    return redactCreditCodeText(JSON.stringify(redact(JSON.parse(String(value)))), code)
+  } catch {
+    return '[جزئیات حساس اعتبار پنهان است]'
+  }
+}
+
 function shapeRedemption(r: any, userNames: Map<number, string>): CreditRedemptionRow {
   return {
     id: r.id,
     creditId: r.creditId,
-    code: r.code,
+    publicReference: `اعتبار #${r.creditId}`,
     amount: Math.round(asNum(r.amount)),
     remainderAfter: Math.round(asNum(r.remainderAfter)),
     seq: Math.round(asNum(r.seq)) || 1,
@@ -2503,8 +2546,8 @@ function shapeRedemption(r: any, userNames: Map<number, string>): CreditRedempti
     idempotencyKey: r.idempotencyKey ?? null,
     reversed: !!r.reversedAt,
     reversedAtJalali: r.reversedAt ? toJalaliDate(new Date(r.reversedAt)) : null,
-    reversedReason: r.reversedReason ?? null,
-    note: r.note ?? null
+    reversedReason: redactCreditCodeText(r.reversedReason, r.code) || null,
+    note: redactCreditCodeText(r.note, r.code) || null
   }
 }
 
@@ -2514,7 +2557,7 @@ function shapeReminderLog(r: any, userNames: Map<number, string>): CreditReminde
   return {
     id: r.id,
     creditId: r.creditId,
-    code: r.code,
+    publicReference: `اعتبار #${r.creditId}`,
     kind,
     kindLabel: kind === CreditReminderKind.NEAR_EXPIRY ? 'نزدیک به انقضا' : 'اعتبار مصرف‌نشده',
     status,
@@ -2527,8 +2570,8 @@ function shapeReminderLog(r: any, userNames: Map<number, string>): CreditReminde
             ? 'مشتری ارسال پیام را نمی‌خواهد'
             : 'آماده‌ی ارسال',
     phone: r.phone ?? null,
-    text: r.text ?? '',
-    reason: r.reason ?? null,
+    text: redactCreditCodeText(r.text, r.code),
+    reason: redactCreditCodeText(r.reason, r.code) || null,
     atJalali: r.atJalali || (r.plannedAt ? toJalaliDate(new Date(r.plannedAt)) : ''),
     atTime: r.atTime || (r.plannedAt ? toClock(new Date(r.plannedAt)) : ''),
     userId: r.userId ?? null,
@@ -2601,15 +2644,57 @@ function duePrefilter(base: any, settings: CreditReminderSettings, now: number):
 
 export const storeCreditService = {
   /**
+   * مسیر محرمانه و تک‌منظورهٔ نمایش کد از روی یک source گزارش.
+   *
+   * کد فقط پس از کنترلِ نشستِ واقعی مدیر در main خوانده می‌شود؛ رمز دوم پنل،
+   * خاموش بودن قفل، state رندرر و payload IPC هیچ‌کدام مجوز افشا نیستند. این
+   * متد عمداً تنها یک رکورد برمی‌گرداند و نه list/detail/report، تا کد به
+   * مسیرهای معمولِ گزارش، export، چاپ یا index نشت نکند.
+   */
+  async revealManagerCode(input: {
+    sourceId?: unknown
+    sourceSubKind?: unknown
+  } = {}): Promise<ManagerStoreCreditCodeReveal> {
+    assertManagerSession('نمایش کد اعتبار خرید')
+
+    const sourceId = assertCreditId(input.sourceId)
+    const sourceSubKind = String(input.sourceSubKind ?? '')
+    let creditId: number
+
+    if (sourceSubKind === 'STORE_CREDIT_ISSUANCE' || sourceSubKind === 'STORE_CREDIT') {
+      /** `STORE_CREDIT` فقط برای جزئیات امن پنل مدیریت است، نه DTO معمولی. */
+      creditId = sourceId
+    } else if (sourceSubKind === 'STORE_CREDIT_REDEMPTION') {
+      const redemption = await prisma.storeCreditRedemption.findUnique({
+        where: { id: sourceId },
+        select: { creditId: true }
+      })
+      if (!redemption) throw new BusinessError('سند مصرف اعتبار پیدا نشد؛ ممکن است حذف یا اصلاح شده باشد.')
+      creditId = Number(redemption.creditId)
+    } else {
+      throw new BusinessError('نوع سند اعتبار برای نمایش کد نامعتبر است.')
+    }
+
+    const credit = await prisma.storeCredit.findUnique({
+      where: { id: creditId },
+      select: { id: true, code: true }
+    })
+    if (!credit) throw new BusinessError('اعتبار مربوط به این سند پیدا نشد؛ ممکن است حذف شده باشد.')
+
+    return { creditId: Number(credit.id), code: String(credit.code) }
+  },
+
+  /**
    * بررسی یک اعتبار *بدون* مصرف کردنش (دکمه‌ی «بررسی» پنل فروش).
+   * کد فقط ورودیِ اعتبارسنجی است؛ پاسخِ استاندارد شناسهٔ امن دارد، نه credential.
    *
    * ⚠️ این تابع بیرون از هر تراکنشی اجرا می‌شود، پس همان‌جا **قفل موقت کد**
    * (§۸) اعمال می‌شود: کد اشتباه پشت‌سرهم ⇒ قفل، دقیقاً مثل رمز دوم پنل‌ها.
    */
-  async lookup(input: { code?: string; userId?: number | null } = {}): Promise<StoreCreditRow> {
+  async lookup(input: { code?: string; userId?: number | null } = {}): Promise<StoreCreditSafeRow> {
     const row = await guardCreditCode(String(input?.code ?? ''), input?.userId ?? null)
     const map = await receiptNoMap(prisma, [row])
-    return shapeStoreCredit(row, map)
+    return shapeStoreCreditSafe(shapeStoreCredit(row, map))
   },
 
   /**
@@ -2627,7 +2712,7 @@ export const storeCreditService = {
     lines?: CreditCartLine[]
     userId?: number | null
   }): Promise<{
-    credit: StoreCreditRow
+    credit: StoreCreditSafeRow
     ok: boolean
     applied: number
     error: string | null
@@ -2645,7 +2730,7 @@ export const storeCreditService = {
     })
     const map = await receiptNoMap(prisma, [row])
     return {
-      credit: shapeStoreCredit(row, map),
+      credit: shapeStoreCreditSafe(shapeStoreCredit(row, map)),
       ok: decision.ok,
       applied: decision.applied,
       error: decision.error,
@@ -2667,15 +2752,21 @@ export const storeCreditService = {
    * `creditStatusWhere` می‌رسید ⇒ «تسویه شده» تب را بی‌صدا خالی می‌کرد و «لغو شده»
    * اعتبارهای لغوشده را نشان می‌داد. اینجا به `invoiceStatus` نگاشت می‌شود.
    */
-  async reportList(filter: ListFilter = {}): Promise<PagedRows<StoreCreditRow>> {
-    return reportCreditListFilter(filter).then((f) => this.list(f))
+  async reportList(filter: ListFilter = {}): Promise<PagedRows<StoreCreditReportRow>> {
+    return this.list(await reportCreditListFilter(filter))
   },
 
-  async list(filter: ListFilter = {}): Promise<PagedRows<StoreCreditRow>> {
+  /**
+   * فهرست عادی مدیریت نیز credential ندارد. جست‌وجوی کد حذف است تا تعداد ردیف‌ها
+   * به oracle حدس‌زدن کد تبدیل نشود؛ POS فقط برای اعتبارسنجیِ کدی که کاربر دارد
+   * از lookup اختصاصی استفاده می‌کند.
+   */
+  async list(filter: ListFilter = {}): Promise<PagedRows<StoreCreditReportRow>> {
+    const { search: _credentialSearch, ...safeFilter } = filter ?? {}
     const where = await whereFromFilter({
-      ...filter,
-      fromJalali: filter.fromJalali ?? (filter.search || filter.batchId != null ? undefined : jalaliToday()),
-      toJalali: filter.toJalali
+      ...safeFilter,
+      fromJalali: safeFilter.fromJalali ?? (safeFilter.batchId != null ? undefined : jalaliToday()),
+      toJalali: safeFilter.toJalali
     })
     const page = creditPage(filter.take, filter.skip, 0)
     let rows: any[]
@@ -2719,7 +2810,7 @@ export const storeCreditService = {
       })
     }
     const map = await receiptNoMap(prisma, rows)
-    const shaped = rows.map((r) => shapeStoreCredit(r, map))
+    const shaped = rows.map((r) => shapeStoreCreditSafe(shapeStoreCredit(r, map)))
     return attachCreditPage(shaped, page)
   },
 
@@ -2749,20 +2840,14 @@ export const storeCreditService = {
    */
   async detail(input: {
     id?: number
-    code?: string
     timelineTake?: number
     timelineSkip?: number
     reminderTake?: number
     reminderSkip?: number
   }): Promise<CreditDetail> {
-    const id = Math.round(Number(input?.id) || 0)
-    const code = normalizeCreditCode(input?.code)
-    const row = id
-      ? await prisma.storeCredit.findUnique({ where: { id } })
-      : code
-        ? await prisma.storeCredit.findUnique({ where: { code } })
-        : null
-    if (!row) throw new BusinessError('این اعتبار پیدا نشد. فهرست را تازه کنید یا کد را دوباره وارد کنید.')
+    const id = assertCreditId(input?.id)
+    const row = await prisma.storeCredit.findUnique({ where: { id } })
+    if (!row) throw new BusinessError('این اعتبار پیدا نشد. فهرست را تازه کنید.')
 
     const timelinePage = creditPage(input.timelineTake ?? 500, input.timelineSkip, await prisma.auditLog.count({
       where: { entity: 'StoreCredit', entityId: row.id }
@@ -2805,9 +2890,9 @@ export const storeCreditService = {
         atTime: toClock(at),
         userId: l.userId ?? null,
         userName: l.userId != null ? (userNames.get(l.userId) ?? null) : null,
-        before: l.before ?? null,
-        after: l.after ?? null,
-        note: l.note ?? null
+        before: redactCreditAuditPayload(l.before, row.code),
+        after: redactCreditAuditPayload(l.after, row.code),
+        note: redactCreditCodeText(l.note, row.code) || null
       }
     })
 
@@ -2823,7 +2908,7 @@ export const storeCreditService = {
     )
 
     return {
-      credit: shapeStoreCredit(row, map),
+      credit: shapeStoreCreditSafe(shapeStoreCredit(row, map)),
       redemptions: redemptions.map((r) => shapeRedemption(r, userNames)),
       reminders: reminderRows,
       remindersPage,
@@ -2847,7 +2932,7 @@ export const storeCreditService = {
           }
         : null,
       remainderCredit: remainderCredit
-        ? { id: remainderCredit.id, code: remainderCredit.code, amount: Math.round(asNum(remainderCredit.amount)) }
+        ? { id: remainderCredit.id, publicReference: `اعتبار #${remainderCredit.id}`, amount: Math.round(asNum(remainderCredit.amount)) }
         : null
     }
   },
@@ -3011,7 +3096,7 @@ export const storeCreditService = {
   bulkIssue: bulkIssueCredits,
 
   /** صدور تکیِ «اعتبار مدیریتی» (§۲) — همان `issueStoreCredit` با نوع MANUAL. */
-  async issueManual(input: IssueCreditInput): Promise<StoreCreditRow> {
+  async issueManual(input: IssueCreditInput): Promise<StoreCreditSafeRow> {
     /**
      * نشست ۱۴۳ · بند ۴-۲۹ — صدور دستی اعتبار بدون فاکتور واقعی همیشه رمز مدیر
      * می‌خواهد؛ Gate رندرر کافی نبود چون هر تماس IPC دورش می‌زد. پیش از تراکنش.
@@ -3037,7 +3122,7 @@ export const storeCreditService = {
       async (tx) => issueStoreCredit(tx, { ...safeInput, source: CreditSource.MANUAL, settings }),
       TX_OPTIONS
     )
-    return shapeStoreCredit(created)
+    return shapeStoreCreditSafe(shapeStoreCredit(created))
   },
 
   /**
@@ -3053,7 +3138,7 @@ export const storeCreditService = {
     file?: string | null
     /** ممیزی AUDIT-S129-01 — نتیجه‌ی چاپ نامعلوم بود و احتیاطاً شمرده می‌شود. */
     uncertain?: boolean
-  }): Promise<StoreCreditRow> {
+  }): Promise<StoreCreditSafeRow> {
     const now = new Date()
     /**
      * جلسه ۲۹ · §۱۰ — به‌روزرسانی شمارنده و لاگش داخل **یک** تراکنش رفتند.
@@ -3084,11 +3169,11 @@ export const storeCreditService = {
         entity: log.entity,
         entityId: log.entityId,
         userId: input.userId ?? null,
-        before: log.before,
-        after: log.after,
-        note: creditPrintUncertainNote(log.note, input.uncertain)
+        before: redactCreditAuditPayload(log.before, row.code),
+        after: redactCreditAuditPayload(log.after, row.code),
+        note: redactCreditCodeText(creditPrintUncertainNote(log.note, input.uncertain), row.code)
       })
-      return shapeStoreCredit(updated)
+      return shapeStoreCreditSafe(shapeStoreCredit(updated))
     }, TX_OPTIONS)
   },
 
@@ -3151,9 +3236,9 @@ export const storeCreditService = {
           entity: log.entity,
           entityId: log.entityId,
           userId: input.userId ?? null,
-          before: log.before,
-          after: log.after,
-          note: creditPrintUncertainNote(log.note, input.uncertain)
+          before: redactCreditAuditPayload(log.before, r.code),
+          after: redactCreditAuditPayload(log.after, r.code),
+          note: redactCreditCodeText(creditPrintUncertainNote(log.note, input.uncertain), r.code)
         }
       })
     )
@@ -3266,7 +3351,7 @@ export const storeCreditService = {
         )
         if (filter.onlyDue && !decision.should) continue
         out.push({
-          credit: shapeStoreCredit(r),
+          credit: shapeStoreCreditSafe(shapeStoreCredit(r)),
           holderName: r.customerName ?? (r.customerId != null ? (nameOf.get(r.customerId) ?? null) : null),
           phone,
           should: decision.should,
@@ -3444,7 +3529,7 @@ export const storeCreditService = {
       userId: input.userId ?? null,
       after: JSON.stringify({ status, kind: decision.kind, phone, reason: decision.reason }),
       note:
-        `ثبت یادآوری اعتبار «${row.code}» با وضعیت «${status}»` +
+        `ثبت یادآوری اعتبار #${row.id} با وضعیت «${status}»` +
         // «هیچ پیامکی ارسال نشد» فقط وقتی راست است که واقعاً چیزی تحویل نشده
         // باشد؛ با فرستنده‌ی زنده این جمله نباید در سابقه بماند.
         (delivered
@@ -3551,7 +3636,7 @@ export const storeCreditService = {
       userId: null,
       after: JSON.stringify({ releasedFrom: log.id, outboxId: input?.outboxId ?? null, outcome: input?.outcome ?? null }),
       note:
-        `یادآوری اعتبار «${log.code}» پذیرفته شد ولی ارسال واقعی انجام نشد` +
+        `یادآوری اعتبار #${creditId} پذیرفته شد ولی ارسال واقعی انجام نشد` +
         ` (${String(input?.outcome ?? '') || 'ناموفق'}) · سهمیه آزاد شد تا یادآوری دوباره ممکن بماند`
     })
 
