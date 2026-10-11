@@ -268,6 +268,16 @@ export interface StoreCreditTotals {
   /** نشست ۱۷۱ · S170-D3 — «باقی‌مانده»ی مصرف جزئی اعتبار اضافه‌دریافت (داخل issuedFromOverpay) */
   issuedOverpayRemainder?: Rial
   issuedOverpayRemainderCount?: number
+  /**
+   * گردش اعتبار ـ خاستگاه‌های متقابلاً مجزای صدور. برخلاف فیلدهای قدیمیِ
+   * سازگاری، هر اعتبار صادرشده دقیقاً در یکی از این شش سبد قرار می‌گیرد.
+   */
+  issuedLifecycleReturn?: Rial
+  issuedLifecycleExchange?: Rial
+  issuedLifecycleManual?: Rial
+  issuedLifecycleOverpay?: Rial
+  issuedLifecycleRemainder?: Rial
+  issuedLifecycleOther?: Rial
 }
 
 export interface AccrualInput {

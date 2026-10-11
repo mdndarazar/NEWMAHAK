@@ -106,6 +106,7 @@ model ProductVariant {
   purchaseItems PurchaseInvoiceItem[]
   returnItems   SaleReturnItem[]
   movements     StockMovement[]
+  wooLinks      WooProductLink[]
 
   @@index([barcode])
   @@index([code])
@@ -139,6 +140,144 @@ model StockMovement {
   @@index([refType, refId])
   // پاک‌سازی/آرشیو بازه‌ای حرکات انبار
   @@index([createdAt])
+}
+
+/// لینک موجودی یک واریانت MAHAK به یک Product/Variation در WooCommerce.
+/// فقط stock_quantity sync می‌شود؛ قیمت/سفارش/مشتری/گزارش فروش سایت وارد MAHAK نمی‌شود.
+model WooProductLink {
+  id                   Int            @id @default(autoincrement())
+  variantId            Int
+  variant              ProductVariant @relation(fields: [variantId], references: [id])
+  wooProductId         Int
+  wooVariationId       Int?
+  /// `p:<productId>` یا `v:<variationId>`؛ کلید پایدار سمت افزونه.
+  holderKey            String
+  sku                  String?
+  remoteName           String?
+  manageStock          Boolean        @default(true)
+  /// ACTIVE | PAUSED | CONFLICT | BROKEN_REMOTE | BROKEN_LOCAL | UNLINKED
+  status               String         @default("ACTIVE")
+  lastWooQty           Int            @default(0)
+  lastMahakQty         Int            @default(0)
+  lastPushedMovementId Int?
+  pauseReason          String?
+  pausedAt             DateTime?
+  pausedBy             Int?
+  pauseNote            String?
+  pauseSeqFloor        BigInt?
+  resumedAt            DateTime?
+  resumedBy            Int?
+  resumeDecision       String?
+  relinkSeqFloor       BigInt?
+  lastRelinkId         String?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  outbox        WooSyncOutbox[]
+  inboundEvents WooInboundEvent[]
+  approvals     WooApproval[]
+
+  @@index([variantId])
+  @@index([holderKey])
+  @@index([status])
+}
+
+/// صف خروجی نوشتن موجودی روی WooCommerce. هر ردیف فقط `stock_quantity` را هدف می‌گیرد.
+model WooSyncOutbox {
+  id             Int            @id @default(autoincrement())
+  linkId         Int
+  link           WooProductLink @relation(fields: [linkId], references: [id])
+  variantId      Int
+  movementId     Int?
+  /// STOCK_PUSH | RECONCILE_PUSH
+  kind           String         @default("STOCK_PUSH")
+  expectedWooQty Int?
+  targetQty      Int
+  /// PENDING | IN_FLIGHT | SENT | FAILED | SUPERSEDED | DEAD | CONFLICT
+  status         String         @default("PENDING")
+  attemptCount   Int            @default(0)
+  idempotencyKey String         @unique
+  lastError      String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  sentAt         DateTime?
+
+  @@index([status, createdAt])
+  @@index([linkId, status])
+}
+
+/// ژورنال ورودی از افزونه. رویداد قیمت/سفارش کامل نیست؛ فقط تغییر عدد موجودی است.
+model WooInboundEvent {
+  id          Int             @id @default(autoincrement())
+  eventUuid   String          @unique
+  seq         BigInt?
+  linkId      Int?
+  link        WooProductLink? @relation(fields: [linkId], references: [id])
+  variantId   Int?
+  holderKey   String
+  orderId     String?
+  orderItemId String?
+  oldQty      Int?
+  newQty      Int
+  delta       Int
+  source      String?
+  requestId   String?
+  /// PENDING | APPLIED | SKIPPED_ECHO | SKIPPED_PAUSED | SKIPPED_UNMAPPED | SUPERSEDED | PARKED | APPLIED_ON_RELINK
+  status      String          @default("PENDING")
+  movementId  Int?
+  relinkId    String?
+  payloadJson String?
+  receivedAt  DateTime        @default(now())
+  processedAt DateTime?
+
+  @@index([status, seq])
+  @@index([linkId, status])
+  @@index([holderKey, seq])
+}
+
+/// صف تأیید مدیر برای تصمیم‌های مبهم همگام‌سازی موجودی Woo.
+/// این جدول فقط درباره عدد موجودی است و هیچ داده فروش/مشتری/قیمت سایت را نگه نمی‌دارد.
+model WooApproval {
+  id             Int             @id @default(autoincrement())
+  /// APPLY_INBOUND | RECONCILE_DISCREPANCY | LOOP_FUSE | CONFLICT_RESOLUTION | UNFREEZE_LINK
+  action         String
+  /// PENDING | APPROVED | REJECTED | EXPIRED
+  status         String          @default("PENDING")
+  linkId         Int?
+  link           WooProductLink? @relation(fields: [linkId], references: [id])
+  variantId      Int?
+  holderKey      String?
+  sourceType     String?
+  sourceId       Int?
+  reason         String
+  title          String
+  message        String
+  payloadJson    String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  resolvedAt     DateTime?
+  resolvedBy     Int?
+  resolution     String?
+  resolutionNote String?
+
+  @@index([status, createdAt])
+  @@index([linkId, status])
+  @@index([sourceType, sourceId, status])
+}
+
+/// لاگ خوانای همگام‌سازی سایت؛ برای ردیابی بدون ورود هیچ مبلغی از سایت.
+model WooSyncLog {
+  id          Int      @id @default(autoincrement())
+  at          DateTime @default(now())
+  level       String   @default("INFO")
+  action      String
+  linkId      Int?
+  variantId   Int?
+  message     String
+  payloadJson String?
+
+  @@index([at])
+  @@index([linkId, at])
 }
 
 // ------------------------- اشخاص (مشتری/تامین‌کننده) -------------------------
@@ -224,6 +363,11 @@ model Shift {
   user                       User?     @relation(fields: [userId], references: [id])
   openedAt                   DateTime  @default(now())
   closedAt                   DateTime?
+  /// نشست ۳۱۰ · اضافه‌کاری شیفت شب — اعلام صریح سروری، فقط یک‌بار و تا سقف تنظیمی.
+  /// داده‌ی قدیمی NULL می‌ماند (بدون backfill)؛ NULL یعنی «اعلام نشده».
+  overtimeDeclaredAt         DateTime?
+  overtimeUntil              DateTime?
+  overtimeReason             String?
   note                       String?
 
   saleInvoices SaleInvoice[]
@@ -1554,7 +1698,7 @@ model CostConsumption {
   saleItemId  Int?
   qty         Int      @default(0)
   unitCost    BigInt   @default(0)
-  /// SALE | RETURN | SHRINK | EDIT_ADJ
+  /// SALE | RETURN | SHRINK | EDIT_ADJ | EXTERNAL_SYNC (مصرف/ورود سایت، بدون فروش/درآمد MAHAK)
   kind        String
   createdAt   DateTime @default(now())
 

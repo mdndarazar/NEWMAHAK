@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
+// نشست ۳۱۶ — جداکننده‌ی هزارگانِ زنده در ورودی «مبلغ بازپرداخت» (state همچنان رقمِ خام)
+import { digitsOnly, groupThousands } from '../lib/moneyInput'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
+import { isUnknownPrintMessage } from '../lib/printErrors'
 import { useBarcodeScanner, useFieldScanDetector } from '../hooks/useBarcodeScanner'
 import ConfirmDialog from '../components/ConfirmDialog'
-import OverpayFlowDialogs, { printOverpayCredit } from '../components/OverpayFlowDialogs'
+import OverpayFlowDialogs, { printOverpayCredit, type OverpayCreditPrintProblem } from '../components/OverpayFlowDialogs'
 import {
   isOverpayWarning,
   needsManagerPassword,
@@ -21,7 +24,11 @@ import VariantSearchBox, { type VariantSearchBoxHandle } from '../components/Var
 import { useCharges } from '../hooks/useCharges'
 import { faDigits, money, jalaliToday, isValidJalaliDate } from '@shared/jalali'
 import { returnValueOf, isReturnableStatus } from '@shared/returnValue'
-import type { ExchangeSaleResult, ReturnLookup, ReturnLookupItem } from '@shared/types'
+import type { ExchangeSaleResult, ReturnLookup, ReturnLookupItem, CardPosOverrideInput } from '@shared/types'
+import InvoiceFinanceBadge from '../components/returns/InvoiceFinanceBadge'
+import SmartSettlementPanel from '../components/returns/SmartSettlementPanel'
+import CardPosOverrideDialog from '../components/returns/CardPosOverrideDialog'
+import { useReturnGuidance } from '../hooks/useReturnGuidance'
 
 /**
  * ===================== برگشت از فروش و تعویض کالا =====================
@@ -169,6 +176,8 @@ export default function SalesReturn() {
   const [allowRemoved, setAllowRemoved] = useState(false)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const [printing, setPrinting] = useState(false)
+  const printingRef = useRef(false)
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [confirmForce, setConfirmForce] = useState<string | null>(null)
@@ -193,6 +202,9 @@ export default function SalesReturn() {
   const [overpayFlow, setOverpayFlow] = useState<OverpayFlowState | null>(null)
   const [overpayReq, setOverpayReq] = useState<OverpayRequest>({})
   const [issuedOverpayCredit, setIssuedOverpayCredit] = useState<any | null>(null)
+  const issuedOverpayCreditOpenRef = useRef(false)
+  const [overpayCreditPrinting, setOverpayCreditPrinting] = useState(false)
+  const [overpayCreditPrintProblem, setOverpayCreditPrintProblem] = useState<OverpayCreditPrintProblem>(null)
   /**
    * بند ۱۲ — تسویه‌ی مابه‌التفاوت *منفی* تعویض؛ بدون پیش‌فرض ضمنی.
    * جلسه ۱۷ · بند ۱ — گزینه‌ی چهارم «کارت‌به‌کارت توسط مدیر» هم اضافه شد و
@@ -212,6 +224,10 @@ export default function SalesReturn() {
   const [lockNeeded, setLockNeeded] = useState(false)
   const [lockPw, setLockPw] = useState('')
   const [lockReason, setLockReason] = useState('')
+  /** نشست ۳۱۹ — تأیید مدیر برای بازپرداخت کارتی (کارت‌خوان) */
+  const [cardPosDialog, setCardPosDialog] = useState(false)
+  const [cardPosOverride, setCardPosOverride] = useState<CardPosOverrideInput | null>(null)
+  const guidance = useReturnGuidance(lookup, qty)
   // ---- بخش ۶: تعویض کالا ----
   /** حالت تعویض روشن است؟ (خاموش = همان برگشت ساده‌ی همیشگی، دست‌نخورده) */
   const [exchangeMode, setExchangeMode] = useState(false)
@@ -261,6 +277,25 @@ export default function SalesReturn() {
     setMsg(m)
     setErr(null)
     window.setTimeout(() => setMsg((c) => (c === m ? null : c)), 10000)
+  }
+
+  const printIssuedOverpayCredit = async (credit: any | null, opts?: { reprintPassword?: string }) => {
+    if (overpayCreditPrinting) return
+    setOverpayCreditPrinting(true)
+    setOverpayCreditPrintProblem(null)
+    try {
+      // نشست ۳۱۶ — چاپِ اولِ صدور بدون رمز؛ چاپ دوباره ⇒ reprint:true + رمز (سرور strict می‌سنجد)
+      const problem = await printOverpayCredit(
+        credit,
+        opts?.reprintPassword ? { reprint: true, password: opts.reprintPassword } : undefined
+      )
+      if (problem) {
+        if (issuedOverpayCreditOpenRef.current) setOverpayCreditPrintProblem(problem)
+        else setErr(problem.msg)
+      }
+    } finally {
+      setOverpayCreditPrinting(false)
+    }
   }
 
   /** پیدا کردن فاکتور با کد (تایپ‌شده یا اسکن‌شده). */
@@ -486,6 +521,7 @@ export default function SalesReturn() {
           managerFullRefund: managerFullRefund || undefined,
           refundReference: refundReference.trim() || undefined,
           refundNote: refundNote.trim() || undefined,
+          cardPosOverride: refundMethod === 'CARD' ? cardPosOverride : undefined,
           // ---- بند ۱۷: فقط وقتی دوره بسته است و کاربر رمز/دلیل داده ----
           ...req,
           managerPassword: req.managerPassword || (managerFullRefund ? fullRefundPw : lockPw).trim() || undefined,
@@ -505,17 +541,17 @@ export default function SalesReturn() {
               : 'این فاکتور بدون کسر از موجودی بود، پس موجودی تغییر نکرد') +
             (res.fullyReturned ? ' · وضعیت فاکتور: برگشت کامل' : ' · وضعیت فاکتور: برگشت جزئی') +
             (res.refundNote ? `\n${res.refundNote}` : '') +
-            (res.storeCreditCode ? ` · بارکد اعتبار «${res.storeCreditCode}»` : '') +
-            (res.overpayCredit?.code
+            (res.storeCreditReference ? ` · ${res.storeCreditReference} صادر شد` : '') +
+            (res.overpayCredit?.id
               ? ` · ${overpayCreditFlash(res.overpayCredit, money, faDigits)}`
               : res.overpayAmount > 0
                 ? ` · مبلغ اضافه‌ی دریافتی: ${money(res.overpayAmount)} ریال (ردیف «دریافت پول اضافه»)`
                 : '')
         )
-        if (res.overpayCredit?.code) {
+        if (res.overpayCredit?.id) {
+          issuedOverpayCreditOpenRef.current = true
           setIssuedOverpayCredit(res.overpayCredit)
-          const problem = await printOverpayCredit(res.overpayCredit)
-          if (problem) setErr(problem)
+          await printIssuedOverpayCredit(res.overpayCredit)
         }
         await lookupCode(lookup.returnCode)
         await loadHistory()
@@ -610,6 +646,7 @@ export default function SalesReturn() {
             autoCentralWithdraw: repAutoCentral || undefined,
             // ---- بند ۱۲: تسویه‌ی مابه‌التفاوت منفی (انتخاب انحصاری کاربر) ----
             refundMode: exTotals.diff < 0 ? exRefundMode : undefined,
+            cardPosOverride: exRefundMode === 'CARD' ? cardPosOverride : undefined,
             // ---- بند ۱۸: رمز مدیر، فقط وقتی قیمت دستی باز شده باشد ----
             managerPassword: (priceOverrideOn ? managerPw.trim() : lockPw.trim()) || undefined,
             overrideReason: lockReason.trim() || undefined
@@ -631,7 +668,7 @@ export default function SalesReturn() {
             (res.diff > 0
               ? `${money(res.diff)} ریال از مشتری دریافت شد`
               : res.diff < 0
-                ? `${money(-res.diff)} ریال بارکد اعتبار «${res.storeCredit?.code ?? '—'}» صادر شد`
+                ? `${money(-res.diff)} ریال ${res.storeCredit?.publicReference ?? 'اعتبار خرید'} صادر شد و برای مشتری چاپ شد`
                 : 'مابه‌التفاوت صفر بود') +
             /**
              * جلسه ۵۰ · مرحله ۱-ب — «کالای جایگزین از کدام انبار آمد».
@@ -670,25 +707,71 @@ export default function SalesReturn() {
    * قالب تنظیمات رسید تبعیت می‌کند.
    */
   const printReturn = useCallback(async (returnId: number) => {
+    if (printingRef.current) return
+    printingRef.current = true
+    setPrinting(true)
     try {
       /** فاز ۳ — مسیر مشترک چاپ؛ انصراف = لغو قطعی و بی‌صدا. */
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printReturn, { returnId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printReturn, { returnId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('رسید برگشت از فروش برای چاپ فرستاده شد')
     } catch (e: any) {
-      setErr(`چاپ رسید برگشت انجام نشد: ${e.message}`)
+      setErr(
+        isUnknownPrintMessage(e)
+          ? `معلوم نیست رسید برگشت چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
+          : `چاپ رسید برگشت انجام نشد: ${e.message}`
+      )
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   /** چاپ «سند تعویض» (قالب exchangeReceiptHtml سمت main). */
   const printExchange = useCallback(async (returnId: number) => {
+    if (printingRef.current) return
+    printingRef.current = true
+    setPrinting(true)
     try {
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printExchange, { returnId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printExchange, { returnId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('سند تعویض برای چاپ فرستاده شد')
     } catch (e: any) {
-      setErr(`چاپ سند تعویض انجام نشد: ${e.message}`)
+      setErr(
+        isUnknownPrintMessage(e)
+          ? `معلوم نیست سند تعویض چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
+          : `چاپ سند تعویض انجام نشد: ${e.message}`
+      )
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const printSourceInvoice = useCallback(async (invoiceId: number) => {
+    if (printingRef.current) return
+    printingRef.current = true
+    setPrinting(true)
+    try {
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printInvoice, { invoiceId, deviceName, silent: opts?.silent })
+      )
+      if (res !== 'CANCELLED') flash('رسید فاکتور برای چاپ فرستاده شد')
+    } catch (e: any) {
+      setErr(
+        isUnknownPrintMessage(e)
+          ? `معلوم نیست رسید فاکتور چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
+          : e.message
+      )
+    } finally {
+      printingRef.current = false
+      setPrinting(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -871,8 +954,8 @@ export default function SalesReturn() {
               : 'این فاکتور بدون کسر از موجودی بود، پس موجودی تغییر نکرد'}
           </span>
           {retResult.storeCredit && (
-            <span className="px-2 py-1 rounded bg-white border font-bold" dir="ltr" title="بارکد اعتبار خرید بعدی">
-              {retResult.storeCredit.code}
+            <span className="px-2 py-1 rounded bg-white border font-bold" title="مرجع امن اعتبار خرید صادرشده">
+              {retResult.storeCredit.publicReference}
             </span>
           )}
           {/* جلسه ۱۷ · بند ۱ — هیچ پولی جابه‌جا نشده؛ فقط یک درخواست ساخته شده است */}
@@ -882,8 +965,8 @@ export default function SalesReturn() {
               {money(retResult.cardTransfer.amount)} ریال · در انتظار پرداخت مدیر
             </span>
           )}
-          <button className="btn btn-primary" onClick={() => void printReturn(retResult.id)}>
-            چاپ رسید برگشت
+          <button className="btn btn-primary" onClick={() => void printReturn(retResult.id)} disabled={printing}>
+            {printing ? 'در حال چاپ…' : 'چاپ رسید برگشت'}
           </button>
           <button className="btn ms-auto" onClick={() => setRetResult(null)}>
             بستن
@@ -929,8 +1012,8 @@ export default function SalesReturn() {
             </span>
           )}
           {exResult.storeCredit && (
-            <span className="px-2 py-1 rounded bg-white border font-bold" dir="ltr" title="بارکد اعتبار خرید بعدی">
-              {exResult.storeCredit.code}
+            <span className="px-2 py-1 rounded bg-white border font-bold" title="مرجع امن اعتبار خرید صادرشده">
+              {exResult.storeCredit.publicReference}
             </span>
           )}
           {exResult.storeCredit && (
@@ -941,8 +1024,8 @@ export default function SalesReturn() {
                 : ''}
             </span>
           )}
-          <button className="btn btn-primary" onClick={() => void printExchange(exResult.returnId)}>
-            چاپ سند تعویض
+          <button className="btn btn-primary" onClick={() => void printExchange(exResult.returnId)} disabled={printing}>
+            {printing ? 'در حال چاپ…' : 'چاپ سند تعویض'}
           </button>
           <button className="btn ms-auto" onClick={() => setExResult(null)}>
             بستن
@@ -953,31 +1036,37 @@ export default function SalesReturn() {
       {lookup && (
         <>
           {/* ---------------- اطلاعات فاکتور ---------------- */}
-          <div className="bg-white rounded shadow p-3 grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-2">
-            <Info label="شماره فیش" value={faDigits(lookup.receiptNo)} strong />
-            <Info label="کد فاکتور" value={lookup.returnCode} ltr strong />
-            <Info label="تاریخ / ساعت" value={`${faDigits(lookup.issuedAtJalali)} · ${faDigits(lookup.issuedTime)}`} />
-            <Info label="خریدار" value={lookup.customerName} />
-            <Info label="شیفت" value={lookup.shiftName ?? '—'} />
-            <Info label="وضعیت" value={lookup.statusLabel} />
-            <Info
-              label="اعتبار کد"
-              value={
-                lookup.expired
-                  ? 'منقضی شده'
-                  : `${faDigits(lookup.daysLeft)} روز مانده (تا ${faDigits(lookup.expiresAtJalali)})`
-              }
-            />
-            <Info label="جمع مبلغ کالا" value={money(lookup.goodsTotal)} />
-            <Info label="تخفیف" value={money(lookup.discountTotal)} />
-            <Info label="حق سرویس" value={money(lookup.serviceCharge)} />
-            <Info label="عوارض و مالیات" value={money(lookup.taxTotal)} />
-            <Info label="جمع کل" value={money(lookup.grandTotal)} strong />
-            <Info label="نحوه پرداخت" value={lookup.paymentLabels || '—'} />
-            <Info
-              label="برگشت‌های قبلی"
-              value={lookup.returnedTotal ? money(lookup.returnedTotal) + ' ریال' : 'ندارد'}
-            />
+          <div className="bg-white rounded shadow p-3 space-y-2">
+            <div className="flex items-center justify-between flex-wrap gap-2 pb-1 border-b">
+              <span className="font-bold text-sm">مشخصات فاکتور #{faDigits(lookup.receiptNo)}</span>
+              <InvoiceFinanceBadge profile={lookup.settlementProfile} />
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-2">
+              <Info label="شماره فیش" value={faDigits(lookup.receiptNo)} strong />
+              <Info label="کد فاکتور" value={lookup.returnCode} ltr strong />
+              <Info label="تاریخ / ساعت" value={`${faDigits(lookup.issuedAtJalali)} · ${faDigits(lookup.issuedTime)}`} />
+              <Info label="خریدار" value={lookup.customerName} />
+              <Info label="شیفت" value={lookup.shiftName ?? '—'} />
+              <Info label="وضعیت" value={lookup.statusLabel} />
+              <Info
+                label="اعتبار کد"
+                value={
+                  lookup.expired
+                    ? 'منقضی شده'
+                    : `${faDigits(lookup.daysLeft)} روز مانده (تا ${faDigits(lookup.expiresAtJalali)})`
+                }
+              />
+              <Info label="جمع مبلغ کالا" value={money(lookup.goodsTotal)} />
+              <Info label="تخفیف" value={money(lookup.discountTotal)} />
+              <Info label="حق سرویس" value={money(lookup.serviceCharge)} />
+              <Info label="عوارض و مالیات" value={money(lookup.taxTotal)} />
+              <Info label="جمع کل" value={money(lookup.grandTotal)} strong />
+              <Info label="نحوه پرداخت" value={lookup.paymentLabels || '—'} />
+              <Info
+                label="برگشت‌های قبلی"
+                value={lookup.returnedTotal ? money(lookup.returnedTotal) + ' ریال' : 'ندارد'}
+              />
+            </div>
           </div>
 
           {!lookup.deductInventory && (
@@ -1417,28 +1506,15 @@ export default function SalesReturn() {
                   مبلغ بیشتر نمی‌شود.
                 </span>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2">
-                {REFUND_CHOICES.map((c) => (
-                  <label
-                    key={c.value}
-                    className={`flex items-start gap-2 p-2 rounded border-2 cursor-pointer ${
-                      refundMethod === c.value ? 'bg-emerald-50 border-emerald-500' : 'border-slate-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      className="w-4 h-4 mt-1"
-                      name="refundMethod"
-                      checked={refundMethod === c.value}
-                      onChange={() => setRefundMethod(c.value)}
-                    />
-                    <span>
-                      <b>{c.title}</b>
-                      <div className="kbd leading-5">{c.hint}</div>
-                    </span>
-                  </label>
-                ))}
-              </div>
+              <SmartSettlementPanel
+                guidance={guidance}
+                selectedMethod={refundMethod}
+                onSelectMethod={(m) => {
+                  setRefundMethod(m)
+                  if (m !== 'CARD') setCardPosOverride(null)
+                }}
+                onCardPosLocked={() => setCardPosDialog(true)}
+              />
               {refundMethod && refundMethod !== 'NONE' && (
                 <div className="flex flex-wrap gap-2 items-end">
                   <label>
@@ -1446,9 +1522,15 @@ export default function SalesReturn() {
                     <input
                       className="inp w-44"
                       dir="ltr"
-                      value={refundAmount}
-                      onChange={(e) => setRefundAmount(e.target.value)}
-                      placeholder={String(totals.amount)}
+                      /**
+                       * نشست ۳۱۶ — نمایش سه‌رقم‌سه‌رقم هنگام تایپ؛ state خامِ
+                       * رقمی می‌ماند تا Number(...) سمت ارسال (:۵۰۶) نیاز به
+                       * تغییر نداشته باشد.
+                       */
+                      value={groupThousands(refundAmount)}
+                      onChange={(e) => setRefundAmount(digitsOnly(e.target.value))}
+                      placeholder={groupThousands(String(totals.amount))}
+                      inputMode="numeric"
                     />
                   </label>
                   {refundMethod === 'CARD' && (
@@ -1545,14 +1627,10 @@ export default function SalesReturn() {
             )}
             <button
               className="btn"
-              onClick={() =>
-                void printWith('INVOICE', (deviceName) =>
-                  call(CH.printInvoice, { invoiceId: lookup.invoiceId, deviceName })
-                ).catch((e: any) => setErr(e.message))
-              }
-              disabled={busy}
+              onClick={() => void printSourceInvoice(lookup.invoiceId)}
+              disabled={busy || printing}
             >
-              چاپ رسید فاکتور
+              {printing ? 'در حال چاپ…' : 'چاپ رسید فاکتور'}
             </button>
             <div className="kbd">
               {exchangeMode
@@ -1657,7 +1735,7 @@ export default function SalesReturn() {
                     <button
                       className="text-brand"
                       onClick={() => void printReturn(r.id)}
-                      disabled={rowBusy}
+                      disabled={rowBusy || printing}
                       title="چاپ رسید مستقل همین برگشت (بند ۱۳)"
                     >
                       چاپ
@@ -1707,12 +1785,14 @@ export default function SalesReturn() {
         onFlow={setOverpayFlow}
         onSubmit={(req) => void doSubmit(false, req)}
         issuedCredit={issuedOverpayCredit}
-        onCloseIssued={() => setIssuedOverpayCredit(null)}
-        onReprint={() =>
-          void printOverpayCredit(issuedOverpayCredit).then((problem) => {
-            if (problem) setErr(problem)
-          })
-        }
+        onCloseIssued={() => {
+          issuedOverpayCreditOpenRef.current = false
+          setIssuedOverpayCredit(null)
+          setOverpayCreditPrintProblem(null)
+        }}
+        onReprint={(pw) => void printIssuedOverpayCredit(issuedOverpayCredit, { reprintPassword: pw })}
+        creditPrinting={overpayCreditPrinting}
+        creditPrintProblem={overpayCreditPrintProblem}
       />
 
       {/* ---------------- ویرایش یک برگشت ثبت‌شده ---------------- */}
@@ -1793,6 +1873,17 @@ export default function SalesReturn() {
         busy={busy}
         onConfirm={() => void doExchange(true)}
         onCancel={() => setConfirmExchange(null)}
+      />
+
+      {/* نشست ۳۱۹ — تأیید مدیر برای بازپرداخت کارتی (کارت‌خوان) */}
+      <CardPosOverrideDialog
+        open={cardPosDialog}
+        onClose={() => setCardPosDialog(false)}
+        onConfirm={(override) => {
+          setCardPosOverride(override)
+          setRefundMethod('CARD')
+          setCardPosDialog(false)
+        }}
       />
     </div>
   )

@@ -19,6 +19,7 @@ import {
   normalizePlan,
   planHasNegative,
   storeLinesOf,
+  warehouseEntriesOf,
   /** جلسه ۵۰ · مرحله ۱-ب — ردیابی برداشت انبار مرکزی در سند تعویض */
   buildCentralWithdrawNote,
   centralWithdrawGroups,
@@ -120,6 +121,7 @@ import type {
   ReturnLookup,
   ReturnLookupItem,
   ReturnItemStock,
+  InvoiceSettlementProfile,
   InvoicePaymentRow,
   InvoicePaymentsView,
   AddInvoicePaymentInput,
@@ -133,7 +135,7 @@ import type {
   CreditSettlementRow,
   CreditReportResult,
   ReturnListRow,
-  StoreCreditRow,
+  StoreCreditSafeRow,
   SaleAccountingStatements,
   PagedRows,
   SaleReportPage
@@ -142,6 +144,20 @@ import type { Prisma } from '@prisma/client'
 
 /** هر `IN` گزارش حداکثر ۵۰۰ شناسه داشته باشد؛ سقف امن برای SQLite و Prisma. */
 const REPORT_IN_CHUNK = 500
+
+/** مرز خروجیِ جریان فروش: credential فقط در main می‌ماند، نه پاسخ IPC/POS. */
+function shapeStoreCreditSafe(row: any): StoreCreditSafeRow {
+  const shaped = shapeStoreCredit(row)
+  const { code: _redeemableCode, legacyCode: _legacyCode, ...safe } = shaped
+  return { ...safe, publicReference: `اعتبار #${safe.id}` }
+}
+
+/** نتیجهٔ صدور از اضافه‌دریافت هم credential ندارد؛ مدل DB همچنان کامل است. */
+function shapeOverpayCreditSafe(row: OverpayCreditResult | null): OverpayCreditSafeResult | null {
+  if (!row) return null
+  const { code: _redeemableCode, ...safe } = row
+  return { ...safe, publicReference: `اعتبار #${safe.id}` }
+}
 
 function reportIdChunks(ids: Iterable<number>): number[][] {
   const unique = [...new Set([...ids].map(Number).filter((id) => Number.isFinite(id)))]
@@ -1760,18 +1776,18 @@ async function auditOverpayChanges(
 async function overpayCreditBacking(
   tx: Prisma.TransactionClient,
   invoiceId: number
-): Promise<{ realOverpay: number; committed: number; available: number; codes: string[] }> {
+): Promise<{ realOverpay: number; committed: number; available: number; creditIds: number[] }> {
   const credits = await tx.storeCredit.findMany({
     where: { sourceInvoiceId: invoiceId, source: CreditSource.OVERPAY },
-    select: { code: true, amount: true, usedAmount: true, status: true, voidedAt: true, deletedAt: true }
+    select: { id: true, amount: true, usedAmount: true, status: true, voidedAt: true, deletedAt: true }
   })
   let committed = 0
-  const codes: string[] = []
+  const creditIds: number[] = []
   for (const c of credits as any[]) {
     const dead = c.status === StoreCreditStatus.CANCELED || !!c.voidedAt || !!c.deletedAt
     const part = dead ? Math.max(0, toNumberRial(c.usedAmount ?? 0)) : Math.max(0, toNumberRial(c.amount))
     committed += part
-    if (part > 0) codes.push(String(c.code))
+    if (part > 0) creditIds.push(Number(c.id))
   }
   const pays = await tx.payment.findMany({
     // ممیزی A88-03 — اضافه‌دریافتِ پرداخت باطل دیگر «اضافه‌دریافت واقعی» نیست
@@ -1791,7 +1807,7 @@ async function overpayCreditBacking(
     if (bucket === 'exchangeCredit' || bucket === 'storeCredit') continue
     realOverpay += Math.max(0, toNumberRial(p.overpayAmount ?? 0))
   }
-  return { realOverpay, committed, available: Math.max(0, realOverpay - committed), codes }
+  return { realOverpay, committed, available: Math.max(0, realOverpay - committed), creditIds }
 }
 
 async function checkOverpayCreditBacking(
@@ -1804,11 +1820,11 @@ async function checkOverpayCreditBacking(
   if (shortfall <= 0) return 0
   const inv = await tx.saleInvoice.findUnique({ where: { id: invoiceId }, select: { receiptNo: true } })
   const receipt = faDigits(inv?.receiptNo ?? invoiceId)
-  const codes = b.codes.map((c) => `«${c}»`).join('، ')
+  const references = b.creditIds.map((id) => `اعتبار #${id}`).join('، ')
   if ((opts.overpayCreditShortfall ?? 'throw') === 'throw')
     throw new BusinessError(
       `این عملیات انجام نشد: از «مبلغ اضافه‌ی دریافتی» فاکتور ${receipt} قبلاً ${money(b.committed)} ریال ` +
-        `اعتبار خرید صادر شده (${codes})، ولی بعد از این تغییر اضافه‌دریافت واقعی فاکتور فقط ` +
+        `اعتبار خرید صادر شده (${references})، ولی بعد از این تغییر اضافه‌دریافت واقعی فاکتور فقط ` +
         `${money(b.realOverpay)} ریال می‌ماند؛ یعنی ${money(shortfall)} ریال اعتبار بی‌پشتوانه می‌شد.\n` +
         'اگر آن اعتبار هنوز مصرف نشده، اول در «مدیریت اعتبار خرید» باطلش کنید و بعد دوباره تلاش کنید؛ ' +
         'اگر مصرف شده، با مدیر هماهنگ کنید.'
@@ -1818,9 +1834,15 @@ async function checkOverpayCreditBacking(
     entity: 'SaleInvoice',
     entityId: invoiceId,
     userId: opts.userId ?? null,
-    after: JSON.stringify({ needsManagerReview: true, overpayCreditCommitted: b.committed, realOverpay: b.realOverpay, shortfall, codes: b.codes }),
+    after: JSON.stringify({
+      needsManagerReview: true,
+      overpayCreditCommitted: b.committed,
+      realOverpay: b.realOverpay,
+      shortfall,
+      creditIds: b.creditIds
+    }),
     note:
-      `⚠️ نیاز به رسیدگی مدیر: اعتبار خرید صادرشده از اضافه‌دریافت فاکتور ${receipt} (${codes}) ` +
+      `⚠️ نیاز به رسیدگی مدیر: اعتبار خرید صادرشده از اضافه‌دریافت فاکتور ${receipt} (${references}) ` +
       `${money(shortfall)} ریال از اضافه‌دریافت واقعی فعلی بیشتر است (تعهد ${money(b.committed)} · ` +
       `اضافه‌دریافت واقعی ${money(b.realOverpay)} ریال). اعتبار را باطل/اصلاح یا مابه‌التفاوت را از مشتری وصول کنید.`
   })
@@ -2352,6 +2374,7 @@ async function writeSaleChargeOverrideAudit(
   })
 }
 
+/** خام و فقط در main: برای ساخت/چاپ همان سند اعتبار، نه پاسخ IPC. */
 export interface OverpayCreditResult {
   id: number
   code: string
@@ -2361,6 +2384,9 @@ export interface OverpayCreditResult {
   invoiceId: number
   receiptNo: number
 }
+
+/** پاسخ امن عملیات فروش برای اعتبار اضافه‌دریافت. */
+export type OverpayCreditSafeResult = Omit<OverpayCreditResult, 'code'> & { publicReference: string }
 
 async function issueOverpayCreditTx(
   tx: Prisma.TransactionClient,
@@ -2377,6 +2403,12 @@ async function issueOverpayCreditTx(
      * SQLite تک‌نویسنده همان بن‌بست شناخته‌شده است.
      */
     managerApproved?: boolean
+    /**
+     * نشست ۳۱۶ — وقتی اعتبار از مسیر «برگشت» صادر می‌شود، شناسه‌ی سند برگشت
+     * این‌جا سوار می‌شود تا (۱) رسید برگشت آن را ببیند و (۲) ابطال سند برگشت
+     * اعتبار را هم خودکار باطل کند (تا امروز تصویرِ دوم سوراخ پول می‌ساخت).
+     */
+    returnId?: number | null
   }
 ): Promise<OverpayCreditResult> {
   const amount = Math.round(Number(input.amount))
@@ -2420,6 +2452,8 @@ async function issueOverpayCreditTx(
     amount,
     source: CreditSource.OVERPAY,
     sourceInvoiceId: inv.id,
+    // نشست ۳۱۶ — لینک به سند برگشت وقتی اعتبار از آن مسیر صادر شده
+    returnId: input.returnId ?? null,
     customerId: inv.customerId ?? null,
     customerName: (inv as any).customer?.name ?? null,
     days: exchangeCreditDays({
@@ -2441,11 +2475,11 @@ async function issueOverpayCreditTx(
     entityId: credit.id,
     userId: input.userId ?? null,
     after: JSON.stringify({
-      code: credit.code, amount, source: CreditSource.OVERPAY, invoiceId: inv.id, receiptNo: inv.receiptNo,
+      creditId: credit.id, amount, source: CreditSource.OVERPAY, invoiceId: inv.id, receiptNo: inv.receiptNo,
       paymentId: input.paymentId ?? null, realOverpay: b.realOverpay, committedBefore: b.committed
     }),
     note:
-      `صدور اعتبار «${credit.code}» به مبلغ ${money(amount)} ریال از اضافه‌دریافت فاکتور ${faDigits(inv.receiptNo)}` +
+      `صدور اعتبار #${credit.id} به مبلغ ${money(amount)} ریال از اضافه‌دریافت فاکتور ${faDigits(inv.receiptNo)}` +
       (input.paymentSeq ? ` (پرداختی ${faDigits(input.paymentSeq)})` : '') +
       ` · پشتوانه: پول واقعاً دریافت‌شده · آزاد قبل از صدور ${money(b.available)} ریال · غیرقابل نقد شدن`
   })
@@ -2474,6 +2508,13 @@ function shapePaymentRow(p: any): InvoicePaymentRow {
   const paidAt = p.paidAt instanceof Date ? p.paidAt : new Date(p.paidAt)
   const kind = (p.kind ?? PaymentEntryKind.CASH) === PaymentEntryKind.CHEQUE ? 'CHEQUE' : 'CASH'
   const status = kind === 'CHEQUE' ? (p.chequeStatus ?? ChequeStatus.PENDING) : null
+  /**
+   * Paymentهای تسویه با اعتبار ممکن است در داده‌های تاریخی reference/noteای
+   * داشته باشند که کد قابل‌مصرف را تکرار کرده است. نمای استاندارد پرداختی‌ها
+   * برای کاربر عادی یک مسیر گزارش است، نه مسیر reveal؛ پس پیش از ساخت DTO آن
+   * دو متن redacted می‌شوند. افشای مدیر فقط از IPC اختصاصی اعتبار انجام می‌شود.
+   */
+  const isStoreCredit = (p.method?.kind ?? '') === 'STORE_CREDIT' || p.storeCreditId != null
   const chequeHistoryText =
     Array.isArray(p.chequeStatusHistory) && p.chequeStatusHistory.length
       ? p.chequeStatusHistory
@@ -2493,9 +2534,9 @@ function shapePaymentRow(p: any): InvoicePaymentRow {
     kind,
     amount: toNumberRial(p.amount),
     methodId: p.methodId,
-    methodLabel: p.method?.label ?? (kind === 'CHEQUE' ? 'چک' : 'پرداخت'),
-    reference: p.reference ?? null,
-    note: p.note ?? null,
+    methodLabel: isStoreCredit ? 'تسویه با اعتبار خرید' : (p.method?.label ?? (kind === 'CHEQUE' ? 'چک' : 'پرداخت')),
+    reference: isStoreCredit ? null : (p.reference ?? null),
+    note: isStoreCredit ? null : (p.note ?? null),
     dateJalali: p.paidAtJalali || toJalaliDate(paidAt),
     time: p.paidAtTime || toClock(paidAt),
     chequeNo: p.chequeNo ?? null,
@@ -2512,8 +2553,8 @@ function shapePaymentRow(p: any): InvoicePaymentRow {
     clearedShiftId: p.clearedShiftId ?? null,
     // بخش ۸: «مبلغ اضافه‌ی دریافتی» همان لحظه‌ی ثبت حساب و روی همین رکورد ذخیره شده
     overpayAmount: Math.max(0, toNumberRial(p.overpayAmount ?? 0)),
-    // بخش ۶: این ردیف مصرف یک «بارکد اعتبار خرید بعدی» است؟ (پول نقد نیست)
-    isStoreCredit: (p.method?.kind ?? '') === 'STORE_CREDIT' || p.storeCreditId != null,
+    // بخش ۶: این ردیف مصرف اعتبار خرید است؟ (پول نقد نیست؛ کد هرگز در DTO نیست)
+    isStoreCredit,
     // ---- کار الف (جلسه ۳۶): مقصد پول ----
     destination: normalizePaymentDestination(p.destination),
     destinationLabel: paymentDestinationLabel(p.destination),
@@ -2604,13 +2645,21 @@ async function assertPaymentMethodExists(tx: Prisma.TransactionClient, methodId:
   assertNotCreditMethodKind(m.kind)
 }
 
-/** AUDIT-S142-01/02 — پیام واحد رد روش سیستمی اعتبار در مسیرهای پرداخت عمومی. */
+/** AUDIT-S142-01/02 + S335 — پیام واحد رد روش‌های غیرقابل‌ثبت مستقیم در مسیرهای پرداخت عمومی. */
 const CREDIT_METHOD_DIRECT_BLOCKED =
-  'پرداخت با اعتبار خرید فقط با کد اعتبار از پنل فروش ثبت می‌شود و هرگز جایگزین نقد نمی‌شود. ' +
-  'ارزش کالای برگشتی هم فقط از خود سند تعویض ثبت می‌شود. روش پرداخت دیگری انتخاب کنید؛ هیچ تغییری ذخیره نشد.'
+  'روش «اعتباری» و اعتبار خرید، پرداختِ مستقیم نیستند: فروش نسیه با ثبت مبلغ کمتر/صفر ساخته می‌شود و ' +
+  'مصرف اعتبار خرید فقط با کد اعتبار از پنل فروش ثبت می‌شود. ارزش کالای برگشتی هم فقط از خود سند تعویض ثبت می‌شود. ' +
+  'یک روش نقدی، کارتی یا سفارشیِ مجاز انتخاب کنید؛ هیچ تغییری ذخیره نشد.'
 
+/**
+ * `PaymentKind.CREDIT` روشِ «فروش نسیه» است، نه پول دریافتی. اگر از راه
+ * payments وارد می‌شد، بدون نقد/کارت، فاکتور را تسویه‌شده نشان می‌داد و کنترل
+ * صندوق را دور می‌زد. نسیه فقط با پرداختِ کم‌تر از مبلغ فاکتور ثبت می‌شود.
+ * دو روش سیستمی دیگر هم فقط از ledger خودشان مجازند.
+ */
 function assertNotCreditMethodKind(kind: string | null | undefined): void {
-  if (kind && NON_CASH_PAYMENT_KINDS.includes(kind)) throw new BusinessError(CREDIT_METHOD_DIRECT_BLOCKED)
+  if (kind === PaymentKind.CREDIT || (kind != null && NON_CASH_PAYMENT_KINDS.includes(kind)))
+    throw new BusinessError(CREDIT_METHOD_DIRECT_BLOCKED)
 }
 
 /** تاریخ شمسی ورودی کاربر → Date (با پیام فارسی روشن در صورت خرابی). */
@@ -3190,6 +3239,15 @@ async function runReturn(
       })
       const redeemedAmt = Math.max(0, toNumberRial(redeemedOnInvoice._sum.amount ?? 0))
       /**
+       * پرداخت اعتبار خرید، پولِ قابل‌برگشت از صندوق نیست: در برگشت کامل، همان
+       * دفتر مصرف معکوس و خود اعتبار دوباره فعال می‌شود. بنابراین هم گیتِ
+       * «اضافه‌دریافت» و هم تشخیصِ بدهیِ بعد از برگشت باید فقط پول واقعی را
+       * ببینند. در غیر این صورت، برگشت کاملِ یک فروش ۱۰۰٪ اعتباری به اشتباه
+       * درخواست تأیید «اضافه‌دریافت» می‌کرد، با این که هیچ پولی از صندوق خارج
+       * نشده و اعتبار همان لحظه قرار است بازگردد.
+       */
+      const cashLikeReceived = await cashLikeReceivedOf(tx, invoice.id, debtBefore.received)
+      /**
        * نشست ۱۹۷ — سقف خروج = پول واقعی (نقد/کارت/چک پاس‌شده)، نه `paidTotal`
        * و نه `EXCHANGE_CREDIT`. اعتبار خرج‌شده دوباره اعتبار می‌شود، نقد نه.
        */
@@ -3211,7 +3269,7 @@ async function runReturn(
        */
       const afterNone = remainingOf({
         grandTotal: toNumberRial(invoice.grandTotal),
-        received: debtBefore.received,
+        received: cashLikeReceived,
         returnedValue: debtBefore.returnedValue + returnTotal,
         refundFromReceived: debtBefore.refundFromReceived
       })
@@ -3277,14 +3335,12 @@ async function runReturn(
         refundAmount: refund?.amount ?? 0
       })
       /**
-       * نشست ۱۹۷ — اضافه‌دریافت برگشت روی سند تعویض را با پول واقعی بسنج، نه با
-       * EXCHANGE_CREDIT؛ وگرنه برگشت نسیه با تبدیل به NONE هشدار اضافه‌دریافت
-       * جعلی می‌دهد و مسیر «بله ثبت کن» اعتبار می‌سازد.
+       * اضافه‌دریافت برگشت را در همه‌ی نوع فاکتورها با پول واقعی بسنج؛ نه
+       * EXCHANGE_CREDIT و نه STORE_CREDIT نقد نیستند. اعتبار مصرف‌شده در برگشت
+       * کامل از طریق `reverseInvoiceRedemptions` برمی‌گردد، نه با ساختن یک
+       * اضافه‌دریافت یا الزام تایید مدیر.
        */
-      const overpayReceived =
-        invoice.orderType === OrderType.EXCHANGE
-          ? await cashLikeReceivedOf(tx, invoice.id, debtBefore.received)
-          : debtBefore.received
+      const overpayReceived = await cashLikeReceivedOf(tx, invoice.id, debtBefore.received)
       const after = remainingOf({
         grandTotal: toNumberRial(invoice.grandTotal),
         received: overpayReceived,
@@ -3482,7 +3538,7 @@ async function runReturn(
           returnTotal,
           refundMethod: refund.method,
           refundAmount: refund.amount,
-          storeCreditCode: refundCredit?.code ?? null,
+          storeCreditId: refundCredit?.id ?? null,
           cashLeftDrawer: refund.method === RefundMethod.CASH,
           fullAmountOverride: !!opts.fullRefundOverride
         }),
@@ -3566,7 +3622,9 @@ async function runReturn(
           invoiceId: invoice.id,
           amount: creditAmt,
           userId: input.userId ?? null,
-          managerApproved: opts.overpayManagerApproved
+          managerApproved: opts.overpayManagerApproved,
+          // نشست ۳۱۶ — لینک به سند برگشت: رسید برگشت اعتبار را ببیند و void سند، اعتبار را هم باطل کند
+          returnId: ret.id
         })
     }
     /** نشست ۱۶۴ · Y22 · بند ۴-۵۲ — چک در جریان: صفر شدن بدهی ⇒ void خودکار؛ جزئی ⇒ علامت بازبینی */
@@ -3653,6 +3711,23 @@ export const salesService = {
   async create(input: CreateSaleInput) {
     validateSaleInput(input)
 
+    /** گارد افزایشی پرداخت ترکیبی: مسیرهای قدیمی بدون splitPayment دست‌نخورده‌اند. */
+    if (input.splitPayment === true) {
+      const rows = input.payments ?? []
+      if (rows.length !== 2 || rows.some((row) => !row || row.amount <= 0))
+        throw new BusinessError('پرداخت ترکیبی باید دقیقاً دو سهم مثبتِ نقد و کارت داشته باشد.')
+      const ids = [...new Set(rows.map((row) => row.methodId))]
+      const methods = await prisma.paymentMethod.findMany({ where: { id: { in: ids } }, select: { id: true, kind: true } })
+      const kinds = new Map(methods.map((method) => [method.id, method.kind]))
+      const cash = rows.filter((row) => kinds.get(row.methodId) === PaymentKind.CASH && row.destination === PaymentDestination.CASH)
+      const card = rows.filter((row) => kinds.get(row.methodId) === PaymentKind.CARD && row.destination === PaymentDestination.CARD)
+      if (cash.length !== 1 || card.length !== 1)
+        throw new BusinessError('پرداخت ترکیبی فقط یک سهم نقدی با مقصد صندوق و یک سهم کارتی با مقصد کارت‌خوان می‌پذیرد.')
+      const totals = saleTotals(input)
+      if (totals.paidTotal < totals.grandTotal && input.allowPartial !== true)
+        throw new BusinessError('جمع نقد و کارت از مبلغ فاکتور کمتر است. برای ثبت نسیه/پرداخت جزئی باید آن گزینه را صریح انتخاب کنید.')
+    }
+
     /**
      * جلسه ۲۱ · §۸ — «قفل موقت ورود کد اعتبار» *قبل از* باز کردن تراکنش.
      *
@@ -3703,11 +3778,24 @@ export const salesService = {
      *
      * ⚠️ قفل خاموش ⇒ `assertPanelPassword` بی رمز `OPEN` می‌دهد (سیاست موجود
      * «قفل ماژول‌ها»، اینجا سیاست تازه‌ای اختراع نمی‌شود).
+     *
+     * نشست ۳۱۵ — دقیق‌سازی گیت رمز (هم‌راستا با رندرر و با متنِ خودِ راهنمای
+     * پنجره): رمز مدیر فقط وقتی لازم است که برنامه‌ی کسر مبدأی **غیر از انبار
+     * فروشگاه** داشته باشد (`warehouseEntriesOf`). برنامه‌ی «همه از انبار
+     * فروشگاه» — یعنی همان سناریوی رایج «کالا فیزیکی آمده ولی انباردار موجودی
+     * سیستم را عقب انداخته» — با رضایت دکمه‌ایِ فروشنده تا منفی ثبت می‌شود؛
+     * «موجودی کافی نیست» در این مسیر همیشه هشدار بوده، نه مانع. قبلاً رمز برای
+     * *هر* برنامه‌ی کسر در فروش تکی لازم بود و ثبتِ واقعیِ فروش بی‌رمز رد
+     * می‌شد (فاکتور ساخته نمی‌شد و انبار منفی نمی‌رفت — درحالی‌که UI دیگر
+     * برای مسیر فروشگاهی رمز نمی‌خواست و کاربر با بن‌بست مواجه می‌شد).
+     * خط دفاع سرویسیِ انتخاب انبار *دیگر* دست‌نخورده باقی می‌ماند.
      * =====================================================================
      */
-    const posPlanRequested =
-      deductInventory && normalizePlan((input as any).stockPlan) != null && orderType === OrderType.INTERNAL
-    if (posPlanRequested)
+    const posRequestedPlan =
+      deductInventory && orderType === OrderType.INTERNAL ? normalizePlan((input as any).stockPlan) : null
+    const posPlanRequested = posRequestedPlan != null
+    const posPlanHasForeignSource = posPlanRequested && warehouseEntriesOf(posRequestedPlan).length > 0
+    if (posPlanHasForeignSource)
       await assertPanelPassword(
         PANEL_KEYS.posCentralWithdrawToggle,
         input.panelPassword ?? null,
@@ -3754,6 +3842,16 @@ export const salesService = {
         after: { issuedAtJalali: input.issuedAtJalali ?? null, orderType }
       })
       const t = saleTotals(input)
+      const defaults = await saleDefaultsWith(tx)
+      /**
+       * feature flag پرداخت ترکیبی: UI فقط راهنماست. درخواست IPC با مبلغِ دلخواه
+       * اعتبار وقتی مدیر این قابلیت را بسته باشد، پیش از ساخت هر سند رد می‌شود.
+       * `null` همان مصرف کاملِ سازگار با داده/رفتار قدیمی است.
+       */
+      if (input.storeCreditAmount != null && defaults.splitStoreCreditPayment === false)
+        throw new BusinessError(
+          'پرداخت ترکیبی اعتبار خرید در تنظیمات فروش خاموش است؛ مبلغ دلخواهِ مصرف اعتبار قابل ثبت نیست.'
+        )
 
       /**
        * =====================================================================
@@ -3887,7 +3985,6 @@ export const salesService = {
        * «مشتری راه دور» در هر دو پنل یک مهلت مستقل و بلندتر دارد (پیش‌فرض ۱۴ روز).
        * -------------------------------------------------------------------
        */
-      const defaults = await saleDefaultsWith(tx)
       const isWholesale = orderType === OrderType.WHOLESALE
       const withCode = isWholesale ? defaults.wholesaleReturnCode !== false : true
       const remoteCustomer = input.remoteCustomer === true
@@ -4049,8 +4146,8 @@ export const salesService = {
        * یک بارکد جدید به مشتری برمی‌گردد (سوخت نمی‌شود).
        * -------------------------------------------------------------------
        */
-      let storeCredit: StoreCreditRow | null = null
-      let storeCreditRemainder: StoreCreditRow | null = null
+      let storeCredit: StoreCreditSafeRow | null = null
+      let storeCreditRemainder: StoreCreditSafeRow | null = null
       let storeCreditApplied = 0
       let settledPaidTotal = t.paidTotal
       const creditCode = String(input.storeCreditCode ?? '').trim()
@@ -4078,8 +4175,8 @@ export const salesService = {
           seq: (input.payments ?? []).length + 1
         })
         storeCreditApplied = redeemed.applied
-        storeCredit = shapeStoreCredit(redeemed.credit)
-        storeCreditRemainder = redeemed.remainder ? shapeStoreCredit(redeemed.remainder) : null
+        storeCredit = shapeStoreCreditSafe(redeemed.credit)
+        storeCreditRemainder = redeemed.remainder ? shapeStoreCreditSafe(redeemed.remainder) : null
         // پرداختی جدید اضافه شد ⇒ جمع پرداختی و علامت «تسویه‌شده» بازمحاسبه می‌شوند
         const settle = await recalcSettlement(tx, invoice.id)
         settledPaidTotal = settle.paidTotal
@@ -4143,8 +4240,8 @@ export const salesService = {
         settled: settledPaidTotal >= t.grandTotal,
         /** نشست ۶۲ — مبلغ اضافه‌ی دریافتی همین فاکتور (۰ = عادی) */
         overpayAmount: saleOverpay,
-        /** نشست ۶۲ — کد اعتبار صادرشده از مبلغ اضافه (null = مرحله ۴) */
-        overpayCredit
+        /** نشست ۶۲ — مرجع امنِ اعتبار صادرشده از مبلغ اضافه (null = مرحله ۴) */
+        overpayCredit: shapeOverpayCreditSafe(overpayCredit)
       }
     }, TX_OPTIONS)
   },
@@ -4625,7 +4722,7 @@ export const salesService = {
       const overpayNote =
         overpayIncrease > 0
           ? ` · دریافت پول اضافه (با تایید فروشنده): ${money(overpayIncrease)} ریال` +
-            (overpayCredit ? ` ⇐ کد اعتبار خرید ${overpayCredit.code} (غیرقابل نقد شدن)` : '')
+            (overpayCredit ? ` ⇐ اعتبار #${overpayCredit.id} صادر شد (غیرقابل نقد شدن)` : '')
           : ''
       await audit(tx, {
         action: AuditAction.SALE_UPDATE,
@@ -4691,8 +4788,8 @@ export const salesService = {
         keptPayments: keepPayments,
         /** نشست ۶۳ — افزایش اضافه‌دریافت با همین ویرایش (۰ = عادی) */
         overpayAmount: overpayIncrease,
-        /** نشست ۶۳ — کد اعتبار صادرشده از آن (null = مرحله ۴) */
-        overpayCredit
+        /** نشست ۶۳ — مرجع امنِ اعتبار صادرشده از آن (null = مرحله ۴) */
+        overpayCredit: shapeOverpayCreditSafe(overpayCredit)
       }
     }, TX_OPTIONS)
   },
@@ -5363,6 +5460,76 @@ export const salesService = {
     const expiresAt = invoice.returnCodeExpiresAt ?? returnCodeExpiry(issuedAt, 7)
     const daysLeft = Math.max(0, Math.ceil((expiresAt.getTime() - now.getTime()) / DAY_MS))
 
+    // نشست ۳۱۹ — پروفایل تسویه‌ی فاکتور مرجع (فقط‌خواندنی)
+    const paidNow = toNumberRial(invoice.paidTotal)
+    const grandNow = toNumberRial(invoice.grandTotal)
+    const cashLike = await cashLikeReceivedOf(prisma, invoice.id, paidNow)
+    const prevAdj = adjustmentsOrEmpty(await debtAdjustmentsByInvoice(prisma, [invoice.id]), invoice.id)
+    const previouslyRefunded = Math.max(0, Math.round(prevAdj.refundFromReceived ?? 0))
+    const cashLikeRefundableNow = await cashLikeRefundableOf(prisma, invoice, previouslyRefunded)
+    const remResult = await invoiceRemaining(prisma, invoice.id, grandNow, paidNow)
+    const remainingDebt = remResult.remaining
+
+    const rawRedemptions = await prisma.storeCreditRedemption.findMany({
+      where: { invoiceId: invoice.id, reversedAt: null },
+      select: { creditId: true, code: true, amount: true }
+    })
+    let credits: Array<{ id: number; status: string }> = []
+    if (rawRedemptions.length > 0) {
+      credits = await prisma.storeCredit.findMany({
+        where: { id: { in: rawRedemptions.map((r) => r.creditId) } },
+        select: { id: true, status: true }
+      })
+    }
+    const creditStatusMap = new Map(credits.map((c) => [c.id, String(c.status)]))
+
+    const maskCredit = (c: string) => {
+      const s = String(c ?? '').trim()
+      if (!s) return '—'
+      if (s.length <= 4) return '****'
+      return '****-' + s.slice(-4)
+    }
+
+    const creditRedemptions = rawRedemptions.map((r) => ({
+      creditId: r.creditId,
+      code: maskCredit(r.code),
+      amount: toNumberRial(r.amount),
+      creditStatus: creditStatusMap.get(r.creditId) ?? 'USED'
+    }))
+
+    const isExchangeDoc = invoice.sourceInvoiceId != null || invoice.orderType === OrderType.EXCHANGE
+    let sourceReceiptNo: number | null = null
+    if (invoice.sourceInvoiceId != null) {
+      const parent = await prisma.saleInvoice.findUnique({
+        where: { id: invoice.sourceInvoiceId },
+        select: { receiptNo: true }
+      })
+      sourceReceiptNo = parent?.receiptNo ?? null
+    }
+
+    let profileKind: InvoiceSettlementProfile['kind'] = 'PAID_CASHLIKE'
+    if (isExchangeDoc) {
+      profileKind = 'EXCHANGE_DOC'
+    } else if (creditRedemptions.length > 0) {
+      profileKind = 'STORE_CREDIT_FUNDED'
+    } else if (cashLike === 0) {
+      profileKind = 'CREDIT_ONLY'
+    } else if (remainingDebt > 0 && cashLike > 0) {
+      profileKind = 'MIXED'
+    } else {
+      profileKind = 'PAID_CASHLIKE'
+    }
+
+    const settlementProfile: InvoiceSettlementProfile = {
+      kind: profileKind,
+      cashLikeReceived: cashLike,
+      cashLikeRefundableNow,
+      remainingDebt,
+      creditRedemptions,
+      isExchangeDoc,
+      sourceReceiptNo
+    }
+
     return {
       invoiceId: invoice.id,
       receiptNo: invoice.receiptNo,
@@ -5392,7 +5559,8 @@ export const salesService = {
       deductInventory: invoice.deductInventory,
       returnedTotal: returnedTotalOf(invoice),
       items,
-      warnings: [...new Set(warnings)]
+      warnings: [...new Set(warnings)],
+      settlementProfile
     }
   },
 
@@ -5419,6 +5587,17 @@ export const salesService = {
       // نشست ۱۸۳ — رمز دوم/سوم پنل «برگشت از فروش» هم پذیرفته می‌شود
     // نشست ۱۸۴ — پول واقعی از کشو خارج می‌شود؛ «همیشه رمز» حتی با قفل خاموش.
     await assertPanelPasswordStrict(PANEL_KEYS.salesReturn, input.managerPassword, 'بازپرداخت مبلغ کاملِ بدون کسر تخفیف')
+    }
+    // نشست ۳۱۹ — گیت قفل کارت‌خوان: بازپرداخت با کارت‌خوان نیاز به تأیید مدیر دارد
+    if (input.refundMethod === RefundMethod.CARD) {
+      const o = input.cardPosOverride
+      if (!o || !o.acknowledgedNoReverse || !String(o.reason ?? '').trim()) {
+        throw new BusinessError(
+          'بازپرداخت با کارت‌خوان قفل است: دستگاه‌های پوز بانکی امکان واریز برگشت وجه به کارت را ندارند.\n' +
+            'از «کارت‌به‌کارت (تعهد مدیر)» استفاده کنید یا مدیر با ثبت رمز و دلیل آن را تأیید کند.'
+        )
+      }
+      await assertManagerPassword(o.managerPassword, 'بازپرداخت کارتی (کارت‌خوان) برگشت')
     }
     // نشست ۶۳ (S63-2) — رمز مدیر دوره‌ی بسته قبل از تراکنش
     const periodApproved = await periodLockService.preverify({
@@ -5450,7 +5629,16 @@ export const salesService = {
       // فیلدهای کمکیِ مسیر تعویض (رکوردهای خام) روی سیم IPC نمی‌روند
       // بند ۱۱ — مسیر برگشت ساده همیشه روش بازپرداخت را اجباری می‌کند
       const full = await runReturn(tx, input, { applyRefund: true, fullRefundOverride, overpayManagerApproved })
-      const { returnRecord: _rec, invoice: _inv, returnedLines: _lines, ...res } = full
+      // دادهٔ خام فقط برای ادامهٔ تراکنش است؛ پاسخ استاندارد هیچ credential ندارد.
+      const {
+        returnRecord: _rec,
+        invoice: _inv,
+        returnedLines: _lines,
+        storeCreditCode: _storeCreditCode,
+        storeCredit: rawStoreCredit,
+        overpayCredit: rawOverpayCredit,
+        ...res
+      } = full
 
       /**
        * ---------------- جلسه ۱۷ · بند ۱ — «کارت‌به‌کارت توسط مدیر» ----------------
@@ -5520,7 +5708,14 @@ export const salesService = {
           }
         })
       }
-      return { ...res, cardTransfer }
+      return {
+        ...res,
+        /** فقط مرجع امنِ اعتبار صادرشده برای برگشت. */
+        storeCredit: rawStoreCredit ? shapeStoreCreditSafe(rawStoreCredit) : null,
+        storeCreditReference: rawStoreCredit ? `اعتبار #${rawStoreCredit.id}` : null,
+        overpayCredit: shapeOverpayCreditSafe(rawOverpayCredit),
+        cardTransfer
+      }
     }, TX_OPTIONS)
   },
 
@@ -5583,6 +5778,18 @@ export const salesService = {
       throw new BusinessError(
         'روش بازپرداخت مابه‌التفاوت نامعتبر است (نقد / کارت / اعتبار خرید / کارت‌به‌کارت توسط مدیر).'
       )
+
+    // نشست ۳۱۹ — گیت قفل کارت‌خوان برای تعویض
+    if (refundMode === 'CARD') {
+      const o = input.cardPosOverride
+      if (!o || !o.acknowledgedNoReverse || !String(o.reason ?? '').trim()) {
+        throw new BusinessError(
+          'بازپرداخت با کارت‌خوان قفل است: دستگاه‌های پوز بانکی امکان واریز برگشت وجه به کارت را ندارند.\n' +
+            'از «کارت‌به‌کارت (تعهد مدیر)» استفاده کنید یا مدیر با ثبت رمز و دلیل آن را تأیید کند.'
+        )
+      }
+      await assertManagerPassword(o.managerPassword, 'بازپرداخت کارتی (کارت‌خوان) تعویض')
+    }
 
     /**
      * ---------------- بند ۱۸ — قیمت دستیِ کالای جایگزین ----------------
@@ -6347,7 +6554,7 @@ export const salesService = {
           exchangeTotal,
           diff,
           settlement,
-          storeCreditCode: credit?.code ?? null,
+          storeCreditId: credit?.id ?? null,
           returnedItems: back.returnedLines.map((i: any) => ({ variantId: i.variantId, qty: i.qty })),
           replacementItems: repLines.map((l) => ({ variantId: l.variantId, qty: l.qty, unitPrice: l.unitPrice })),
           /** جلسه ۵۰ · مرحله ۱-ب — برداشت از انبار مرکزی، به تفکیک انبار */
@@ -6364,7 +6571,7 @@ export const salesService = {
                 (debtCut > 0 && -diff - debtCut > 0 ? ' و ' : '') +
                 (-diff - debtCut > 0
                   ? credit
-                    ? `${money(-diff - debtCut)} ریال بارکد اعتبار «${credit.code}» صادر شد`
+                    ? `${money(-diff - debtCut)} ریال اعتبار #${credit.id} صادر شد`
                     : cardToCard > 0
                       ? `${money(cardToCard)} ریال کارت‌به‌کارت مدیر (در انتظار)`
                       : `${money(cashRefunded)} ریال ${refundMode === 'CARD' ? 'به کارت مشتری' : 'نقد از صندوق'} برگشت`
@@ -6387,7 +6594,8 @@ export const salesService = {
         diff,
         settlement,
         settlementLabel: EXCHANGE_SETTLEMENT_LABELS[settlement] ?? settlement,
-        storeCredit: credit ? shapeStoreCredit(credit) : null,
+        /** کد در نتیجهٔ عادی تعویض نیست؛ فقط مرجع امن برای ردیابی برمی‌گردد. */
+        storeCredit: credit ? shapeStoreCreditSafe(credit) : null,
         restockedQty: back.restockedQty ?? 0,
         /** ---- جلسه ۴۰ · کار ب ---- */
         restockPending: back.restockPending === true && releasedPending === 0,
@@ -6559,13 +6767,24 @@ export const salesService = {
          * EXCHANGE_CREDIT و STORE_CREDIT عمداً بیرون می‌مانند، وگرنه مابه‌التفاوتی
          * که هیچ‌وقت دریافت نشده، در گزارش «دریافتی» دیده می‌شد.
          */
-        const cashReceived = (ex?.payments ?? []).reduce((s, p) => {
-          const kind = p.method?.kind ?? ''
-          if (kind === PaymentKind.EXCHANGE_CREDIT || kind === PaymentKind.STORE_CREDIT) return s
-          if ((p.kind ?? PaymentEntryKind.CASH) === PaymentEntryKind.CHEQUE && p.chequeStatus !== ChequeStatus.CLEARED)
-            return s
-          return s + toNumberRial(p.amount)
-        }, 0)
+        /**
+         * گزارش تعویض نباید دریافت کارت را «نقد» بنامد. همان destination ذخیره‌شده
+         * روی Payment منبع حقیقت است؛ EXCHANGE_CREDIT/STORE_CREDIT و چکِ پاس‌نشده
+         * اساساً پول دریافتی نیستند.
+         */
+        const received = (ex?.payments ?? []).reduce(
+          (sum, p) => {
+            const kind = p.method?.kind ?? ''
+            if (kind === PaymentKind.EXCHANGE_CREDIT || kind === PaymentKind.STORE_CREDIT) return sum
+            if ((p.kind ?? PaymentEntryKind.CASH) === PaymentEntryKind.CHEQUE && p.chequeStatus !== ChequeStatus.CLEARED)
+              return sum
+            const amount = toNumberRial(p.amount)
+            if (p.destination === PaymentDestination.CARD) sum.card += amount
+            else sum.cash += amount
+            return sum
+          },
+          { cash: 0, card: 0 }
+        )
         const settlement = r.exchangeSettlement ?? ExchangeSettlement.NONE
         const creditRow = credit ? shapeStoreCredit(credit) : null
         return {
@@ -6601,8 +6820,10 @@ export const salesService = {
           diff: toNumberRial(r.exchangeDiff ?? 0),
           settlement,
           settlementLabel: EXCHANGE_SETTLEMENT_LABELS[settlement] ?? settlement,
-          cashReceived,
-          storeCreditCode: creditRow?.code ?? r.storeCreditCode ?? null,
+          cashReceived: received.cash,
+          cardReceived: received.card,
+          /** کد قابل‌مصرف فقط برای چاپ/مسیر مجوزدار است؛ گزارش شناسهٔ امن دارد. */
+          storeCreditReference: creditRow || r.storeCreditId ? `اعتبار #${creditRow?.id ?? r.storeCreditId}` : null,
           storeCreditAmount: creditRow?.amount ?? 0,
           storeCreditStatus: creditRow?.status ?? null,
           storeCreditStatusLabel: creditRow?.statusLabel ?? null,
@@ -6617,6 +6838,7 @@ export const salesService = {
       exchangeTotal: rows.reduce((s, r) => s + r.exchangeTotal, 0),
       diffTotal: rows.reduce((s, r) => s + r.diff, 0),
       cashReceivedTotal: rows.reduce((s, r) => s + r.cashReceived, 0),
+      cardReceivedTotal: rows.reduce((s, r) => s + r.cardReceived, 0),
       creditIssuedTotal: rows.reduce((s, r) => s + r.storeCreditAmount, 0),
       creditUsedTotal: rows.reduce(
         (s, r) => s + (r.storeCreditStatus === StoreCreditStatus.USED ? r.storeCreditAmount : 0),
@@ -7113,7 +7335,8 @@ export const salesService = {
       legacyAssumed: !r.refundMethod,
       invoiceUserName: r.invoice?.user?.displayName ?? 'مدیر',
       returnUserName: (r.userId != null ? umap.get(r.userId) : null) ?? 'مدیر',
-      storeCreditCode: r.storeCreditCode ?? null,
+      /** کد اعتبار از DTO گزارش برگشت حذف است؛ id فقط ردیابی غیرقابل‌مصرف است. */
+      storeCreditReference: r.storeCreditId ? `اعتبار #${r.storeCreditId}` : null,
       exchangeDiff: toNumberRial(r.exchangeDiff ?? 0),
       exchangeSettlement: r.exchangeSettlement ?? null,
       exchangeSettlementLabel: r.exchangeSettlement
@@ -8449,8 +8672,8 @@ export const salesService = {
         remainingBefore,
         /** کار الف: مقصد ثبت‌شده‌ی پول (برای پیام تأیید پنل) */
         destination,
-        /** نشست ۶۱ — کد اعتبار صادرشده از مبلغ اضافه (null = مرحله ۴: فقط ردیف دریافت پول اضافه) */
-        overpayCredit
+        /** نشست ۶۱ — مرجع امنِ اعتبار صادرشده از مبلغ اضافه (null = مرحله ۴: فقط ردیف دریافت پول اضافه) */
+        overpayCredit: shapeOverpayCreditSafe(overpayCredit)
       }
     }, TX_OPTIONS)
   },
@@ -8466,7 +8689,7 @@ export const salesService = {
     amount?: number | null
     userId?: number | null
     managerPassword?: string | null
-  }): Promise<OverpayCreditResult & { available: number }> {
+  }): Promise<OverpayCreditSafeResult & { available: number }> {
     if (input?.invoiceId == null) throw new BusinessError('فاکتوری برای صدور اعتبار اضافه‌دریافت مشخص نشده است.')
     const invoiceId = assertSafeInteger(input.invoiceId, 'شناسه فاکتور', 1)
     /**
@@ -8497,7 +8720,7 @@ export const salesService = {
       const res = await issueOverpayCreditTx(tx, {
         invoiceId, amount, userId: input?.userId ?? null, managerApproved
       })
-      return { ...res, available: Math.max(0, b.available - res.amount) }
+      return { ...shapeOverpayCreditSafe(res)!, available: Math.max(0, b.available - res.amount) }
     }, TX_OPTIONS)
   },
 

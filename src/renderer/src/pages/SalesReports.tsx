@@ -1,13 +1,15 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
+import { isPrintCancelledError } from '../lib/printErrors'
 import { exportTable } from '../lib/exportCsv'
 import { pageOfOutput, readAllReportPages, type ReadAllPagedResult } from '../lib/reportOutput'
 import ReportFilterBar, { channelsLabel, makeFilters, toServiceFilter, type ReportFilters } from '../components/ReportFilterBar'
 import ManagerGate from '../components/ManagerGate'
 import AccountingBlocks, { type DrillTarget } from '../components/AccountingBlocks'
+import BridgeDiagnosticsModal from '../components/BridgeDiagnosticsModal'
 import ReportExtraTables from '../components/ReportExtraTables'
 /**
  * جلسه ۱۸ — بدنه‌ی سه تب تازه. هر سه، کامپوننت‌های *مستقل*اند تا این فایل
@@ -35,6 +37,7 @@ import { dateOnlyTabNotice } from '@shared/reportTabScope'
 import OutOfShiftPanel from '../components/OutOfShiftPanel'
 import OverrideSessionsPanel from '../components/OverrideSessionsPanel'
 import InvoicePaymentsModal from '../components/InvoicePaymentsModal'
+import CreditSettlementModal from '../components/CreditSettlementModal'
 import { useSettings } from '../hooks/useSettings'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { MANAGER_ACCOUNT_ROW_LABEL, MANAGER_ACCOUNT_ROW_NOTE } from '@shared/enums'
@@ -45,7 +48,7 @@ import {
   destinationCells,
   DESTINATION_HEADERS
 } from '../lib/destinationCells'
-import { useManagerSession } from '../hooks/useManagerSession'
+import { usePanelOpen } from '../hooks/usePanelLocks'
 import { PANEL_KEYS } from '@shared/panels'
 import {
   ColGroup,
@@ -55,6 +58,11 @@ import {
 } from '../components/ResizableColumns'
 import { faDigits, money, isValidJalaliDate } from '@shared/jalali'
 import { physicalMoneyInDrawerAndCard, returnCreditAmountOf } from '@shared/accounting'
+import { buildNetToDrawer, splitDrawerPos } from '@shared/cashExplainer'
+import { DrawerVsPosSplit } from '../components/cash/DrawerVsPosSplit'
+import FinancialInspector from '../components/cash/FinancialInspector'
+import CreditLifecycleCard from '../components/cash/CreditLifecycleCard'
+import { NonCashDrawer } from '../components/cash/NonCashDrawer'
 import {
   creditOutstandingOf,
   fraudOutputRows,
@@ -93,18 +101,24 @@ import {
   dashboardCards,
   type CreditExportKind
 } from '@shared/creditUi'
-import type { CreditDashboard, StoreCreditRow } from '@shared/types'
+import type { CreditDashboard, StoreCreditSafeRow } from '@shared/types'
 import type {
   CreditInvoiceRow,
   CreditReportResult,
   CreditSettlementRow,
   ExchangeReportResult,
+  ExchangeReportRow,
   PagedRows,
   SaleReportResult,
   SaleReportPage,
   SaleReportRow,
   SaleItemReportRow,
-  SaleReportTotals
+  SaleReportTotals,
+  SaleAccountingStatements,
+  SaleBridgeBlock,
+  SaleBridgeRow,
+  SaleBridgeSource,
+  FinancialSourceKey
 } from '@shared/types'
 
 /**
@@ -200,7 +214,7 @@ function reportDataKey(
  * ستون مرده با «منبع» (تعویض/صدور دستی — ردیابی صدور بی‌فاکتور، بند ۴-۲۹) جایگزین شد.
  */
 const STORE_CREDIT_NOT_CASHABLE_TITLE = 'غیرقابل نقد شدن'
-const STORE_CREDIT_OUTPUT_HEADERS = ['کد اعتبار', 'شماره فیش مبدأ', 'تاریخ صدور', 'تاریخ انقضا', 'وضعیت', 'مبلغ', 'مصرف‌شده', 'مانده‌ی قابل مصرف', 'تاریخ مصرف', 'منبع']
+const STORE_CREDIT_OUTPUT_HEADERS = ['شناسهٔ امن اعتبار', 'شماره فیش مبدأ', 'تاریخ صدور', 'تاریخ انقضا', 'وضعیت', 'مبلغ', 'مصرف‌شده', 'مانده‌ی قابل مصرف', 'تاریخ مصرف', 'منبع']
 
 const SUMMARY_HEADERS = [
   'شماره فیش',
@@ -217,6 +231,11 @@ const SUMMARY_HEADERS = [
   'هزینه پیک',
   'جمع کل فروش',
   'نقدی',
+  /**
+   * مبلغی که همین فاکتور با اعتبار خرید تسویه شده است؛ پول نقد/کارت نیست.
+   * عدد از ردیف آمادهٔ server می‌آید و با کلیک، جزئیات امن همان فاکتور باز می‌شود.
+   */
+  'تسویه با اعتبار خرید',
   // کار الف: جای ستون تکیِ «کارت» (که «سایر» را بی‌صدا در خود داشت)
   ...DESTINATION_HEADERS,
   'کد فاکتور',
@@ -261,7 +280,7 @@ const RETURN_HEADERS = [
   // ---- بند ۱۰ و ۱۱ (جلسه ۱۶): ستون‌هایی که تفکیک کسری واقعی را ممکن می‌کنند ----
   'نحوه‌ی تسویه',
   'پول واقعاً خارج‌شده از کشو',
-  'بارکد اعتبار',
+  'شناسهٔ امن اعتبار',
   'مبلغ اعتبار',
   'برگشت به انبار',
   /**
@@ -318,8 +337,9 @@ const EXCHANGE_HEADERS = [
   EXCHANGE_SOURCE_COLUMN,
   'مابه‌التفاوت',
   'نحوه‌ی تسویه',
-  'دریافت نقد/کارت',
-  'بارکد اعتبار',
+  'دریافت نقدی',
+  'دریافت کارتی',
+  'شناسهٔ امن اعتبار',
   'مبلغ اعتبار',
   'وضعیت اعتبار'
 ]
@@ -399,6 +419,7 @@ const emptyExchange = (): ExchangeReportResult => ({
     exchangeTotal: 0,
     diffTotal: 0,
     cashReceivedTotal: 0,
+    cardReceivedTotal: 0,
     creditIssuedTotal: 0,
     creditUsedTotal: 0
   }
@@ -434,6 +455,7 @@ const exchangeTotalsFromRows = (rows: ExchangeReportResult['rows']): ExchangeRep
   exchangeTotal: rows.reduce((sum, row) => sum + Number(row.exchangeTotal ?? 0), 0),
   diffTotal: rows.reduce((sum, row) => sum + Number(row.diff ?? 0), 0),
   cashReceivedTotal: rows.reduce((sum, row) => sum + Number(row.cashReceived ?? 0), 0),
+  cardReceivedTotal: rows.reduce((sum, row) => sum + Number(row.cardReceived ?? 0), 0),
   creditIssuedTotal: rows.reduce((sum, row) => sum + Number(row.storeCreditAmount ?? 0), 0),
   creditUsedTotal: rows.reduce(
     (sum, row) => sum + (row.storeCreditStatus === 'USED' ? Number(row.storeCreditAmount ?? 0) : 0),
@@ -496,6 +518,7 @@ const summaryRowValues = (r: SaleReportRow, source = '') => [
   r.deliveryFee,
   r.grandTotal,
   r.cashTotal,
+  r.storeCreditTotal,
   ...destinationCells(r),
   r.returnCode ?? '',
   // جلسه ۵۳ · مرحله ۴ — همان ستون «مبدأ کسر» جدول، در چاپ A4 و اکسل
@@ -637,6 +660,8 @@ export default function SalesReports() {
   const [loadedReportKey, setLoadedReportKey] = useState<string | null>(null)
   const [byShift, setByShift] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [printBusy, setPrintBusy] = useState(false)
+  const printBusyRef = useRef(false)
   /** خروجی پیش‌فرض کل فیلتر اجراشده است؛ صفحه‌ی جاری فقط با تیک صریح صادر می‌شود. */
   const [outputScope, setOutputScope] = useState<OutputScope>('all')
   const [err, setErr] = useState<string | null>(null)
@@ -690,13 +715,18 @@ export default function SalesReports() {
   const [summaryOn, setSummaryOn] = useState<SummaryPartKey[]>([...ALL_SUMMARY_PARTS])
   /** پنجره‌ی «پرداختی‌ها / اقساط» برای ثبت پرداختی نسیه‌ی یک فاکتور */
   const [paymentsFor, setPaymentsFor] = useState<number | null>(null)
+  /** کلیک ستون اعتبار، مسیر mutation پرداختی‌ها نیست؛ فقط تاریخچهٔ امن را می‌بیند. */
+  const [creditSettlementFor, setCreditSettlementFor] = useState<number | null>(null)
+  /** نشست ۳۱۸ — نمای تشخیص پل تطبیق؛ باز-بسته شدن آن هیچ‌وقت گزارش را بازنمی‌خواند. */
+  const [bridgeDiagOpen, setBridgeDiagOpen] = useState(false)
+  const openBridgeDiag = useCallback(() => setBridgeDiagOpen(true), [])
   const [methods, setMethods] = useState<{ id: number; label: string; kind?: string | null }[]>([])
   /**
    * قفل مستقل تب نسیه: تا باز نشده، حتی *خوانده* هم نمی‌شود (نه فقط پنهان
    * نمایش داده شود) — فهرست بدهکاران داده‌ی حساسی است.
    */
-  const { canOpen } = useManagerSession()
-  const creditOpen = canOpen(PANEL_KEYS.salesCredit)
+  /** قفل خاموش هم باید دادهٔ نسیه را بخواند؛ تا خواندن policy همچنان fail-closed است. */
+  const creditOpen = usePanelOpen(PANEL_KEYS.salesCredit)
   const currentReportKey = useMemo(
     () => reportDataKey(tab, filters, { includeExchanges, includeSettled, chequeDateMode, creditOpen }),
     [tab, filters, includeExchanges, includeSettled, chequeDateMode, creditOpen]
@@ -1228,7 +1258,7 @@ export default function SalesReports() {
         (summary.creditUsedTotal > 0
           ? ` · ${money(summary.creditUsedTotal)} ریال فروش با بارکد اعتبار تسویه شده (نقد وارد صندوق نشده؛ کسری نیست` +
             ((report.accounting?.storeCredits?.usedStories ?? []).length
-              ? `؛ ${faDigits((report.accounting?.storeCredits?.usedStories ?? []).length)} بارکد — روی صفحه با + باز می‌شود`
+              ? `؛ ${faDigits((report.accounting?.storeCredits?.usedStories ?? []).length)} مصرف اعتبار — روی صفحه با + باز می‌شود`
               : '') +
             ').'
           : '') +
@@ -1239,6 +1269,9 @@ export default function SalesReports() {
   ]
 
   const printA4 = async () => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       const output = await prepareOutputSnapshot()
       if (tab === 'summary') {
@@ -1264,6 +1297,7 @@ export default function SalesReports() {
             money(t.deliveryTotal),
             money(t.grandTotal),
             money(t.cashTotal),
+            money(t.storeCreditUsedTotal),
             ...destinationCells(t).map((v) => money(v)),
             '',
             // جلسه ۵۳ — ستون «مبدأ کسر» جمع ندارد (متن است، نه عدد)
@@ -1346,6 +1380,7 @@ export default function SalesReports() {
             money(output.exchangeTotals.diffTotal),
             '',
             money(output.exchangeTotals.cashReceivedTotal),
+            money(output.exchangeTotals.cardReceivedTotal),
             '',
             money(output.exchangeTotals.creditIssuedTotal),
             ''
@@ -1389,7 +1424,7 @@ export default function SalesReports() {
           meta: output.meta,
           headers: STORE_CREDIT_OUTPUT_HEADERS,
           rows: output.storeCreditRows.map((r: any) => [
-            r.code ?? '—',
+            r.publicReference ?? `اعتبار #${r.id ?? '—'}`,
             faDigits(r.sourceReceiptNo ?? r.receiptNo ?? '—'),
             faDigits(r.issuedAtJalali ?? r.dateJalali ?? '—'),
             faDigits(r.expiresAtJalali ?? '—'),
@@ -1436,7 +1471,7 @@ export default function SalesReports() {
             money(r.total),
             r.refundMethodLabel ?? '—',
             money(r.cashRefundAmount ?? 0),
-            r.storeCreditCode ?? '—',
+            r.storeCreditReference ?? '—',
             money(returnCreditAmountOf(r)),
             faDigits(r.restockedQty),
             faDigits(r.pendingRestockQty ?? 0),
@@ -1455,11 +1490,17 @@ export default function SalesReports() {
       }
       flash('گزارش برای چاپ A4 فرستاده شد')
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
   const printThermal = async () => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       await call(CH.printThermalSummary, {
         title: 'سرجمع فروش',
@@ -1474,6 +1515,7 @@ export default function SalesReports() {
           { label: 'تخفیف', value: money(t.discountTotal) },
           { label: 'هزینه پیک', value: money(t.deliveryTotal) },
           { label: 'نقدی', value: money(t.cashTotal) },
+          { label: 'تسویه با اعتبار خرید (غیرنقدی)', value: money(t.storeCreditUsedTotal) },
           { label: 'کارت (کارتخوان فروشگاه)', value: money(cardOnlyOf(t)) },
           // کار الف: دو ردیف جدا و صریح، حتی وقتی صفرند
           { label: MANAGER_ACCOUNT_ROW_LABEL, value: money(managerAccountOf(t)) },
@@ -1492,7 +1534,10 @@ export default function SalesReports() {
       })
       flash('گزارش حرارتی چاپ شد')
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
@@ -1523,6 +1568,7 @@ export default function SalesReports() {
             t.deliveryTotal,
             t.grandTotal,
             t.cashTotal,
+            t.storeCreditUsedTotal,
             ...destinationCells(t),
             '',
             // جلسه ۵۳ — ستون «مبدأ کسر» جمع ندارد (متن است، نه عدد)
@@ -1605,6 +1651,7 @@ export default function SalesReports() {
             output.exchangeTotals.diffTotal,
             '',
             output.exchangeTotals.cashReceivedTotal,
+            output.exchangeTotals.cardReceivedTotal,
             '',
             output.exchangeTotals.creditIssuedTotal,
             ''
@@ -1651,7 +1698,7 @@ export default function SalesReports() {
           title: `گزارش اعتبار خرید (${STORE_CREDIT_NOT_CASHABLE_TITLE}) — ${meta}`,
           headers: STORE_CREDIT_OUTPUT_HEADERS,
           rows: output.storeCreditRows.map((r: any) => [
-            r.code ?? '',
+            r.publicReference ?? `اعتبار #${r.id ?? ''}`,
             r.sourceReceiptNo ?? r.receiptNo ?? '',
             r.issuedAtJalali ?? r.dateJalali ?? '',
             r.expiresAtJalali ?? '',
@@ -1713,7 +1760,7 @@ export default function SalesReports() {
             r.total,
             r.refundMethodLabel ?? '',
             r.cashRefundAmount ?? 0,
-            r.storeCreditCode ?? '',
+            r.storeCreditReference ?? '',
             returnCreditAmountOf(r),
             r.restockedQty,
             r.pendingRestockQty ?? 0,
@@ -1825,24 +1872,40 @@ export default function SalesReports() {
 
   /** چاپ «سند تعویض» یک ردیف تب تعویض کالا (کانال print:exchange). */
   const printExchangeDoc = async (returnId: number) => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       /** فاز ۳ — چاپ سند تعویض از مسیر مشترک (پروفایل رسید/فاکتور). */
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printExchange, { returnId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printExchange, { returnId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('سند تعویض برای چاپ فرستاده شد')
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
   const reprint = async (invoiceId: number) => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       /** فاز ۳ — از مسیر مشترک چاپ؛ انصراف ⇒ لغو قطعی و بی‌صدا. */
-      const res = await printWith('INVOICE', (deviceName) => call(CH.printInvoice, { invoiceId, deviceName }))
+      const res = await printWith('INVOICE', (deviceName, opts) =>
+        call(CH.printInvoice, { invoiceId, deviceName, silent: opts?.silent })
+      )
       if (res === 'CANCELLED') return
       flash('رسید فاکتور دوباره چاپ شد')
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
@@ -1983,8 +2046,8 @@ export default function SalesReports() {
               </div>
             )}
             <span className="kbd leading-6">
-              پیش‌فرض خاموش است (بند ۱۰): تب برگشت فقط «برگشت ساده» را نشان می‌دهد تا ارزش کالای برگشتیِ داخل تعویض با
-              برگشت نقدی ساده قاطی نشود. بعد از تغییر این تیک، «تهیه گزارش» را بزنید.
+              پیش‌فرض خاموش است: این تب فقط «برگشت ساده» را نشان می‌دهد تا ارزش کالای برگشتیِ داخل تعویض با برگشت نقدی
+              ساده قاطی نشود. با روشن‌کردن تیک، تعویض‌ها نیز به همین جدول افزوده می‌شوند و گزارش خودکار تازه می‌شود.
             </span>
           </div>
         )}
@@ -2008,6 +2071,17 @@ export default function SalesReports() {
             />
             فاکتورهای تسویه‌شده‌ی این بازه هم نمایش داده شوند
           </label>
+        )}
+        {cols.customized && (
+          <button
+            type="button"
+            className="btn btn-sm bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 font-bold px-2.5 py-1 text-xs rounded transition-colors flex items-center gap-1"
+            onClick={cols.reset}
+            title="بازگشت عرض ستون‌های همین جدول به حالت خودکار"
+          >
+            <span>⟲</span>
+            <span>بازنشانی عرض ستون‌ها</span>
+          </button>
         )}
       </ReportFilterBar>
 
@@ -2062,6 +2136,7 @@ export default function SalesReports() {
             <ShiftGroups
               groups={report.groups}
               onReprint={reprint}
+              onOpenCreditSettlement={(invoiceId) => setCreditSettlementFor(invoiceId)}
               cols={summaryCols}
               sourceOf={stockSources.shortOf}
             />
@@ -2075,7 +2150,13 @@ export default function SalesReports() {
               </thead>
               <tbody>
                 {report.rows.map((r) => (
-                  <SummaryRow key={r.id} r={r} onReprint={reprint} source={stockSources.shortOf(r.id)} />
+                  <SummaryRow
+                    key={r.id}
+                    r={r}
+                    onReprint={reprint}
+                    onOpenCreditSettlement={(invoiceId) => setCreditSettlementFor(invoiceId)}
+                    source={stockSources.shortOf(r.id)}
+                  />
                 ))}
                 {!report.rows.length && (
                   <tr>
@@ -2098,6 +2179,7 @@ export default function SalesReports() {
                     <td>{money(t.deliveryTotal)}</td>
                     <td>{money(t.grandTotal)}</td>
                     <td>{money(t.cashTotal)}</td>
+                    <td className={t.storeCreditUsedTotal > 0 ? 'bg-violet-50 text-violet-950' : ''}>{money(t.storeCreditUsedTotal)}</td>
                     <td>{money(cardOnlyOf(t))}</td>
                     <td className={managerAccountOf(t) > 0 ? 'text-amber-800' : ''}>{money(managerAccountOf(t))}</td>
                     <td>{money(otherOrUnknownOf(t))}</td>
@@ -2198,7 +2280,7 @@ export default function SalesReports() {
             </thead>
             <tbody>
               {returns.map((r) => (
-                <tr key={r.id} className={r.storeCreditCode || r.hasRemovedItems ? 'bg-amber-50' : ''}>
+                <tr key={r.id} className={r.storeCreditReference || r.hasRemovedItems ? 'bg-amber-50' : ''}>
                   <td className="font-bold">{faDigits(r.receiptNo ?? '—')}</td>
                   <td dir="ltr">{r.returnCode ?? '—'}</td>
                   <td>{faDigits(r.invoiceDateJalali)}</td>
@@ -2214,8 +2296,8 @@ export default function SalesReports() {
                     {r.isExchange && <div className="kbd text-sky-800 font-bold">سند تعویض</div>}
                   </td>
                   <td className={r.cashRefundAmount ? 'text-rose-700 font-bold' : ''}>{money(r.cashRefundAmount ?? 0)}</td>
-                  <td dir="ltr" className={r.storeCreditCode ? 'font-bold text-amber-900' : ''}>
-                    {r.storeCreditCode ?? '—'}
+                  <td dir="ltr" className={r.storeCreditReference ? 'font-bold text-amber-900' : ''}>
+                    {r.storeCreditReference ?? '—'}
                   </td>
                   <td className={returnCreditAmountOf(r) ? 'font-bold text-amber-900' : ''}>
                     {money(returnCreditAmountOf(r))}
@@ -2246,7 +2328,7 @@ export default function SalesReports() {
               {!returns.length && (
                 <tr>
                   <td colSpan={RETURN_HEADERS.length} className="text-center py-10 text-slate-400">
-                    در این بازه برگشت از فروشی ثبت نشده است
+                    در این بازه برگشت ساده‌ای ثبت نشده است. اگر انتظار تعویض دارید، تیک «تعویض‌ها را هم نشان بده» را روشن کنید یا تب «تعویض کالا» را ببینید.
                   </td>
                 </tr>
               )}
@@ -2396,6 +2478,20 @@ export default function SalesReports() {
               کل {faDigits(report.page!.totalCount)} ردیف حساب شده‌اند، نه روی همین صفحه.
             </div>
           )}
+          {/** نشست ۳۱۸ — تک‌دکمه‌ی ورود «نمای تشخیص پل»: فقط روی وضعیت
+               report.accounting.bridge.balanced === false (نه متن‌خوانی از هشدارها). */}
+          {report.accounting?.bridge && report.accounting.bridge.balanced === false && (
+            <div className="mt-2 flex items-center gap-2 rounded border-2 border-rose-400 bg-rose-50 px-3 py-2 text-sm text-rose-900">
+              <span>پل تطبیق بسته نیست — {money(Math.abs(report.accounting.bridge.unexplained))} ریال بدون توضیح مانده است.</span>
+              <button
+                className="btn border-rose-500 text-rose-800 hover:bg-rose-100"
+                onClick={openBridgeDiag}
+                title="نمایش راهنمای ردیف‌به‌ردیف (فقط خواندنی؛ باز کردنش رمز می‌خواهد)"
+              >
+                نمای تشخیص پل…
+              </button>
+            </div>
+          )}
           <AccountingBlocks
             statements={report.accounting ?? null}
             warnings={report.warnings ?? []}
@@ -2497,9 +2593,13 @@ export default function SalesReports() {
           }
           onAll={(all) => setSummaryOn(all ? [...ALL_SUMMARY_PARTS] : [])}
           net={summary.net}
+          totals={t}
           cashTotal={t.cashTotal}
           cardTotal={summary.cardTotal}
           creditCardTotal={t.creditTotal}
+          otherTotal={t.otherTotal}
+          managerAccountTotal={t.managerAccountTotal}
+          destinationUnknownTotal={t.destinationUnknownTotal}
           realCash={summary.realCash}
           nonCash={summary.nonCash}
           creditRefundTotal={summary.creditRefundTotal}
@@ -2514,10 +2614,25 @@ export default function SalesReports() {
           invoiceCount={t.count}
           range={`از ${appliedFilters.fromJalali} تا ${appliedFilters.toJalali}`}
           channels={appliedFilters.channels}
+          bridge={report.accounting?.bridge}
+          statements={report.accounting ?? null}
+          appliedFiltersPayload={toServiceFilter(appliedFilters)}
+          onOpenInvoice={(id) => setPaymentsFor(id)}
+          onOpenBridgeDiag={openBridgeDiag}
+          refundCashTotal={t.refundCashTotal}
+          refundCardTotal={t.refundCardTotal}
         />
       )}
 
       {/* ---------- ثبت پرداختی نسیه (همان پنجره‌ی پرداختی‌ها / اقساط) ---------- */}
+      {/* نشست ۳۱۸ — نمای تشخیص پل تطبیق؛ scope همان فیلتر فعلی صفحه است. */}
+      <BridgeDiagnosticsModal
+        open={bridgeDiagOpen}
+        onClosed={() => setBridgeDiagOpen(false)}
+        scope={toServiceFilter(filters)}
+        pageUnexplained={report?.accounting?.bridge ? report.accounting.bridge.unexplained : null}
+      />
+      <CreditSettlementModal open={creditSettlementFor != null} invoiceId={creditSettlementFor} onClose={() => setCreditSettlementFor(null)} />
       <InvoicePaymentsModal
         open={paymentsFor != null}
         invoiceId={paymentsFor}
@@ -2555,7 +2670,7 @@ export default function SalesReports() {
           <div className="kbd">
             {faDigits(exchanges.totals.count)} تعویض · جمع برگشتی {money(exchanges.totals.returnTotal)} · جمع جایگزین{' '}
             {money(exchanges.totals.exchangeTotal)} · مابه‌التفاوت {money(exchanges.totals.diffTotal)} · دریافت نقد{' '}
-            {money(exchanges.totals.cashReceivedTotal)} · اعتبار صادرشده {money(exchanges.totals.creditIssuedTotal)} ریال
+            نقد {money(exchanges.totals.cashReceivedTotal)} · کارت {money(exchanges.totals.cardReceivedTotal)} · اعتبار صادرشده {money(exchanges.totals.creditIssuedTotal)} ریال
           </div>
         )}
         {outputDirty && (
@@ -2579,11 +2694,11 @@ export default function SalesReports() {
         <span className="text-xs text-slate-500">
           {outputScope === 'all' ? 'پیش‌فرض: کل خروجی فیلترشده' : 'خروجی محدود به صفحه‌ی جاری است'}
         </span>
-        <button className="btn" onClick={() => void printThermal()} disabled={busy || outputDirty || tab !== 'summary' || !report.rows.length}>
-          چاپ حرارتی
+        <button className="btn" onClick={() => void printThermal()} disabled={busy || printBusy || outputDirty || tab !== 'summary' || !report.rows.length}>
+          {printBusy ? 'در حال چاپ…' : 'چاپ حرارتی'}
         </button>
-        <button className="btn" onClick={() => void printA4()} disabled={busy || outputDirty}>
-          چاپ A4
+        <button className="btn" onClick={() => void printA4()} disabled={busy || printBusy || outputDirty}>
+          {printBusy ? 'در حال چاپ…' : 'چاپ A4'}
         </button>
         <button className="btn" onClick={() => void exportCsvNow()} disabled={busy || outputDirty}>
           خروجی اکسل
@@ -2606,7 +2721,7 @@ export default function SalesReports() {
         <div className="kbd">
           جمع کل تخفیف‌ها: {money(discountSummary.summaryDiscount)} · جمع پس از تخفیف:{' '}
           {money(discountSummary.summaryAfterDiscount)} · جمع کل فروش بازه: {money(t.grandTotal)} ریال · نقدی{' '}
-          {money(t.cashTotal)} · کارت{' '}
+          {money(t.cashTotal)} · تسویه با اعتبار خرید (غیرنقدی) {money(t.storeCreditUsedTotal)} · کارت{' '}
           {money(cardOnlyOf(t))} · {MANAGER_ACCOUNT_ROW_LABEL} {money(managerAccountOf(t))} · سایر/نامشخص{' '}
           {money(otherOrUnknownOf(t))} · برگشت {money(t.returnedTotal)} · عرض هر ستون را با کشیدن مرز سرستون تغییر
           دهید (دوبار کلیک = عرض خودکار)
@@ -2633,9 +2748,13 @@ function SaleSummaryBlock({
   onToggle,
   onAll,
   net,
+  totals,
   cashTotal,
   cardTotal,
   creditCardTotal,
+  otherTotal = 0,
+  managerAccountTotal = 0,
+  destinationUnknownTotal = 0,
   realCash,
   nonCash,
   creditRefundTotal,
@@ -2646,33 +2765,118 @@ function SaleSummaryBlock({
   priorCreditStoryHidden = 0,
   invoiceCount,
   range,
-  channels
+  channels,
+  bridge,
+  statements,
+  appliedFiltersPayload,
+  onOpenInvoice,
+  onOpenBridgeDiag,
+  refundCashTotal = 0,
+  refundCardTotal = 0
 }: {
   parts: SummaryPart[]
   active: SummaryPartKey[]
   onToggle: (key: SummaryPartKey) => void
   onAll: (all: boolean) => void
   net: number
+  totals?: Partial<SaleReportTotals>
   cashTotal: number
   cardTotal: number
   creditCardTotal: number
+  otherTotal?: number
+  managerAccountTotal?: number
+  destinationUnknownTotal?: number
   realCash: number
   nonCash: number
   creditRefundTotal: number
   creditUsedTotal: number
-  creditUsedStories: { code: string; amount: number; text: string }[]
-  creditUsedStoryHidden: number
-  priorCreditStories: { paymentId: number; receiptNo: number; amount: number; text: string }[]
-  priorCreditStoryHidden: number
+  /** داستان‌های امن مصرف اعتبار؛ کد قابل مصرف از گزارش فروش عبور نمی‌کند. */
+  creditUsedStories?: { amount: number; safeText: string }[]
+  creditUsedStoryHidden?: number
+  priorCreditStories?: { paymentId: number; receiptNo: number; amount: number; text: string }[]
+  priorCreditStoryHidden?: number
   invoiceCount: number
   range: string
   channels: string[]
+  bridge?: SaleBridgeBlock | null
+  statements?: SaleAccountingStatements | null
+  appliedFiltersPayload?: any
+  onOpenInvoice?: (id: number) => void
+  onOpenBridgeDiag?: () => void
+  refundCashTotal?: number
+  refundCardTotal?: number
 }) {
   const [creditStoriesOpen, setCreditStoriesOpen] = useState(false)
   const [priorCreditStoriesOpen, setPriorCreditStoriesOpen] = useState(false)
+  /** یک ریزبین واحد؛ focus تعیین می‌کند کاربر از کدام کاشی وارد شده است. */
+  const [financialInspectorOpen, setFinancialInspectorOpen] = useState(false)
+  const [financialInspectorFocus, setFinancialInspectorFocus] = useState<'overview' | 'drawer' | 'pos' | 'other' | 'manager' | 'nonCash'>('overview')
+  /** ورود کارت گردش اعتبار مستقیماً به history امن همان سبد می‌رود. */
+  const [financialInspectorInitialSource, setFinancialInspectorInitialSource] = useState<FinancialSourceKey | undefined>()
+  const [nonCashOpen, setNonCashOpen] = useState(false)
+  const [nonCashLoading, setNonCashLoading] = useState(false)
+  const [exchangeRows, setExchangeRows] = useState<ExchangeReportRow[]>([])
+  const [creditSources, setCreditSources] = useState<SaleBridgeSource[]>([])
+  const [loadedPayloadKey, setLoadedPayloadKey] = useState<string | null>(null)
+
   const priorCreditTotal = parts.find((p) => p.key === 'priorCredit')?.value ?? 0
   const allOn = active.length === parts.length
   const hidden = parts.filter((p) => !active.includes(p.key))
+
+  // ساخت زنجیره تراز ریاضی خالص به دخل
+  const netToDrawer = useMemo(() => {
+    return buildNetToDrawer(bridge, realCash)
+  }, [bridge, realCash])
+
+  // تفکیک درشت کشو و کارت‌خوان
+  const split = useMemo(() => {
+    const rawTotals = totals ?? {
+      cashTotal,
+      refundCashTotal,
+      refundCardTotal,
+      otherTotal,
+      creditTotal: creditCardTotal,
+      destinationUnknownTotal,
+      managerAccountTotal
+    }
+    return splitDrawerPos(rawTotals, cardTotal, realCash, netToDrawer.end)
+  }, [totals, cashTotal, refundCashTotal, refundCardTotal, otherTotal, creditCardTotal, destinationUnknownTotal, managerAccountTotal, cardTotal, realCash, netToDrawer.end])
+
+  // بارگذاری داده‌های ریز اقلام غیرنقدی (Lazy loading بر مبنای appliedFilters)
+  const currentPayloadKey = JSON.stringify(appliedFiltersPayload ?? {})
+  useEffect(() => {
+    if (!nonCashOpen) return
+    if (loadedPayloadKey === currentPayloadKey) return
+
+    let cancelled = false
+    setNonCashLoading(true)
+
+    Promise.all([
+      call<ExchangeReportResult>(CH.saleExchangeList, appliedFiltersPayload ?? {}).catch(() => ({ rows: [] } as any)),
+      call<SaleReportResult>(CH.saleReportRows, {
+        ...(appliedFiltersPayload ?? {}),
+        withDrillDown: true,
+        bridgeSourceKey: 'storeCreditUsed',
+        bridgeSourceSkip: 0,
+        bridgeSourceTake: 200
+      }).catch(() => ({ accounting: { bridge: { rows: [] } } } as any))
+    ])
+      .then(([exRes, reportRes]) => {
+        if (cancelled) return
+        setExchangeRows(exRes?.rows ?? [])
+        const bridgeRow = reportRes?.accounting?.bridge?.rows?.find((r: SaleBridgeRow) => r.key === 'storeCreditUsed')
+        setCreditSources(bridgeRow?.sources ?? [])
+        setLoadedPayloadKey(currentPayloadKey)
+      })
+      .finally(() => {
+        if (!cancelled) setNonCashLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [nonCashOpen, currentPayloadKey, loadedPayloadKey, appliedFiltersPayload])
+
   return (
     <div className="bg-white rounded shadow border-2 border-brand/40">
       <div className="p-2 border-b bg-brand/10 font-bold flex items-center gap-2 flex-wrap">
@@ -2741,46 +2945,122 @@ function SaleSummaryBlock({
       </div>
 
       {/**
-        * ---------- کنترل کارت‌خوان (هدف اصلی بند ۷) ----------
-        * این خط عمداً با تیک‌های بالا عوض نمی‌شود: یک واقعیت فیزیکی است، نه یک
-        * سناریو. «پول واقعی این بازه» = نقدی + کارت + سایرِ دریافت‌شده −
-        * بازپرداخت نقد/کارت واقعی. وصول نسیه‌ی دوره‌ی قبل داخل همان نقد/کارت است
-        * (نشست ۲۰۳)؛ جداگانه ردیف برچسب‌دار دارد، دوباره جمع نمی‌شود.
-        *
-        * نشست ۱۸۷: ارزش کالای برگشتی و اعتبار صادرشده خروج نقد نیستند؛ اگر کم
-        * می‌شدند، فروشنده‌ای که نقد داده و در سیستم اعتبار زده کسری‌اش با گزارش
-        * یکی می‌شد.
+        * ---------- کنترل کارت‌خوان (هدف اصلی بند ۷ + لایه شفاف‌ساز جدید) ----------
         */}
-      <div className="p-2 border-t bg-sky-50 leading-7">
-        <b>کنترل کارت‌خوان و صندوق:</b> نقدی <b dir="ltr">{money(cashTotal)}</b> · کارت{' '}
-        <b dir="ltr">{money(cardTotal)}</b> · اعتباری/سایر <b dir="ltr">{money(creditCardTotal)}</b> ⇒{' '}
-        <b dir="ltr">{money(realCash)}</b> ریال پولی است که باید واقعاً در صندوق و کارت‌خوان باشد.
+      <div className="p-2 border-t">
+        <DrawerVsPosSplit
+          drawer={split.drawer}
+          pos={split.pos}
+          other={split.other}
+          managerOutside={split.managerOutside}
+          realCash={realCash}
+          cashTotal={cashTotal}
+          cardTotal={cardTotal}
+          refundCashTotal={refundCashTotal}
+          refundCardTotal={refundCardTotal}
+          otherTotal={totals?.otherTotal ?? otherTotal}
+          creditTotal={totals?.creditTotal ?? creditCardTotal}
+          destinationUnknownTotal={totals?.destinationUnknownTotal ?? destinationUnknownTotal}
+          hasDiscrepancy={split.hasDiscrepancy}
+          discrepancy={split.discrepancy}
+          discrepancyKind={
+            split.discrepancyKind === 'OFFICIAL_REFERENCE'
+              ? 'OFFICIAL_REFERENCE'
+              : split.discrepancyKind === 'CHAIN_COMPOSITION'
+                ? 'CHAIN_COMPOSITION'
+                : null
+          }
+          bridgeAlarm={netToDrawer.alarm}
+          onOpenExplainer={() => {
+            setFinancialInspectorInitialSource(undefined)
+            setFinancialInspectorFocus('overview')
+            setFinancialInspectorOpen(true)
+          }}
+          onOpenFinancialInspector={(focus) => {
+            setFinancialInspectorInitialSource(undefined)
+            setFinancialInspectorFocus(focus)
+            setFinancialInspectorOpen(true)
+          }}
+          onOpenBridgeDiag={onOpenBridgeDiag}
+          nonCash={nonCash}
+          nonCashOpen={nonCashOpen}
+          onToggleNonCash={() => setNonCashOpen((prev) => !prev)}
+        />
+
+        <CreditLifecycleCard
+          credit={statements?.storeCredits}
+          onInspect={(key) => {
+            setFinancialInspectorInitialSource(key)
+            setFinancialInspectorFocus('overview')
+            setFinancialInspectorOpen(true)
+          }}
+        />
+
+        {/* ریزبین واحد: هیچ مودال مالی دیگری روی آن باز نمی‌شود. */}
+        <FinancialInspector
+          open={financialInspectorOpen}
+          onClose={() => {
+            setFinancialInspectorOpen(false)
+            setFinancialInspectorInitialSource(undefined)
+          }}
+          scope={appliedFiltersPayload ?? {}}
+          totals={totals ?? {
+            cashTotal,
+            cardTotal,
+            creditTotal: creditCardTotal,
+            otherTotal,
+            managerAccountTotal,
+            destinationUnknownTotal,
+            refundCashTotal,
+            refundCardTotal
+          }}
+          statements={statements}
+          referenceRealCash={realCash}
+          split={split}
+          bridgeAlarm={netToDrawer.alarm}
+          initialFocus={financialInspectorFocus}
+          initialSourceKey={financialInspectorInitialSource}
+          onOpenBridgeDiag={onOpenBridgeDiag}
+        />
+
+        {/* آکاردئون legacy ریز تسویه‌های غیرنقدی؛ اعداد و منابع آن دست‌نخورده‌اند. */}
+        <NonCashDrawer
+          open={nonCashOpen}
+          onToggle={() => setNonCashOpen((prev) => !prev)}
+          expectedNonCash={nonCash}
+          exchangeRows={exchangeRows}
+          creditSources={creditSources}
+          loading={nonCashLoading}
+          onOpenInvoice={(id) => onOpenInvoice && onOpenInvoice(id)}
+          creditUsedStories={creditUsedStories}
+        />
+
         {creditRefundTotal > 0 && (
-          <div className="kbd text-amber-900 font-bold">
+          <div className="kbd text-amber-900 font-bold mt-2">
             {money(creditRefundTotal)} ریال بابت برگشت/تعویض بارکد اعتبار خرید صادر شده — این مبلغ از صندوق بیرون
             نرفته و بدهی فروشگاه به مشتری است. اگر فروشنده نقد هم داده، کشو باید به همین اندازه کسری نشان بدهد.
           </div>
         )}
         {creditUsedTotal > 0 && (
-          <div className="kbd text-amber-900 font-bold">
+          <div className="kbd text-amber-900 font-bold mt-1">
             {money(creditUsedTotal)} ریال فروش این بازه با بارکد اعتبار خرید تسویه شده — پولی وارد صندوق نشده.
             بستن صندوق نباید کسری نشان بدهد؛ کالا رفته و بدهی قبلی ما به مشتری تسویه شده است.
             {creditUsedStories.length > 0 && (
               <div className="mt-1">
                 <button
                   type="button"
-                  className="btn"
+                  className="btn btn-xs"
                   onClick={() => setCreditStoriesOpen((open) => !open)}
-                  title={creditStoriesOpen ? 'جمع شدن فهرست بارکدها' : 'باز شدن همهٔ بارکدهای اعتبار مصرف‌شده'}
+                  title={creditStoriesOpen ? 'جمع شدن فهرست مصرف اعتبارها' : 'باز شدن سابقهٔ امن اعتبارهای مصرف‌شده'}
                 >
                   {creditStoriesOpen
-                    ? `− جمع شدن ${faDigits(creditUsedStories.length)} بارکد اعتبار`
-                    : `+ نمایش ${faDigits(creditUsedStories.length)} بارکد اعتبار`}
+                    ? `− جمع شدن ${faDigits(creditUsedStories.length)} سابقهٔ اعتبار`
+                    : `+ نمایش ${faDigits(creditUsedStories.length)} سابقهٔ اعتبار`}
                 </button>
                 {creditStoriesOpen && (
                   <div className="mt-1 leading-7 font-normal">
-                    {creditUsedStories.map((s) => (
-                      <div key={`${s.code}-${s.amount}-${s.text}`}>{s.text}</div>
+                    {creditUsedStories.map((s, index) => (
+                      <div key={`${s.safeText}-${s.amount}-${index}`}>{s.safeText}</div>
                     ))}
                     {creditUsedStoryHidden > 0 && (
                       <div className="font-bold">
@@ -2795,12 +3075,12 @@ function SaleSummaryBlock({
           </div>
         )}
         {priorCreditStories.length > 0 && (
-          <div className="kbd text-amber-900 font-bold">
+          <div className="kbd text-amber-900 font-bold mt-1">
             {money(priorCreditTotal)} ریال وصول نسیهٔ فاکتورهای بازه‌های قبل در این بازه آمده — فروش این بازه نیست.
             <div className="mt-1">
               <button
                 type="button"
-                className="btn"
+                className="btn btn-xs"
                 onClick={() => setPriorCreditStoriesOpen((open) => !open)}
                 title={priorCreditStoriesOpen ? 'جمع شدن فهرست وصول نسیه' : 'باز شدن همهٔ وصول‌های نسیه'}
               >
@@ -2825,12 +3105,12 @@ function SaleSummaryBlock({
           </div>
         )}
         {nonCash > 0 && (
-          <div className="kbd text-amber-800">
+          <div className="kbd text-amber-800 mt-1">
             {money(nonCash)} ریال از فاکتورهای «تسویه‌شده»ی این بازه پول نقد نبوده است (ارزش کالای برگشتی در تعویض +
             بارکد اعتبار خرید مصرف‌شده)، پس دنبالش در کارت‌خوان نگردید.
           </div>
         )}
-        <div className="kbd">
+        <div className="kbd mt-1">
           اگر «کارت» این گزارش با جمع پایان‌روز دستگاه کارت‌خوان نخواند، تب «نسیه» و ستون «اضافه دریافتی» را هم ببینید:
           بیشترِ اختلاف‌ها یا نسیه‌ای است که نقدی ثبت شده، یا تخفیفی که بعد از پرداخت خورده است.
         </div>
@@ -2842,10 +3122,16 @@ function SaleSummaryBlock({
 function SummaryRow({
   r,
   onReprint,
+  onOpenCreditSettlement,
   source = ''
 }: {
   r: SaleReportRow
   onReprint: (id: number) => void
+  /**
+   * جزئیات همان فاکتور، از endpoint امن پرداختی‌ها. این callback فقط برای مبلغ
+   * اعتبار مصرف‌شده است و هیچ کد اعتبار یا lookup کد به renderer نمی‌فرستد.
+   */
+  onOpenCreditSettlement?: (invoiceId: number) => void
   /** جلسه ۵۳ — خط کوتاه «مبدأ کسر» همین فاکتور؛ خالی ⇒ «—» (فاکتور بی‌دفتر) */
   source?: string
 }) {
@@ -2865,6 +3151,20 @@ function SummaryRow({
       <td>{money(r.deliveryFee)}</td>
       <td className="font-bold">{money(r.grandTotal)}</td>
       <td>{money(r.cashTotal)}</td>
+      <td className={r.storeCreditTotal > 0 ? 'bg-violet-50 font-bold text-violet-950' : ''}>
+        {r.storeCreditTotal > 0 && onOpenCreditSettlement ? (
+          <button
+            type="button"
+            className="text-right text-violet-800 underline decoration-dotted underline-offset-2 hover:text-violet-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+            onClick={() => onOpenCreditSettlement(r.id)}
+            title="نمایش جزئیات امن تسویهٔ این فاکتور با اعتبار خرید؛ کد اعتبار نمایش داده نمی‌شود"
+          >
+            {money(r.storeCreditTotal)}
+          </button>
+        ) : (
+          money(r.storeCreditTotal)
+        )}
+      </td>
       <td>{money(cardOf(r))}</td>
       {/* کار الف — «حساب مدیر»: پول به فروشگاه نرسیده، پس ستون خودش را دارد */}
       <td
@@ -2899,11 +3199,13 @@ function SummaryRow({
 function ShiftGroups({
   groups,
   onReprint,
+  onOpenCreditSettlement,
   cols,
   sourceOf
 }: {
   groups: SaleReportResult['groups']
   onReprint: (id: number) => void
+  onOpenCreditSettlement?: (invoiceId: number) => void
   /** همان چیدمان عرض ستون‌های تب «سرجمع فروش» (مشترک با جدول بدون تفکیک) */
   cols: ResizableColumns
   /** جلسه ۵۳ — «مبدأ کسر» هر فاکتور، از همان هوک مشترک صفحه (پیش‌فرض: خالی) */
@@ -2946,12 +3248,24 @@ function ShiftGroups({
                       </td>
                     </tr>
                     {sg.rows.map((r) => (
-                      <SummaryRow key={r.id} r={r} onReprint={onReprint} source={sourceOf?.(r.id) ?? ''} />
+                      <SummaryRow
+                        key={r.id}
+                        r={r}
+                        onReprint={onReprint}
+                        onOpenCreditSettlement={onOpenCreditSettlement}
+                        source={sourceOf?.(r.id) ?? ''}
+                      />
                     ))}
                   </Fragment>
                 ))
               : g.rows.map((r) => (
-                  <SummaryRow key={r.id} r={r} onReprint={onReprint} source={sourceOf?.(r.id) ?? ''} />
+                  <SummaryRow
+                        key={r.id}
+                        r={r}
+                        onReprint={onReprint}
+                        onOpenCreditSettlement={onOpenCreditSettlement}
+                        source={sourceOf?.(r.id) ?? ''}
+                      />
                 ))}
             <tr className="bg-slate-100 font-bold">
               <td colSpan={7}>جمع {g.shiftName} (همه‌ی نشست‌ها)</td>
@@ -2962,6 +3276,7 @@ function ShiftGroups({
               <td>{money(g.totals.deliveryTotal)}</td>
               <td>{money(g.totals.grandTotal)}</td>
               <td>{money(g.totals.cashTotal)}</td>
+              <td className={g.totals.storeCreditUsedTotal > 0 ? 'bg-violet-50 text-violet-950' : ''}>{money(g.totals.storeCreditUsedTotal)}</td>
               <td>{money(cardOnlyOf(g.totals))}</td>
               <td className={managerAccountOf(g.totals) > 0 ? 'text-amber-800' : ''}>
                 {money(managerAccountOf(g.totals))}
@@ -3050,7 +3365,8 @@ function exchangeRowValues(
     r.diff,
     r.settlementLabel,
     r.cashReceived,
-    r.storeCreditCode ?? '',
+    r.cardReceived,
+    r.storeCreditReference ?? '',
     r.storeCreditAmount,
     r.storeCreditStatusLabel ?? ''
   ]
@@ -3088,7 +3404,7 @@ function ExchangeTable({
       </thead>
       <tbody>
         {data.rows.map((r) => (
-          <tr key={r.returnId} className={r.storeCreditCode ? 'bg-amber-50' : ''}>
+          <tr key={r.returnId} className={r.storeCreditReference ? 'bg-amber-50' : ''}>
             <td className="font-bold">{faDigits(r.receiptNo)}</td>
             <td className="font-bold">{r.exchangeReceiptNo ? faDigits(r.exchangeReceiptNo) : '—'}</td>
             <td>{faDigits(r.dateJalali)}</td>
@@ -3123,8 +3439,9 @@ function ExchangeTable({
             </td>
             <td>{r.settlementLabel}</td>
             <td>{money(r.cashReceived)}</td>
+            <td>{money(r.cardReceived)}</td>
             <td dir="ltr" className="font-bold">
-              {r.storeCreditCode ?? '—'}
+              {r.storeCreditReference ?? '—'}
             </td>
             <td>{r.storeCreditAmount ? money(r.storeCreditAmount) : '—'}</td>
             <td>{r.storeCreditStatusLabel ?? '—'}</td>
@@ -3167,6 +3484,7 @@ function ExchangeTable({
             <td>{money(t.diffTotal)}</td>
             <td></td>
             <td>{money(t.cashReceivedTotal)}</td>
+            <td>{money(t.cardReceivedTotal)}</td>
             <td></td>
             <td>{money(t.creditIssuedTotal)}</td>
             <td colSpan={2}></td>
@@ -3174,8 +3492,8 @@ function ExchangeTable({
           <tr className="bg-amber-50 font-bold">
             <td colSpan={EXCHANGE_HEADERS.length + 1}>
               اعتبار صادرشده‌ی این بازه: {money(t.creditIssuedTotal)} ریال (بدهی ما به مشتری) · از این مبلغ{' '}
-              {money(t.creditUsedTotal)} ریال مصرف شده است · «دریافت نقد/کارت» عمداً فقط پول واقعی است و ارزش کالای
-              برگشتی در آن شمرده نمی‌شود.
+              {money(t.creditUsedTotal)} ریال مصرف شده است · دریافت نقدی و کارتی عمداً فقط پول واقعی هستند و ارزش کالای
+              برگشتی در آن‌ها شمرده نمی‌شود.
             </td>
           </tr>
         </tfoot>
@@ -3437,10 +3755,10 @@ function CreditTables({
 const CREDIT_CELL_FMT = { money, fa: faDigits }
 
 function CreditManagementReport({ fromJalali, toJalali }: { fromJalali: string; toJalali: string }) {
-  const { canOpen } = useManagerSession()
-  const open = canOpen(PANEL_KEYS.creditManagement)
+  /** با خاموش شدن قفل، خود ManagerGate و loader این تب باید یک تصمیم بگیرند. */
+  const open = usePanelOpen(PANEL_KEYS.creditManagement)
   const [dashboard, setDashboard] = useState<CreditDashboard | null>(null)
-  const [rows, setRows] = useState<StoreCreditRow[]>([])
+  const [rows, setRows] = useState<StoreCreditSafeRow[]>([])
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
   const [source, setSource] = useState('')
@@ -3490,7 +3808,7 @@ function CreditManagementReport({ fromJalali, toJalali }: { fromJalali: string; 
       })
       const [d, list] = await Promise.all([
         call<CreditDashboard>(CH.creditDashboard, req.dashboard.payload),
-        call<PagedRows<StoreCreditRow>>(CH.creditList, req.list.payload)
+        call<PagedRows<StoreCreditSafeRow>>(CH.creditList, req.list.payload)
       ])
       setDashboard(d)
       setRows(list ?? [])
@@ -3593,7 +3911,8 @@ function CreditManagementReport({ fromJalali, toJalali }: { fromJalali: string; 
             <input
               className="inp"
               value={search}
-              placeholder="کد، مشتری، شرکت، تلفن"
+              placeholder="جست‌وجوی عادی در این گزارش غیرفعال است؛ کد اعتبار فقط در مسیر مصرف بررسی می‌شود"
+              disabled
               onChange={(e) => {
                 setCreditSkip(0)
                 setSearch(e.target.value)
