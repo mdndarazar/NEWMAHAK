@@ -26,6 +26,7 @@ process.env.HARNESS_DB = join(DIR, 'shop.db')
 const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
 const { salesService, saleWhere } = await import('../../src/main/services/SalesService.ts')
+const { setManagerCorrectionApprovalPassword } = await import('../../src/main/services/AuthService.ts')
 const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
 const { RefundMethod } = await import('@shared/enums')
 const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
@@ -196,7 +197,47 @@ truthy('رمز مدیر، ابطال قفل‌شده را واقعاً ثبت ک
 seed.setting(SETTING_KEYS.panelLocks, {})
 
 // ===========================================================================
-console.log('\n۷) ساختاری')
+console.log('\n۷) روز عملیاتی و تأیید هویت شخصی مدیر')
+const H = await safe('فاکتور برای ابطال دیرهنگام', () => twoItems(0))
+const rH = await safe('برگشت برای ابطال دیرهنگام', () => ret(H.inv.id, H.items[0].id))
+const yesterdayAt = new Date(Date.now() - 24 * 60 * 60 * 1000)
+const yesterday = toJalaliDate(yesterdayAt)
+sql.prepare('UPDATE "SaleReturn" SET returnedAt = ?, returnedAtJalali = ? WHERE id = ?').run(yesterdayAt.getTime(), yesterday, retId(rH))
+await throwsWith('فروشنده روز بعد، حتی با رمز سراسری، مدیر شخصی ندارد ⇒ رد', () =>
+  salesService.returnDelete({
+    id: retId(rH),
+    userId,
+    reason: 'اصلاح دیرهنگام تستی',
+    managerPassword: DEFAULT_MANAGER_PASSWORD
+  }), 'مدیر تأییدکننده')
+truthy('رد هویت دیرهنگام، سند را دست‌نخورده نگه می‌دارد', retRow(retId(rH))?.voidedAt == null)
+await safe('تعریف رمز شخصی مدیر تست', () =>
+  setManagerCorrectionApprovalPassword({ userId, password: '2468', actorUserId: userId })
+)
+await throwsWith('رمز شخصی غلط مدیر رد می‌شود', () =>
+  salesService.returnDelete({
+    id: retId(rH),
+    userId,
+    reason: 'اصلاح دیرهنگام تستی',
+    approverUserId: userId,
+    approverPassword: '0000'
+  }), 'رمز شخصی')
+const voidH = await safe('مدیر شخصی، ابطال دیرهنگام را تأیید می‌کند', () =>
+  salesService.returnDelete({
+    id: retId(rH),
+    userId,
+    reason: 'اصلاح دیرهنگام تستی',
+    approverUserId: userId,
+    approverPassword: '2468'
+  })
+)
+truthy('ابطال دیرهنگام با هویت مدیر ثبت شد', voidH?.voided === true && voidH?.approvingManager?.userId === userId)
+const auditH = seed.one(`SELECT after FROM "AuditLog" WHERE entity = 'SaleReturn' AND entityId = ? AND action = 'VOID' ORDER BY id DESC`, retId(rH))
+truthy('Audit ابطال دیرهنگام، مدیر تأییدکننده و روز عملیاتی را نگه می‌دارد',
+  String(auditH?.after ?? '').includes('"approvingManager":{"userId":' + userId) && String(auditH?.after ?? '').includes('"sameOperationalDay":false'))
+
+// ===========================================================================
+console.log('\n۸) ساختاری')
 const svc = src('src/main/services/SalesService.ts')
 const delBody = (svc.match(/async returnDelete\([\s\S]*?\n  },\n/) ?? [''])[0]
 truthy('returnDelete دیگر saleReturn.delete ندارد', delBody.length > 0 && !delBody.includes('saleReturn.delete('))
@@ -206,6 +247,8 @@ const ui = src('src/renderer/src/pages/SalesReturn.tsx')
 truthy('صفحه‌ی برگشت دلیل ابطال را می‌فرستد', /saleReturnDelete,\s*\{[^}]*reason/.test(ui))
 truthy('ابطال سمت سرور قفل اختصاصی خودش را پیش از تراکنش می‌سنجد', /assertPanelPassword\(\s*PANEL_KEYS\.salesReturnCorrection/.test(delBody))
 truthy('قفل اختصاصی ابطال در نصب تازه خاموش است', /DEFAULT_OPEN_PANEL_KEYS[\s\S]{0,160}salesReturnCorrection/.test(src('src/shared/panels.ts')))
+truthy('ابطال دیرهنگام هویت شخصی مدیر را سمت سرور می‌سنجد', /verifyManagerCorrectionApproval\([\s\S]{0,500}approverUserId/.test(delBody))
+truthy('رمز شخصی مدیر فقط هش‌شده در AuthService است', /purpose: 'MANAGER_RETURN_CORRECTION'/.test(src('src/main/services/AuthService.ts')))
 
 console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
 process.exit(bad === 0 ? 0 : 1)

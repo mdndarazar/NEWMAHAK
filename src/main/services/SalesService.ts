@@ -7,7 +7,12 @@ import { generateReturnCode, normalizeReturnCode, returnCodeExpiry, DAY_MS } fro
 import { shapeSaleRow, sumTotals, groupByDayShift, paymentLabels, returnedTotalOf } from './reportShape'
 import { buildStatements, cashMovementTotals } from './accountingReport'
 import { recordCashMovement } from './CashMovementService'
-import { assertManagerPassword, assertPanelPassword, assertPanelPasswordStrict } from './AuthService'
+import {
+  assertManagerPassword,
+  assertPanelPassword,
+  assertPanelPasswordStrict,
+  verifyManagerCorrectionApproval
+} from './AuthService'
 import { wholesaleDiscountCeilingFor } from '@shared/priceAdjust'
 import { PANEL_KEYS } from '@shared/panels'
 import { periodLockService } from './PeriodLockService'
@@ -7984,15 +7989,26 @@ export const salesService = {
     reason?: string | null
     /** رمز اختیاری قفل «اصلاح و ابطال برگشت/تعویض» در روز جاری. */
     panelPassword?: string | null
-    /** بند ۱۷ — لازم فقط وقتی تاریخ همین برگشت در دوره‌ی بسته‌شده باشد */
+    /** بند ۱۷ — سازگاری با مسیر قدیمیِ رمز سراسری (برای عملیات دیگر) */
     managerPassword?: string | null
     overrideReason?: string | null
+    /** مدیر شخصیِ تأییدکننده برای اصلاح دیرهنگام یا دوره‌ی بسته. */
+    approverUserId?: number | null
+    approverPassword?: string | null
   }) {
     if (!input?.id) throw new BusinessError('برگشتی برای ابطال مشخص نشده است.')
     // نشست ۶۳ (S63-2) — رمز دوره‌ی بسته بیرون از تراکنش؛ نشست ۶۴ — اول گاردهای بی‌هزینه
     const pre = await prisma.saleReturn.findUnique({
       where: { id: input.id },
-      select: { id: true, returnedAt: true, voidedAt: true, voidReason: true, kind: true, exchangeReceiptNo: true }
+      select: {
+        id: true,
+        returnedAt: true,
+        returnedAtJalali: true,
+        voidedAt: true,
+        voidReason: true,
+        kind: true,
+        exchangeReceiptNo: true
+      }
     })
     if (!pre) throw new BusinessError('این برگشت از فروش پیدا نشد؛ فهرست را تازه کنید.')
     assertReturnNotVoided(pre as any, 'ابطال')
@@ -8017,11 +8033,34 @@ export const salesService = {
       input.panelPassword ?? input.managerPassword ?? null,
       preIsExchange ? 'ابطال تعویض کالا' : 'ابطال برگشت از فروش'
     )
+
+    /**
+     * روز عملیاتی از نشست بازِ سرور خوانده می‌شود؛ اگر نشستی باز نباشد فقط
+     * تاریخ سرور معتبر است. هرگز ساعت/تاریخ renderer ملاک نیست. پس فروشنده
+     * فقط همان روز عملیاتی می‌تواند ابطال کند؛ هر روز بعد یا دوره‌ی بسته،
+     * حتماً هویتِ یک مدیر مشخص را می‌خواهد.
+     */
+    const operationalShift = await shiftService.shiftForNow()
+    const operationalDayJalali = operationalShift?.dayJalali || jalaliToday()
+    const sameOperationalDay = pre.returnedAtJalali === operationalDayJalali
+    const periodState = await periodLockService.status({ at: pre.returnedAt })
+    const requiresNamedManager = !sameOperationalDay || periodState.enforced
+    const managerApproval = requiresNamedManager
+      ? await verifyManagerCorrectionApproval({
+          managerUserId: input.approverUserId,
+          password: input.approverPassword,
+          action:
+            !sameOperationalDay
+              ? `ابطال دیرهنگام سند برگشت ${faDigits(pre.id)}`
+              : `ابطال سند برگشت ${faDigits(pre.id)} در دوره‌ی بسته‌شده`
+        })
+      : null
     const periodApproved = await periodLockService.preverify({
       at: pre.returnedAt,
       what: `ابطال سند برگشت ${faDigits(pre.id)}`,
       managerPassword: input.managerPassword ?? null,
-      overrideReason: input.overrideReason ?? null
+      overrideReason: input.overrideReason ?? reason,
+      alreadyVerified: managerApproval != null
     })
 
     /**
@@ -8060,7 +8099,9 @@ export const salesService = {
           entityId: ret.id,
           managerVerified: periodApproved,
           managerPassword: input.managerPassword ?? null,
-          overrideReason: input.overrideReason ?? null,
+          overrideReason: input.overrideReason ?? reason,
+          approvedByUserId: managerApproval?.userId ?? null,
+          approvedByLabel: managerApproval?.displayName ?? null,
           userId: input.userId ?? null,
           before: { total: ret.total, returnedAtJalali: ret.returnedAtJalali, invoiceId: ret.invoiceId }
         })
@@ -8366,7 +8407,12 @@ export const salesService = {
             reason,
             canceledCreditRefs,
             status,
-            correctionAuthScope
+            correctionAuthScope,
+            operationalDayJalali,
+            sameOperationalDay,
+            approvingManager: managerApproval
+              ? { userId: managerApproval.userId, displayName: managerApproval.displayName }
+              : null
           }),
           note:
             (isExchange
@@ -8380,7 +8426,10 @@ export const salesService = {
                 : '') +
             (canceledCreditRefs.length ? ` · اعتبار باطل‌شده: ${canceledCreditRefs.join('، ')}` : '') +
             (pendingReq ? ` · درخواست کارت‌به‌کارت ${faDigits(pendingReq.id)} لغو شد` : '') +
-            ` · وضعیت فاکتور: ${status ?? '—'}`
+            ` · وضعیت فاکتور: ${status ?? '—'}` +
+            (managerApproval
+              ? ` · تأیید دیرهنگام/دوره‌بسته توسط مدیر «${managerApproval.displayName}» (#${faDigits(managerApproval.userId)})`
+              : '')
         })
 
         return {
@@ -8399,7 +8448,10 @@ export const salesService = {
           exchangeInvoiceId: exInv?.id ?? null,
           exchangeReceiptNo: exInv?.receiptNo ?? null,
           exchangeReversedQty: exReversedQty,
-          debtRestored
+          debtRestored,
+          approvingManager: managerApproval
+            ? { userId: managerApproval.userId, displayName: managerApproval.displayName }
+            : null
         }
       }, TX_OPTIONS)
     } catch (e) {

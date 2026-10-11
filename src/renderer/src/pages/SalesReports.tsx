@@ -1844,6 +1844,11 @@ export default function SalesReports() {
   const [exVoidReason, setExVoidReason] = useState('')
   /** رمز قفل اختیاری ابطال؛ برای دوره‌ی بسته باید رمز مدیر باشد. */
   const [exVoidAuthPassword, setExVoidAuthPassword] = useState('')
+  const [exVoidApproverUserId, setExVoidApproverUserId] = useState<number | null>(null)
+  const [exVoidApproverPassword, setExVoidApproverPassword] = useState('')
+  const [exVoidManagers, setExVoidManagers] = useState<
+    { id: number; name: string; role: string; isActive: boolean; hasCorrectionApprovalPassword?: boolean }[]
+  >([])
   const [exVoidErr, setExVoidErr] = useState<string | null>(null)
   const [exVoidBusy, setExVoidBusy] = useState(false)
   const doExchangeVoid = async () => {
@@ -1861,10 +1866,14 @@ export default function SalesReports() {
         reason,
         panelPassword: exVoidAuthPassword || undefined,
         managerPassword: exVoidAuthPassword || undefined,
-        overrideReason: reason
+        overrideReason: reason,
+        approverUserId: exVoidApproverUserId ?? undefined,
+        approverPassword: exVoidApproverPassword || undefined
       })
       setExVoidTarget(null)
       setExVoidAuthPassword('')
+      setExVoidApproverUserId(null)
+      setExVoidApproverPassword('')
       flash(
         (res?.exchangeVoided
           ? `تعویض باطل شد: سند برگشت و سند تعویض ${faDigits(res.exchangeReceiptNo ?? target.exchangeReceiptNo ?? 0)} با مهر «باطل» ماندند`
@@ -2398,8 +2407,16 @@ export default function SalesReports() {
             onVoid={(r) => {
               setExVoidReason('')
               setExVoidAuthPassword('')
+              setExVoidApproverUserId(null)
+              setExVoidApproverPassword('')
               setExVoidErr(null)
               setExVoidTarget(r)
+              void call<{ rows?: { id: number; name: string; role: string; isActive: boolean; hasCorrectionApprovalPassword?: boolean }[] }>(
+                CH.staffDirectory,
+                { includeInactive: false }
+              )
+                .then((res) => setExVoidManagers((res?.rows ?? []).filter((u) => u.role === 'MANAGER' && u.isActive)))
+                .catch(() => setExVoidManagers([]))
             }}
             pending={pending}
           />
@@ -2447,8 +2464,44 @@ export default function SalesReports() {
                 }}
                 placeholder="برای قفل عملیات یا دوره‌ی بسته"
               />
-              <span className="kbd block mt-1">دوره‌ی بسته فقط رمز مدیر می‌پذیرد؛ قفل اختیاری عملیات روز جاری رمز مدیر یا رمز دوم همین عمل را می‌پذیرد.</span>
+              <span className="kbd block mt-1">قفل اختیاری عملیات روز جاری رمز مدیر یا رمز دوم همین عمل را می‌پذیرد. برای روزهای بعد یا دوره‌ی بسته، هویت شخصی مدیر در فیلدهای پایین لازم است.</span>
             </label>
+            <div className="rounded border border-amber-300 bg-amber-50 p-2 space-y-2">
+              <p className="text-sm font-bold text-amber-900">تأیید شخصی مدیر — فقط اصلاح دیرهنگام یا دوره‌ی بسته</p>
+              <label className="block">
+                <span>مدیر تأییدکننده</span>
+                <select
+                  className="inp w-full"
+                  value={exVoidApproverUserId ?? ''}
+                  onChange={(e) => {
+                    setExVoidApproverUserId(e.target.value ? Number(e.target.value) : null)
+                    setExVoidErr(null)
+                  }}
+                >
+                  <option value="">انتخاب کنید…</option>
+                  {exVoidManagers.map((manager) => (
+                    <option key={manager.id} value={manager.id}>
+                      {manager.name}{manager.hasCorrectionApprovalPassword ? '' : ' — رمز شخصی تعریف نشده'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span>رمز شخصی مدیر انتخاب‌شده</span>
+                <input
+                  type="password"
+                  dir="ltr"
+                  className="inp w-full"
+                  value={exVoidApproverPassword}
+                  onChange={(e) => {
+                    setExVoidApproverPassword(e.target.value)
+                    setExVoidErr(null)
+                  }}
+                  placeholder="برای روزهای بعد یا دوره‌ی بسته اجباری است"
+                />
+              </label>
+              <p className="kbd">هویت مدیر تأییدکننده در سابقه‌ی غیرقابل‌تغییر ثبت می‌شود؛ رمز سراسری جای آن را نمی‌گیرد.</p>
+            </div>
             {exVoidErr && <p className="text-red-600 whitespace-pre-line">{exVoidErr}</p>}
             <p className="text-amber-700">
               اگر مابه‌التفاوت از مشتری دریافت شده، بازپرداخت نقد/کارت انجام شده، اعتبار این تعویض خرج شده یا روی سند
@@ -2461,6 +2514,8 @@ export default function SalesReports() {
         onCancel={() => {
           setExVoidTarget(null)
           setExVoidAuthPassword('')
+          setExVoidApproverUserId(null)
+          setExVoidApproverPassword('')
           setExVoidErr(null)
         }}
       />

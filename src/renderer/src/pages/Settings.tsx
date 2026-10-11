@@ -245,6 +245,8 @@ export default function Settings() {
   const [custDelPw, setCustDelPw] = useState('')
   /** نشست ۱۶۵ (S165-D4) — رمز پنل تنظیمات برای ثبت/ویرایش کارمند (سمت main هم سنجیده می‌شود) */
   const [staffPw, setStaffPw] = useState('')
+  /** رمز شخصی مدیر برای تأیید اصلاح/ابطال دیرهنگام؛ هرگز از سرور خوانده نمی‌شود. */
+  const [staffCorrectionApprovalPw, setStaffCorrectionApprovalPw] = useState('')
   const [printers, setPrinters] = useState<string[]>([])
   /**
    * نشست ۲۲۲ · فاز ۳ — فهرست «کامل» چاپگرها (پیش‌فرض ویندوز + نوع حدسی) برای
@@ -394,7 +396,15 @@ export default function Settings() {
 
   // ---------------- جلسه ۱۸ · بند ۲ — کارمندان ----------------
   const [staffRows, setStaffRows] = useState<
-    { id: number; username: string; name: string; role: string; roleLabel: string; isActive: boolean }[]
+    {
+      id: number
+      username: string
+      name: string
+      role: string
+      roleLabel: string
+      isActive: boolean
+      hasCorrectionApprovalPassword?: boolean
+    }[]
   >([])
 
   const [staffDraft, setStaffDraft] = useState<{ id: number | null; name: string; role: string; isActive: boolean }>({
@@ -1613,7 +1623,15 @@ export default function Settings() {
   const loadStaff = useCallback(async () => {
     try {
       const res = await call<{
-        rows: { id: number; username: string; name: string; role: string; roleLabel: string; isActive: boolean }[]
+        rows: {
+          id: number
+          username: string
+          name: string
+          role: string
+          roleLabel: string
+          isActive: boolean
+          hasCorrectionApprovalPassword?: boolean
+        }[]
         activeUserId: number | null
       }>(CH.staffDirectory, {})
       setStaffRows(res?.rows ?? [])
@@ -1631,7 +1649,8 @@ export default function Settings() {
         name: staffDraft.name.trim(),
         role: staffDraft.role,
         isActive: staffDraft.isActive,
-        panelPassword: staffPw
+        panelPassword: staffPw,
+        correctionApprovalPassword: staffCorrectionApprovalPw || undefined
       })
       setStaffDraft({ id: null, name: '', role: 'CASHIER', isActive: true })
       await loadStaff()
@@ -1641,6 +1660,7 @@ export default function Settings() {
     } finally {
       setStaffBusy(false)
       setStaffPw('')
+      setStaffCorrectionApprovalPw('')
     }
   }
 
@@ -4072,7 +4092,11 @@ export default function Settings() {
                     <select
                       className="inp min-w-[200px]"
                       value={staffDraft.role}
-                      onChange={(e) => setStaffDraft({ ...staffDraft, role: e.target.value })}
+                      onChange={(e) => {
+                        const role = e.target.value
+                        setStaffDraft({ ...staffDraft, role })
+                        if (role !== 'MANAGER') setStaffCorrectionApprovalPw('')
+                      }}
                     >
                       {STAFF_ROLES.map((r) => (
                         <option key={r} value={r}>
@@ -4090,6 +4114,16 @@ export default function Settings() {
                     />
                     فعال
                   </label>
+                  {staffDraft.role === 'MANAGER' && (
+                    <label title="فقط هنگام اصلاح/ابطال دیرهنگام یا دوره‌بسته استفاده می‌شود؛ خالی گذاشتن آن رمز قبلی مدیر را تغییر نمی‌دهد.">
+                      <div className="mb-1 font-bold">رمز شخصی تأیید اصلاح دیرهنگام</div>
+                      <PasswordField
+                        value={staffCorrectionApprovalPw}
+                        onChange={(e) => setStaffCorrectionApprovalPw(e.target.value)}
+                        placeholder={staffDraft.id ? 'خالی = بدون تغییر' : 'حداقل ۴ نویسه'}
+                      />
+                    </label>
+                  )}
                   <label title="ثبت یا ویرایش کارمند (نام/نقش/فعال‌بودن) رمز مدیر یا رمز دوم پنل تنظیمات می‌خواهد">
                     <div className="mb-1 font-bold">رمز مدیر / رمز تنظیمات</div>
                     <PasswordField value={staffPw} onChange={(e) => setStaffPw(e.target.value)} />
@@ -4120,6 +4154,7 @@ export default function Settings() {
                     <th>شماره</th>
                     <th>نام</th>
                     <th>نقش</th>
+                    <th>رمز تأیید اصلاح</th>
                     <th>وضعیت</th>
                     <th>ویرایش</th>
                   </tr>
@@ -4130,6 +4165,9 @@ export default function Settings() {
                       <td className="tabular-nums">{faDigits(r.id)}</td>
                       <td className="font-bold">{r.name}</td>
                       <td>{r.roleLabel}</td>
+                      <td>
+                        {r.role === 'MANAGER' ? (r.hasCorrectionApprovalPassword ? 'تعریف شده' : 'تعریف نشده') : '—'}
+                      </td>
                       <td>{r.isActive ? 'فعال' : 'غیرفعال'}</td>
                       <td>
                         <button
@@ -4143,7 +4181,7 @@ export default function Settings() {
                   ))}
                   {!staffRows.length && (
                     <tr>
-                      <td colSpan={5} className="text-center py-4 text-slate-500">
+                      <td colSpan={6} className="text-center py-4 text-slate-500">
                         هنوز کارمندی ثبت نشده است.
                       </td>
                     </tr>

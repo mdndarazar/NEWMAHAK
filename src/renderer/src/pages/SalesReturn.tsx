@@ -268,6 +268,10 @@ export default function SalesReturn() {
    * مدیر باشد؛ در روز جاری، وقتی قفل عملیات روشن است، رمز مدیر/دوم کافی است.
    */
   const [voidAuthPassword, setVoidAuthPassword] = useState('')
+  /** برای روزهای بعد/دوره‌بسته: مدیر مشخص + رمز شخصی همان مدیر (نه رمز سراسری). */
+  const [voidApproverUserId, setVoidApproverUserId] = useState<number | null>(null)
+  const [voidApproverPassword, setVoidApproverPassword] = useState('')
+  const [voidManagers, setVoidManagers] = useState<{ id: number; name: string; role: string; isActive: boolean; hasCorrectionApprovalPassword?: boolean }[]>([])
   const [voidReasonErr, setVoidReasonErr] = useState<string | null>(null)
   const [rowBusy, setRowBusy] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -842,11 +846,15 @@ export default function SalesReturn() {
         panelPassword: voidAuthPassword || undefined,
         /** دوره‌ی بسته فقط همین رمز را به‌عنوان رمز مدیر می‌پذیرد؛ رمز دوم کافی نیست. */
         managerPassword: voidAuthPassword || undefined,
-        overrideReason: reason
+        overrideReason: reason,
+        approverUserId: voidApproverUserId ?? undefined,
+        approverPassword: voidApproverPassword || undefined
       })
       setDeleteTarget(null)
       setVoidReason('')
       setVoidAuthPassword('')
+      setVoidApproverUserId(null)
+      setVoidApproverPassword('')
       setVoidReasonErr(null)
       flash(
         `برگشت از فروش فاکتور شماره ${faDigits(res.receiptNo ?? target.receiptNo ?? 0)} باطل شد · ` +
@@ -865,7 +873,16 @@ export default function SalesReturn() {
       setRowBusy(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deleteTarget, voidReason, voidAuthPassword, loadHistory, lookup, lookupCode])
+  }, [
+    deleteTarget,
+    voidReason,
+    voidAuthPassword,
+    voidApproverUserId,
+    voidApproverPassword,
+    loadHistory,
+    lookup,
+    lookupCode
+  ])
 
   const reset = () => {
     setLookup(null)
@@ -1875,8 +1892,16 @@ export default function SalesReturn() {
                       onClick={() => {
                         setVoidReason('')
                         setVoidAuthPassword('')
+                        setVoidApproverUserId(null)
+                        setVoidApproverPassword('')
                         setVoidReasonErr(null)
                         setDeleteTarget(r)
+                        void call<{ rows?: { id: number; name: string; role: string; isActive: boolean; hasCorrectionApprovalPassword?: boolean }[] }>(
+                          CH.staffDirectory,
+                          { includeInactive: false }
+                        )
+                          .then((res) => setVoidManagers((res?.rows ?? []).filter((u) => u.role === 'MANAGER' && u.isActive)))
+                          .catch(() => setVoidManagers([]))
                       }}
                       disabled={rowBusy}
                       title="ابطال این برگشت (سند با مهر «باطل» و دلیل می‌ماند) و بازگرداندن اثرش روی موجودی انبار"
@@ -1963,9 +1988,47 @@ export default function SalesReturn() {
                 placeholder="قفل عملیات روشن است یا سند در دوره‌ی بسته است؟ رمز لازم را وارد کنید"
               />
               <span className="kbd block mt-1">
-                در دوره‌ی بسته فقط رمز مدیر پذیرفته می‌شود؛ در روز جاری این فیلد فقط وقتی لازم است که مدیر قفل عملیات ابطال را روشن کرده باشد.
+                در روز جاری این فیلد فقط وقتی لازم است که مدیر قفل عملیات ابطال را روشن کرده باشد. رمز شخصیِ مدیرِ مشخص برای روزهای بعد یا دوره‌ی بسته در فیلدهای پایین وارد می‌شود.
               </span>
             </label>
+            <div className="rounded border border-amber-300 bg-amber-50 p-2 space-y-2">
+              <p className="text-sm font-bold text-amber-900">تأیید شخصی مدیر — فقط اصلاح دیرهنگام یا دوره‌ی بسته</p>
+              <label className="block">
+                <span>مدیر تأییدکننده</span>
+                <select
+                  className="inp w-full"
+                  value={voidApproverUserId ?? ''}
+                  onChange={(e) => {
+                    setVoidApproverUserId(e.target.value ? Number(e.target.value) : null)
+                    setVoidReasonErr(null)
+                  }}
+                >
+                  <option value="">انتخاب کنید…</option>
+                  {voidManagers.map((manager) => (
+                    <option key={manager.id} value={manager.id}>
+                      {manager.name}{manager.hasCorrectionApprovalPassword ? '' : ' — رمز شخصی تعریف نشده'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span>رمز شخصی مدیر انتخاب‌شده</span>
+                <input
+                  type="password"
+                  dir="ltr"
+                  className="inp w-full"
+                  value={voidApproverPassword}
+                  onChange={(e) => {
+                    setVoidApproverPassword(e.target.value)
+                    setVoidReasonErr(null)
+                  }}
+                  placeholder="برای روزهای بعد یا دوره‌ی بسته اجباری است"
+                />
+              </label>
+              <p className="kbd">
+                مدیر و رمز او در سابقه‌ی غیرقابل‌تغییر ثبت می‌شود؛ رمز سراسری یا رمز پنل جای این هویت شخصی را نمی‌گیرد.
+              </p>
+            </div>
             {voidReasonErr && <p className="text-red-600 whitespace-pre-line">{voidReasonErr}</p>}
             <p className="text-amber-700">
               اگر بازپرداخت نقد/کارت‌خوان/کارت‌به‌کارتِ پرداخت‌شده انجام شده یا اعتبار خرید این برگشت خرج شده باشد،
@@ -1990,6 +2053,8 @@ export default function SalesReturn() {
         onCancel={() => {
           setDeleteTarget(null)
           setVoidAuthPassword('')
+          setVoidApproverUserId(null)
+          setVoidApproverPassword('')
           setVoidReasonErr(null)
         }}
       />

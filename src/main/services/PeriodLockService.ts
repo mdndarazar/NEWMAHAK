@@ -157,7 +157,8 @@ export const periodLockService = {
     const state = await this.status({ at: input.at })
     if (!state.enforced) return false
     const reason = String(input.overrideReason ?? '').trim()
-    if (!input.managerPassword || reason.length < 3) throw new BusinessError(lockedMessage(input.what, state))
+    if ((!input.managerPassword && input.alreadyVerified !== true) || reason.length < 3)
+      throw new BusinessError(lockedMessage(input.what, state))
     if (input.alreadyVerified === true) return true
     await assertManagerPassword(input.managerPassword, `${input.what} در دوره‌ی بسته‌شده`)
     return true
@@ -187,13 +188,17 @@ export const periodLockService = {
        * این تابع دیگر هیچ‌وقت خودش رمز را نمی‌سنجد (نوشتن AuthLockout وسط تراکنش).
        */
       managerVerified?: boolean
+      /** مدیر شخصی که عبور از دوره‌ی بسته را تأیید کرده است (در صورت وجود). */
+      approvedByUserId?: number | null
+      approvedByLabel?: string | null
     }
   ): Promise<PeriodLockStatus> {
     const state = await this.status({ at: input.at })
     if (!state.enforced) return state
 
     const reason = String(input.overrideReason ?? '').trim()
-    if (!input.managerPassword || reason.length < 3) throw new BusinessError(lockedMessage(input.what, state))
+    if ((!input.managerPassword && input.managerVerified !== true) || reason.length < 3)
+      throw new BusinessError(lockedMessage(input.what, state))
     if (input.managerVerified !== true)
       // دوره بین سنجش قبل از تراکنش و خود تراکنش بسته شد (یا صدازننده preverify نکرد):
       // امن‌ترین کار رد کامل است، نه سنجش رمز وسط تراکنش.
@@ -215,9 +220,15 @@ export const periodLockService = {
         cashSessionId: state.cashSessionId,
         consolidationId: state.consolidationId,
         overrideReason: reason,
+        ...(input.approvedByUserId != null
+          ? { approvedByUserId: input.approvedByUserId, approvedByLabel: input.approvedByLabel ?? null }
+          : {}),
         ...(input.after == null ? {} : { payload: input.after })
       }),
-      note: `${input.what} در دوره‌ی بسته‌ی ${faDigits(state.dayJalali)} با تایید مدیر · دلیل: ${reason}`
+      note:
+        `${input.what} در دوره‌ی بسته‌ی ${faDigits(state.dayJalali)} با تایید مدیر` +
+        (input.approvedByLabel ? ` «${input.approvedByLabel}»` : '') +
+        ` · دلیل: ${reason}`
     })
     return state
   },
