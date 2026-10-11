@@ -507,6 +507,10 @@ export function registerIpcHandlers(): void {
   handle(IPC.saleReturnGet, (p) => salesService.returnGet(p.id))
   handle(IPC.saleReturnUpdate, async (p) => salesService.returnUpdate(await withSessionActor(p ?? {}, 'ویرایش برگشت از فروش')))
   handle(IPC.saleReturnDelete, async (p) => salesService.returnDelete(await withSessionActor(p ?? {}, 'ابطال برگشت یا تعویض')))
+  handle(IPC.saleReturnCorrection, async (p) =>
+    salesService.returnReconcileVoid(await withSessionActor(p ?? {}, 'اصلاح جبرانی برگشت از فروش'))
+  )
+  handle(IPC.saleReturnCorrectionList, (p) => salesService.returnCorrectionList(p ?? {}))
   handle(IPC.salePurgePreview, (p) => salesService.purgePreview(p ?? {}))
   handle(IPC.salePurge, async (p) => {
     const payload = await withSessionActor(p ?? {})

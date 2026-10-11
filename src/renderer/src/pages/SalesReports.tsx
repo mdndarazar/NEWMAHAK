@@ -38,6 +38,7 @@ import OutOfShiftPanel from '../components/OutOfShiftPanel'
 import OverrideSessionsPanel from '../components/OverrideSessionsPanel'
 import InvoicePaymentsModal from '../components/InvoicePaymentsModal'
 import CreditSettlementModal from '../components/CreditSettlementModal'
+import ReturnCorrectionLedger from '../components/ReturnCorrectionLedger'
 import { useSettings } from '../hooks/useSettings'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { MANAGER_ACCOUNT_ROW_LABEL, MANAGER_ACCOUNT_ROW_NOTE } from '@shared/enums'
@@ -2293,6 +2294,7 @@ export default function SalesReports() {
             )}
           </table>
         ) : tab === 'returns' ? (
+          <>
           <table className={returnCols.tableClass} ref={returnCols.tableRef}>
             <ColGroup widths={returnCols.widths} />
             <thead className="sticky top-0">
@@ -2380,6 +2382,8 @@ export default function SalesReports() {
               </tfoot>
             )}
           </table>
+          <ReturnCorrectionLedger fromJalali={filters.fromJalali} toJalali={filters.toJalali} />
+          </>
         ) : tab === 'credit' ? (
           /**
            * بخش ۷ + گیت هشتم: تب «نسیه» با کلید قفل مستقل خودش. عمداً فقط *همین

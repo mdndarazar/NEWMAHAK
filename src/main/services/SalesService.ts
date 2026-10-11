@@ -42,7 +42,16 @@ import {
   guardCreditCode,
   reverseInvoiceRedemptions
 } from './StoreCreditService'
-import { exchangeCreditDays, CreditSource, creditIssueReasonOf, CREDIT_ISSUE_REASON_LABELS, effectiveStatus, CREDIT_STATUS_LABELS, remainingOf as creditRemainingOf } from '@shared/credit'
+import {
+  exchangeCreditDays,
+  CreditSource,
+  CreditStatus,
+  creditIssueReasonOf,
+  CREDIT_ISSUE_REASON_LABELS,
+  effectiveStatus,
+  CREDIT_STATUS_LABELS,
+  remainingOf as creditRemainingOf
+} from '@shared/credit'
 /** نشست ۶۱ — تشخیص «پول واقعی» برای پشتوانه‌ی اعتبار اضافه‌دریافت (همان نگاشت پل تطبیق) */
 import { receiptBucketOf } from '@shared/accounting'
 import { allocateLineNet, returnValueOf, returnListPriceOf, mergeReturnTargets, isReturnableStatus } from '@shared/returnValue'
@@ -1142,15 +1151,29 @@ export async function resolveReportPeriod(
 async function refreshInvoiceStatus(tx: Prisma.TransactionClient, invoiceId: number): Promise<string | null> {
   const inv = await tx.saleInvoice.findUnique({
     where: { id: invoiceId },
-    select: { id: true, status: true, items: { select: { id: true, qty: true } }, returns: { where: { voidedAt: null }, select: { items: { select: { saleItemId: true, qty: true } } } } }
+    select: {
+      id: true,
+      status: true,
+      items: { select: { id: true, qty: true } },
+      returns: {
+        where: { voidedAt: null },
+        select: {
+          items: { select: { saleItemId: true, qty: true } },
+          corrections: { where: { status: 'POSTED' }, select: { id: true } }
+        }
+      }
+    }
   })
   if (!inv) return null
   if (inv.status !== SaleStatus.SETTLED && inv.status !== SaleStatus.RETURNED && inv.status !== SaleStatus.PARTIALLY_RETURNED)
     return inv.status
 
   const returnedByItem = new Map<number, number>()
-  for (const r of inv.returns)
+  for (const r of inv.returns) {
+    // ردیف جبرانی جدید، اثر کالای این برگشت را در شیفت اصلاح‌کننده معکوس کرده است.
+    if (r.corrections.length) continue
     for (const it of r.items) returnedByItem.set(it.saleItemId, (returnedByItem.get(it.saleItemId) ?? 0) + it.qty)
+  }
 
   const soldQty = inv.items.reduce((s, i) => s + i.qty, 0)
   const returnedQty = inv.items.reduce((s, i) => s + Math.min(i.qty, returnedByItem.get(i.id) ?? 0), 0)
@@ -8474,6 +8497,439 @@ export const salesService = {
         })
       }
       throw e
+    }
+  },
+
+  /**
+   * دفتر جبرانیِ ابطال برگشتِ تسویه‌شده.
+   *
+   * برخلاف `returnDelete` قدیمی، این مسیر SaleReturn/StoreCredit/حرکت نقدی
+   * اولیه را پاک یا باطل نمی‌کند. اثرهای جبرانی با زمان/کاربر/شیفت فعلی ایجاد
+   * می‌شوند؛ بنابراین گزارش شیفت مبدأ حقیقت تاریخی خود را حفظ می‌کند و صندوق
+   * و شمارش موجودیِ شیفت اصلاح‌کننده اثر واقعیِ امروز را می‌بینند.
+   *
+   * فاز نخست عمداً فقط `kind === RETURN` را می‌پذیرد. تعویض گراف پرداخت/فاکتور
+   * جایگزین دارد و نباید با حدس زدن مثل برگشت ساده اصلاح شود.
+   */
+  async returnReconcileVoid(input: {
+    id?: number | null
+    userId?: number | null
+    reason?: string | null
+    panelPassword?: string | null
+    approverUserId?: number | null
+    approverPassword?: string | null
+    /** آنچه واقعاً از مشتری به صندوق فعلی برگشته است. */
+    cashRecovered?: number | null
+    /** آنچه واقعاً به کارت/بانک برگشته است (دفتر مستقل، نه پول کشو). */
+    cardRecovered?: number | null
+    cardReference?: string | null
+    /** NONE | CANCELED_UNUSED | REMAINS_ACTIVE | CONSUMED */
+    creditOutcome?: string | null
+    note?: string | null
+  }) {
+    const id = Math.round(Number(input?.id ?? 0))
+    if (!Number.isSafeInteger(id) || id <= 0) throw new BusinessError('برگشتی برای اصلاح جبرانی مشخص نشده است.')
+    const reason = String(input?.reason ?? '').trim()
+    if (reason.length < 3) throw new BusinessError('برای اصلاح جبرانی، نوشتن دلیل اجباری است (حداقل ۳ حرف).')
+    const toSafeNonnegativeAmount = (value: unknown, label: string): number => {
+      if (value == null || value === '') return 0
+      if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)
+        throw new BusinessError(`${label} باید عدد صحیحِ صفر یا بزرگ‌تر باشد.`)
+      return value
+    }
+    const cashRecovered = toSafeNonnegativeAmount(input?.cashRecovered, 'مبلغ نقدِ بازیافتی')
+    const cardRecovered = toSafeNonnegativeAmount(input?.cardRecovered, 'مبلغ کارت/بانکِ بازیافتی')
+    const cardReference = String(input?.cardReference ?? '').trim()
+    if (cardRecovered > 0 && cardReference.length < 3)
+      throw new BusinessError('برای مبلغ بازیافتی کارت/بانک، شماره پیگیری یا توضیح قابل‌ردیابی بنویسید (حداقل ۳ نویسه).')
+
+    const pre = await prisma.saleReturn.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        kind: true,
+        voidedAt: true,
+        returnedAt: true,
+        returnedAtJalali: true,
+        userId: true,
+        shiftId: true,
+        exchangeReceiptNo: true
+      }
+    })
+    if (!pre) throw new BusinessError('این برگشت از فروش پیدا نشد؛ فهرست را تازه کنید.')
+    assertReturnNotVoided(pre as any, 'ابطال')
+    /** مقدار ناآشنا هرگز برگشت ساده فرض نمی‌شود. */
+    if (pre.kind !== ReturnKind.RETURN)
+      throw new BusinessError(
+        `اصلاح جبرانیِ خودکار فقط برای «برگشت ساده» مجاز است؛ نوع سند ${String(pre.kind ?? 'نامشخص')} است` +
+          (pre.exchangeReceiptNo ? ` (سند تعویض ${faDigits(pre.exchangeReceiptNo)})` : '') +
+          '. تعویض کالا باید با دفتر جبرانی کاملِ گراف تعویض رسیدگی شود.'
+      )
+
+    const correctionAuthScope = await assertPanelPassword(
+      PANEL_KEYS.salesReturnCorrection,
+      input?.panelPassword ?? null,
+      'اصلاح/ابطال جبرانی برگشت از فروش'
+    )
+    /** نشست باز مرجع قطعی کاربر/شیفتِ جبران است؛ renderer نمی‌تواند آن را جعل کند. */
+    const operationalShift = await shiftService.shiftForNow()
+    if (!operationalShift?.id || !operationalShift.userId)
+      throw new BusinessError('برای ثبت اصلاح جبرانی باید یک نشست باز با کارمند مشخص وجود داشته باشد؛ ابتدا نشست/کارمند فعلی را تعیین کنید.')
+    const correctingUserId = Number(operationalShift.userId)
+    const correctingShiftId = Number(operationalShift.id)
+    const operationalDayJalali = operationalShift.dayJalali || jalaliToday()
+    const sameOperationalDay = pre.returnedAtJalali === operationalDayJalali
+    const periodState = await periodLockService.status({ at: pre.returnedAt })
+    const managerApproval = !sameOperationalDay || periodState.enforced
+      ? await verifyManagerCorrectionApproval({
+          managerUserId: input?.approverUserId,
+          password: input?.approverPassword,
+          action:
+            !sameOperationalDay
+              ? `اصلاح دیرهنگام برگشت ${faDigits(pre.id)}`
+              : `اصلاح برگشت ${faDigits(pre.id)} در دوره‌ی بسته‌شده`
+        })
+      : null
+    const periodApproved = await periodLockService.preverify({
+      at: pre.returnedAt,
+      what: `اصلاح جبرانی برگشت ${faDigits(pre.id)}`,
+      overrideReason: reason,
+      alreadyVerified: managerApproval != null
+    })
+
+    return prisma.$transaction(async (tx) => {
+      const ret = await tx.saleReturn.findUnique({
+        where: { id },
+        include: {
+          items: true,
+          invoice: { select: { id: true, receiptNo: true } }
+        }
+      })
+      if (!ret) throw new BusinessError('این برگشت از فروش پیدا نشد؛ فهرست را تازه کنید.')
+      assertReturnNotVoided(ret as any, 'ابطال')
+      if ((ret.kind ?? ReturnKind.RETURN) !== ReturnKind.RETURN)
+        throw new BusinessError('نوع این سند دیگر برگشت ساده نیست؛ اصلاح جبرانی انجام نشد.')
+      const existing = await (tx as any).returnCorrection.findUnique({ where: { returnId: ret.id }, select: { id: true } })
+      if (existing)
+        throw new BusinessError(`برای برگشت ${faDigits(ret.id)} قبلاً اصلاح جبرانی شماره ${faDigits(existing.id)} ثبت شده است؛ ثبت دوباره ممنوع است.`)
+
+      await periodLockService.assertOpen(tx, {
+        at: ret.returnedAt,
+        what: `اصلاح جبرانی برگشت ${faDigits(ret.id)}`,
+        entity: 'SaleReturn',
+        entityId: ret.id,
+        managerVerified: periodApproved,
+        overrideReason: reason,
+        approvedByUserId: managerApproval?.userId ?? null,
+        approvedByLabel: managerApproval?.displayName ?? null,
+        userId: correctingUserId,
+        before: { total: ret.total, returnedAtJalali: ret.returnedAtJalali, invoiceId: ret.invoiceId }
+      })
+
+      const now = new Date()
+      const refundAmount = Math.max(0, toNumberRial(ret.refundAmount ?? 0))
+      let originalCashOrCardOut = 0
+      const refundMethod = String(ret.refundMethod ?? '')
+      const knownRefundMethods = [RefundMethod.NONE, RefundMethod.CASH, RefundMethod.CARD, RefundMethod.STORE_CREDIT, RefundMethod.CARD_TO_CARD]
+      if (!knownRefundMethods.includes(refundMethod))
+        throw new BusinessError(
+          refundMethod
+            ? 'روش بازپرداخت این برگشت برای اصلاح جبرانی شناخته‌شده نیست؛ برای جلوگیری از مخفی‌شدن پول، رسیدگی دستی مدیر لازم است.'
+            : 'روش بازپرداخت این برگشت قدیمی ثبت نشده است؛ مبلغ آن را صفر فرض نمی‌کنیم. ابتدا رسیدگی دستی و تکمیل تسویه لازم است.'
+        )
+      if (refundMethod === RefundMethod.CASH || refundMethod === RefundMethod.CARD) originalCashOrCardOut = refundAmount
+      if (refundMethod === RefundMethod.CARD_TO_CARD) {
+        const request = await tx.cardTransferRequest.findFirst({
+          where: { returnId: ret.id },
+          select: { id: true, status: true, amount: true }
+        })
+        if (!request)
+          throw new BusinessError('برای بازپرداخت کارت‌به‌کارتِ این برگشت، درخواست مرجع پیدا نشد؛ مبلغ را صفر فرض نمی‌کنیم و رسیدگی دستی مدیر لازم است.')
+        if (request.status !== CardTransferStatus.PENDING && request.status !== CardTransferStatus.CANCELED)
+          originalCashOrCardOut = Math.max(0, toNumberRial(request.amount))
+      }
+      if (cashRecovered + cardRecovered > originalCashOrCardOut)
+        throw new BusinessError(
+          `جمع مبلغ بازیافتی (${money(cashRecovered + cardRecovered)} ریال) از بازپرداخت واقعی این برگشت (${money(originalCashOrCardOut)} ریال) بیشتر است.`
+        )
+
+      const credit = ret.storeCreditId
+        ? await tx.storeCredit.findUnique({
+            where: { id: ret.storeCreditId },
+            select: { id: true, amount: true, usedAmount: true, status: true, voidedAt: true }
+          })
+        : null
+      const creditAmount = credit ? Math.max(0, toNumberRial(credit.amount)) : 0
+      const creditUsed = credit ? Math.max(0, toNumberRial(credit.usedAmount)) : 0
+      const creditRemaining = Math.max(0, creditAmount - creditUsed)
+      const creditOutcome = String(input?.creditOutcome ?? (credit ? '' : 'NONE')).trim().toUpperCase()
+      const allowedCreditOutcomes = credit ? ['CANCELED_UNUSED', 'REMAINS_ACTIVE', 'CONSUMED'] : ['NONE']
+      if (!allowedCreditOutcomes.includes(creditOutcome))
+        throw new BusinessError(credit ? 'وضعیت اعتبار صادرشده را دقیقاً انتخاب کنید: لغو نشده/باقی می‌ماند/مصرف شده.' : 'این برگشت اعتبار خرید صادرشده ندارد؛ وضعیت اعتبار باید «ندارد» باشد.')
+      if (creditOutcome === 'CANCELED_UNUSED' && (creditUsed > 0 || creditRemaining <= 0))
+        throw new BusinessError('اعتبار فقط وقتی «لغوِ مصرف‌نشده» می‌شود که هیچ مصرفی نداشته باشد و مانده‌ی مثبت داشته باشد.')
+      if (creditOutcome === 'CONSUMED' && creditRemaining > 0)
+        throw new BusinessError('این اعتبار بخشی مانده دارد؛ وضعیت «مصرف‌شده» فقط برای اعتباری پذیرفته است که کاملاً مصرف شده باشد. وضعیت «باقی می‌ماند» را ثبت کنید.')
+      if (creditOutcome === 'REMAINS_ACTIVE' && creditRemaining <= 0)
+        throw new BusinessError('اعتبارِ مانده‌دار وجود ندارد؛ وضعیت «مصرف‌شده» را انتخاب کنید.')
+
+      const unrecoveredAmount = Math.max(0, originalCashOrCardOut - cashRecovered - cardRecovered)
+      const originalSnapshot = {
+        returnId: ret.id,
+        invoiceId: ret.invoiceId,
+        receiptNo: ret.invoice?.receiptNo ?? null,
+        returnedAtJalali: ret.returnedAtJalali,
+        total: toNumberRial(ret.total),
+        refundMethod: ret.refundMethod ?? null,
+        refundAmount,
+        originalUserId: ret.userId ?? null,
+        originalShiftId: ret.shiftId ?? null,
+        credit: credit ? { id: credit.id, amount: creditAmount, usedAmount: creditUsed, status: credit.status } : null
+      }
+      const reconciliation = {
+        cashRecovered,
+        cardRecovered,
+        cardReference: cardRecovered > 0 ? cardReference : null,
+        originalCashOrCardOut,
+        unrecoveredAmount,
+        creditOutcome,
+        creditAmount,
+        creditUsed,
+        creditRemaining,
+        note: String(input?.note ?? '').trim() || null
+      }
+      const correction = await (tx as any).returnCorrection.create({
+        data: {
+          returnId: ret.id,
+          reason,
+          originalUserId: ret.userId ?? null,
+          originalShiftId: ret.shiftId ?? null,
+          correctingUserId,
+          correctingShiftId,
+          approvingManagerId: managerApproval?.userId ?? null,
+          originalDayJalali: ret.returnedAtJalali,
+          operationalDayJalali,
+          originalSnapshotJson: JSON.stringify(originalSnapshot),
+          reconciliationJson: JSON.stringify(reconciliation),
+          cashRecovered,
+          cardRecovered,
+          unrecoveredAmount,
+          creditOutcome,
+          creditAffectedAmount: creditAmount,
+          createdAt: now,
+          createdAtJalali: toJalaliDate(now),
+          createdAtTime: toClock(now)
+        }
+      })
+
+      const effectRows: any[] = []
+      const stockLines = ret.items
+        .filter((item: any) => Number(item.restockedQty ?? 0) > 0)
+        .map((item: any) => ({ variantId: Number(item.variantId), qty: Number(item.restockedQty) }))
+      if (stockLines.length) {
+        await inventoryService.decrease(
+          stockLines,
+          {
+            reason: 'RETURN_CORRECTION',
+            refType: 'ReturnCorrection',
+            refId: correction.id,
+            userId: correctingUserId,
+            note: `اصلاح جبرانی برگشت ${faDigits(ret.id)} · فاکتور ${faDigits(ret.invoice?.receiptNo ?? 0)} · ${reason}`
+          },
+          tx
+        )
+        for (const item of ret.items) {
+          const qty = Number(item.restockedQty ?? 0)
+          if (qty > 0)
+            effectRows.push({
+              correctionId: correction.id,
+              type: 'INVENTORY_OUT',
+              qty,
+              variantId: item.variantId,
+              referenceType: 'SaleReturnItem',
+              referenceId: item.id,
+              detailsJson: JSON.stringify({ returnId: ret.id }),
+              occurredAt: now,
+              occurredAtJalali: toJalaliDate(now),
+              occurredAtTime: toClock(now),
+              shiftId: correctingShiftId,
+              userId: correctingUserId
+            })
+        }
+      }
+      if (cashRecovered > 0) {
+        const movement = await recordCashMovement(tx, {
+          amount: cashRecovered,
+          type: CashMovementType.CASH_IN,
+          shiftId: correctingShiftId,
+          userId: correctingUserId,
+          description: `بازیافت نقدِ اصلاح برگشت ${faDigits(ret.id)} · اصلاح ${faDigits(correction.id)} · ${reason}`,
+          refType: 'ReturnCorrection',
+          refId: correction.id,
+          occurredAt: now
+        })
+        effectRows.push({
+          correctionId: correction.id,
+          type: 'CASH_RECOVERED',
+          amount: cashRecovered,
+          cashMovementId: movement.id,
+          referenceType: 'CashMovement',
+          referenceId: movement.id,
+          detailsJson: JSON.stringify({ returnId: ret.id }),
+          occurredAt: now,
+          occurredAtJalali: toJalaliDate(now),
+          occurredAtTime: toClock(now),
+          shiftId: correctingShiftId,
+          userId: correctingUserId
+        })
+      }
+      if (cardRecovered > 0)
+        effectRows.push({
+          correctionId: correction.id,
+          type: 'CARD_RECOVERED',
+          amount: cardRecovered,
+          detailsJson: JSON.stringify({ returnId: ret.id, cardReference }),
+          occurredAt: now,
+          occurredAtJalali: toJalaliDate(now),
+          occurredAtTime: toClock(now),
+          shiftId: correctingShiftId,
+          userId: correctingUserId
+        })
+      if (unrecoveredAmount > 0)
+        effectRows.push({
+          correctionId: correction.id,
+          type: 'UNRECOVERED_REFUND',
+          amount: unrecoveredAmount,
+          detailsJson: JSON.stringify({ returnId: ret.id, originalCashOrCardOut }),
+          occurredAt: now,
+          occurredAtJalali: toJalaliDate(now),
+          occurredAtTime: toClock(now),
+          shiftId: correctingShiftId,
+          userId: correctingUserId
+        })
+      if (credit) {
+        if (creditOutcome === 'CANCELED_UNUSED') {
+          await tx.storeCredit.update({
+            where: { id: credit.id },
+            data: {
+              status: StoreCreditStatus.CANCELED,
+              voidedAt: now,
+              voidedReason: `اصلاح جبرانی برگشت ${faDigits(ret.id)} · اصلاح ${faDigits(correction.id)} · ${reason}`
+            }
+          })
+        }
+        effectRows.push({
+          correctionId: correction.id,
+          type: `CREDIT_${creditOutcome}`,
+          amount: creditOutcome === 'CANCELED_UNUSED' ? creditRemaining : creditAmount,
+          referenceType: 'StoreCredit',
+          referenceId: credit.id,
+          detailsJson: JSON.stringify({ creditStatusBefore: credit.status, usedAmount: creditUsed, remainingAmount: creditRemaining }),
+          occurredAt: now,
+          occurredAtJalali: toJalaliDate(now),
+          occurredAtTime: toClock(now),
+          shiftId: correctingShiftId,
+          userId: correctingUserId
+        })
+      }
+      if (effectRows.length) await (tx as any).returnCorrectionEffect.createMany({ data: effectRows })
+
+      const status = await refreshInvoiceStatus(tx, ret.invoiceId)
+      const settleAfter = await recalcSettlement(tx, ret.invoiceId, { userId: correctingUserId, overpayCreditShortfall: 'flag' })
+      await auditOverpayChanges(tx, settleAfter, {
+        invoiceId: ret.invoiceId,
+        receiptNo: ret.invoice?.receiptNo ?? 0,
+        userId: correctingUserId,
+        why: `اصلاح جبرانی برگشت ${faDigits(ret.id)}`
+      })
+      await audit(tx, {
+        action: AuditAction.VOID,
+        entity: 'ReturnCorrection',
+        entityId: correction.id,
+        userId: correctingUserId,
+        before: JSON.stringify(originalSnapshot),
+        after: JSON.stringify({
+          returnId: ret.id,
+          correctionId: correction.id,
+          correctionAuthScope,
+          operationalDayJalali,
+          sameOperationalDay,
+          correctingUserId,
+          correctingShiftId,
+          approvingManager: managerApproval,
+          reconciliation,
+          effectCount: effectRows.length,
+          invoiceStatus: status,
+          invoiceRemaining: settleAfter.remaining
+        }),
+        note:
+          `اصلاح جبرانی برگشت ${faDigits(ret.id)} (فاکتور ${faDigits(ret.invoice?.receiptNo ?? 0)}) ثبت شد` +
+          ` · شیفت اصلاح ${faDigits(correctingShiftId)} / کاربر ${faDigits(correctingUserId)}` +
+          (managerApproval ? ` · تأیید مدیر «${managerApproval.displayName}» (#${faDigits(managerApproval.userId)})` : '') +
+          ` · دلیل: ${reason}` +
+          (unrecoveredAmount ? ` · مغایرت بازیافت‌نشده: ${money(unrecoveredAmount)} ریال` : '')
+      })
+      return {
+        id: correction.id,
+        returnId: ret.id,
+        invoiceId: ret.invoiceId,
+        receiptNo: ret.invoice?.receiptNo ?? null,
+        status: 'POSTED' as const,
+        cashRecovered,
+        cardRecovered,
+        unrecoveredAmount,
+        creditOutcome,
+        correctedShiftId: correctingShiftId,
+        correctingUserId,
+        approvingManager: managerApproval,
+        effects: effectRows.map((row) => ({ type: row.type, amount: row.amount ?? 0, qty: row.qty ?? 0 }))
+      }
+    }, TX_OPTIONS)
+  },
+
+  /** خواندنی: دفتر اصلاح‌های جبرانی برای گزارش و پیگیری مغایرت. */
+  async returnCorrectionList(input: { fromJalali?: string | null; toJalali?: string | null } = {}) {
+    const from = String(input.fromJalali ?? '').trim() || jalaliToday()
+    const to = String(input.toJalali ?? '').trim() || from
+    if (!isValidJalaliDate(from) || !isValidJalaliDate(to) || from > to)
+      throw new BusinessError('بازه‌ی گزارش اصلاحات جبرانی معتبر نیست.')
+    const rows = await (prisma as any).returnCorrection.findMany({
+      where: { createdAt: { gte: jalaliStartOfDay(from), lte: jalaliEndOfDay(to) } },
+      include: { effects: { orderBy: { id: 'asc' } }, return: { select: { invoiceId: true, returnedAtJalali: true, total: true } } },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }]
+    })
+    const userIds = [...new Set(rows.flatMap((row: any) => [row.originalUserId, row.correctingUserId, row.approvingManagerId]).filter(Boolean))]
+    const users = userIds.length
+      ? await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, displayName: true } })
+      : []
+    const userName = new Map(users.map((u: any) => [u.id, u.displayName]))
+    return {
+      rows: rows.map((row: any) => ({
+        id: row.id,
+        returnId: row.returnId,
+        invoiceId: row.return?.invoiceId ?? null,
+        originalDayJalali: row.originalDayJalali,
+        operationalDayJalali: row.operationalDayJalali,
+        createdAtJalali: row.createdAtJalali,
+        createdAtTime: row.createdAtTime,
+        reason: row.reason,
+        cashRecovered: toNumberRial(row.cashRecovered),
+        cardRecovered: toNumberRial(row.cardRecovered),
+        unrecoveredAmount: toNumberRial(row.unrecoveredAmount),
+        creditOutcome: row.creditOutcome,
+        originalUser: row.originalUserId ? userName.get(row.originalUserId) ?? `کاربر #${row.originalUserId}` : 'نامشخص',
+        correctingUser: userName.get(row.correctingUserId) ?? `کاربر #${row.correctingUserId}`,
+        approvingManager: row.approvingManagerId ? userName.get(row.approvingManagerId) ?? `مدیر #${row.approvingManagerId}` : null,
+        originalShiftId: row.originalShiftId,
+        correctingShiftId: row.correctingShiftId,
+        effects: row.effects.map((effect: any) => ({
+          type: effect.type,
+          amount: toNumberRial(effect.amount),
+          qty: effect.qty,
+          variantId: effect.variantId,
+          detailsJson: effect.detailsJson
+        }))
+      }))
     }
   },
 

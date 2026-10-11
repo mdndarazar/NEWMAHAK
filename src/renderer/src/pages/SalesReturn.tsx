@@ -273,6 +273,19 @@ export default function SalesReturn() {
   const [voidApproverPassword, setVoidApproverPassword] = useState('')
   const [voidManagers, setVoidManagers] = useState<{ id: number; name: string; role: string; isActive: boolean; hasCorrectionApprovalPassword?: boolean }[]>([])
   const [voidReasonErr, setVoidReasonErr] = useState<string | null>(null)
+  /** دفتر جبرانیِ مستقل برای برگشتی که پول/اعتبارش واقعاً تعیین‌تکلیف شده است. */
+  const [correctionTarget, setCorrectionTarget] = useState<any | null>(null)
+  const [correctionReason, setCorrectionReason] = useState('')
+  const [correctionAuthPassword, setCorrectionAuthPassword] = useState('')
+  const [correctionApproverUserId, setCorrectionApproverUserId] = useState<number | null>(null)
+  const [correctionApproverPassword, setCorrectionApproverPassword] = useState('')
+  const [correctionCash, setCorrectionCash] = useState('')
+  const [correctionCard, setCorrectionCard] = useState('')
+  const [correctionCardReference, setCorrectionCardReference] = useState('')
+  const [correctionCreditOutcome, setCorrectionCreditOutcome] = useState('NONE')
+  const [correctionNote, setCorrectionNote] = useState('')
+  const [correctionErr, setCorrectionErr] = useState<string | null>(null)
+  const [correctionBusy, setCorrectionBusy] = useState(false)
   const [rowBusy, setRowBusy] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const repSearchRef = useRef<VariantSearchBoxHandle>(null)
@@ -879,6 +892,65 @@ export default function SalesReturn() {
     voidAuthPassword,
     voidApproverUserId,
     voidApproverPassword,
+    loadHistory,
+    lookup,
+    lookupCode
+  ])
+
+  const doCorrection = useCallback(async () => {
+    const target = correctionTarget
+    if (!target) return
+    const reason = correctionReason.trim()
+    if (reason.length < 3) {
+      setCorrectionErr('دلیل اصلاح جبرانی را بنویسید (حداقل ۳ حرف).')
+      return
+    }
+    const cashRecovered = Number(digitsOnly(correctionCash) || '0')
+    const cardRecovered = Number(digitsOnly(correctionCard) || '0')
+    if (!Number.isSafeInteger(cashRecovered) || !Number.isSafeInteger(cardRecovered)) {
+      setCorrectionErr('مبلغ بازیافتی معتبر نیست.')
+      return
+    }
+    setCorrectionBusy(true)
+    try {
+      const res = await call<any>(CH.saleReturnCorrection, {
+        id: target.id,
+        reason,
+        panelPassword: correctionAuthPassword || undefined,
+        approverUserId: correctionApproverUserId ?? undefined,
+        approverPassword: correctionApproverPassword || undefined,
+        cashRecovered,
+        cardRecovered,
+        cardReference: correctionCardReference.trim() || undefined,
+        creditOutcome: correctionCreditOutcome,
+        note: correctionNote.trim() || undefined
+      })
+      setCorrectionTarget(null)
+      setCorrectionErr(null)
+      flash(
+        `اصلاح جبرانی شماره ${faDigits(res.id)} ثبت شد` +
+          (res.cashRecovered ? ` · نقدِ بازیافتی: ${money(res.cashRecovered)} ریال` : '') +
+          (res.cardRecovered ? ` · کارت/بانکِ بازیافتی: ${money(res.cardRecovered)} ریال` : '') +
+          (res.unrecoveredAmount ? ` · مغایرت بازیافت‌نشده: ${money(res.unrecoveredAmount)} ریال` : '')
+      )
+      await loadHistory()
+      if (lookup) await lookupCode(lookup.returnCode)
+    } catch (e: any) {
+      setCorrectionErr(String(e?.message ?? 'اصلاح جبرانی انجام نشد.'))
+    } finally {
+      setCorrectionBusy(false)
+    }
+  }, [
+    correctionTarget,
+    correctionReason,
+    correctionCash,
+    correctionCard,
+    correctionAuthPassword,
+    correctionApproverUserId,
+    correctionApproverPassword,
+    correctionCardReference,
+    correctionCreditOutcome,
+    correctionNote,
     loadHistory,
     lookup,
     lookupCode
@@ -1908,6 +1980,32 @@ export default function SalesReturn() {
                     >
                       ابطال
                     </button>
+                    <button
+                      className="text-amber-700 mr-2"
+                      onClick={() => {
+                        setCorrectionReason('')
+                        setCorrectionAuthPassword('')
+                        setCorrectionApproverUserId(null)
+                        setCorrectionApproverPassword('')
+                        setCorrectionCash('')
+                        setCorrectionCard('')
+                        setCorrectionCardReference('')
+                        setCorrectionCreditOutcome(r.storeCreditReference ? 'REMAINS_ACTIVE' : 'NONE')
+                        setCorrectionNote('')
+                        setCorrectionErr(null)
+                        setCorrectionTarget(r)
+                        void call<{ rows?: { id: number; name: string; role: string; isActive: boolean; hasCorrectionApprovalPassword?: boolean }[] }>(
+                          CH.staffDirectory,
+                          { includeInactive: false }
+                        )
+                          .then((res) => setVoidManagers((res?.rows ?? []).filter((u) => u.role === 'MANAGER' && u.isActive)))
+                          .catch(() => setVoidManagers([]))
+                      }}
+                      disabled={rowBusy}
+                      title="ثبت اثر جبرانی جدید برای پول، کارت، اعتبار و موجودی؛ سند برگشت اصلی دست‌نخورده می‌ماند"
+                    >
+                      اصلاح جبرانی
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -1948,6 +2046,71 @@ export default function SalesReturn() {
           void loadHistory()
           if (lookup) void lookupCode(lookup.returnCode)
         }}
+      />
+
+      {/* ---------------- دفتر جبرانی برای اثرهای واقعاً تسویه‌شده ---------------- */}
+      <ConfirmDialog
+        open={!!correctionTarget}
+        title="اصلاح جبرانی برگشت از فروش"
+        busy={correctionBusy}
+        confirmLabel="ثبت اثرهای جبرانی"
+        message={
+          <div className="space-y-2">
+            <p className="text-amber-800">
+              این مسیر سند برگشت اصلی را پاک یا باطل نمی‌کند. خروج موجودی، نقد بازیافتی و ثبت کارت/اعتبار با زمان، کاربر و شیفت <b>فعلی</b> در دفتر جبرانی ثبت می‌شوند تا گزارش شیفت مبدأ دست‌نخورده بماند.
+            </p>
+            <p>
+              برگشت فاکتور <b>{faDigits(correctionTarget?.receiptNo ?? '—')}</b> به تاریخ <b>{faDigits(correctionTarget?.returnedAtJalali ?? '—')}</b> · مبلغ <b>{money(correctionTarget?.total ?? 0)}</b> ریال
+            </p>
+            <label className="block">
+              <span className="font-bold">دلیل اصلاح جبرانی (اجباری)</span>
+              <input className="inp w-full" autoFocus value={correctionReason} onChange={(e) => { setCorrectionReason(e.target.value); setCorrectionErr(null) }} />
+            </label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <label>
+                <span>نقدی که واقعاً به کشوی فعلی برگشت</span>
+                <input dir="ltr" className="inp w-full" inputMode="numeric" value={groupThousands(correctionCash)} onChange={(e) => { setCorrectionCash(digitsOnly(e.target.value)); setCorrectionErr(null) }} placeholder="۰" />
+              </label>
+              <label>
+                <span>کارت/بانکی که واقعاً برگشت</span>
+                <input dir="ltr" className="inp w-full" inputMode="numeric" value={groupThousands(correctionCard)} onChange={(e) => { setCorrectionCard(digitsOnly(e.target.value)); setCorrectionErr(null) }} placeholder="۰" />
+              </label>
+            </div>
+            <label className="block">
+              <span>شماره پیگیری/توضیح بازیافت کارت (اگر مبلغ کارت وارد شده)</span>
+              <input className="inp w-full" value={correctionCardReference} onChange={(e) => { setCorrectionCardReference(e.target.value); setCorrectionErr(null) }} />
+            </label>
+            <label className="block">
+              <span className="font-bold">وضعیت اعتبار صادرشده از همین برگشت</span>
+              <select className="inp w-full" value={correctionCreditOutcome} onChange={(e) => { setCorrectionCreditOutcome(e.target.value); setCorrectionErr(null) }}>
+                <option value="NONE">این برگشت اعتبار صادر نکرده است</option>
+                <option value="CANCELED_UNUSED">اعتبار مصرف‌نشده لغو شد</option>
+                <option value="REMAINS_ACTIVE">اعتبار هنوز باقی و قابل مصرف است</option>
+                <option value="CONSUMED">اعتبار کامل مصرف شده است</option>
+              </select>
+            </label>
+            <label className="block">
+              <span>یادداشت تسویه/کسری (اختیاری، ولی برای مغایرت توصیه می‌شود)</span>
+              <input className="inp w-full" value={correctionNote} onChange={(e) => setCorrectionNote(e.target.value)} />
+            </label>
+            <label className="block">
+              <span>رمز قفل اختیاری عملیات (اگر در تنظیمات روشن است)</span>
+              <input type="password" dir="ltr" className="inp w-full" value={correctionAuthPassword} onChange={(e) => { setCorrectionAuthPassword(e.target.value); setCorrectionErr(null) }} />
+            </label>
+            <div className="rounded border border-amber-300 bg-amber-50 p-2 space-y-2">
+              <p className="font-bold">تأیید شخصی مدیر — فقط روز بعد یا دوره‌ی بسته</p>
+              <select className="inp w-full" value={correctionApproverUserId ?? ''} onChange={(e) => { setCorrectionApproverUserId(e.target.value ? Number(e.target.value) : null); setCorrectionErr(null) }}>
+                <option value="">انتخاب مدیر تأییدکننده…</option>
+                {voidManagers.map((manager) => <option key={manager.id} value={manager.id}>{manager.name}{manager.hasCorrectionApprovalPassword ? '' : ' — رمز شخصی تعریف نشده'}</option>)}
+              </select>
+              <input type="password" dir="ltr" className="inp w-full" value={correctionApproverPassword} onChange={(e) => { setCorrectionApproverPassword(e.target.value); setCorrectionErr(null) }} placeholder="رمز شخصی مدیر انتخاب‌شده" />
+            </div>
+            {correctionErr && <p className="text-red-600 whitespace-pre-line">{correctionErr}</p>}
+            <p className="kbd">اگر همه‌ی پولِ بازپرداخت‌شده برنگشته باشد، سیستم همان کسری را به‌عنوان «مغایرت بازیافت‌نشده» ثبت می‌کند؛ آن را صفر یا پنهان نمی‌کند.</p>
+          </div>
+        }
+        onConfirm={() => void doCorrection()}
+        onCancel={() => { setCorrectionTarget(null); setCorrectionErr(null) }}
       />
 
       {/* ---------------- تاییدیه‌ی حذف یک برگشت ثبت‌شده ---------------- */}

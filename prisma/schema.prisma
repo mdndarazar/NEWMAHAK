@@ -821,6 +821,8 @@ model SaleReturn {
   restockReleasedAtJalali String?
 
   items SaleReturnItem[]
+  /// دفتر جبرانیِ مستقل: سند برگشت اصلی دست‌نخورده می‌ماند و اثر اصلاحی جداست.
+  corrections ReturnCorrection[]
 
   @@index([invoiceId])
   @@index([returnedAtJalali])
@@ -857,6 +859,68 @@ model SaleReturnItem {
 }
 
 // ----------------------------- فاکتور خرید -----------------------------
+/// ===========================================================================
+/// دفتر جبرانیِ اصلاح/ابطال برگشت — منبع اصلی هرگز بازنویسی یا حذف نمی‌شود.
+/// اثرهای پول/کارت/اعتبار/انبار در ردیف‌های جدا با زمان و شیفتِ لحظه‌ی اصلاح می‌ماند.
+/// شناسه‌های کاربر/شیفت عمداً scalar هستند تا تغییر یا غیرفعال‌سازی کارکنان سابقه
+/// را نشکند؛ snapshotهای JSON فقط برای توضیح‌اند و هرگز کدِ قابل‌مصرف اعتبار ندارند.
+/// ===========================================================================
+model ReturnCorrection {
+  id                    Int        @id @default(autoincrement())
+  returnId              Int        @unique
+  return                SaleReturn @relation(fields: [returnId], references: [id])
+  kind                  String     @default("VOID_RECONCILIATION")
+  status                String     @default("POSTED")
+  reason                String
+  originalUserId        Int?
+  originalShiftId       Int?
+  correctingUserId      Int
+  correctingShiftId     Int
+  approvingManagerId    Int?
+  originalDayJalali     String
+  operationalDayJalali  String
+  originalSnapshotJson  String     @default("{}")
+  reconciliationJson    String     @default("{}")
+  cashRecovered         BigInt     @default(0)
+  cardRecovered         BigInt     @default(0)
+  unrecoveredAmount     BigInt     @default(0)
+  creditOutcome         String     @default("NONE")
+  creditAffectedAmount  BigInt     @default(0)
+  createdAt             DateTime   @default(now())
+  createdAtJalali       String     @default("")
+  createdAtTime         String     @default("")
+  effects               ReturnCorrectionEffect[]
+
+  @@index([createdAt])
+  @@index([createdAtJalali])
+  @@index([correctingShiftId])
+  @@index([approvingManagerId])
+}
+
+model ReturnCorrectionEffect {
+  id             Int              @id @default(autoincrement())
+  correctionId   Int
+  correction     ReturnCorrection @relation(fields: [correctionId], references: [id])
+  type           String
+  amount         BigInt           @default(0)
+  qty            Int              @default(0)
+  variantId      Int?
+  cashMovementId Int?
+  referenceType  String?
+  referenceId    Int?
+  detailsJson    String            @default("{}")
+  occurredAt     DateTime          @default(now())
+  occurredAtJalali String          @default("")
+  occurredAtTime String            @default("")
+  shiftId        Int?
+  userId         Int?
+
+  @@index([correctionId])
+  @@index([type])
+  @@index([occurredAt])
+  @@index([shiftId])
+}
+
 model PurchaseInvoice {
   id             Int       @id @default(autoincrement())
   invoiceNo      Int       @unique

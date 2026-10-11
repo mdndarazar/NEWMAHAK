@@ -45,6 +45,9 @@ export const IPC = {
   saleReturnUpdate: 'sale:return:update',
   /** حذف یک برگشت ثبت‌شده؛ اثر آن روی موجودی انبار برگردانده (reverse) می‌شود */
   saleReturnDelete: 'sale:return:delete',
+  /** دفتر جبرانیِ مستقل برای برگشتِ تسویه‌شده؛ هرگز سند اصلی را پاک نمی‌کند. */
+  saleReturnCorrection: 'sale:return:correction',
+  saleReturnCorrectionList: 'sale:return:correction:list',
   /**
    * پیش‌نمایش حذف گزارشات فروش (بدون هیچ تغییری در داده).
    * با `invoiceIds` = فقط همان فاکتورهای تیک‌خورده (حذف تکی/چندتایی — مورد ۱).

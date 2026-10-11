@@ -3,6 +3,8 @@ export const StockReason = {
   /** موجودی اولیه‌ی واریانت در لحظه‌ی تعریف کالا (ورود از فرم کالا) */
   INITIAL: 'INITIAL',
   SALE_RETURN: 'SALE_RETURN',
+  /** اثر جبرانیِ مستقلِ ابطال/اصلاح برگشت؛ سند اصلی دست‌نخورده می‌ماند. */
+  RETURN_CORRECTION: 'RETURN_CORRECTION',
   PURCHASE: 'PURCHASE',
   ADJUSTMENT: 'ADJUSTMENT',
   STOCKTAKE: 'STOCKTAKE',
