@@ -69,6 +69,12 @@ export const PANEL_KEYS = {
   salesCredit: 'sales-credit',
   /** برگشت از فروش (و تعویض کالا) */
   salesReturn: 'sales-return',
+  /**
+   * فقط عمل «اصلاح/ابطال» برگشت یا تعویض؛ جدا از بازکردن خودِ پنل برگشت.
+   * سیاست مالک: این قفل عملیاتی در نصب تازه خاموش است، اما اگر روشن شود
+   * رمز مدیر/دومِ همین عمل را لازم می‌کند.
+   */
+  salesReturnCorrection: 'sales-return-correction',
   /** بستن صندوق */
   cashClose: 'cash-close',
   /** تجمیع و انتقال */
@@ -287,6 +293,12 @@ export const LOCKED_PANELS: readonly PanelDef[] = [
     hint: 'فهرست فاکتورهای تسویه‌نشده و ثبت پرداختی نسیه — قفل جدا از خود گزارشات.'
   },
   { key: PANEL_KEYS.salesReturn, title: 'برگشت از فروش و تعویض کالا', hint: 'ثبت برگشت و تعویض کالا (حساس؛ مستقیم روی موجودی و پول اثر دارد).' },
+  {
+    key: PANEL_KEYS.salesReturnCorrection,
+    title: 'اصلاح و ابطال برگشت / تعویض',
+    hint:
+      'قفل ریزِ عملیات اصلاح یا ابطال، جدا از خود پنل برگشت. در نصب تازه خاموش است؛ با روشن‌کردنش رمز مدیر یا رمز دوم اختصاصی این عمل لازم می‌شود. اصلاح روزهای گذشته همچنان گیت سخت مدیر خودش را دارد.'
+  },
   { key: PANEL_KEYS.cashClose, title: 'بستن صندوق', hint: 'بستن صندوق و پایان شیفت؛ رمز دومش را به سرشیفت بدهید.' },
   { key: PANEL_KEYS.consolidation, title: 'تجمیع و انتقال', hint: 'قطعی‌کردن کسر انبار روز — معمولاً فقط مدیر یا انباردار مسئول.' },
   { key: PANEL_KEYS.settings, title: 'تنظیمات', hint: 'کل تنظیمات برنامه (قالب فاکتور، چاپ، بکاپ، رمزها).' },
@@ -488,10 +500,18 @@ export function isAlwaysLocked(panel: string): boolean {
  */
 export type PanelLockConfig = Record<string, boolean>
 
-/** همه‌چیز قفل — همان پیش‌فرض برنامه و همان چیزی که بعد از نصب تازه برمی‌گردد. */
+/**
+ * استثنای صریحِ سیاست پیش‌فرض: خود پنل‌ها قفل‌اند، اما مالک خواسته عملیات
+ * «اصلاح/ابطال برگشت و تعویض» در روز جاری تا وقتی خودش قفلش را روشن نکرده
+ * آزاد باشد. این استثنا هرگز گیت سخت دوره‌ی بسته یا گیت‌های مالی دیگر را باز
+ * نمی‌کند؛ آن‌ها مستقل و سمت سرورند.
+ */
+const DEFAULT_OPEN_PANEL_KEYS = new Set<string>([PANEL_KEYS.salesReturnCorrection])
+
+/** پیکربندی پیش‌فرض قفل‌ها؛ همه قفل‌اند، مگر استثنای صریح بالا. */
 export function allLockedConfig(): PanelLockConfig {
   const out: PanelLockConfig = {}
-  for (const p of LOCKED_PANELS) out[p.key] = true
+  for (const p of LOCKED_PANELS) out[p.key] = !DEFAULT_OPEN_PANEL_KEYS.has(p.key)
   return out
 }
 

@@ -459,7 +459,8 @@ function validateReturnUpdateMutation(input: UpdateReturnInput): void {
  */
 function returnUpdateFinancialGate(
   ret: { refundAmount?: unknown; refundMethod?: string | null },
-  settledCredit: { code: string } | null,
+  /** فقط مرجع امن؛ کد قابل‌مصرف نباید حتی در پیام gate یا Audit راه پیدا کند. */
+  settledCredit: { id: number } | null,
   relatedTransfer: { status: string } | null
 ) {
   const refundedAmount = toNumberRial(ret.refundAmount ?? 0)
@@ -469,7 +470,7 @@ function returnUpdateFinancialGate(
   const debtOnly = !hasMoneyEffect && (ret.refundMethod == null || ret.refundMethod === RefundMethod.NONE)
   const what: string[] = []
   if (moneyLeftTill) what.push(`بازپرداخت ${money(refundedAmount)} ریال`)
-  if (settledCredit) what.push(`اعتبار خرید «${settledCredit.code}»`)
+  if (settledCredit) what.push(`اعتبار خرید #${settledCredit.id}`)
   if (debtOnly) what.push('کاهش بدهی فاکتور')
   return {
     refundedAmount,
@@ -7561,7 +7562,7 @@ export const salesService = {
     const preCredit = pre
       ? await prisma.storeCredit.findFirst({
           where: { returnId: pre.id, voidedAt: null },
-          select: { id: true, code: true, amount: true }
+          select: { id: true, amount: true }
         })
       : null
     const preTransfer = pre
@@ -7651,7 +7652,7 @@ export const salesService = {
        */
       const settledCredit = await tx.storeCredit.findFirst({
         where: { returnId: ret.id, voidedAt: null },
-        select: { id: true, code: true, amount: true }
+        select: { id: true, amount: true }
       })
       const relatedTransfer = await tx.cardTransferRequest.findFirst({
         where: { returnId: ret.id, status: { not: CardTransferStatus.CANCELED } },
@@ -7981,6 +7982,8 @@ export const salesService = {
     userId?: number | null
     /** نشست ۶۴ — دلیل ابطال (اجباری) */
     reason?: string | null
+    /** رمز اختیاری قفل «اصلاح و ابطال برگشت/تعویض» در روز جاری. */
+    panelPassword?: string | null
     /** بند ۱۷ — لازم فقط وقتی تاریخ همین برگشت در دوره‌ی بسته‌شده باشد */
     managerPassword?: string | null
     overrideReason?: string | null
@@ -8004,6 +8007,16 @@ export const salesService = {
           : 'برای ابطال سند برگشت، نوشتن دلیل اجباری است (حداقل ۳ حرف).\n' +
             'سند حذف نمی‌شود؛ با مهر «باطل» و همین دلیل برای همیشه در سابقه می‌ماند.')
       )
+    /**
+     * قفل اختیاری عملیاتِ ابطال، مستقل از قفل صفحه‌ی برگشت است. پیش‌فرض آن
+     * طبق سیاست مالک OPEN است؛ اما روشن‌کردنش در تنظیمات، IPC مستقیم را هم
+     * بدون رمز مدیر/دوم رد می‌کند. گیت سخت دوره‌ی بسته پایین‌تر مستقل می‌ماند.
+     */
+    const correctionAuthScope = await assertPanelPassword(
+      PANEL_KEYS.salesReturnCorrection,
+      input.panelPassword ?? input.managerPassword ?? null,
+      preIsExchange ? 'ابطال تعویض کالا' : 'ابطال برگشت از فروش'
+    )
     const periodApproved = await periodLockService.preverify({
       at: pre.returnedAt,
       what: `ابطال سند برگشت ${faDigits(pre.id)}`,
@@ -8130,7 +8143,7 @@ export const salesService = {
           const liveUses = await tx.storeCreditRedemption.count({ where: { creditId: c.id, reversedAt: null } })
           if (used > 0 || Number(c.usedCount ?? 0) > 0 || liveUses > 0)
             throw new BusinessError(
-              `ابطال ${docLabel} ممکن نیست: اعتبار خرید «${c.code}» که از همین برگشت صادر شده، ` +
+              `ابطال ${docLabel} ممکن نیست: اعتبار خرید #${c.id} که از همین برگشت صادر شده، ` +
                 `${money(used)} ریال مصرف شده است (مصرف اعتبار قابل برگرداندن نیست).\n` +
                 'ابطال سند، اعتبار خرج‌شده را بی‌پشتوانه می‌گذاشت. موضوع برای رسیدگی مدیر ثبت شد.'
             )
@@ -8218,14 +8231,18 @@ export const salesService = {
 
         // ---- ۳) اعتبار خرید دست‌نخورده‌ی همین برگشت ⇒ ابطال (نه حذف) ----
         const now = new Date()
-        const canceledCredits: string[] = []
+        /**
+         * پاسخ و Audit فقط شناسه‌ی داخلیِ قابل‌نمایش دارند؛ code یک credential
+         * قابل‌مصرف است و حتی برای عملیات ابطال نیز به UI/لاگ عادی برنمی‌گردد.
+         */
+        const canceledCreditRefs: string[] = []
         for (const c of credits) {
           if (c.status === StoreCreditStatus.CANCELED) continue
           await tx.storeCredit.update({
             where: { id: c.id },
             data: { status: StoreCreditStatus.CANCELED, voidedAt: now, voidedReason: `ابطال سند برگشت ${faDigits(ret.id)} · ${reason}` }
           })
-          canceledCredits.push(c.code)
+          canceledCreditRefs.push(`اعتبار #${c.id}`)
           await audit(tx, {
             action: AuditAction.CREDIT_VOID,
             entity: 'StoreCredit',
@@ -8233,7 +8250,7 @@ export const salesService = {
             userId: input.userId ?? null,
             before: JSON.stringify({ status: c.status, amount: c.amount }),
             after: JSON.stringify({ status: StoreCreditStatus.CANCELED, returnId: ret.id }),
-            note: `ابطال اعتبار «${c.code}» (${money(Number(c.amount ?? 0))} ریال) چون سند برگشت ${faDigits(ret.id)} باطل شد · دلیل: ${reason}`
+            note: `ابطال اعتبار #${c.id} (${money(Number(c.amount ?? 0))} ریال) چون سند برگشت ${faDigits(ret.id)} باطل شد · دلیل: ${reason}`
           })
         }
 
@@ -8343,7 +8360,14 @@ export const salesService = {
           entityId: ret.id,
           userId: input.userId ?? ret.userId ?? null,
           before: JSON.stringify(snapshot),
-          after: JSON.stringify({ voidedAt: now.toISOString(), voidedByUserId: input.userId ?? null, reason, canceledCredits, status }),
+          after: JSON.stringify({
+            voidedAt: now.toISOString(),
+            voidedByUserId: input.userId ?? null,
+            reason,
+            canceledCreditRefs,
+            status,
+            correctionAuthScope
+          }),
           note:
             (isExchange
               ? `ابطال تعویض کالا: سند برگشت ${faDigits(ret.id)} و سند تعویض ${faDigits(exInv?.receiptNo ?? 0)} فاکتور ${receipt} (${money(ret.total)} ریال) · دلیل: ${reason}`
@@ -8354,7 +8378,7 @@ export const salesService = {
               : wasPending
                 ? ' · کالایش «در انتظار پرداخت مدیر» بود و هیچ‌وقت به موجودی اضافه نشده بود'
                 : '') +
-            (canceledCredits.length ? ` · اعتبار باطل‌شده: ${canceledCredits.map((c) => `«${c}»`).join('، ')}` : '') +
+            (canceledCreditRefs.length ? ` · اعتبار باطل‌شده: ${canceledCreditRefs.join('، ')}` : '') +
             (pendingReq ? ` · درخواست کارت‌به‌کارت ${faDigits(pendingReq.id)} لغو شد` : '') +
             ` · وضعیت فاکتور: ${status ?? '—'}`
         })
@@ -8369,7 +8393,7 @@ export const salesService = {
           voided: true as const,
           voidedAt: now,
           reason,
-          canceledCredits,
+          canceledCreditRefs,
           /** نشست ۶۵ — ابطال گراف تعویض */
           exchangeVoided: isExchange,
           exchangeInvoiceId: exInv?.id ?? null,

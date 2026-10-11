@@ -29,6 +29,8 @@ const { salesService, saleWhere } = await import('../../src/main/services/SalesS
 const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
 const { RefundMethod } = await import('@shared/enums')
 const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
+const { SETTING_KEYS, DEFAULT_MANAGER_PASSWORD } = await import('@shared/receipt')
+const { PANEL_KEYS } = await import('@shared/panels')
 
 const db = harnessClient()
 const seed = makeSeeder(db)
@@ -175,7 +177,26 @@ truthy('سند برگشت باطل شد', retRow(retId(rE))?.voidedAt != null)
 closed(await report())
 
 // ===========================================================================
-console.log('\n۶) ساختاری')
+console.log('\n۶) قفل اختیاریِ خودِ عملیات ابطال (پیش‌فرض خاموش)')
+const F = await safe('فاکتور نسیه برای قفل ابطال', () => twoItems(0))
+const rF = await safe('برگشت برای قفل ابطال', () => ret(F.inv.id, F.items[0].id))
+await safe('قفل پیش‌فرض خاموش: ابطال روز جاری بی‌رمز انجام می‌شود', () => voidIt(retId(rF), 'ابطال پیش‌فرض باز'))
+const auditF = seed.one(`SELECT after FROM "AuditLog" WHERE entity = 'SaleReturn' AND entityId = ? AND action = 'VOID' ORDER BY id DESC`, retId(rF))
+truthy('Audit سطح OPEN قفل عملیات را نگه می‌دارد', String(auditF?.after ?? '').includes('"correctionAuthScope":"OPEN"'))
+
+seed.setting(SETTING_KEYS.panelLocks, { [PANEL_KEYS.salesReturnCorrection]: true })
+const G = await safe('فاکتور نسیه با قفل ابطال روشن', () => twoItems(0))
+const rG = await safe('برگشت با قفل ابطال روشن', () => ret(G.inv.id, G.items[0].id))
+await throwsWith('قفل روشن: IPC مستقیم بی‌رمز رد می‌شود', () => voidIt(retId(rG), 'قفل روشن ابطال'), 'تأیید مدیر')
+truthy('رد گیت، سند را باطل نمی‌کند', retRow(retId(rG))?.voidedAt == null)
+const voidG = await safe('قفل روشن: رمز مدیر عملیات را مجاز می‌کند', () =>
+  salesService.returnDelete({ id: retId(rG), userId, reason: 'قفل روشن ابطال', panelPassword: DEFAULT_MANAGER_PASSWORD })
+)
+truthy('رمز مدیر، ابطال قفل‌شده را واقعاً ثبت کرد', voidG?.voided === true && retRow(retId(rG))?.voidedAt != null)
+seed.setting(SETTING_KEYS.panelLocks, {})
+
+// ===========================================================================
+console.log('\n۷) ساختاری')
 const svc = src('src/main/services/SalesService.ts')
 const delBody = (svc.match(/async returnDelete\([\s\S]*?\n  },\n/) ?? [''])[0]
 truthy('returnDelete دیگر saleReturn.delete ندارد', delBody.length > 0 && !delBody.includes('saleReturn.delete('))
@@ -183,6 +204,8 @@ truthy('returnDelete اقلام را پاک نمی‌کند', delBody.length > 0
 truthy('migration ستون‌های ابطال', existsSync(join(ROOT, 'prisma/migrations/20270927100000_sale_return_void/migration.sql')))
 const ui = src('src/renderer/src/pages/SalesReturn.tsx')
 truthy('صفحه‌ی برگشت دلیل ابطال را می‌فرستد', /saleReturnDelete,\s*\{[^}]*reason/.test(ui))
+truthy('ابطال سمت سرور قفل اختصاصی خودش را پیش از تراکنش می‌سنجد', /assertPanelPassword\(\s*PANEL_KEYS\.salesReturnCorrection/.test(delBody))
+truthy('قفل اختصاصی ابطال در نصب تازه خاموش است', /DEFAULT_OPEN_PANEL_KEYS[\s\S]{0,160}salesReturnCorrection/.test(src('src/shared/panels.ts')))
 
 console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
 process.exit(bad === 0 ? 0 : 1)

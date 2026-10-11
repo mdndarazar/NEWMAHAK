@@ -1842,6 +1842,8 @@ export default function SalesReports() {
    */
   const [exVoidTarget, setExVoidTarget] = useState<ExchangeReportResult['rows'][number] | null>(null)
   const [exVoidReason, setExVoidReason] = useState('')
+  /** رمز قفل اختیاری ابطال؛ برای دوره‌ی بسته باید رمز مدیر باشد. */
+  const [exVoidAuthPassword, setExVoidAuthPassword] = useState('')
   const [exVoidErr, setExVoidErr] = useState<string | null>(null)
   const [exVoidBusy, setExVoidBusy] = useState(false)
   const doExchangeVoid = async () => {
@@ -1854,21 +1856,28 @@ export default function SalesReports() {
     }
     setExVoidBusy(true)
     try {
-      const res = await call<any>(CH.saleReturnDelete, { id: target.returnId, reason })
+      const res = await call<any>(CH.saleReturnDelete, {
+        id: target.returnId,
+        reason,
+        panelPassword: exVoidAuthPassword || undefined,
+        managerPassword: exVoidAuthPassword || undefined,
+        overrideReason: reason
+      })
       setExVoidTarget(null)
+      setExVoidAuthPassword('')
       flash(
         (res?.exchangeVoided
           ? `تعویض باطل شد: سند برگشت و سند تعویض ${faDigits(res.exchangeReceiptNo ?? target.exchangeReceiptNo ?? 0)} با مهر «باطل» ماندند`
           : 'سند باطل شد') +
           (res?.exchangeReversedQty ? ` · ${faDigits(res.exchangeReversedQty)} عدد کالای جایگزین به موجودی برگشت` : '') +
           (res?.reversedQty ? ` · ${faDigits(res.reversedQty)} عدد کالای برگشتی از موجودی خارج شد` : '') +
-          (res?.canceledCredits?.length ? ` · اعتبار ${res.canceledCredits.join('، ')} باطل شد` : '') +
+          (res?.canceledCreditRefs?.length ? ` · ${res.canceledCreditRefs.join('، ')} باطل شد` : '') +
           (res?.debtRestored ? ` · ${money(res.debtRestored)} ریال بدهی فاکتور اصلی برگشت` : '')
       )
       void load()
     } catch (e: any) {
-      setExVoidTarget(null)
-      setErr(e.message)
+      /** برای واردکردن رمز لازم یا اصلاح دلیل، مودال باز می‌ماند. */
+      setExVoidErr(String(e?.message ?? 'ابطال تعویض انجام نشد.'))
     } finally {
       setExVoidBusy(false)
     }
@@ -2388,6 +2397,7 @@ export default function SalesReports() {
             onPrint={printExchangeDoc}
             onVoid={(r) => {
               setExVoidReason('')
+              setExVoidAuthPassword('')
               setExVoidErr(null)
               setExVoidTarget(r)
             }}
@@ -2424,7 +2434,22 @@ export default function SalesReports() {
                 }}
               />
             </label>
-            {exVoidErr && <p className="text-red-600">{exVoidErr}</p>}
+            <label className="block">
+              <span className="font-bold">رمز تأیید (در صورت نیاز)</span>
+              <input
+                type="password"
+                dir="ltr"
+                className="inp w-full"
+                value={exVoidAuthPassword}
+                onChange={(e) => {
+                  setExVoidAuthPassword(e.target.value)
+                  setExVoidErr(null)
+                }}
+                placeholder="برای قفل عملیات یا دوره‌ی بسته"
+              />
+              <span className="kbd block mt-1">دوره‌ی بسته فقط رمز مدیر می‌پذیرد؛ قفل اختیاری عملیات روز جاری رمز مدیر یا رمز دوم همین عمل را می‌پذیرد.</span>
+            </label>
+            {exVoidErr && <p className="text-red-600 whitespace-pre-line">{exVoidErr}</p>}
             <p className="text-amber-700">
               اگر مابه‌التفاوت از مشتری دریافت شده، بازپرداخت نقد/کارت انجام شده، اعتبار این تعویض خرج شده یا روی سند
               تعویض برگشت ثبت شده باشد، ابطال انجام نمی‌شود (پول یا کالا واقعاً جابه‌جا شده) و موضوع برای رسیدگی مدیر
@@ -2433,7 +2458,11 @@ export default function SalesReports() {
           </div>
         }
         onConfirm={() => void doExchangeVoid()}
-        onCancel={() => setExVoidTarget(null)}
+        onCancel={() => {
+          setExVoidTarget(null)
+          setExVoidAuthPassword('')
+          setExVoidErr(null)
+        }}
       />
 
       {/* ===================== جلسه ۱۸ — سه تب تازه ===================== */}

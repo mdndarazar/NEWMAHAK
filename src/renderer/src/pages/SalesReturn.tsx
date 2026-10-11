@@ -263,6 +263,11 @@ export default function SalesReturn() {
   const [deleteTarget, setDeleteTarget] = useState<any | null>(null)
   /** نشست ۶۴ · بند ۴-۲۲ — «حذف» = ابطال با دلیل اجباری (سند می‌ماند) */
   const [voidReason, setVoidReason] = useState('')
+  /**
+   * قفل ریزِ قابل‌تنظیم برای ابطال. در روز/دوره‌ی بسته همین فیلد باید رمز
+   * مدیر باشد؛ در روز جاری، وقتی قفل عملیات روشن است، رمز مدیر/دوم کافی است.
+   */
+  const [voidAuthPassword, setVoidAuthPassword] = useState('')
   const [voidReasonErr, setVoidReasonErr] = useState<string | null>(null)
   const [rowBusy, setRowBusy] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -831,9 +836,17 @@ export default function SalesReturn() {
     }
     setRowBusy(true)
     try {
-      const res = await call<any>(CH.saleReturnDelete, { id: target.id, reason })
+      const res = await call<any>(CH.saleReturnDelete, {
+        id: target.id,
+        reason,
+        panelPassword: voidAuthPassword || undefined,
+        /** دوره‌ی بسته فقط همین رمز را به‌عنوان رمز مدیر می‌پذیرد؛ رمز دوم کافی نیست. */
+        managerPassword: voidAuthPassword || undefined,
+        overrideReason: reason
+      })
       setDeleteTarget(null)
       setVoidReason('')
+      setVoidAuthPassword('')
       setVoidReasonErr(null)
       flash(
         `برگشت از فروش فاکتور شماره ${faDigits(res.receiptNo ?? target.receiptNo ?? 0)} باطل شد · ` +
@@ -841,18 +854,18 @@ export default function SalesReturn() {
           (res.reversedQty
             ? `${faDigits(res.reversedQty)} عدد از موجودی انبار برگشت خورد (موجودی به حالت قبل از این برگشت رسید)`
             : 'این برگشت موجودی انبار را تغییر نداده بود، پس انبار دست‌نخورده ماند') +
-          (res.canceledCredits?.length ? ` · اعتبار خرید ${res.canceledCredits.join('، ')} هم باطل شد` : '')
+          (res.canceledCreditRefs?.length ? ` · ${res.canceledCreditRefs.join('، ')} هم باطل شد` : '')
       )
       await loadHistory()
       if (lookup) await lookupCode(lookup.returnCode)
     } catch (e: any) {
-      setErr(e.message)
-      setDeleteTarget(null)
+      /** هدف باز می‌ماند تا فروشنده بتواند، مثلاً، رمز لازم را وارد و دوباره ثبت کند. */
+      setVoidReasonErr(String(e?.message ?? 'ابطال انجام نشد.'))
     } finally {
       setRowBusy(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deleteTarget, voidReason, loadHistory, lookup, lookupCode])
+  }, [deleteTarget, voidReason, voidAuthPassword, loadHistory, lookup, lookupCode])
 
   const reset = () => {
     setLookup(null)
@@ -1861,6 +1874,7 @@ export default function SalesReturn() {
                       className="text-red-600"
                       onClick={() => {
                         setVoidReason('')
+                        setVoidAuthPassword('')
                         setVoidReasonErr(null)
                         setDeleteTarget(r)
                       }}
@@ -1935,7 +1949,24 @@ export default function SalesReturn() {
                 }}
               />
             </label>
-            {voidReasonErr && <p className="text-red-600">{voidReasonErr}</p>}
+            <label className="block">
+              <span className="font-bold">رمز تأیید (در صورت نیاز)</span>
+              <input
+                type="password"
+                dir="ltr"
+                className="inp w-full"
+                value={voidAuthPassword}
+                onChange={(e) => {
+                  setVoidAuthPassword(e.target.value)
+                  setVoidReasonErr(null)
+                }}
+                placeholder="قفل عملیات روشن است یا سند در دوره‌ی بسته است؟ رمز لازم را وارد کنید"
+              />
+              <span className="kbd block mt-1">
+                در دوره‌ی بسته فقط رمز مدیر پذیرفته می‌شود؛ در روز جاری این فیلد فقط وقتی لازم است که مدیر قفل عملیات ابطال را روشن کرده باشد.
+              </span>
+            </label>
+            {voidReasonErr && <p className="text-red-600 whitespace-pre-line">{voidReasonErr}</p>}
             <p className="text-amber-700">
               اگر بازپرداخت نقد/کارت‌خوان/کارت‌به‌کارتِ پرداخت‌شده انجام شده یا اعتبار خرید این برگشت خرج شده باشد،
               ابطال انجام نمی‌شود (پول واقعاً رفته است) و موضوع برای رسیدگی مدیر ثبت می‌شود.
@@ -1956,7 +1987,11 @@ export default function SalesReturn() {
         confirmLabel="بله، باطل کن"
         busy={rowBusy}
         onConfirm={() => void doDelete()}
-        onCancel={() => setDeleteTarget(null)}
+        onCancel={() => {
+          setDeleteTarget(null)
+          setVoidAuthPassword('')
+          setVoidReasonErr(null)
+        }}
       />
 
       <ConfirmDialog
