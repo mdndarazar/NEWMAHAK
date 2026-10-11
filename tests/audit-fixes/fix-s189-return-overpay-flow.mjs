@@ -132,7 +132,7 @@ console.log('\n۳) با تأیید + overpayAsCredit ⇒ کد OVERPAY')
       refundMethod: RefundMethod.NONE, confirmOverpay: true, overpayAsCredit: true,
       userId, shiftId, managerPassword: PW
     }))
-    truthy('کد اعتبار صادر شد', !!ret?.overpayCredit?.code)
+    truthy('اعتبار با مرجع امن صادر شد', !!ret?.overpayCredit?.id && /^اعتبار #\d+$/.test(String(ret?.overpayCredit?.publicReference ?? '')) && !Object.hasOwn(ret?.overpayCredit ?? {}, 'code'))
     eq('مبلغ اعتبار', Number(ret?.overpayCredit?.amount ?? 0), 400_000)
   }
 }

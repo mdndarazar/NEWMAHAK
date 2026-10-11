@@ -79,7 +79,7 @@ interface TransactionsResult {
     exchangeTotal: number | null
     exchangeDiff: number | null
     exchangeSettlement: string | null
-    storeCreditCode: string | null
+    storeCreditReference: string | null
     shiftName: string | null
   }[]
   cardTransfers: {
@@ -94,7 +94,7 @@ interface TransactionsResult {
   }[]
   creditRedemptions: {
     id: number
-    code: string
+    storeCreditReference: string
     amount: number
     invoiceId: number | null
     receiptNo: number | null
@@ -599,7 +599,7 @@ function Body({ fromJalali, toJalali }: { fromJalali: string; toJalali: string }
                   <th>مبلغ</th>
                   <th>روش تسویه</th>
                   <th>مابه‌التفاوت تعویض</th>
-                  <th>کد اعتبار خرید</th>
+                  <th>شناسهٔ امن اعتبار</th>
                 </tr>
               </thead>
               <tbody>
@@ -619,7 +619,7 @@ function Body({ fromJalali, toJalali }: { fromJalali: string; toJalali: string }
                         : refundMethodLabel(r.refundMethod)}
                     </td>
                     <td className="tabular-nums">{r.exchangeDiff == null ? '—' : money(r.exchangeDiff)}</td>
-                    <td dir="ltr">{r.storeCreditCode ?? '—'}</td>
+                    <td dir="ltr">{r.storeCreditReference ?? '—'}</td>
                   </tr>
                 ))}
                 {!drill.data.returns.length && (
@@ -640,7 +640,7 @@ function Body({ fromJalali, toJalali }: { fromJalali: string; toJalali: string }
             <table className="tbl text-sm">
               <thead>
                 <tr>
-                  <th>کد اعتبار</th>
+                  <th>شناسهٔ امن مصرف اعتبار</th>
                   <th>شماره فیش</th>
                   <th>مبلغ مصرف‌شده</th>
                   <th>تاریخ</th>
@@ -650,7 +650,7 @@ function Body({ fromJalali, toJalali }: { fromJalali: string; toJalali: string }
               <tbody>
                 {drill.data.creditRedemptions.map((c) => (
                   <tr key={c.id}>
-                    <td dir="ltr">{c.code || '—'}</td>
+                    <td dir="ltr">{c.storeCreditReference || '—'}</td>
                     <td className="tabular-nums">{c.receiptNo ? faDigits(c.receiptNo) : '—'}</td>
                     <td className="tabular-nums">{money(c.amount)}</td>
                     <td className="tabular-nums">{faDigits(c.atJalali ?? '')}</td>

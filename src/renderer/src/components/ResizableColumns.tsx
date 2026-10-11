@@ -43,6 +43,15 @@ function saveWidths(key: string, widths: number[] | null): void {
   }
 }
 
+/**
+ * ثبت جدول‌های زنده‌ی این هوک به‌ازای کلیدشان — برای اینکه دکمه‌ی سراسریِ
+ * «برگشت به پیش‌فرض» (lib/tableLayoutFab.ts) بتواند بدون دست‌زدن به صفحه‌ها
+ * جدول‌های هوک‌محور (گزارشات فروش، اقلام پنل فروش) را هم ریست کند.
+ */
+const liveHookCols = new Map<string, { reset: () => void; customized: () => boolean }>()
+export const getHookColsByKey = (key: string | null | undefined) =>
+  (key ? liveHookCols.get(key) : undefined) ?? undefined
+
 export interface ResizableColumns {
   /** به عنصر <table> وصل می‌شود تا عرض واقعی ستون‌ها قابل اندازه‌گیری باشد */
   tableRef: (node: HTMLTableElement | null) => void
@@ -68,6 +77,9 @@ export function useResizableColumns(key: string, count: number): ResizableColumn
   const [widths, setWidths] = useState<number[] | null>(() => loadWidths(key, count))
   const tableEl = useRef<HTMLTableElement | null>(null)
   const drag = useRef<{ index: number; startX: number; base: number[] } | null>(null)
+  /** آینه‌ی همگامِ state برای خواندنِ بیرون‌از-React (رجیستری فاب) */
+  const widthsRef = useRef(widths)
+  widthsRef.current = widths
 
   // اگر تعداد ستون‌ها عوض شد (تب دیگر، ستون جدید)، چیدمان قدیمی معتبر نیست
   useEffect(() => {
@@ -75,9 +87,23 @@ export function useResizableColumns(key: string, count: number): ResizableColumn
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, count])
 
-  const tableRef = useCallback((node: HTMLTableElement | null) => {
-    tableEl.current = node
-  }, [])
+  const tableRef = useCallback(
+    (node: HTMLTableElement | null) => {
+      // کلید جدول روی عنصر می‌نشیند تا tableLayoutFab بتواند جدول ← هوک را نگاشت کند
+      if (tableEl.current && tableEl.current !== node) tableEl.current.removeAttribute('data-rzkey')
+      tableEl.current = node
+      if (node) {
+        node.setAttribute('data-rzkey', key)
+        // اگر React عنصر جدول را بازسازی کرد، قفل عرض دستیِ قبلی هم بازنشانی شود
+        const cur = widthsRef.current
+        if (cur && cur.length) {
+          const sum = cur.reduce((a, w) => a + Math.max(MIN_WIDTH, Math.round(w)), 0)
+          node.style.width = `${sum}px`
+        }
+      }
+    },
+    [key]
+  )
 
   /** عرض واقعی سرستون‌ها در همین لحظه (مبنای شروع کشیدن). */
   const measure = useCallback((): number[] => {
@@ -147,6 +173,37 @@ export function useResizableColumns(key: string, count: number): ResizableColumn
     setWidths(null)
     saveWidths(key, null)
   }, [key])
+
+  /**
+   * رجیستری زنده‌ی جدول‌های هوک‌محور — دکمه‌ی سراسری «↺ برگشت به پیش‌فرض»
+   * (tableLayoutFab) از این مسیر همین جدول را ریست می‌کند؛ هوک و صفحه‌ها
+   * هیچ تغییری نمی‌خواهند.
+   */
+  useEffect(() => {
+    liveHookCols.set(key, { reset, customized: () => widthsRef.current != null })
+    return () => {
+      liveHookCols.delete(key)
+    }
+  }, [key, reset])
+
+  /**
+   * ⚠️ قفل عرض کل جدول کنار چیدمان دستی (همان ریشه‌ی جهش‌های colResize):
+   * جدول `w-full` است و با `table-layout: fixed`، مرورگر برای پرکردن ۱۰۰٪
+   * همه‌ی ستون‌ها را بازتوزیع می‌کرد و کشیدنِ یک ستون بقیه را می‌جابه‌جا
+   * کرد. با عرض پیکسلیِ جدول، هر ستون دقیقاً همان چیزی می‌شود که کشیده شده
+   * (بزرگ‌تر از صفحه ⇒ اسکرول افقی wrapper، مثل اکسل). با ریست، قفل پاک و
+   * چیدمان خودکارِ w-full برمی‌گردد.
+   */
+  useEffect(() => {
+    const t = tableEl.current
+    if (!t) return
+    if (widths && widths.length) {
+      const sum = widths.reduce((a, w) => a + Math.max(MIN_WIDTH, Math.round(w)), 0)
+      t.style.width = `${sum}px`
+    } else {
+      t.style.removeProperty('width')
+    }
+  }, [widths])
 
   return {
     tableRef,

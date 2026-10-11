@@ -21,7 +21,7 @@ check('اعتبار خرید شاخه‌ی Excel مستقل دارد', /tab === 
 check('ضدتقلب شاخه‌ی Excel مستقل دارد', /tab === ['"]fraud['"][\s\S]{0,2800}exportTable/.test(section))
 check('اعتبار خرید از snapshot همان تب می‌خواند', /tab === ['"]storeCredits['"][\s\S]{0,2600}(output\.storeCreditRows|storeCredits|creditRows)/.test(section))
 check('ضدتقلب از snapshot همان تب می‌خواند', /tab === ['"]fraud['"][\s\S]{0,2800}(output\.fraudGroups|fraud|fraudGroups)/.test(section))
-check('ستون‌های اعتبار خرید مخصوص گزارش‌اند', /کد اعتبار[\s\S]{0,500}مصرف‌شده[\s\S]{0,300}(کانال|منبع)/.test(section) || (/STORE_CREDIT_OUTPUT_HEADERS/.test(section) && /STORE_CREDIT_OUTPUT_HEADERS = \['کد اعتبار'[^\n]*مصرف‌شده[^\n]*منبع'\]/.test(src)))
+check('ستون‌های اعتبار خرید مخصوص گزارش‌اند', /شناسه[^\n]*اعتبار[\s\S]{0,500}مصرف‌شده[\s\S]{0,300}(کانال|منبع)/.test(section) || (/STORE_CREDIT_OUTPUT_HEADERS/.test(section) && /STORE_CREDIT_OUTPUT_HEADERS\s*=\s*\['شناسه[^']*اعتبار'[^\n]*مصرف‌شده[^\n]*منبع'\]/.test(src)))
 check('ستون‌های ضدتقلب مخصوص گزارش‌اند', /گروه[\s\S]{0,500}شدت[\s\S]{0,500}توضیح/.test(section))
 check('fallback برگشت بعد از شاخه‌های مستقل است', section.indexOf('title: `گزارش برگشت از فروش') > section.indexOf("tab === 'fraud'"))
 

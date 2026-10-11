@@ -27,7 +27,7 @@ const check = (label, actual) => {
 check('قرارداد درخواست skip دارد', /skip\?: number/.test(ui))
 check('skip در درخواست فهرست فرستاده می‌شود', /\.\.\.\(filter\.skip \? \{ skip: Math\.max\(0, Math\.round\(filter\.skip\)\) \} : \{\}\)/.test(ui))
 check('صفحه‌ی فعلی در state نگه داشته می‌شود', /useState<SaleReportPage \| null>\(null\)/.test(page))
-check('پاسخ paged از کانال اعتبار خوانده می‌شود', /call<PagedRows<StoreCreditRow>>\(CH\.creditList/.test(page))
+check('پاسخ paged امن از کانال اعتبار خوانده می‌شود', /call<PagedRows<StoreCreditSafeRow>>\(CH\.creditList/.test(page))
 check('دکمه‌ی صفحه‌ی قبل وجود دارد', /صفحه‌ی قبل/.test(page))
 check('دکمه‌ی صفحه‌ی بعد با skip صفحه را جلو می‌برد', /setCreditSkip\(pager\.nextSkip \?\? 0\)/.test(page) && /creditListPager\(creditPage, rows\.length/.test(page) /* ممیزی A101-01: منطق به creditListPager رفت */)
 check('صفحه‌ی بعد با truncated قفل می‌شود', /disabled=\{busy \|\| pager\.nextSkip == null\}/.test(page) /* ممیزی A101-01 */)

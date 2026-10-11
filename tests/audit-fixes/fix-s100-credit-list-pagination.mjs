@@ -23,7 +23,7 @@ const check = (label, actual, expected = true) => {
   }
 }
 
-check('فهرست اعتبار قرارداد PagedRows دارد', /async list\(filter: ListFilter = \{\}\): Promise<PagedRows<StoreCreditRow>>/.test(service))
+check('فهرست اعتبار قرارداد امن PagedRows دارد', /async list\(filter: ListFilter = \{\}\): Promise<PagedRows<StoreCreditReportRow>>/.test(service))
 check('تعداد کل با count واقعی محاسبه می‌شود', /page\.totalCount = await prisma\.storeCredit\.count\(\{ where \}\)/.test(service))
 check('صفحه با skip و take واقعی خوانده می‌شود', /take: page\.take[\s\S]{0,80}skip: page\.skip/.test(service))
 check('پاسخ همچنان آرایه‌ی قابل مصرف برای callerهای قدیمی است', /return Object\.assign\(rows, \{ page, warnings \}\) as PagedRows/.test(service))

@@ -1,0 +1,59 @@
+name: Build Windows installer
+
+on:
+  push:
+    branches:
+      - arena/074a2e5d-newmahak
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-windows:
+    name: Package MahakPOS for Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify source syntax
+        run: npm run check:syntax
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          npm run dist:win -- --publish never *>&1 | Tee-Object -FilePath build-output.log
+          if ($LASTEXITCODE -ne 0) {
+            $lastLines = (Get-Content build-output.log -Tail 20) -join " | "
+            Write-Output "::error title=Installer build failed::$lastLines"
+            exit $LASTEXITCODE
+          }
+
+      - name: Upload Windows installer
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MahakPOS-Windows-installer
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MahakPOS-Windows-build-log
+          path: build-output.log
+          if-no-files-found: warn
+          retention-days: 30

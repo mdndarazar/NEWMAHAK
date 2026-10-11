@@ -8,12 +8,14 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "npm run db:generate && electron-vite build",
+    "build:check": "electron-vite build",
     "start": "electron-vite preview",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
     "dist:win": "npm run build && electron-builder --win --x64",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "check:syntax": "node tools/esbuild-check.mjs"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

@@ -16,17 +16,9 @@
  *      چون دو بار چاپ‌شدن یک برگه بدتر از یک خطای روشن است.
  * ===========================================================================
  */
+import { BusinessError } from '../../errors'
 import { printHtml, type PrintPageSizeOption } from '../printer'
 import { printEscPosDoc } from './index'
-
-/**
- * DPI چاپگر رسید برای مسیر RAW.
- *
- * ⚠️ مجهول سخت‌افزاری: مدل دقیق Axiom در دسترس نیست. ۲۰۳ نقطه/اینچ پیش‌فرض
- * خانواده‌ی چاپگرهای حرارتی ۸۰ میلی‌متری است (۷۲mm ≈ ۵۷۶ نقطه). اگر برگه‌ی
- * آزمایشی RAW کوچک/بزرگ درآمد، همین عدد باید اصلاح شود — بخش ۱۲.۳ طرح.
- */
-export const RECEIPT_RAW_DPI = 203
 
 export interface PrintDocRouteInput {
   /** `printMethod` قالب رسید/لیبل (تنها منبع تصمیم). */
@@ -34,7 +26,13 @@ export interface PrintDocRouteInput {
   html: string
   deviceName: string
   silent?: boolean
+  /** فقط مسیر Chromium؛ برای دیالوگ ویندوز چند نسخه در یک job چاپ می‌شود. */
+  copies?: number
   pageSize: PrintPageSizeOption
+  /** فقط برای RAW؛ DPI واقعی دستگاه (پیش‌فرض ۲۰۳). */
+  rawDpi?: number
+  /** فقط برای RAW؛ اگر دستگاه سفید/مشکی را برعکس گرفت، true می‌شود. */
+  rawInvert?: boolean
   /** فقط برای RAW؛ پیش‌فرض `FULL`. */
   cutMode?: 'FULL' | 'PARTIAL' | 'NONE'
 }
@@ -48,22 +46,33 @@ export interface PrintDocRouteResult {
 /** آیا این قالب باید خام چاپ شود؟ (فقط مقدار صریح `RAW`) */
 export const isRawMethod = (method: unknown): boolean => method === 'RAW'
 
+/** RAW مسیر دیالوگ ویندوز Electron ندارد؛ نباید silent:false را بی‌صدا نادیده بگیرد. */
+export function assertRawNotDialog(silent: unknown): void {
+  if (silent === false)
+    throw new BusinessError(
+      'چاپ خام (RAW) با دیالوگ ویندوز سازگار نیست؛ هیچ برگه‌ای چاپ نشد. برای انتخاب چاپگر، دیالوگ داخلی برنامه را استفاده کنید یا روش چاپ را روی Chromium بگذارید.'
+    )
+}
+
 export async function printMaybeRaw(input: PrintDocRouteInput): Promise<PrintDocRouteResult> {
   if (!isRawMethod(input.method)) {
     await printHtml(input.html, {
       silent: input.silent ?? true,
       deviceName: input.deviceName,
+      copies: input.copies,
       pageSize: input.pageSize
     })
     return { engine: 'CHROMIUM' }
   }
+  assertRawNotDialog(input.silent)
   const result = await printEscPosDoc({
     html: input.html,
     printerName: input.deviceName,
     widthMm: input.pageSize.widthMm,
     heightMm: input.pageSize.heightMm,
-    dpi: RECEIPT_RAW_DPI,
-    cutMode: input.cutMode
+    dpi: Number(input.rawDpi) === 300 ? 300 : 203,
+    cutMode: input.cutMode,
+    invertBits: input.rawInvert === true
   })
   return { engine: 'RAW', bytes: result.bytes, summary: result.summary }
 }

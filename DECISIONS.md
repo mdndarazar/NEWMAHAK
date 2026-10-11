@@ -12,6 +12,56 @@
 - انتخاب من: نگه‌داشتن سقف عملیاتی.
 - دلیل: این سقف‌ها محافظ رندر/پرینتر هستند، نه سقف گزارش؛ سرویس چاپ مقدار `capped` و تعداد درخواستی/برنامه‌ریزی‌شده را برمی‌گرداند و کاربر می‌تواند دسته را چندبخشی چاپ کند.
 
+## نشست ۲۲۴
+
+### S224-1 — ترکیب RAW با دیالوگ ویندوز
+- سؤال: اگر روش چاپ یک پروفایل RAW باشد و کاربر هم «دیالوگ ویندوز» را روشن کند، چاپ باید چه کند؟
+- گزینه‌ها: نادیده‌گرفتن دیالوگ و ارسال RAW؛ fallback به Chromium؛ رد کردن چاپ با پیام روشن.
+- انتخاب من: رد کردن چاپ با پیام روشن و بدون ارسال هیچ job.
+- دلیل: RAW از مسیر PowerShell/Spooler می‌رود و دیالوگ ویندوز Electron در آن وجود ندارد. نادیده‌گرفتن `silent:false` یعنی «هر بار بپرس» بی‌صدا به چاپ مستقیم تبدیل می‌شود، و fallback به Chromium هم می‌تواند یک خروجی متفاوت یا دوباره‌چاپی بسازد. امن‌ترین رفتار، توقف قطعی قبل از چاپ است.
+
+### S224-2 — کد صریح برای نتیجه‌ی نامعلوم چاپ
+- سؤال: renderer نتیجه‌ی نامعلوم چاپ را با regex متن فارسی تشخیص دهد یا کد IPC بگیرد؟
+- گزینه‌ها: ادامه‌ی regex؛ فقط کد؛ کد صریح با regex محدود به‌عنوان fallback سازگاری.
+- انتخاب من: کد صریح `PRINT_OUTCOME_UNKNOWN` از IPC، با regex محدود و print-specific برای پیام‌های قدیمی.
+- دلیل: متن خطا ممکن است تغییر کند و timeout PDF هم عباراتی مثل «نتیجه نداد/ممکن است» دارد ولی نتیجه‌اش چاپ نامعلوم نیست. کد صریح قرارداد را پایدار می‌کند و regex محدود جلوی مثبت کاذب PDF را می‌گیرد.
+
+## نشست ۲۲۵
+
+### S225-1 — تعمیم ممنوعیت RAW + دیالوگ ویندوز
+- سؤال: مسیرهای RAW لیبل و برگه‌ی آزمایشی وقتی `silent:false`/«هر بار بپرس» می‌گیرند چه کنند؟
+- گزینه‌ها: مثل قبل silent را نادیده بگیرند؛ fallback به Chromium؛ قبل از هر ارسال RAW با پیام فارسی رد شوند.
+- انتخاب من: guard مشترک `assertRawNotDialog` و رد قبل از TSPL/ESC-POS.
+- دلیل: RAW هیچ دیالوگ ویندوزی ندارد؛ نادیده‌گرفتن آن دقیقاً چاپ مستقیم بی‌صدا می‌سازد. fallback هم خروجی متفاوت و ریسک دوباره‌چاپ دارد. پس همان تصمیم S224-1 باید همه‌ی ورودی‌های RAW را پوشش دهد.
+
+### S225-2 — lifecycle پنجره‌ی کد اعتبار اضافه‌دریافت در حین چاپ
+- سؤال: اگر چاپ خودکار/دوباره‌ی کد اعتبار هنوز در جریان است، کاربر بتواند modal «کد اعتبار خرید صادر شد» را ببندد؟
+- گزینه‌ها: آزاد؛ بستن را تا پایان چاپ قفل کنیم؛ فقط پیام صفحه بدهیم.
+- انتخاب من: قفل بستن/Esc/backdrop/X تا پایان چاپ، به‌علاوه fallback پیام میزبان اگر به هر دلیل modal بسته شده باشد.
+- دلیل: نتیجه‌ی unknown/failed/warning چاپ باید همان‌جا دیده شود و با lifecycle modal گم نشود؛ ولی اگر والد بسته شد یا جریان غیرمعمول رخ داد، پیام روی صفحه/flash باقی بماند.
+
+### S225-3 — خطای `markPrinted` بعد از چاپ اعتبار
+- سؤال: خطای ثبت شمارنده/Audit بعد از چاپ موفق یا outcome نامعلوم باید چاپ را failed کند؟
+- گزینه‌ها: همان throw فعلی؛ ignore کامل؛ log + warning برای success و حفظ خطای اصلی برای unknown.
+- انتخاب من: در outcome نامعلوم، خطای mark فقط log می‌شود و همیشه خطای اصلی (`PRINT_OUTCOME_UNKNOWN`) rethrow می‌شود؛ در success چاپ، خطای mark باعث throw چاپ نمی‌شود و نتیجه‌ی موفق با `warnings/markFailed` برمی‌گردد.
+- دلیل: اگر کاغذ چاپ شده باشد، گزارش «چاپ نشد» یا پوشاندن `PRINT_OUTCOME_UNKNOWN` کاربر را به چاپ کور دوباره سوق می‌دهد. مشکل ثبت شمارنده باید جدا و روشن گزارش شود، نه اینکه واقعیت چاپ را عوض کند.
+
+## نشست ۲۲۶
+
+### S226-1 — میان‌برهای سراسری Shell وقتی modal باز است
+- سؤال: وقتی modal باز است، مخصوصاً modal کد اعتبار که چاپ Windows dialog آن ممکن است طولانی شود، F2/F3/F8/F9/F10/F11 باید صفحه را عوض کنند؟
+- گزینه‌ها: آزاد بمانند؛ فقط برای چاپ اعتبار flag سراسری بسازیم؛ همه‌ی modalها از stack موجود، میان‌برهای ناوبری Shell را قفل کنند.
+- انتخاب من: قفل ناوبری Shell با `isAnyModalOpen()` روی stack مشترک Modal/ConfirmDialog.
+- دلیل: جابه‌جایی صفحه وسط modal، میزبان نتیجه‌ی چاپ را unmount می‌کند و پیام unknown/failed گم می‌شود. stack موجود دقیقاً وضعیت modalهای رویی را دارد؛ خواندن آن در لحظه‌ی keydown کم‌ریسک‌تر از state سراسری تازه یا toast جدید است و فقط میان‌برهای ناوبری Shell را متوقف می‌کند.
+
+## نشست ۲۲۳
+
+### S223-1 — چاپگر پیش‌فرض سند اعتبار
+- سؤال: وقتی سند اعتبار خرید بدون نام چاپگر صریح چاپ می‌شود، از چاپگر رسید استفاده شود یا از پیش‌فرض واقعی ویندوز؟
+- گزینه‌ها: گره‌زدن اعتبار به `receipt.template.printerName`؛ افزودن تنظیم چاپگر جدا برای اعتبار؛ حفظ رفتار فعلی با `resolvePrintTargetName({ savedName: '' })` و ثبت/تست آن.
+- انتخاب من: حفظ رفتار فعلی و ثبت آن در تست‌ها؛ اعتبار از نظر کاغذ و مقصد چاپ به رسید فروش گره نمی‌خورد و اگر renderer نامی نفرستد، پیش‌فرض واقعی ویندوز انتخاب می‌شود. نام صریح renderer همچنان با فهرست زنده اعتبارسنجی می‌شود و fallback به اولین چاپگر وجود ندارد.
+- دلیل: تنظیم جداگانه‌ی چاپگر اعتبار هنوز در UI وجود ندارد و استفاده از چاپگر رسید، در فروشگاه‌هایی که رسید حرارتی دارند ولی اعتبار را روی A6/A5/A4 می‌زنند، مسیر اشتباه می‌سازد. مشکل گزارش‌شده ناشی از تست/مستندات stale بود، نه نیاز به تغییر رفتار چاپ.
+
 ## نشست ۱۰۷
 
 ### S107-1
@@ -1315,3 +1365,243 @@ S142-6 — سؤال: گیت نبودن رمز مدیر روی issueManual/bulkIs
 - گزینه‌ها: ۱) یک لیبل = یک صفحه (رفتار قبلی) · ۲) یک ردیف = یک صفحه (خانه‌های خالی نامرئی).
 - انتخاب من: گزینهٔ ۲.
 - دلیل: روی رول دوستونه، «یک لیبل» یعنی یک ردیف با یک خانه‌ی خالی و هر چاپ، لیبل بعدی را یک خانه جلو می‌برد (همان هدررفت عکس‌شده). حالا `@page` اندازه‌ی ردیف است، هر ردیف `break-after:page` دارد و خانه‌ی خالی `visibility:hidden` می‌ماند؛ `startColumn` هم برای رول نیمه‌مصرف، همان تهی‌های ابتدای ردیف را بازتولید می‌کند.
+
+## نشست Woo-Stock-Hardening
+
+### WOO-H1 — زیرسیستم Approval کامل Woo در همین نسخه یا مسیر امن مرحله‌ای؟
+- سؤال: برای بندهای WooApproval / HOLD / PUSH_PARK / INBOUND_PARK / crossedPause آیا همین نشست یک زیرسیستم کامل تأیید مدیر بسازیم یا تا داشتن متن کامل v1.3 و تست رفتاری، مسیرهای خطرناک را امن و محدود کنیم؟
+- گزینه‌ها: (الف) پیاده‌سازی کامل و پرریسک مدل‌های Approval بدون متن کامل v1.3؛ (ب) فعلاً ثبت تصمیم و UI محدودیت، و بستن مسیرهای بحرانی با Reconcile، PARK/Retry و رمز مدیر؛ (ج) نادیده گرفتن.
+- انتخاب من: (ب).
+- دلیل: اصل «فقط موجودی» و سلامت فروش/گزارش‌های موجود مهم‌تر از اضافه‌کردن عجولانه workflow بزرگ Approval است. برای نسخه فعلی، رویداد خطادار PARK و قابل retry شد، وصل دوباره رمز مدیر/پیش‌نمایش امضاشده دارد، و اختلاف دوره‌ای کشف می‌شود؛ اما زیرسیستم کامل تأیید مدیر باید با متن کامل v1.3 و تست‌های رفتاری مستقل اضافه شود.
+
+### WOO-H2 — PARKED خودکار اعمال شود یا فقط دستی با رمز مدیر؟
+- سؤال: رویدادهای PARKED که قبلاً به‌خاطر خطا/ابهام اعمال نشده‌اند، در sync خودکار دوباره روی موجودی بنشینند یا پشت تأیید مدیر بمانند؟
+- گزینه‌ها: اعمال خودکار دوره‌ای؛ اعمال با دکمه معمولی؛ اعمال فقط با رمز مدیر و محدودیت رویدادهای برگشت/Refund؛ نگه‌داشتن کامل تا ساخت WooApproval.
+- انتخاب من: اعمال خودکار حذف شد؛ پردازش دستی رمز مدیر می‌خواهد و رویدادهای relink/Refund پرریسک بدون سقف فروش قبلی اعمال نمی‌شوند.
+- دلیل: فقط موجودی مهم است، اما ورود مرجوعی/برگشت کنترل‌نشده می‌تواند موجودی سایت/فروشگاه را بیش از واقعیت نشان دهد. تا زمان پیاده‌سازی کامل Approval، مسیر امن‌تر این است که PARKED خودش از صف خودکار خارج باشد.
+
+### WOO-H3 — تکمیل Approval/HOLD/FROZEN بعد از الزام مالک
+- سؤال: بعد از تأکید مالک که همه‌ی بخش‌ها باید یک‌جا برای دیباگ آماده باشند، مسیر Approval مرحله بعد بماند یا همین نشست کامل‌تر شود؟
+- گزینه‌ها: نگه‌داشتن محدودیت قبلی؛ ساخت جدول/IPC/UI صف تأیید مدیر، FROZEN و loop fuse داخل همین branch؛ پیاده‌سازی سفارش/فروش سایت.
+- انتخاب من: ساخت صف تأیید موجودی، FROZEN و loop fuse، بدون ورود هیچ داده مالی/مشتری/فروش سایت.
+- دلیل: مالک درست می‌گوید که برای دیباگ یکپارچه باید مسیرهای اصلی موجود باشد. بنابراین تصمیم WOO-H1 از «محدودیت نسخه ۱» به «پیاده‌سازی در همین branch» تغییر کرد، اما مرز فقط موجودی همچنان قفل است.
+
+### WOO-H4 — پاسخ به بازبینی افزونه: parent-managed و fractional stock
+- سؤال: برای variationهایی که موجودی را از parent می‌گیرند، آیا همان variation به‌عنوان holder مستقل sync شود یا parent product جداگانه قابل اتصال باشد؟
+- گزینه‌ها: اتصال variation و نگاشت به parent؛ رد کامل؛ نمایش parent به‌عنوان holder واقعی و رد variationهای parent-managed.
+- انتخاب من: نمایش parent variable product وقتی خودش manage_stock دارد، و رد variationهای parent-managed برای اتصال/نوشتن مستقل.
+- دلیل: اگر چند رنگ/سایز یک stock مشترک دارند، اتصال مستقل هر variation می‌تواند موجودی مشترک را چندبار یا با مفهوم غلط sync کند. امن‌ترین مسیر برای «فقط موجودی» این است که stock مشترک را با holder والد sync کنیم و variationهای parent-managed را قابل اتصال نشان ندهیم.
+
+### WOO-H5 — موجودی اعشاری Woo
+- سؤال: MAHAK در این نسخه موجودی Woo اعشاری را پشتیبانی کند یا صریحاً رد کند؟
+- گزینه‌ها: تبدیل پنهان به int؛ پشتیبانی کامل decimal در MAHAK و migrationها؛ رد صریح در افزونه.
+- انتخاب من: رد صریح با `mahak_fractional_stock`.
+- دلیل: مدل موجودی MAHAK و قرارداد outbox/inbound فعلی integer است. تبدیل پنهان اعشار به int خطر oversell دارد؛ پشتیبانی decimal تغییر دامنه بزرگ‌تری است و باید جدا طراحی شود.
+
+### WOO-H6 — بازبینی دوم افزونه: CAS خام، رویدادهای Woo و مقدار نامعتبر remote
+- سؤال: بعد از افزودن CAS و observer متا، گزارش‌های مستقل درباره conflict کاذب، double event و delta سفارش زیر هم‌زمانی چه تصمیمی می‌خواهند؟
+- گزینه‌ها: نادیده‌گرفتن چون تست regex پاس می‌شود؛ بازطراحی کامل sync؛ patch حداقلی روی نقاط race و نگه‌داشتن مرز فقط موجودی.
+- انتخاب من: patch حداقلی و محافظه‌کارانه.
+- تصمیم‌ها:
+  - CAS روی مقدار خام قفل‌شده `_stock` انجام می‌شود، نه رشته‌ی integer ساخته‌شده، چون Woo مقدار set را ممکن است به فرم `N.000000` ذخیره کند.
+  - journal strict قبل از `wc_update_product_stock` ثبت می‌شود تا خطای journal پیش از side-effectهای Woo رخ دهد.
+  - event مستقیم meta با event بعدی stock dedupe می‌شود.
+  - در order item hook، `from/to` اتمیک Woo اگر موجود باشد old/new/delta ردیف journal را اصلاح می‌کند.
+  - موجودی remote نامعتبر/اعشاری/غیر managed به صفر تبدیل نمی‌شود؛ لینک BROKEN_REMOTE می‌شود و WOO_WINS مجاز نیست.
+- مرز معماری: همچنان فقط stock_quantity sync می‌شود؛ قیمت، مشتری، سفارش مالی و گزارش فروش Woo وارد MAHAK نمی‌شود.
+
+### WOO-H7 — بازبینی سوم افزونه و سرویس: جلوگیری از دوباره‌شماری و stock نامعلوم
+- سؤال: پس از CAS خام و hardening قبلی، گزارش‌های مستقل درباره دوباره‌شماری approval، اتصال اولیه بدون floor، stock خالی Woo، journal prefix و upgrade schema چه تصمیمی می‌خواهند؟
+- انتخاب من: رفع حداقلی و محافظه‌کارانه بدون ورود سفارش/مشتری/قیمت Woo به MAHAK.
+- تصمیم‌ها:
+  - مقدار خالی/NULL `_stock` دیگر صفر حساب نمی‌شود و event موجودی نمی‌سازد؛ baseline داخلی افزونه پاک می‌شود تا روشن‌شدن دوباره manage_stock delta کهنه نسازد.
+  - لینک تازه با `relinkSeqFloor` بر اساس `last_seq` سایت ساخته می‌شود تا رویدادهای قبل از اتصال اولیه بعداً دوباره اعمال نشوند.
+  - حل approvalهای conflict/reconcile قبل از تصمیم، ژورنال سایت را drain می‌کند؛ رویدادهای pauseشده‌ای که تا snapshot سایت پوشش داده شده‌اند SUPERSEDED و approvalهای APPLY_INBOUND مربوطه EXPIRED می‌شوند.
+  - `/journal` فقط یک prefix settle‌شده از seqها را برمی‌گرداند و سمت برنامه با overlap کوچک cursor می‌خواند تا late commit باعث skip دائمی نشود.
+  - upgrade جدول با lock، پاک‌سازی request_id خالی، کوتاه‌سازی index ترکیبی و تأیید وجود unique index انجام می‌شود؛ نسخه DB فقط بعد از تأیید ثبت می‌شود.
+  - CAS افزونه روی `meta_id` قفل‌شده و مقدار خام انجام می‌شود و false از wpdb به خطای واقعی تبدیل می‌شود، نه conflict کاذب.
+- مرز معماری: همچنان فقط عدد موجودی sync می‌شود؛ order_id فقط شناسه attribution است و هیچ فاکتور/پرداخت/مشتری/قیمت Woo ساخته یا وارد نمی‌شود.
+
+### WOO-H8 — بازبینی چهارم Woo: Approval، فیوز حلقه و لبه‌های افزونه
+- سؤال: گزارش‌های جدید درباره حذف خاموش سفارش‌های pause‌شده، loop fuse روی فروش عادی، stale approval، request_id leak و parent-managed variation چه تصمیمی می‌خواهند؟
+- انتخاب من: patch حداقلی و محافظه‌کارانه روی همان مسیر «فقط موجودی»، بدون ورود سفارش مالی/مشتری/قیمت Woo به MAHAK.
+- تصمیم‌ها:
+  - resolve approval روی لینک ACTIVE سالم اجرا نمی‌شود و approval قدیمی EXPIRED می‌شود.
+  - اگر SKIPPED_PAUSED از سفارش/Refund واقعی با delta غیرصفر وجود داشته باشد، تصمیم‌های MAHAK_WINS/VERIFY_ONLY/UNFREEZE آن را silent supersede نمی‌کنند؛ مدیر باید از preview وصل دوباره با «MAHAK + سفارش‌های سایت» یا تأیید همان inbound event استفاده کند. WOO_WINS همچنان snapshot عدد موجودی سایت را به‌صورت stock adjustment اعمال می‌کند.
+  - loop fuse فقط outboxهای بدون `movementId` را می‌شمارد تا فروش عادی/حرکت واقعی MAHAK باعث FROZEN کاذب نشود.
+  - `retryParked` و `APPLY_INBOUND` قبل از اعمال، `relinkSeqFloor` را چک می‌کنند و رویدادهای پوشش‌داده‌شده در snapshot قبلی را SUPERSEDED/EXPIRED می‌کنند.
+  - echo detection سمت برنامه به همان `linkId` محدود شد و افزونه request_id عملیات MAHAK را به journal eventهای hook عمومی/متا منتقل نمی‌کند.
+  - تراکنش‌های Woo از `TX_OPTIONS` مشترک استفاده می‌کنند؛ resolve/resume approvalهای stale و outboxهای باز را پاک‌سازی می‌کند.
+  - افزونه به نسخه `1.0.3` و DB `4` رفت: normalize request_id طولانی idempotent شد، upgrade backoff و table_exists case-insensitive شد، lock اعمال موجودی namespace گرفت، settle journal با ساعت PHP UTC یکسان شد، و hookهای stock برای parent-managed/unmanaged guard شدند.
+- مرز معماری: order_id فقط برای attribution و محافظت موجودی است؛ هیچ سفارش مالی، گزارش فروش سایت، مشتری، قیمت، مالیات، آدرس یا پرداخت Woo وارد MAHAK نمی‌شود.
+
+### WOO-H9 — بازبینی پنجم Woo: PARKEDهای خطرناک، baseline قدیمی و race hook
+- سؤال: بعد از hardening قبلی، با رویدادهای سفارش/Refund که به جای `SKIPPED_PAUSED` در وضعیت `PARKED` مانده‌اند، approvalهای یتیم، refundهای بیش از سقف، push در حال پرواز و race افزونه چه کنیم؟
+- انتخاب من: patch محافظه‌کارانه روی همان sync فقط موجودی؛ هر موردی که نیازمند staging واقعی Woo/WordPress بود بدون تغییر پرریسک deferred شد.
+- تصمیم‌ها:
+  - `PARKED`های بدون `relinkId` یا مربوط به آخرین `lastRelinkId` کنار `SKIPPED_PAUSED` به‌عنوان held inbound دیده می‌شوند. `MAHAK_WINS`، `VERIFY_ONLY/NOOP` و `UNFREEZE` در حضور سفارش/Refund حل‌نشده رد می‌شوند؛ فقط `WOO_WINS` snapshot سایت را پوشش می‌دهد یا `MAHAK_PLUS_ORDERS` order deltaها را از مسیر امن اعمال می‌کند.
+  - `resumeApply` پس از اعمال/رد/supersede کردن held eventها، approvalهای `APPLY_INBOUND` مربوط را expire می‌کند؛ unlink هم approvalهای pending لینک را orphan نمی‌گذارد.
+  - refund/restock بیش از سقف فروش ثبت‌شده در مسیر relink با همان `relinkId` دوباره `PARKED` می‌ماند و log هشدار می‌گیرد؛ `retryParked` دیگر این دسته را صرفاً به‌خاطر `relinkSeqFloor` حذف نمی‌کند.
+  - در `retryParked` و `APPLY_INBOUND` اگر بعد از event قدیمی‌تر event جدیدتری اعمال شده باشد، baseline سایت از `lastWooQty` فعلی حفظ می‌شود تا push بعدی با `expectedWooQty` قدیمی conflict کاذب نسازد.
+  - تصمیم‌های مدیر در صورت outbox تازه‌ی `IN_FLIGHT` متوقف می‌شوند؛ outboxهای `IN_FLIGHT` واقعاً stale قبل از ساخت هدف جدید supersede می‌شوند. echo journalِ apply timeout‌شده، outbox را `SENT` و `lastWooQty` را همگام می‌کند.
+  - `resumeProductGroupMahak` لینک‌هایی را که held order/refund یا push تازه‌ی درحال‌پرواز دارند skip می‌کند و تعداد skip را برمی‌گرداند.
+  - افزونه به نسخه `1.0.4` رفت: upgrade lock با DB/prefix namespace شد و hookهای `before_stock/after_stock` از همان نام‌گذاری lock apply استفاده می‌کنند؛ context سفارش در shutdown پاک می‌شود.
+- Deferred: hook lock کامل برای تمام مسیرهای سفارشی/third-party، timeout ناشناخته‌ی push روی staging واقعی، performance کاتالوگ بسیار بزرگ و سیاست کامل order_id retention باید در محیط Woo واقعی و با داده حجیم اعتبارسنجی شوند.
+- مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود؛ قیمت، مشتری، پرداخت، آدرس، مالیات، سفارش مالی یا گزارش فروش Woo وارد MAHAK نمی‌شود.
+
+### WOO-H10 — بازبینی ششم Woo: held ناقص، lock-timeout journal و وصل گروهی
+- سؤال: گزارش جدید درباره پنهان‌شدن `SKIPPED_PAUSED` پشت floor، حذف journal هنگام timeout قفل افزونه، فعال‌شدن خودکار conflict و مسیر نیمه‌امن وصل گروهی چه تصمیمی می‌خواهد؟
+- انتخاب من: رفع high/mediumهای قطعی و کم‌ریسک در همان مرز «فقط موجودی»؛ موارد نیازمند staging واقعی همچنان باید روی Woo/WordPress واقعی تست شوند.
+- تصمیم‌ها:
+  - held inbound به معنی هر event حل‌نشده با status `SKIPPED_PAUSED` یا `PARKED` برای همان link است؛ `pauseSeqFloor` و `relinkId` دیگر آن را از guardها پنهان نمی‌کنند. اگر بعد از snapshot پیش‌نمایش event تازه‌ای وارد DB شده باشد، اعمال تصمیم مدیر fail می‌شود.
+  - امضای preview از «تعداد eventها» به «تعداد + hash رویدادهای held» تقویت شد.
+  - افزونه در timeout قفل hook دیگر `after_stock` را skip نمی‌کند؛ event با payload `lock_timeout` در journal می‌ماند. برنامه event دارای `lock_timeout` یا ناپیوستگی `old_qty/lastWooQty` را PARK می‌کند تا مدیر تصمیم بگیرد.
+  - `resumeProductGroupMahak` بازنویسی شد: ژورنال را drain می‌کند، FROZEN را باز نمی‌کند، همه heldها را skip می‌کند، snapshot remote/`relinkSeqFloor` تازه می‌گیرد، داخل transaction و با guard `IN_FLIGHT` queue می‌کند و `skippedLinks` برمی‌گرداند.
+  - موفقیت outbox فقط برای `RECONCILE_PUSH` مدیریتی با pauseReason مجاز و بدون held event، لینک PAUSED را ACTIVE می‌کند؛ rebase/idempotent دیگر conflict را خودکار فعال نمی‌کند.
+  - مسیر floor در `pullJournal` برای order/refund خطرناک از `canSupersedeByRelinkFloor` استفاده می‌کند؛ اگر امن نباشد event PARK و approval ساخته می‌شود.
+  - echo فقط برای source=`mahak_apply` معتبر است؛ `mahak_apply` بدون outbox متناظر PARK می‌شود و به‌عنوان delta اعمال نمی‌شود.
+  - قطع دائم link و اتصال اولیه با انتخاب مرجع موجودی، رمز مدیر می‌خواهند. قطع دائم در حضور held event یا `IN_FLIGHT` تازه block می‌شود.
+- Deferred/Needs staging: رفتار hookهای سفارشی خارج از مسیر Woo استاندارد، patch دقیق order item با نگه‌داشتن insert_id در request، و تست هم‌زمانی واقعی روی MySQL/MariaDB و PHP نسخه‌های مختلف باید در staging واقعی انجام شود.
+- مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود؛ هیچ قیمت، مشتری، پرداخت، آدرس، مالیات، سفارش مالی یا گزارش فروش Woo وارد MAHAK نمی‌شود.
+
+### WOO-H11 — بازبینی هفتم Woo: ریز-raceهای held، approval و baseline افزونه
+- سؤال: دو گزارش مستقل پس از hardening قبلی چند race باقی‌مانده را مطرح کردند؛ کدام‌ها در کد واقعی تأیید و با کمترین ریسک رفع شوند؟
+- انتخاب من: فقط موارد قابل‌تأیید در کد واقعی و مرتبط با Woo stock sync را patch کردم؛ موارد speculative یا نیازمند staging واقعی Woo/MySQL/PHP بدون تغییر پرریسک باقی ماندند.
+- تصمیم‌ها:
+  - `resumeApply` داخل همان transaction دوباره تعداد و hash رویدادهای held را با preview مقایسه می‌کند؛ صرفاً check کردن `lastSeq` کافی نبود.
+  - `DELETE_ZERO` برای لینک `BROKEN_LOCAL` مجاز شد تا صف پاک‌سازی بعد از حذف کالای محلی بن‌بست نشود.
+  - اتصال holder سایت فقط با holder canonical ساخته می‌شود و هر holderKey غیر-UNLINKED قبلی جلوی اتصال دوباره همان محصول/Variation Woo به کالای دیگر را می‌گیرد.
+  - resolve approval با `updateMany({ id, status: PENDING })` claim می‌شود تا دو تصمیم هم‌زمان نتوانند side-effect تکراری بسازند.
+  - baseline سایت بعد از APPLY_INBOUND فقط از eventهای معتبر `APPLIED/APPLIED_ON_RELINK/SKIPPED_ECHO` تازه‌تر گرفته می‌شود؛ `PARKED` و `SKIPPED_PAUSED` دیگر مبنای expected بعدی را خراب نمی‌کنند.
+  - pull ژورنال، لینک ACTIVE خوانده‌شده بیرون transaction را داخل transaction با status و `updatedAt` دوباره چک می‌کند؛ اگر هم‌زمان pause/reconcile رخ داده باشد event به صف تأیید می‌رود.
+  - تنظیمات Woo اجازه فعال‌سازی بدون آدرس و کلید اتصال را نمی‌دهد و workerها اگر config ناقص باشد outbox/journal را attempt نمی‌کنند.
+  - افزونه به نسخه `1.0.6` رفت: baseline `_mahak_stock_last_qty` فقط بعد از `record()` موفق جلو می‌رود، مسیر مستقیم meta همان named lock را می‌گیرد، `lock_timeout` را در payload می‌فرستد و cleanup وضعیت‌های موقت انجام می‌شود؛ `before_post_update` نیز مقدار قبلی را از DB می‌خواند.
+- Deferred/Needs staging: صحت کامل مسیرهای سفارشی third-party که مستقیم meta را بدون hook استاندارد Woo تغییر می‌دهند، رفتار object cache وردپرس، و serialization واقعی `GET_LOCK`/transaction در MySQL/MariaDB باید در staging واقعی Woo سنجیده شود.
+- مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود؛ هیچ قیمت، مشتری، پرداخت، آدرس، مالیات، سفارش مالی یا گزارش فروش Woo وارد MAHAK نمی‌شود.
+
+### WOO-H12 — بازبینی هشتم Woo: atomic outbox claim و قفل pre_post_update
+- سؤال: گزارش Claude بعد از `4f90cf2` درباره non-atomic بودن skip/claim خروجی و نگه‌داشتن lock در `pre_post_update` چه تصمیمی می‌خواهد؟
+- انتخاب من: Finding مربوط به claim خروجی قطعی و کم‌ریسک بود و با یک `UPDATE ... NOT EXISTS` اتمیک روی SQLite رفع شد. Finding قفل `pre_post_update` هم به‌صورت محافظه‌کارانه کاهش ریسک شد؛ موارد وابسته به lifecycle واقعی Woo/کش همچنان staging لازم دارند.
+- تصمیم‌ها:
+  - `processOutbox` دیگر `count(IN_FLIGHT)` و سپس `update` جداگانه انجام نمی‌دهد؛ claim هر outbox با یک statement اتمیک انجام می‌شود که فقط وقتی برای همان `linkId` ردیف `IN_FLIGHT` دیگری نباشد، همان ردیف را به `IN_FLIGHT` می‌برد و attempt را زیاد می‌کند.
+  - این lock منطقی فقط تا claim DB است و HTTP request را داخل transaction نگه نمی‌دارد؛ بنابراین throughput بی‌دلیل قربانی نمی‌شود.
+  - افزونه به نسخه `1.0.7` رفت: `before_post_update` فقط وقتی از request مقدار stock قابل‌تشخیص برسد وارد مسیر lock/baseline می‌شود و اگر مقدار ارسال‌شده با مقدار فعلی برابر یا نامعتبر باشد، lock را فوراً آزاد می‌کند.
+  - audit regex قبلی که صرفاً وجود `competingInFlight` را نشانه‌ی ایمنی می‌دانست اصلاح شد و اکنون دنبال claim اتمیک با `NOT EXISTS` می‌گردد.
+- Deferred/Needs staging: رفتار object cache/duplicate `_stock` و attribution دقیق order/refund در lifecycle واقعی Woo هنوز باید با staging Woo/MySQL/PHP و چند نسخه WooCommerce تست شود.
+- مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود و هیچ داده مالی/مشتری/قیمت/گزارش فروش Woo وارد MAHAK نمی‌شود.
+
+### WOO-H13 — بازبینی نهم Woo: strict remote qty، rejection پایدار و readهای بی‌اثر
+- سؤال: دو گزارش جدید درباره parser موجودی remote، atomicity outbox داخلی، رد approval، pagination کاتالوگ و side-effect endpointهای read چه تصمیمی می‌خواهند؟
+- انتخاب من: موارد قطعی و کم‌ریسک روی مسیر stock-only رفع شد؛ موارد وابسته به lifecycle واقعی Woo/DB همچنان staging لازم دارند.
+- تصمیم‌ها:
+  - مقدار `stock_quantity` برگشتی از سایت دیگر با `Math.round(Number(...))` به عدد معتبر تبدیل نمی‌شود؛ فقط integer امن پذیرفته می‌شود و مقدار اعشاری/نامعتبر `null` می‌شود تا `WOO_WINS` یا اتصال اولیه کورکورانه تغذیه نشود.
+  - شکست ساخت outbox در همان تراکنش حرکت موجودی داخلی دیگر swallow نمی‌شود؛ خطا بعد از ثبت تلاش log دوباره throw می‌شود تا حرکت داخلی بدون outbox durable commit نشود.
+  - رد approval از نوع `APPLY_INBOUND` اکنون event متناظر `PARKED/SKIPPED_PAUSED` را terminal `SUPERSEDED` می‌کند و approvalهای هم‌رویداد را منقضی می‌کند؛ retry دستی پارک‌شده‌ها تصمیم رد مدیر را دور نمی‌زند.
+  - ساخت approval از check-then-create به `INSERT ... WHERE NOT EXISTS` تک‌عبارتی روی SQLite تغییر کرد تا duplicate pending approval کمتر شود، بدون migration جدید.
+  - `syncNow` فازهای pull/reconcile/push را مستقل اجرا می‌کند؛ خطای reconcile دیگر push outboxهای آماده را متوقف نمی‌کند و خطای هر فاز در log و نتیجه برمی‌گردد.
+  - خواندن catalog در service تا چند صفحه/حداکثر ۱۰۰۰ holder را جمع می‌کند تا UI فقط صفحه اول سایت را نبیند. فیلد کلید افزونه در UI password شد.
+  - افزونه به نسخه `1.0.8` رفت: endpointهای read (`catalog`/`stock`) دیگر baseline `_mahak_stock_last_qty` را mutate نمی‌کنند و خطای داخلی apply با پیام عمومی به API برمی‌گردد؛ جزئیات فقط در error log وردپرس می‌ماند.
+- Rejected/No patch: reuse متفاوت `request_id` در افزونه برای client رسمی MAHAK conflict قطعی نیست، چون پاسخ idempotent شامل `new_qty` قبلی است و service در mismatch outbox تازه می‌سازد. no-op بدون journal هم double-apply عددی نمی‌سازد و تغییر آن contract/جدول جدید می‌خواهد.
+- Deferred/Needs staging: lock-timeout fail-open در plugin چون service آن را PARK می‌کند، attribution سفارش/Refund با heuristic، object cache/duplicate `_stock`، signature واقعی hookهای refund، و رفتار MySQL/MariaDB/connection باید در staging واقعی Woo سنجیده شوند.
+- مرز معماری: همچنان فقط `stock_quantity` مبادله می‌شود؛ هیچ قیمت، مشتری، پرداخت، آدرس، مالیات، سفارش مالی یا گزارش فروش Woo وارد MAHAK نمی‌شود.
+
+## نشست Woo-S300-10
+
+### WOO-S300-10-1 — Bind idempotency به payload افزونه
+- سؤال: اگر `request_id` تکراری با `expected/target` متفاوت رسید، مثل قبل پاسخ idempotent بدهیم یا درخواست را conflict کنیم؟
+- انتخاب من: conflict با `mahak_idempotency_payload_mismatch` و status 409.
+- دلیل: `request_id + holder_key` بدون payload می‌تواند پاسخ موفق قدیمی را برای قصد جدید replay کند. از این نسخه receiptها `expected` و `target` را نگه می‌دارند؛ برای ردیف‌های خیلی قدیمی اگر فقط target وجود داشته باشد همان مقدار قابل کنترل است و از سازگاری نصب‌های قبلی محافظت می‌شود.
+
+### WOO-S300-10-2 — Outbox finalize وقتی لینک حین HTTP تغییر کرده است
+- سؤال: بعد از پاسخ موفق سایت، اگر status/updatedAt لینک نسبت به snapshot قبل از HTTP عوض شده بود، baseline را به‌روزرسانی کنیم یا عقب بکشیم؟
+- انتخاب من: outbox را sent می‌کنیم، ولی link baseline/status را overwrite نمی‌کنیم.
+- دلیل: HTTP side-effect قبلاً بیرون از transaction رخ داده است؛ برگرداندن outbox به pending می‌تواند دوباره‌ارسال کور بسازد، اما overwrite کردن لینکِ تازه‌تغییرکرده تصمیم مدیر/رویداد inbound جدید را خراب می‌کند.
+
+### WOO-S300-10-3 — رویدادهای `mahak_apply` پارک‌شده بدون outbox
+- سؤال: retry گروهی PARKEDها این echoها را دوباره روی MAHAK اعمال کند؟
+- انتخاب من: خیر؛ در bulk retry skip و log می‌شوند.
+- دلیل: `mahak_apply` echo عملیات MAHAK است، نه تغییر مستقل سایت. اگر outbox متناظر پیدا نشده، اعمال دوباره‌اش روی MAHAK ریسک double-apply دارد و باید از مسیر تصمیم/بررسی دقیق‌تر حل شود.
+
+### WOO-S300-10-4 — یافته‌های staging-only افزونه
+- سؤال: lock hook fail-open و strict شدن journal hook عادی را همین‌جا قطعی تغییر دهیم؟
+- انتخاب من: نه؛ فقط guardهای low-risk قطعی را اعمال کردم و این موارد را staging-only نگه داشتم.
+- دلیل: رفتار `GET_LOCK`، connection persistence، object cache، duplicate `_stock` و hook ordering Woo/MySQL باید روی staging واقعی سنجیده شود؛ تغییر کور می‌تواند سایت عملیاتی را بیشتر مختل کند.
+
+### WOO-S300-10-5 — کاتالوگ/لینک‌های بزرگ‌تر از سقف امن UI
+- سؤال: سقف catalog و links را حذف کنیم یا truncate را آشکار کنیم؟
+- انتخاب من: برای catalog سقف امن حفظ شد، اما نتیجه‌ی IPC متادیتای `hasMore/capped` می‌دهد و UI هشدار فارسی نشان می‌دهد؛ برای فهرست لینک‌های موجود، `LIMIT 1000` حذف شد تا اتصال فعال پنهان نماند.
+- دلیل: حذف سقف catalog بدون virtualized select می‌تواند renderer را کند یا ناپایدار کند؛ اما truncate بی‌خبر هم خطر اتصال اشتباه دارد. در links پنهان‌شدن اتصال مدیریتی خطرناک‌تر از هزینه‌ی query است، پس همه‌ی لینک‌های غیر-UNLINKED برگردانده می‌شوند.
+
+## نشست Woo-S300-11 (تریاج سه گزارش بازبینی موازی)
+
+### پیش‌داوری تریاج
+- سه گزارش (R1 با ۱۳ یافته، R2 با ۹ یافته، R3 با ۱۳ یافته) موردبه‌مورد با anchor واقعی روی کد جاری بررسی شدند. R1 سیزده‌ازسیزده معتبر بود؛ R2 هفت یافته معتبر و دو یافته طبق تصمیم قبلی رد شد؛ R3 دوازده یافته معتبر و یک یافته نادرست بود. هم‌پوشانی‌ها یک‌بار اعمال شدند (R1.4=R3.1، R1.2=R3.10، R1.13=R3.8، R1.8=R3.7، R1.7≈R3.6، R1.3=R2.7، R2.5≈R3.12).
+
+### WOO-S300-11-1 — حضور approval برای هر رویداد مبهم
+- سؤال: eventهای `mahak_apply` echo بدون outbox، relink-floor، untrusted و «ذخیره‌شده هنگام PAUSED» باید WooApproval داشته باشند یا فقط status پارک؟
+- انتخاب من: رویداد + approval داخل یک تراکنش ساخته می‌شوند.
+- دلیل: پنل approvals مدیر فقط روی جدول WooApproval سوار است؛ رویداد پارک‌شده‌ی بدون approval هرگز دیده نمی‌شد و فقط با bulk retry مبهم پردازش می‌شد.
+
+### WOO-S300-11-2 — HTTPS اجباری برای اتصال
+- سؤال: گیت HTTPS فقط روی UI بماند یا در سرویس/ذخیره تنظیمات هم اعمال شود؟
+- انتخاب من: `wooUrlRequiresTls` در shared تعریف و هم در `fullConfig` (هر مسیر راه‌اندازی) و هم در `saveSettings` اعمال شد؛ loopback (127.0.0.1/localhost/[::1]) برای تست محلی استثناست.
+- دلیل: توکن افزونه روی کانال HTTP بای‌پس UI (IPC مستقیم) plaintext رد می‌شد؛ محصول نصب/استقرار دسکتاپ توزیع نمی‌شود، پس سخت‌گیر شدن دیفالت امن‌ترین حالت است و توسعه‌دهنده برای تست لوکال loopback دارد.
+
+### WOO-S300-11-3 — معنای فیلد غایب در ذخیره تنظیمات
+- سؤال: اگر IPC call `saveSettings` بعضی فیلدها را نفرستد، حذف یعنی «مقدار پیش‌فرض» یا «دست‌نخورده»؟
+- انتخاب من: `undefined` = مقدار قبلی حفظ می‌شود؛ fallback فقط برای نصب اولیه است؛ و read/merge/write داخل یک تراکنش انجام می‌شود.
+- دلیل: فرم‌های آینده یا فراخوانی‌های جزئی می‌توانستند بدون توجه پنهان `autoSync/enabled/interval` را ریست کنند و هم‌زمان رقابت دو ذخیره مقدار میانی overwrite می‌شد.
+
+### WOO-S300-11-4 — tagging دقیق سفارش به جای heuristic
+- سؤال: attribution رویداد order/refund به ردیف ژورنال با جست‌وجوی «آخرین ردیف شبیه در ۱۰ دقیقه» بماند یا به seq دقیق برسد؟
+- انتخاب من: `record()` حالا seq برمی‌گرداند، در state request-level (`$last_event_seq`) ذخیره و همان ردیف exact tag می‌شود؛ heuristic قدیمی فقط fallback است.
+- دلیل: در تغییرات نزدیک (ادیت ادمین + سفارش هم‌زمان) heuristic می‌توانست ردیف actor دیگری را اشتباه به سفارش نسبت دهد؛ seq دقیق از `insert_id` قابل اعتماد است و سازگاری behavioral برای ماژ‌های دیگر حفظ می‌شود.
+
+### WOO-S300-11-5 — حد hard error برای پاسخ ناقص سایت
+- سؤال: پاسخ موفق `/stock/apply` بدون `new_qty` یا holder ناسازگار را چگونه نهایی کنیم؟
+- انتخاب من: envelope کامل (`ok===true`) اجباری است؛ نبود `new_qty` معتبر یا ناهماهنگی holder اکنون BusinessError است و outbox به حالت قبلی برمی‌گردد (نه SENT با baseline کاذب).
+- دلیل: قبل از این پاسخ ناقص می‌توانست ارسال را SENT با `lastWooQty` نادرست علامت بزند و محاسبه‌ی reconcile را واقعاً خراب کند؛ با retry idempotent افزونه، عقب‌کشیدن outbox در این سناریو امن است.
+
+### WOO-S300-11-6 — یافته‌های ردشده/معلق با مستندات
+- R2.2 «lock-timeout باید fail-closed شود»: رد دوباره. رفتار واقعی `GET_LOCK` در اتصال‌های persistent تشخیص قطعی coding-level ندارد؛ delayهای مضاعف در endpoint وردپرس ریسک بزرگ‌تری است. برنامه hookهای timeout را FROZEN می‌کند، پس مسیر fail-open پتانسیل silent-loss از دست نمی‌دهد.
+- R2.4 «marker hook بعد از شکست DB اجباری است»: رد. پایه‌ی dedupe، state داخل request و restore از meta است؛ marker که فقط با meta در دسترس است، با بافر هم‌سطح meta نمی‌تواند پایدار باشد و تغییرش معماری را پیچیده‌تر از سود واقعی‌اش می‌کند.
+- R3.9 «REST set_stock baseline را دور می‌زند»: نادرست بود. مسیر REST/CRUD سپس `save()` همان هوک‌های `woocommerce_product*` را فایر می‌کند و meta-fallback آگاهانه اولویت با baseline است؛ کلاینت‌های REST خام با مقدار مطلق فقط event مستقیم meta را ایجاد می‌کنند که همان قصد است.
+
+### WOO-S300-11-7 — UI صادقانه درباره نیمه‌ساز
+- سؤال: آیا pause/unlink باید کل صفحه را (با فرم نیمه‌پر) reload کند و syncNow همیشه «موفق» اعلام کند؟
+- انتخاب من: `refreshPanel` فقط وضعیت/تأییدها را تازه می‌کند؛ syncNow عین busy/errors سرویس را نشان می‌دهد و ارسال‌های درحال‌اجرا در پیام pause صادقانه ذکر می‌شوند.
+- دلیل: بازخورد گمراه‌کننده منجر به اقدام‌های تکراری مدیر (retry دستی دوباره، تغییر بسته‌ی نیمه‌کاره) می‌شد.
+
+## نشست Woo-S300-12 (بازبینی نهایی / Sign-off)
+
+### WOO-S300-12-1 — گارد اسنپ‌شات در مسیر اعمال APPLY_INBOUND
+- سؤال: آیا گزارش WOO-12-1 (خوان لینک خارج از تراکنش در resolveApproval، بدون re-read داخل تراکنش) معتبر است و پذیرفته شود؟
+- تریاج: معتبر — با anchor بررسی شد: siblingها (`retryParked` و مسیر تصمیم مرجع) هر دو لینک را داخل همان تراکنش دوباره می‌خوانند و فقط APPLY_INBOUND این گارد را نداشت؛ پنجره‌ی هم‌زمانی واقعی است (پاسخ 409 scheduler زمان کلیک مدیر).
+- انتخاب من: پچ حداقلی گزارش‌شده — داخل تراکنش `freshLink` با status+updatedAt مقایسه می‌شود؛ نابرابری → throw و rollback کامل (claim تأیید هم rollback می‌شود و PENDING می‌ماند). شاخه‌ی supersede/rebase بر اساس `freshLink.status` اجرا می‌شود.
+- جمع‌بندی: بعد از این اصلاح، روند بازبینی‌های پی‌در‌پی متوقف می‌شود؛ ماژول stock-sync در وضعیت انتشار قرار دارد و تنها موارد باز، به تست staging زنده‌ی وردپرس/WooCommerce نیاز دارند که در فهرست staging-only مستند است.
+
+## نشست Woo-S300-13
+
+### WOO-S300-13-1 — گپ رویداد لحظه‌ی وصل اولیه
+- سؤال: رویدادی که بین snapshot لینک و ساخت لینک توسط pullJournal به‌عنوان SKIPPED_UNMAPPED ثبت و دورریخته شود، گم می‌شود؟
+- تریاج: معتبر — linkCreate بدون drain snapshot می‌گرفت و رویدادهای unmapped دیگر پردازش نمی‌شدند.
+- انتخاب من: (۱) `pullJournalDrain(5, 200)` قبل از خوان snapshot تا lastSeq/stockQuantity تازه‌ترین نقطه‌ی ژورنال را پوشش دهد؛ (۲) داخل تراکنش‌ی ساخت لینک، رویدادهای `SKIPPED_UNMAPPED` هم‌هولدر با `seq > floor` به وضعیت نگهداشته‌شده + تأیید مدیر (`INBOUND_DURING_LINK_CREATE`) تبدیل شوند. این دومین حلقه‌ی تصمیم مدیر است، نه حذف.
+- چرا نه «ایجاد دوباره‌ی خودکار»؟ چون floor همان معنای «پوشش‌داده‌شده توسط snapshot» است و اعمال خودکار delta رویدادی که ممکن است بخشی از baseline باشد، ریسک double-apply دارد؛ نگهداشت برای مدیر همان رفتار سایر رویدادهای مبهم است.
+
+### WOO-S300-13-2 — گارد updatedAt برای resume تک/گروهی
+- سؤال: گارد وضعیت (PAUSED/CONFLICT/…) تنها کافی است یا لازم است updatedAt هم برابر باشد؟
+- تریاج: معتبر — pause دوباره وضعیت را عوض نمی‌کند ولی updatedAt را می‌برد؛ درخواست کهنه می‌گذشت؛ همپوشانی با امضای پیش‌نمایش هم پاسخ پاسخ نبود چون امضا فقط موجودی/رویدادها را می‌پوشاند.
+- انتخاب من: گارد `sameDbTime(fresh.updatedAt, link.updatedAt)` در resumeApply (throw جهت تازه‌سازی) و در resumeProductGroupMahak (رد همان لینک به‌عنوان STALE).
+
+### WOO-S300-13-3 — گارد اسنپ‌شات برای تصمیم مرجع
+- سؤال: چرا مسیر RECONCILE/CONFLICT از گارد WOO-12-1 محروم مانده بود؟
+- تریاج: معتبر — دور ۱۲ فقط APPLY_INBOUND گارد گرفت؛ این مسیر پنجره‌ی شبکه‌ای (drain × تا ۳۰ + /stock) عریض‌تری هم دارد.
+- انتخاب من: همان گارد اتمیک با همان متن خطا؛ rollback یعنی تازه‌سازی صف و تصمیم دوباره، که با رفتار رابط هم سازگار است.
+
+## نشست Woo-S300-14
+
+### WOO-S300-14-1 — فعال‌سازی لینک از مسیر echo
+- سؤال: وقتی پاسخ /stock/apply گم می‌شود (timeout/502/504) ولی موفقیتش با echo ژورنال تأیید می‌شود، چه کسی لینکِ در انتظار را فعال کند؟
+- تریاج: معتبر — فعال‌سازی فقط در finalize (IN_FLIGHT→SENT توسط processOutbox) بود؛ مسیر echo ردیف را مستقیم SENT می‌کرد و وضعیت لینک دست‌نخورده PAUSED می‌ماند و reconcile هم ACTIVE-only است.
+- انتخاب من: داخل همان تراکنش echo، اگر همین outbox تازه SENT شده و می‌خواست لینک را فعال کند (همان `canActivateAfterOutbox`)، فعال‌سازی با چک «رویداد معلق ندارد» انجام شود؛ ترتیب (اول outbox بعد لینک) طوری است که finalize بعدی در count=0 رد شود و دوباره‌کاری نشود.
+- چرا لاگ جدا؟ تا مدیر در لاگ ببیند «نتیجه‌ی گم‌شده با ژورنال تأیید شد و اتصال فعال شد» (ECHO_ACTIVATE_LINK).
