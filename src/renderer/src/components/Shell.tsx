@@ -6,9 +6,11 @@ import { useManagerSession } from '../hooks/useManagerSession'
 import { useEffect, useMemo, useState } from 'react'
 import { StocktakeReminderChip } from './StocktakeReminderBadge'
 import { ShiftSessionChip } from './ShiftSessionModal'
+import { CustodyChip } from './CustodyChip'
 import { DebtReminderBanner } from './DebtReminderBanner'
 // نشست ۲۲۲ · فاز ۳ — میزبان پنجره‌ی «با کدام چاپگر چاپ شود؟» (یک بار در ریشه mount می‌شود)
 import PrinterPickerHost from './PrinterPickerModal'
+import { isAnyModalOpen } from './Modal'
 
 /** پنل‌های پرکاربرد در نوار بالا (همان ترتیب کار روزانه‌ی فروشگاه). */
 const NAV = [
@@ -26,6 +28,7 @@ const NAV = [
   { title: 'انبارگردانی', to: '/stocktake', key: '' },
   { title: 'تغییر قیمت گروهی', to: '/price-adjust', key: '' },
   { title: 'مدیریت اعتبار', to: '/credit-management', key: '' },
+  { title: 'موجودی سایت', to: '/woo-sync', key: '' },
   /** ماژول مستقل «پنل پیامکی» — جدا از گزارش‌ها و صندوق */
   { title: 'پنل پیامکی', to: '/sms-panel', key: '' },
   { title: 'عوارض و مالیات', to: '/charges/tax/pos', key: '' },
@@ -44,7 +47,23 @@ export default function Shell() {
 
   // میان‌برهای سراسری محک: F2..F11
   const map = useMemo(
-    () => Object.fromEntries(Object.entries(ROUTE_BY_SHORTCUT).map(([k, r]) => [k, () => nav(r)])),
+    () =>
+      Object.fromEntries(
+        Object.entries(ROUTE_BY_SHORTCUT).map(([k, r]) => [
+          k,
+          () => {
+            /**
+             * وقتی modal باز است (به‌خصوص دیالوگ چاپ اعتبار با Windows dialog)،
+             * جابه‌جایی صفحه با F2/F3/F8/F9/F10/F11 نتیجه‌ی چاپ را روی کامپوننت
+             * unmount‌شده گم می‌کند. وضعیت stack لحظه‌ی keydown خوانده می‌شود،
+             * نه فقط زمان render Shell، چون باز/بسته‌شدن modal لزوماً Shell را
+             * دوباره render نمی‌کند.
+             */
+            if (isAnyModalOpen()) return
+            nav(r)
+          }
+        ])
+      ),
     [nav]
   )
   useHotkeys(map)
@@ -80,6 +99,7 @@ export default function Shell() {
           * غیرقابل‌نادیده‌گرفتن، بدون قفل کردن هیچ چیزی).
           */}
         <ShiftSessionChip />
+        <CustodyChip />
         {/* وضعیت «مدیر پشت سیستم است» / «کارمند» + خروج مدیر با یک کلیک */}
         {isManager ? (
           <button
