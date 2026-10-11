@@ -360,7 +360,23 @@ await throwsWith('چند درخواست کارت‌به‌کارت برای یک
 eq('رد fail-closed، موجودی کالای جایگزین را دوباره تغییر نمی‌دهد', stockOf(repN), 99)
 
 // ===========================================================================
-console.log('\n۱۵) ساختاری')
+console.log('\n۱۵) وضعیت کارت‌به‌کارت متناقض: لغوشده با پرداخت ⇒ رد fail-closed')
+const O = await safe('فاکتور پرداخت‌شده‌ی ۱٬۰۰۰ برای وضعیت کارت متناقض', () => twoItems(1000))
+const repO = variant(200)
+const exO = await safe('تعویض کارت‌به‌کارت برای وضعیت متناقض', () => exchange(O.inv.id, O.items[0].id, repO, 'CARD_TO_CARD'))
+const reqO = seed.one('SELECT id FROM "CardTransferRequest" WHERE returnId = ?', exO?.returnId ?? -1)
+sql.prepare(`UPDATE "CardTransferRequest" SET status = 'CANCELED', paidAmount = 50, paidAt = ? WHERE id = ?`).run(Date.now(), reqO?.id)
+await throwsWith('درخواست لغوشده با مبلغ پرداخت‌شده، اصلاح را متوقف می‌کند', () =>
+  salesService.returnReconcileVoid({
+    id: exO?.returnId, userId, reason: 'اصلاح با وضعیت کارت متناقض',
+    cashRecovered: 0, cardRecovered: 0, cashPaidOut: 0, cardPaidOut: 0, creditOutcome: 'NONE'
+  }),
+  'لغوشده'
+)
+eq('رد وضعیت متناقض، موجودی کالای جایگزین را دست‌نخورده نگه می‌دارد', stockOf(repO), 99)
+
+// ===========================================================================
+console.log('\n۱۶) ساختاری')
 truthy('migration ستون‌های ابطال فاکتور', existsSync(join(ROOT, 'prisma/migrations/20270928100000_sale_invoice_void/migration.sql')))
 const invModel = (src('prisma/schema.prisma').match(/model SaleInvoice \{[\s\S]*?\n\}/) ?? [''])[0]
 truthy('schema: SaleInvoice.voidedAt/voidedByUserId/voidReason', /voidedAt\s+DateTime\?/.test(invModel) && /voidedByUserId\s+Int\?/.test(invModel) && /voidReason\s+String\?/.test(invModel))

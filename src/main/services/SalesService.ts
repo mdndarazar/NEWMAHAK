@@ -8690,10 +8690,16 @@ export const salesService = {
           throw new BusinessError('برای کارت‌به‌کارت این سند بیش از یک درخواست مرجع پیدا شد؛ مبلغ بازیافتی حدس زده نمی‌شود و رسیدگی دستی مدیر لازم است.')
         const request = requests[0]
         if (request.status === CardTransferStatus.PENDING) {
+          if (request.paidAt != null || request.paidAmount != null)
+            throw new BusinessError('درخواست کارت‌به‌کارت این سند هم‌زمان «در انتظار» و دارای پرداخت ثبت‌شده است؛ مبلغ بازیافتی حدس زده نمی‌شود و رسیدگی دستی مدیر لازم است.')
           pendingCardTransfer = { id: request.id, amount: request.amount }
           return 0
         }
-        if (request.status === CardTransferStatus.CANCELED) return 0
+        if (request.status === CardTransferStatus.CANCELED) {
+          if (request.paidAt != null || request.paidAmount != null)
+            throw new BusinessError('درخواست کارت‌به‌کارت لغوشده‌ی این سند پرداخت ثبت‌شده هم دارد؛ مبلغ بازیافتی حدس زده نمی‌شود و رسیدگی دستی مدیر لازم است.')
+          return 0
+        }
         if (
           (request.status !== CardTransferStatus.PAID && request.status !== CardTransferStatus.ADJUSTED) ||
           request.paidAt == null
