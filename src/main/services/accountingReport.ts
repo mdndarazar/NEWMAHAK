@@ -1164,6 +1164,29 @@ async function storeCreditStatement(
     )
     return Math.max(0, agg.sum.amount - agg.sum.usedAmount)
   }
+  /**
+   * «منقضی‌شده در بازه» یک رویدادِ تاریخ‌محور است، نه snapshot پایان بازه:
+   * فقط ماندهٔ اعتبارهای دارای expiresAt در دو سرِ شاملِ بازه شمرده می‌شود.
+   * بنابراین اعتباری که سال قبل منقضی شده، در گزارش ماه جاری دوباره ظاهر نمی‌شود.
+   */
+  const expiredInRangeSum = async () => {
+    if (!range) return 0
+    const agg = await aggregateByIdChunks(
+      'storeCredit',
+      {
+        OR: [
+          {
+            status: { in: [StoreCreditStatus.ACTIVE, StoreCreditStatus.PARTIALLY_USED, StoreCreditStatus.SUSPENDED] },
+            expiresAt: range
+          },
+          { status: StoreCreditStatus.EXPIRED, expiresAt: range }
+        ]
+      },
+      scopedIds,
+      ['amount', 'usedAmount']
+    )
+    return Math.max(0, agg.sum.amount - agg.sum.usedAmount)
+  }
   const statusSum = async (status: string) =>
     (
       await aggregateByIdChunks(
@@ -1211,7 +1234,10 @@ async function storeCreditStatement(
       StoreCreditStatus.PARTIALLY_USED,
       StoreCreditStatus.SUSPENDED
     ]),
+    // snapshot تعهد/انقضای پایان بازه، برای خواندن حسابداری تاریخی حفظ می‌شود.
     expired: await expiredSum(),
+    // کارت دوره‌ای فقط این رویداد را نشان می‌دهد: expiresAt داخل بازهٔ انتخاب‌شده.
+    expiredInRange: await expiredInRangeSum(),
     canceled: await statusSum(StoreCreditStatus.CANCELED)
   }
 }
@@ -1637,12 +1663,13 @@ async function bridgeSources(
       return { sources: out, page: makePage(ids.length) }
     }
 
-    if (key === 'storeCreditExpired' || key === 'storeCreditCanceled') {
+    if (key === 'storeCreditExpired' || key === 'storeCreditExpiredInRange' || key === 'storeCreditCanceled') {
       const { range: creditRange, scopedIds } = await storeCreditScopes(scope, [])
       const asOf = (creditRange && scope.to) || new Date()
       const issuedBeforeEnd = creditRange && scope.to ? { issuedAt: { lte: scope.to } } : {}
       const isExpired = { expiresAt: { not: null, lte: asOf } }
       const isExpiredKey = key === 'storeCreditExpired'
+      const isExpiredInRangeKey = key === 'storeCreditExpiredInRange'
       const statusWhere: any = isExpiredKey
         ? {
             OR: [
@@ -1654,29 +1681,49 @@ async function bridgeSources(
             ],
             ...issuedBeforeEnd
           }
-        : { status: StoreCreditStatus.CANCELED, ...issuedBeforeEnd }
+        : isExpiredInRangeKey
+          ? creditRange
+            ? {
+                OR: [
+                  {
+                    status: { in: [StoreCreditStatus.ACTIVE, StoreCreditStatus.PARTIALLY_USED, StoreCreditStatus.SUSPENDED] },
+                    expiresAt: creditRange
+                  },
+                  { status: StoreCreditStatus.EXPIRED, expiresAt: creditRange }
+                ]
+              }
+            : { id: { in: [] } }
+          : { status: StoreCreditStatus.CANCELED, ...issuedBeforeEnd }
       const all = await liteRowsByIdChunks<{
         id: number
         amount: any
         usedAmount: any
         issuedAt: Date
         issuedAtJalali: string | null
+        expiresAt: Date | null
+        expiresAtJalali: string | null
         customerName: string | null
         exchangeInvoiceId: number | null
         sourceInvoiceId: number | null
       }>(
         'storeCredit', statusWhere, scopedIds,
-        { amount: true, usedAmount: true, issuedAt: true, issuedAtJalali: true, customerName: true, exchangeInvoiceId: true, sourceInvoiceId: true },
+        { amount: true, usedAmount: true, issuedAt: true, issuedAtJalali: true, expiresAt: true, expiresAtJalali: true, customerName: true, exchangeInvoiceId: true, sourceInvoiceId: true },
         (a, b) => Number(b.id) - Number(a.id)
       )
       const rows = all.slice(skip, skip + take)
       for (const r of rows) {
         /** انقضا در صورت رسمی فقط ماندهٔ خرج‌نشده است، اما ابطال مبلغ اولیه را می‌سنجد. */
-        const amount = isExpiredKey ? Math.max(0, n(r.amount) - n(r.usedAmount)) : n(r.amount)
+        const isExpiryRow = isExpiredKey || isExpiredInRangeKey
+        const amount = isExpiryRow ? Math.max(0, n(r.amount) - n(r.usedAmount)) : n(r.amount)
         out.push({
           kind: 'STORE_CREDIT', subKind: 'STORE_CREDIT_ISSUANCE', id: r.id, amount,
-          label: (isExpiredKey ? 'اعتبار منقضی‌شده' : 'اعتبار لغوشده') + (r.customerName ? ` · ${r.customerName}` : ''),
-          dateJalali: r.issuedAtJalali || toJalaliDate(r.issuedAt),
+          label:
+            (isExpiredInRangeKey ? 'اعتبار منقضی‌شده در بازه' : isExpiredKey ? 'اعتبار منقضی‌شده' : 'اعتبار لغوشده') +
+            (r.customerName ? ` · ${r.customerName}` : ''),
+          // کارت دوره‌ای باید تاریخ خودِ انقضا را نشان دهد، نه تاریخ صدور اعتبار.
+          dateJalali: isExpiredInRangeKey
+            ? (r.expiresAtJalali || (r.expiresAt ? toJalaliDate(r.expiresAt) : '—'))
+            : (r.issuedAtJalali || toJalaliDate(r.issuedAt)),
           invoiceId: r.exchangeInvoiceId ?? r.sourceInvoiceId ?? null, receiptNo: null
         })
       }
@@ -2344,7 +2391,9 @@ export async function buildStatements(
       issuedLifecycleOverpay: sc.issuedLifecycleOverpay,
       issuedLifecycleRemainder: sc.issuedLifecycleRemainder,
       issuedLifecycleOther: sc.issuedLifecycleOther,
-      expired: sc.expired, canceled: sc.canceled,
+      expired: sc.expired,
+      expiredInRange: sc.expiredInRange,
+      canceled: sc.canceled,
       issuedCount: sc.issuedCount, usageCount: sc.usageCount,
       usedStories: sc.usedStories ?? []
     },

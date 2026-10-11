@@ -37,7 +37,7 @@ import {
   guardCreditCode,
   reverseInvoiceRedemptions
 } from './StoreCreditService'
-import { exchangeCreditDays, CreditSource } from '@shared/credit'
+import { exchangeCreditDays, CreditSource, creditIssueReasonOf, CREDIT_ISSUE_REASON_LABELS, effectiveStatus, CREDIT_STATUS_LABELS, remainingOf as creditRemainingOf } from '@shared/credit'
 /** نشست ۶۱ — تشخیص «پول واقعی» برای پشتوانه‌ی اعتبار اضافه‌دریافت (همان نگاشت پل تطبیق) */
 import { receiptBucketOf } from '@shared/accounting'
 import { allocateLineNet, returnValueOf, returnListPriceOf, mergeReturnTargets, isReturnableStatus } from '@shared/returnValue'
@@ -124,6 +124,7 @@ import type {
   InvoiceSettlementProfile,
   InvoicePaymentRow,
   InvoicePaymentsView,
+  CreditSettlementLineageView,
   AddInvoicePaymentInput,
   UpdateInvoicePaymentInput,
   ChequeListRow,
@@ -505,6 +506,13 @@ function validateExchangeMutation(input: ExchangeSaleInput): void {
   ] as const) {
     const value = (input as any)[field]
     if (value != null) assertSafeInteger(value, label, field === 'methodId' ? 1 : 0)
+  }
+  if (input.payments != null) {
+    if (!Array.isArray(input.payments)) throw new BusinessError('فهرست پرداخت ترکیبی تعویض معتبر نیست.')
+    for (const payment of input.payments) {
+      assertSafeInteger(payment?.methodId, 'شناسه روش پرداخت ترکیبی تعویض', 1)
+      assertSafeInteger(payment?.amount, 'مبلغ سهم پرداخت ترکیبی تعویض', 1)
+    }
   }
 }
 
@@ -2939,6 +2947,21 @@ function resolveRefund(input: {
     Number.isFinite(keepCap) ? keepCap : cap,
     Math.max(0, Math.round(input.receivedOnInvoice))
   )
+  /**
+   * درخواست صریحِ بیشتر از ارزش رسمیِ *همین اقلام برگشتی* نباید مثل گذشته
+   * بی‌صدا کوچک شود. «cap» بعد از محاسبه‌ی خط‌های واقعی (و فقط در صورت تایید
+   * مدیر، قیمت کامل مجاز) ساخته شده است؛ پس منبع حقیقتِ این سقف است.
+   *
+   * عمداً فقط cap سنجیده می‌شود، نه keepCap/پولِ قابل‌خروج: آن دو برای
+   * تسویه‌ی هوشمندِ نسیه و بازپرداخت‌های قبلی‌اند و کاهشِ آن‌ها نباید درخواست
+   * کوچک‌ترِ معتبر را رد کند یا رفتار settled موجود را تغییر دهد.
+   */
+  if (input.requested != null && asked > cap)
+    throw new BusinessError(
+      `بازپرداخت یا اعتبارِ درخواستی ${money(asked)} ریال برای فاکتور ${faDigits(input.receiptNo)} ممکن نیست: ` +
+        `ارزش رسمی اقلام انتخاب‌شده برای برگشت فقط ${money(cap)} ریال است.\n` +
+        'مبلغی تا همین ارزش وارد کنید؛ سقف پول دریافتی و تسویه‌ی بدهی جداگانه و طبق وضعیت فاکتور اعمال می‌شود.'
+    )
   /**
    * نشست ۲۰۸ — override بند ۴-۱۱ یا کامل است یا رد می‌شود؛ بی‌صدا به سهم
    * تخفیف‌خورده تقلیل داده نمی‌شود.
@@ -6132,54 +6155,89 @@ export const salesService = {
       let debtCut = 0
 
       if (diff > 0) {
-        // مشتری مابه‌التفاوت را می‌پردازد
-        const methodRow = input.methodId
-          ? await tx.paymentMethod.findUnique({ where: { id: Number(input.methodId) }, select: { id: true, kind: true, key: true } })
-          : await tx.paymentMethod.findFirst({
-              where: { isActive: true },
-              orderBy: { sortOrder: 'asc' },
-              select: { id: true, kind: true, key: true }
+        /**
+         * پرداخت ترکیبی مثبت فقط نقد + کارت است: دو Payment واقعی، دو مقصد
+         * واقعی و جمع دقیق مابه‌التفاوت. مسیر تک‌روش پایین عمداً دست‌نخورده است.
+         */
+        if (input.splitPayment === true) {
+          const rows = input.payments ?? []
+          if (rows.length !== 2 || rows.some((row) => !row || row.amount <= 0))
+            throw new BusinessError('پرداخت ترکیبی مابه‌التفاوت تعویض باید دقیقاً دو سهم مثبت نقد و کارت داشته باشد.')
+          const sum = rows.reduce((total, row) => total + row.amount, 0)
+          if (!Number.isSafeInteger(sum) || sum !== diff)
+            throw new BusinessError(`جمع نقد و کارت مابه‌التفاوت باید دقیقاً ${money(diff)} ریال باشد.`)
+          const methodIds = [...new Set(rows.map((row) => row.methodId))]
+          const methodRows = await tx.paymentMethod.findMany({
+            where: { id: { in: methodIds }, isActive: true },
+            select: { id: true, kind: true }
+          })
+          const kindById = new Map(methodRows.map((method) => [method.id, method.kind]))
+          const cashRows = rows.filter((row) => kindById.get(row.methodId) === PaymentKind.CASH && row.destination === PaymentDestination.CASH)
+          const cardRows = rows.filter((row) => kindById.get(row.methodId) === PaymentKind.CARD && row.destination === PaymentDestination.CARD)
+          if (cashRows.length !== 1 || cardRows.length !== 1)
+            throw new BusinessError('پرداخت ترکیبی مابه‌التفاوت فقط یک سهم نقدی با مقصد صندوق و یک سهم کارتی با مقصد کارت‌خوان می‌پذیرد.')
+          for (const row of [cashRows[0], cardRows[0]]) {
+            const destination = assertDestination(row.destination, kindById.get(row.methodId), 'PAYMENT')
+            await tx.payment.create({
+              data: {
+                invoiceId: exchangeInvoice.id,
+                methodId: row.methodId,
+                amount: row.amount,
+                kind: PaymentEntryKind.CASH,
+                destination,
+                seq: ++seq,
+                paidAt: now,
+                paidAtJalali: toJalaliDate(now),
+                paidAtTime: toClock(now),
+                createdAt: now,
+                createdByUserId: input.userId ?? null,
+                createdShiftId: shiftId,
+                note: `مابه‌التفاوت تعویض کالا (دریافت ${destination === PaymentDestination.CARD ? 'کارت‌خوان' : 'نقدی'})`
+              }
             })
-        const methodId = methodRow?.id
-        if (!methodId)
-          throw new BusinessError('روش پرداخت پیدا نشد؛ از پنل تنظیمات یک روش پرداخت فعال کنید.')
-        await assertPaymentMethodExists(tx, methodId)
-
-        /**
-         * نشست ۱۹۰ — مقصد پول مثل `addPayment` اجباری و سازگار با `kind` است.
-         * `destinationFromMethodKind` برای نقد/کارت یک مقدار unambiguous می‌دهد؛
-         * روش CUSTOM بدون مقصد صریح null برمی‌گرداند و `assertDestination` رد می‌کند
-         * تا ردیف بی‌مقصد (سبد نامعلوم در بستن صندوق) ساخته نشود.
-         */
-        const destination = assertDestination(
-          input.destination ?? destinationFromMethodKind(methodRow?.kind ?? null),
-          methodRow?.kind,
-          'PAYMENT'
-        )
-        await tx.payment.create({
-          data: {
-            invoiceId: exchangeInvoice.id,
-            methodId,
-            amount: diff,
-            kind: PaymentEntryKind.CASH,
-            destination,
-            seq: ++seq,
-            paidAt: now,
-            paidAtJalali: toJalaliDate(now),
-            paidAtTime: toClock(now),
-            createdAt: now,
-            createdByUserId: input.userId ?? null,
-            createdShiftId: shiftId,
-            note: `مابه‌التفاوت تعویض کالا (دریافت از مشتری${destination === PaymentDestination.CARD ? ' — کارت‌خوان' : ''})`
           }
-        })
-        /**
-         * `cashReceived` فقط پولی است که واقعاً وارد **کشو** شده. اگر با کارت
-         * پرداخت شده، مبلغ در ستون کارت می‌نشیند نه نقد — وگرنه همان ناهماهنگی
-         * بالا از راه دیگری برمی‌گردد.
-         */
-        if (destination === PaymentDestination.CARD) cardReceived = diff
-        else cashReceived = diff
+          cashReceived = cashRows[0].amount
+          cardReceived = cardRows[0].amount
+        } else {
+          // مشتری مابه‌التفاوت را با یک روش پرداخت می‌کند (رفتار قدیمی)
+          const methodRow = input.methodId
+            ? await tx.paymentMethod.findUnique({ where: { id: Number(input.methodId) }, select: { id: true, kind: true, key: true } })
+            : await tx.paymentMethod.findFirst({
+                where: { isActive: true },
+                orderBy: { sortOrder: 'asc' },
+                select: { id: true, kind: true, key: true }
+              })
+          const methodId = methodRow?.id
+          if (!methodId)
+            throw new BusinessError('روش پرداخت پیدا نشد؛ از پنل تنظیمات یک روش پرداخت فعال کنید.')
+          await assertPaymentMethodExists(tx, methodId)
+
+          /** مقصد پول مثل addPayment، اجباری و سازگار با kind است. */
+          const destination = assertDestination(
+            input.destination ?? destinationFromMethodKind(methodRow?.kind ?? null),
+            methodRow?.kind,
+            'PAYMENT'
+          )
+          await tx.payment.create({
+            data: {
+              invoiceId: exchangeInvoice.id,
+              methodId,
+              amount: diff,
+              kind: PaymentEntryKind.CASH,
+              destination,
+              seq: ++seq,
+              paidAt: now,
+              paidAtJalali: toJalaliDate(now),
+              paidAtTime: toClock(now),
+              createdAt: now,
+              createdByUserId: input.userId ?? null,
+              createdShiftId: shiftId,
+              note: `مابه‌التفاوت تعویض کالا (دریافت از مشتری${destination === PaymentDestination.CARD ? ' — کارت‌خوان' : ''})`
+            }
+          })
+          if (destination === PaymentDestination.CARD) cardReceived = diff
+          else cashReceived = diff
+        }
         settlement = ExchangeSettlement.CASH
       } else if (diff < 0) {
         /**
@@ -7240,7 +7298,14 @@ export const salesService = {
       ? { kind: filter.kind }
       : filter.includeExchanges === true
         ? {}
-        : { OR: [{ kind: ReturnKind.RETURN }, { kind: null as any }] }
+        /**
+         * ستون kind در schema فعلی NOT NULL و پیش‌فرضش RETURN است. فرستادن
+         * `kind: null` با `as any` فقط TypeScript را ساکت می‌کند و Prisma واقعی
+         * آن را ورودی نامعتبر می‌داند؛ نتیجه‌اش در UI جدول خالی بود، نه نبودن
+         * برگشت ساده. داده‌ی نوع ناشناخته عمداً اینجا «برگشت ساده» حدس زده
+         * نمی‌شود؛ باید جداگانه بررسی شود.
+         */
+        : { kind: ReturnKind.RETURN }
     // ممیزی A99-03 — دامنه‌ی مشترک با تب تعویض، شمارنده‌ی سقف و پل تطبیق
     const where: Prisma.SaleReturnWhereInput = {
       ...(await returnReportScopeWhere(filter)),
@@ -8399,6 +8464,125 @@ export const salesService = {
       overpayCreditIssued: overpayBacking.committed,
       storeCreditTotal: rows.reduce((sum, r) => sum + (r.isStoreCredit ? r.amount : 0), 0),
       payments: rows
+    }
+  },
+
+  /**
+   * زنجیره‌ی امنِ تسویه با اعتبار خرید، فقط برای کلیک از گزارش فروش.
+   *
+   * این یک DTO مالی/audit است، نه `StoreCredit.detail`: هیچ code/legacyCode،
+   * مشخصات دارنده، note، reference آزادانه یا payload لاگ را بازنمی‌گرداند.
+   * دفتر `StoreCreditRedemption` منبع اصلی است؛ Paymentهای تاریخی که دفتر ندارند
+   * فقط با همان شناسهٔ داخلی و مرجع امن به‌عنوان fallback نشان داده می‌شوند.
+   */
+  async creditSettlementLineage(input: { invoiceId?: number } = {}): Promise<CreditSettlementLineageView> {
+    const invoiceId = assertSafeInteger(input?.invoiceId, 'شناسه فاکتور', 1)
+    const invoice = await prisma.saleInvoice.findUnique({
+      where: { id: invoiceId },
+      select: { id: true, receiptNo: true }
+    })
+    if (!invoice) throw new BusinessError('فاکتور برای نمایش زنجیرهٔ اعتبار پیدا نشد؛ گزارش را تازه کنید.')
+
+    const [redemptions, creditPayments] = await Promise.all([
+      prisma.storeCreditRedemption.findMany({
+        where: { invoiceId: invoice.id, reversedAt: null },
+        select: { id: true, creditId: true, paymentId: true, amount: true, at: true, atJalali: true, atTime: true }
+      }),
+      prisma.payment.findMany({
+        where: { invoiceId: invoice.id, voidedAt: null, storeCreditId: { not: null } },
+        select: { id: true, seq: true, storeCreditId: true, amount: true, paidAt: true, paidAtJalali: true, paidAtTime: true }
+      })
+    ])
+    const creditIds = [...new Set([
+      ...redemptions.map((row) => Number(row.creditId)).filter((id) => Number.isSafeInteger(id) && id > 0),
+      ...creditPayments.map((row) => Number(row.storeCreditId)).filter((id) => Number.isSafeInteger(id) && id > 0)
+    ])]
+    const credits = creditIds.length
+      ? await prisma.storeCredit.findMany({
+          where: { id: { in: creditIds } },
+          select: {
+            id: true,
+            amount: true,
+            usedAmount: true,
+            usedCount: true,
+            maxUses: true,
+            multiUse: true,
+            status: true,
+            expiresAt: true,
+            expiresAtJalali: true,
+            issuedAt: true,
+            issuedAtJalali: true,
+            source: true,
+            returnId: true,
+            exchangeInvoiceId: true
+          }
+        })
+      : []
+    const creditById = new Map(credits.map((row) => [Number(row.id), row]))
+    const paymentById = new Map(creditPayments.map((row) => [Number(row.id), row]))
+    const creditDto = (credit: any) => {
+      const status = effectiveStatus({
+        amount: toNumberRial(credit.amount),
+        usedAmount: toNumberRial(credit.usedAmount),
+        usedCount: Number(credit.usedCount ?? 0),
+        maxUses: Number(credit.maxUses ?? 1),
+        multiUse: credit.multiUse === true,
+        status: String(credit.status ?? 'ACTIVE'),
+        expiresAt: credit.expiresAt ?? null
+      })
+      const expiresAt = credit.expiresAt ? new Date(credit.expiresAt) : null
+      const issuedAt = credit.issuedAt ? new Date(credit.issuedAt) : new Date()
+      return {
+        id: Number(credit.id),
+        publicReference: `اعتبار #${Number(credit.id)}`,
+        issuedAtJalali: credit.issuedAtJalali || toJalaliDate(issuedAt),
+        expiresAtJalali: credit.expiresAtJalali ?? (expiresAt ? toJalaliDate(expiresAt) : null),
+        sourceLabel: CREDIT_ISSUE_REASON_LABELS[creditIssueReasonOf(credit)],
+        status,
+        statusLabel: CREDIT_STATUS_LABELS[status] ?? status,
+        remaining: creditRemainingOf({ amount: toNumberRial(credit.amount), usedAmount: toNumberRial(credit.usedAmount) })
+      }
+    }
+    const rows: CreditSettlementLineageView['rows'] = []
+    const paymentIdsInLedger = new Set<number>()
+    for (const redemption of redemptions) {
+      const credit = creditById.get(Number(redemption.creditId))
+      if (!credit) continue // اعتبار حذف دائمیِ legacy؛ هیچ داده‌ی جایگزین حدسی نساز.
+      const payment = redemption.paymentId == null ? null : paymentById.get(Number(redemption.paymentId)) ?? null
+      if (payment) paymentIdsInLedger.add(Number(payment.id))
+      const at = redemption.at instanceof Date ? redemption.at : new Date(redemption.at)
+      rows.push({
+        redemptionId: Number(redemption.id),
+        paymentId: payment ? Number(payment.id) : (redemption.paymentId == null ? null : Number(redemption.paymentId)),
+        paymentSeq: payment ? Number(payment.seq ?? 1) : null,
+        amount: toNumberRial(redemption.amount),
+        redeemedAtJalali: redemption.atJalali || toJalaliDate(at),
+        redeemedAtTime: redemption.atTime || toClock(at),
+        credit: creditDto(credit)
+      })
+    }
+    /** دادهٔ قدیمیِ Payment.storeCreditId که دفتر redemption ندارد؛ فقط ردیف امن fallback. */
+    for (const payment of creditPayments) {
+      if (paymentIdsInLedger.has(Number(payment.id))) continue
+      const credit = payment.storeCreditId == null ? null : creditById.get(Number(payment.storeCreditId))
+      if (!credit) continue
+      const at = payment.paidAt instanceof Date ? payment.paidAt : new Date(payment.paidAt)
+      rows.push({
+        redemptionId: null,
+        paymentId: Number(payment.id),
+        paymentSeq: Number(payment.seq ?? 1),
+        amount: toNumberRial(payment.amount),
+        redeemedAtJalali: payment.paidAtJalali || toJalaliDate(at),
+        redeemedAtTime: payment.paidAtTime || toClock(at),
+        credit: creditDto(credit)
+      })
+    }
+    rows.sort((a, b) => `${a.redeemedAtJalali} ${a.redeemedAtTime}`.localeCompare(`${b.redeemedAtJalali} ${b.redeemedAtTime}`) || (a.paymentId ?? 0) - (b.paymentId ?? 0))
+    return {
+      invoiceId: invoice.id,
+      receiptNo: invoice.receiptNo,
+      totalAmount: rows.reduce((sum, row) => sum + row.amount, 0),
+      rows
     }
   },
 

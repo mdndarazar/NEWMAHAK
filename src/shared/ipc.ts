@@ -59,6 +59,8 @@ export const IPC = {
    */
   /** تاریخچه‌ی کامل پرداختی‌های یک فاکتور + باقی‌مانده و وضعیت تسویه */
   salePayments: 'sale:payments',
+  /** زنجیرهٔ read-only اعتبارهای مصرف‌شده از کلیک «تسویه با اعتبار» گزارش فروش (بدون کد/PII دارنده) */
+  saleCreditSettlementLineage: 'sale:credit:settlement:lineage',
   /** ثبت یک پرداختی جدید (پرداختی دوم، سوم، ...) — نقدی یا چک */
   salePaymentAdd: 'sale:payment:add',
   /** ویرایش یک پرداختی/چک ثبت‌شده */

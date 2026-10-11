@@ -251,7 +251,10 @@ export interface StoreCreditTotals {
   issued: Rial
   used: Rial
   active: Rial
+  /** ماندهٔ اعتبارهایی که تا پایان بازه منقضی شده‌اند (snapshot وضعیت). */
   expired: Rial
+  /** ماندهٔ اعتبارهایی که تاریخ انقضایشان داخل خودِ بازهٔ انتخاب‌شده است. */
+  expiredInRange?: Rial
   canceled: Rial
   usageCount: number
   issuedCount: number
@@ -752,11 +755,15 @@ export function calculateChequeTotals(payments: PaymentEvent[] = [], asOf: Date 
 
 export function calculateStoreCreditTotals(events: StoreCreditEvent[] = [], period?: Period, asOf: Date | string | number = new Date()): StoreCreditTotals {
   const at = dateOf(asOf) ?? new Date()
-  const out: StoreCreditTotals = { issued: 0, used: 0, active: 0, expired: 0, canceled: 0, usageCount: 0, issuedCount: 0 }
+  const out: StoreCreditTotals = { issued: 0, used: 0, active: 0, expired: 0, expiredInRange: 0, canceled: 0, usageCount: 0, issuedCount: 0 }
   for (const e of events) {
     const amount = Math.max(0, n(e.amount))
     if (!period || inPeriod(e.issuedAt, period)) { out.issued += amount; out.issuedCount++ }
     if (period && inPeriod(e.usedAt, period)) { out.used += amount; out.usageCount++ }
+    // این helper رویدادِ مصرف جزئی ندارد؛ برای ردیف‌های ساده، USED یعنی مانده‌ای
+    // برای سوختن نیست. سرویس گزارش authoritative، amount − usedAmount را می‌سنجد.
+    if (period && e.status !== 'CANCELED' && e.status !== 'USED' && inPeriod(e.expiresAt, period))
+      out.expiredInRange! += amount
     if (e.status === 'ACTIVE') out.active += amount
     else if (e.status === 'EXPIRED') out.expired += amount
     else if (e.status === 'CANCELED') out.canceled += amount

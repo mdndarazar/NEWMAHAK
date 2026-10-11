@@ -274,7 +274,8 @@ const RETURN_HEADERS = [
   'تاریخ برگشت',
   'ساعت',
   'مشتری',
-  'نوع',
+  'نوع سند',
+  'کامل/جزئی',
   'تعداد',
   'ارزش کالای برگشتی',
   // ---- بند ۱۰ و ۱۱ (جلسه ۱۶): ستون‌هایی که تفکیک کسری واقعی را ممکن می‌کنند ----
@@ -832,7 +833,7 @@ export default function SalesReports() {
   useEffect(() => {
     void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, creditOpen, includeSettled, channelsKey, chequeDateMode])
+  }, [tab, creditOpen, includeSettled, includeExchanges, channelsKey, chequeDateMode])
 
   // روش‌های پرداخت، برای پنجره‌ی «ثبت پرداختی نسیه»
   useEffect(() => {
@@ -1466,6 +1467,7 @@ export default function SalesReports() {
             faDigits(r.returnedAtJalali),
             faDigits(r.time),
             r.customerName,
+            r.isExchange ? 'تعویض کالا' : 'برگشت ساده',
             r.isFull ? 'کامل' : 'جزئی',
             faDigits(r.qty),
             money(r.total),
@@ -1755,6 +1757,7 @@ export default function SalesReports() {
             r.returnedAtJalali,
             r.time,
             r.customerName,
+            r.isExchange ? 'تعویض کالا' : 'برگشت ساده',
             r.isFull ? 'کامل' : 'جزئی',
             r.qty,
             r.total,
@@ -1770,6 +1773,7 @@ export default function SalesReports() {
           ]),
           totals: [
             'جمع',
+            '',
             '',
             '',
             '',
@@ -2287,6 +2291,7 @@ export default function SalesReports() {
                   <td>{faDigits(r.returnedAtJalali)}</td>
                   <td>{faDigits(r.time)}</td>
                   <td>{r.customerName}</td>
+                  <td className={r.isExchange ? 'font-bold text-sky-800' : 'font-bold'}>{r.isExchange ? 'تعویض کالا' : 'برگشت ساده'}</td>
                   <td>{r.isFull ? 'کامل' : 'جزئی'}</td>
                   <td className="text-center">{faDigits(r.qty)}</td>
                   <td className="font-bold">{money(r.total)}</td>
@@ -2336,7 +2341,7 @@ export default function SalesReports() {
             {!!returns.length && (
               <tfoot>
                 <tr className="bg-slate-100 font-bold">
-                  <td colSpan={7}>جمع {faDigits(returns.length)} برگشت</td>
+                  <td colSpan={8}>جمع {faDigits(returns.length)} برگشت</td>
                   <td className="text-center">{faDigits(returns.reduce((s, r) => s + r.qty, 0))}</td>
                   <td>{money(returns.reduce((s, r) => s + r.total, 0))}</td>
                   <td></td>

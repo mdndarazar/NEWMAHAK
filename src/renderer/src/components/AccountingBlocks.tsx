@@ -374,7 +374,8 @@ export default function AccountingBlocks({
             onClick={jump('storeCredits')}
           />
           <Row label="اعتبار فعال در پایان بازه (مانده‌ی بدهی ما)" value={s.storeCredits.active} sign={0} tone="warn" bold onClick={jump('storeCredits')} />
-          <Row label="اعتبار منقضی‌شده" value={s.storeCredits.expired} sign={0} tone="muted" onClick={jump('storeCredits')} />
+          <Row label="ماندهٔ منقضی‌شده در بازهٔ انتخابی" value={s.storeCredits.expiredInRange ?? s.storeCredits.expired} sign={0} tone="muted" onClick={jump('storeCredits')} />
+          <Row label="ماندهٔ منقضی تا پایان بازه (snapshot وضعیت)" value={s.storeCredits.expired} sign={0} tone="muted" onClick={jump('storeCredits')} />
           <Row label="اعتبار لغوشده" value={s.storeCredits.canceled} sign={0} tone="muted" onClick={jump('storeCredits')} />
         </Block>
 

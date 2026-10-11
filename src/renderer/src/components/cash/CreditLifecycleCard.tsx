@@ -87,10 +87,10 @@ export default function CreditLifecycleCard({ credit, onInspect }: CreditLifecyc
       tone: 'sky'
     },
     {
-      key: 'storeCreditExpired',
-      label: 'منقضی‌شده',
-      hint: 'ماندهٔ اعتبارهایی که تا پایان بازه منقضی شده‌اند.',
-      value: credit.expired,
+      key: 'storeCreditExpiredInRange',
+      label: 'منقضی‌شده در بازه',
+      hint: 'ماندهٔ استفاده‌نشدهٔ اعتبارهایی که تاریخ انقضایشان داخل بازهٔ انتخاب‌شده است (دو سر بازه هم شامل‌اند).',
+      value: credit.expiredInRange ?? credit.expired,
       tone: 'amber'
     },
     {

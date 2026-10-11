@@ -174,6 +174,18 @@ assert.equal(expiredDetail.detail?.creditValidity?.statusLabel, 'منقضی شد
 assert.equal(expiredDetail.detail?.creditValidity?.expiresAtJalali, '۱۴۰۰/۰۱/۰۱')
 assert.equal(expiredDetail.detail?.creditValidity?.remaining, 500)
 assert.equal(Object.hasOwn(expiredDetail.detail?.creditValidity ?? {}, 'code'), false, 'جزئیات انقضا هم کد قابل‌مصرف ندارد')
+
+/** S343: کارت بازه‌ای نباید اعتبار منقضیِ سال‌های قبل را دوباره به بازهٔ امروز نسبت دهد. */
+const expiresInRangeSafe = await storeCreditService.issueManual({ amount: 800, multiUse: true, maxUses: 2, userId, managerPassword: DEFAULT_MANAGER_PASSWORD })
+sql.prepare('UPDATE "StoreCredit" SET expiresAt = ?, expiresAtJalali = ?, usedAmount = ?, status = ? WHERE id = ?')
+  .run(Date.now(), today, 300, 'PARTIALLY_USED', expiresInRangeSafe.id)
+const rangeExpiredSources = await financialInspectorService.sources({
+  scope: { fromJalali: today, toJalali: today },
+  key: 'storeCreditExpiredInRange'
+})
+assert.equal(rangeExpiredSources.result?.totalAmount, 500, 'کارت بازه فقط ماندهٔ ۸۰۰−۳۰۰ با expiresAt امروز را می‌شمارد')
+assert.ok(rangeExpiredSources.result?.sources.some((source) => source.ref.id === expiresInRangeSafe.id), 'سند با تاریخ انقضای داخل بازه دیده می‌شود')
+assert.equal(rangeExpiredSources.result?.sources.some((source) => source.ref.id === expiringSafe.id), false, 'سند منقضیِ سال قبل در کارت بازهٔ امروز تکرار نمی‌شود')
 assert.match(await errorOf(() => saleWithCredit(500, expiringCode)) ?? '', /تمام شده|مهلت/)
 assert.match(
   await errorOf(() => storeCreditService.reactivate({

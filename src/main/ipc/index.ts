@@ -515,6 +515,15 @@ export function registerIpcHandlers(): void {
   })
   // ---- فروش نسیه: پرداختی چندمرحله‌ای و چک ----
   handle(IPC.salePayments, (p) => salesService.payments(p ?? {}))
+  /**
+   * زنجیرهٔ مالی اعتبار فقط از داخل گزارش فروش خوانده می‌شود. DTO سرویس خودش
+   * code و PII دارنده را ندارد، اما gate main مانع invoke مستقیم از UI قفل‌شده
+   * هم هست؛ reveal کد همچنان مسیر جدا و manager-only خودش را دارد.
+   */
+  handle(IPC.saleCreditSettlementLineage, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.salesReports, 'دیدن زنجیرهٔ تسویه با اعتبار در گزارش فروش')
+    return salesService.creditSettlementLineage(p ?? {})
+  })
   // نشست ۶۷ — actor همه‌ی mutationهای Payment فقط از نشست باز می‌آید؛
   // userId ارسالی renderer در این مسیرها عمداً نادیده گرفته می‌شود.
   handle(IPC.salePaymentAdd, async (p) => salesService.addPayment(await withSessionActor(p)))

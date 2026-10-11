@@ -281,6 +281,40 @@ export interface InvoicePaymentRow {
   chequeReviewNote?: string | null
 }
 
+/**
+ * زنجیره‌ی فقط‌خواندنیِ «تسویه با اعتبار» که از گزارش فروش باز می‌شود.
+ *
+ * این قرارداد عمداً از InvoicePaymentsView جداست: فقط شناسه/مرجع امن اعتبار،
+ * رویداد صدور، رویداد مصرف و مانده‌ی مالی را دارد. کد قابل‌مصرف، legacyCode،
+ * اطلاعات دارنده (تلفن/نشانی/شناسه ملی/یادداشت) و reference آزادانه هرگز اینجا
+ * نیستند. نمایش کد تنها مسیر مستقل و manager-authorized خودش را دارد.
+ */
+export interface CreditSettlementLineageRow {
+  redemptionId: number | null
+  paymentId: number | null
+  paymentSeq: number | null
+  amount: number
+  redeemedAtJalali: string
+  redeemedAtTime: string
+  credit: {
+    id: number
+    publicReference: string
+    issuedAtJalali: string
+    expiresAtJalali: string | null
+    sourceLabel: string
+    status: string
+    statusLabel: string
+    remaining: number
+  }
+}
+
+export interface CreditSettlementLineageView {
+  invoiceId: number
+  receiptNo: number
+  totalAmount: number
+  rows: CreditSettlementLineageRow[]
+}
+
 /** نمای کامل پرداختی‌های یک فاکتور (مودال «پرداختی‌ها / اقساط»). */
 export interface InvoicePaymentsView {
   invoiceId: number
@@ -1163,7 +1197,10 @@ export interface SaleStoreCreditBlock {
   issuedLifecycleOther?: number
   used: number
   active: number
+  /** ماندهٔ منقضی تا پایان بازه (snapshot/حسابداری). */
   expired: number
+  /** مانده‌ای که تاریخ انقضایش دقیقاً در بازهٔ انتخاب‌شده است. */
+  expiredInRange?: number
   canceled: number
   issuedCount: number
   usageCount: number
@@ -1266,6 +1303,8 @@ export const FINANCIAL_SOURCE_KEYS = [
   'storeCreditIssuedRemainder',
   'storeCreditIssuedOther',
   'storeCreditExpired',
+  /** ماندهٔ اعتبارهایی که تاریخ انقضایشان داخل بازهٔ انتخاب‌شده است. */
+  'storeCreditExpiredInRange',
   'storeCreditCanceled',
   'priorCreditSettlements',
   'priorClearedCheques',
@@ -1940,6 +1979,12 @@ export interface ExchangeSaleInput {
   allowRemoved?: boolean
   /** روش پرداخت مابه‌التفاوت (وقتی مشتری باید بپردازد) */
   methodId?: number | null
+  /**
+   * پرداخت ترکیبیِ مابه‌التفاوت مثبت تعویض. فقط CASH + CARD با مقصدهای متناظر
+   * پذیرفته می‌شود؛ هر سهم Payment مستقل می‌سازد.
+   */
+  splitPayment?: boolean
+  payments?: { methodId: number; amount: number; destination?: string | null }[]
   /**
    * مقصد پول مابه‌التفاوت مثبت. برای نقد/کارت از `kind` روش قابل استنتاج است؛
    * روش CUSTOM بدون این فیلد رد می‌شود (همان قاعده‌ی `addPayment`).

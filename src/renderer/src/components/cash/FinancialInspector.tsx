@@ -81,7 +81,8 @@ function inspectorKeyLabel(key: FinancialInspectorKey): string {
     storeCreditIssuedOverpay: 'اعتبار صادرشده از اضافه‌دریافت',
     storeCreditIssuedRemainder: 'اعتبار باقی‌ماندهٔ مصرف جزئی',
     storeCreditIssuedOther: 'اعتبار با خاستگاه ثبت‌نشده',
-    storeCreditExpired: 'ماندهٔ اعتبارهای منقضی‌شده',
+    storeCreditExpired: 'ماندهٔ اعتبارهای منقضی تا پایان بازه',
+    storeCreditExpiredInRange: 'ماندهٔ اعتبارهای منقضی‌شده در بازه',
     storeCreditCanceled: 'اعتبارهای لغوشده'
   }
   return labels[key] ?? key

@@ -16,11 +16,19 @@ console.log('--- ۱. تب برگشت به‌طور پیش‌فرض فقط برگ
 assert.match(reports, /const \[includeExchanges, setIncludeExchanges\] = useState\(false\)/)
 assert.match(
   sales,
-  /filter\.includeExchanges === true\s*\? \{\}\s*:\s*\{ OR: \[\{ kind: ReturnKind\.RETURN \}, \{ kind: null as any \}\] \}/s,
-  'خاموش بودن تیک باید RETURN و دادهٔ legacy-null را نگه دارد'
+  /filter\.includeExchanges === true\s*\?\s*\{\}[\s\S]{0,1200}?:\s*\{\s*kind:\s*ReturnKind\.RETURN\s*\}/,
+  'خاموش بودن تیک باید فقط RETURN را بگیرد؛ SaleReturn.kind در schema nullable نیست'
 )
+assert.doesNotMatch(sales, /kind:\s*null\s+as\s+any/, 'نباید null نامعتبر به Prisma واقعی فرستاده شود')
+assert.match(
+  reports,
+  /\[tab, creditOpen, includeSettled, includeExchanges, channelsKey, chequeDateMode\]/,
+  'تغییر تیک باید گزارش را دوباره دریافت کند'
+)
+assert.match(reports, /'نوع سند',\s*'کامل\/جزئی'/)
+assert.match(reports, /r\.isExchange \? 'تعویض کالا' : 'برگشت ساده'/)
 assert.match(reports, /در این بازه برگشت ساده‌ای ثبت نشده است[\s\S]{0,160}تعویض‌ها را هم نشان بده/)
-console.log('  ✓ خاموش: RETURN/null؛ روشن: افزودن تعویض‌ها با empty-state شفاف')
+console.log('  ✓ خاموش: فقط RETURN؛ روشن: افزودن تعویض‌ها، reload خودکار و برچسب‌های مستقل سند/کامل-جزئی')
 
 console.log('--- ۲. تب اختصاصی تعویض فقط EXCHANGE را می‌خواند ---')
 const exchangeStart = sales.indexOf('async exchangeList(')

@@ -161,7 +161,7 @@ function effectOf(source: SaleBridgeSource, key: FinancialInspectorKey): Financi
   if (key === 'uncollectedCredit' || key === 'priorDebtReturns') return 'BALANCE'
   if (
     key === 'storeCreditIssued' || key === 'storeCreditUsed' ||
-    key.startsWith('storeCreditIssued') || key === 'storeCreditExpired' || key === 'storeCreditCanceled' ||
+    key.startsWith('storeCreditIssued') || key === 'storeCreditExpired' || key === 'storeCreditExpiredInRange' || key === 'storeCreditCanceled' ||
     source.kind === 'STORE_CREDIT'
   ) return 'NON_CASH'
   if (key.includes('Refund') || source.kind === 'RETURN') return 'OUT'
@@ -550,9 +550,14 @@ function officialAmountOf(report: any, key: FinancialInspectorKey): OfficialFina
       amount: lifecycle?.issuedLifecycleOther
     },
     storeCreditExpired: {
-      label: 'ماندهٔ اعتبارهای منقضی‌شده',
-      hint: 'باقی‌ماندهٔ اعتبارهایی که تا پایان بازه منقضی شده‌اند.',
+      label: 'ماندهٔ اعتبارهای منقضی تا پایان بازه',
+      hint: 'snapshot باقی‌ماندهٔ اعتبارهایی که تا پایان بازه منقضی شده‌اند.',
       amount: lifecycle?.expired
+    },
+    storeCreditExpiredInRange: {
+      label: 'ماندهٔ اعتبارهای منقضی‌شده در بازه',
+      hint: 'فقط باقی‌ماندهٔ اعتبارهایی که تاریخ انقضایشان داخل بازهٔ انتخاب‌شده است.',
+      amount: lifecycle?.expiredInRange ?? lifecycle?.expired
     },
     storeCreditCanceled: {
       label: 'اعتبارهای لغوشده',

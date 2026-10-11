@@ -14,7 +14,8 @@ import PasswordField from '../components/PasswordField'
 import { useCharges } from '../hooks/useCharges'
 import VariantSearchBox, { type VariantSearchBoxHandle } from '../components/VariantSearchBox'
 import { ColGroup, ResizableHeaderCells, useResizableColumns } from '../components/ResizableColumns'
-import { money, faDigits } from '@shared/jalali'
+import { money, faDigits, parseGroupedInteger } from '@shared/jalali'
+import { digitsOnly, groupThousands } from '../lib/moneyInput'
 import { withFreshSale, type SaleDefaults } from '@shared/receipt'
 import { describeChargeRule } from '@shared/charges'
 import { describeDiscountPolicy, discountCeilingFor, fixedDiscountFor, scaleLineDiscounts } from '@shared/priceAdjust'
@@ -175,10 +176,14 @@ export default function Pos() {
     () => methods.filter((method) => !['CREDIT', 'STORE_CREDIT', 'EXCHANGE_CREDIT'].includes(method.kind)),
     [methods]
   )
-  /** پرداخت ترکیبی واقعی نقد + کارت؛ فقط UI است، هر سهم به Payment مستقل تبدیل می‌شود. */
+  /**
+   * پرداخت ترکیبی واقعی نقد + کارت؛ هر سهم به Payment مستقل تبدیل می‌شود.
+   * draftها عمداً رشته‌ی خام‌اند تا نمایش سه‌رقم‌سه‌رقم، ارقام فارسی و paste
+   * امن باشند؛ فقط `parseGroupedInteger` اجازه دارد آن‌ها را مبلغ کند.
+   */
   const [splitPayment, setSplitPayment] = useState(false)
-  const [splitCash, setSplitCash] = useState(0)
-  const [splitCard, setSplitCard] = useState(0)
+  const [splitCash, setSplitCash] = useState('')
+  const [splitCard, setSplitCard] = useState('')
   const [splitCardMethodId, setSplitCardMethodId] = useState<number | null>(null)
   const [invoiceDiscount, setInvoiceDiscount] = useState(0)
   /** تخفیف فاکتور به‌صورت مبلغ ریالی یا درصدی از جمع کل */
@@ -675,6 +680,19 @@ export default function Pos() {
   /** نقدی/کارتی که *واقعاً* باید از مشتری گرفته شود: قابل پرداخت منهای اعتبار. */
   const cashDue = useMemo(() => Math.max(0, totals.payable - creditApplied), [totals.payable, creditApplied])
 
+  /**
+   * `null` یعنی متن واردشده (اعشار/منفی/حرف/بزرگ‌تر از عدد امن) مبلغ معتبر نیست.
+   * با این تفکیک، هیچ ورودی نمایشی پیش از ثبت با `Number` یا `Math.round` تغییر
+   * معنا نمی‌دهد؛ به‌ویژه «۱.۲» هرگز به‌اشتباه «۱۲» ریال نمی‌شود.
+   */
+  const splitCashAmount = useMemo(() => parseGroupedInteger(splitCash), [splitCash])
+  const splitCardAmount = useMemo(() => parseGroupedInteger(splitCard), [splitCard])
+  const splitTotal = useMemo(() => {
+    if (splitCashAmount == null || splitCardAmount == null) return null
+    const total = splitCashAmount + splitCardAmount
+    return Number.isSafeInteger(total) ? total : null
+  }, [splitCashAmount, splitCardAmount])
+
   useEffect(() => {
     const payload = creditInfo
       ? posPreviewPayload({
@@ -912,12 +930,13 @@ export default function Pos() {
          *   • حالت نسیه: عددی که فروشنده نوشته (بین صفر و قابل پرداخت). صفر ⇒
          *     هیچ ردیف پرداختی ساخته نمی‌شود و کل فاکتور بدهی می‌ماند.
          */
-        const splitCashAmount = Math.max(0, Math.round(splitCash || 0))
-        const splitCardAmount = Math.max(0, Math.round(splitCard || 0))
-        const splitTotal = splitCashAmount + splitCardAmount
-        const paidNow = isSplit ? splitTotal : creditMode ? Math.min(Math.max(0, Math.round(creditPaid || 0)), cashDue) : cashDue
+        if (isSplit && (splitCashAmount == null || splitCardAmount == null || splitTotal == null))
+          return setErr('مبلغ نقد یا کارت معتبر نیست؛ فقط عدد صحیحِ غیرمنفی (بدون اعشار، منفی یا حرف) وارد کنید.')
+        if (isSplit && (splitCashAmount <= 0 || splitCardAmount <= 0))
+          return setErr('پرداخت ترکیبی باید یک سهم نقدیِ مثبت و یک سهم کارتیِ مثبت داشته باشد.')
+        const paidNow = isSplit ? splitTotal! : creditMode ? Math.min(Math.max(0, Math.round(creditPaid || 0)), cashDue) : cashDue
         if (isSplit && splitTotal !== cashDue)
-          return setErr(`جمع نقد و کارت باید دقیقاً ${money(cashDue)} ریال باشد؛ اکنون ${money(splitTotal)} ریال است.`)
+          return setErr(`جمع نقد و کارت باید دقیقاً ${money(cashDue)} ریال باشد؛ اکنون ${money(splitTotal!)} ریال است.`)
         /**
          * ---- کار الف: مقصد فقط وقتی فرستاده می‌شود که واقعاً انتخاب شده باشد ----
          * و اگر انتخابش با روش پرداختی که همین حالا زده شد سازگار نباشد (مثلاً
@@ -967,8 +986,8 @@ export default function Pos() {
           splitPayment: isSplit || undefined,
           payments: isSplit
             ? [
-                { methodId: cashMethod!.id, amount: splitCashAmount, destination: 'CASH' },
-                { methodId: cardMethod!.id, amount: splitCardAmount, destination: 'CARD' }
+                { methodId: cashMethod!.id, amount: splitCashAmount!, destination: 'CASH' },
+                { methodId: cardMethod!.id, amount: splitCardAmount!, destination: 'CARD' }
               ].filter((payment) => payment.amount > 0)
             : paidNow > 0
               ? [{ methodId: method!.id, amount: paidNow, destination: destination ?? undefined }]
@@ -1075,7 +1094,9 @@ export default function Pos() {
           receiptNo: inv.receiptNo,
           returnCode: inv.returnCode ?? null,
           grandTotal: inv.grandTotal ?? totals.payable,
-          methodLabel: method.label,
+          // در پرداخت ترکیبی `method` عمداً null است؛ برچسب ثابت مانع خطای
+          // پس از ثبت موفق فاکتور می‌شود (قبلاً UI خطا می‌داد، با اینکه سند ثبت شده بود).
+          methodLabel: isSplit ? 'نقد + کارت' : method!.label,
           printed,
           returnCodeDays: inv.returnCodeDays,
           storeCredit: inv.storeCredit ?? null,
@@ -1100,8 +1121,13 @@ export default function Pos() {
         setCreditMode(false)
         setCreditPaid(0)
         setCreditDestination(null)
+        // مبلغ‌های فاکتور قبلی نباید روی فاکتور بعدی بمانند یا با قابل‌پرداخت جدید مقایسه شوند.
+        setSplitPayment(false)
+        setSplitCash('')
+        setSplitCard('')
+        setSplitCardMethodId(null)
         notify(
-          `فیش شماره ${faDigits(inv.receiptNo)} ثبت شد · ${money(inv.grandTotal ?? totals.payable)} ریال · ${method.label}` +
+          `فیش شماره ${faDigits(inv.receiptNo)} ثبت شد · ${money(inv.grandTotal ?? totals.payable)} ریال · ${isSplit ? 'نقد + کارت' : method!.label}` +
             (inv.returnCode ? ` · کد فاکتور: ${inv.returnCode}` : '') +
             // بخش ۷: فروش نسیه ⇒ باقی‌ماندهٔ بدهی و راه ثبت پرداختی بعدی
             (inv.remaining > 0
@@ -1145,6 +1171,11 @@ export default function Pos() {
       busy,
       lines,
       methods,
+      directPaymentMethods,
+      splitCashAmount,
+      splitCardAmount,
+      splitTotal,
+      splitCardMethodId,
       invoiceDiscount,
       totals,
       lineDiscountOf,
@@ -2079,12 +2110,54 @@ export default function Pos() {
           {splitPayment && (
             <div className="rounded border-2 border-sky-300 bg-sky-50 p-2 space-y-2">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <label><span className="kbd">نقد (ریال)</span><input type="number" min={0} className="inp" value={splitCash} onChange={(e) => setSplitCash(Math.max(0, Math.round(+e.target.value || 0)))} /></label>
-                <label><span className="kbd">کارت (ریال)</span><input type="number" min={0} className="inp" value={splitCard} onChange={(e) => setSplitCard(Math.max(0, Math.round(+e.target.value || 0)))} /></label>
-                <label><span className="kbd">روش کارت</span><select className="inp" value={splitCardMethodId ?? ''} onChange={(e) => setSplitCardMethodId(e.target.value ? Number(e.target.value) : null)}>{directPaymentMethods.filter((m) => m.kind === 'CARD').map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</select></label>
+                <label>
+                  <span className="kbd">نقد (ریال)</span>
+                  <input
+                    className="inp"
+                    dir="ltr"
+                    inputMode="numeric"
+                    value={groupThousands(splitCash)}
+                    placeholder="۰"
+                    title="فقط عدد صحیح ریالی؛ جداکنندهٔ هزارگان و ارقام فارسی پذیرفته می‌شود."
+                    onChange={(e) => {
+                      // متن نامعتبر را هرگز با حذف کاراکترها به مبلغ دیگری تبدیل نکن.
+                      if (parseGroupedInteger(e.target.value) != null) setSplitCash(digitsOnly(e.target.value))
+                    }}
+                  />
+                </label>
+                <label>
+                  <span className="kbd">کارت (ریال)</span>
+                  <input
+                    className="inp"
+                    dir="ltr"
+                    inputMode="numeric"
+                    value={groupThousands(splitCard)}
+                    placeholder="۰"
+                    title="فقط عدد صحیح ریالی؛ جداکنندهٔ هزارگان و ارقام فارسی پذیرفته می‌شود."
+                    onChange={(e) => {
+                      // ۱.۲ نباید بی‌صدا به ۱۲ تبدیل شود؛ ورودی نامعتبر پذیرفته نمی‌شود.
+                      if (parseGroupedInteger(e.target.value) != null) setSplitCard(digitsOnly(e.target.value))
+                    }}
+                  />
+                </label>
+                <label>
+                  <span className="kbd">روش کارت</span>
+                  <select className="inp" value={splitCardMethodId ?? ''} onChange={(e) => setSplitCardMethodId(e.target.value ? Number(e.target.value) : null)}>
+                    {directPaymentMethods.filter((m) => m.kind === 'CARD').map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                  </select>
+                </label>
               </div>
-              <div className="kbd">جمع: {money(splitCash + splitCard)} ریال · قابل پرداخت: {money(cashDue)} ریال</div>
-              <div className="flex gap-2"><button className="btn" onClick={() => setSplitCard(Math.max(0, cashDue - splitCash))}>باقی را کارت کن</button><button className="btn btn-primary" disabled={busy || splitCash + splitCard !== cashDue || splitCash <= 0 || splitCard <= 0} onClick={() => void settle('__SPLIT__')}>ثبت نقد + کارت</button></div>
+              <div className="kbd">جمع: {money(splitTotal ?? 0)} ریال · قابل پرداخت: {money(cashDue)} ریال</div>
+              <div className="flex gap-2">
+                <button className="btn" onClick={() => setSplitCard(String(Math.max(0, cashDue - (splitCashAmount ?? 0))))}>باقی را کارت کن</button>
+                <button
+                  className="btn btn-primary"
+                  disabled={busy || splitTotal == null || splitTotal !== cashDue || (splitCashAmount ?? 0) <= 0 || (splitCardAmount ?? 0) <= 0}
+                  onClick={() => void settle('__SPLIT__')}
+                >
+                  ثبت نقد + کارت
+                </button>
+              </div>
             </div>
           )}
           {!splitPayment && <div className="grid grid-cols-2 gap-2">

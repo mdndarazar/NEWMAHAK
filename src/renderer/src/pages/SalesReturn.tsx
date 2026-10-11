@@ -22,7 +22,7 @@ import ReturnEditModal from '../components/ReturnEditModal'
 import JalaliDateInput from '../components/JalaliDateInput'
 import VariantSearchBox, { type VariantSearchBoxHandle } from '../components/VariantSearchBox'
 import { useCharges } from '../hooks/useCharges'
-import { faDigits, money, jalaliToday, isValidJalaliDate } from '@shared/jalali'
+import { faDigits, money, jalaliToday, isValidJalaliDate, parseGroupedInteger } from '@shared/jalali'
 import { returnValueOf, isReturnableStatus } from '@shared/returnValue'
 import type { ExchangeSaleResult, ReturnLookup, ReturnLookupItem, CardPosOverrideInput } from '@shared/types'
 import InvoiceFinanceBadge from '../components/returns/InvoiceFinanceBadge'
@@ -234,6 +234,12 @@ export default function SalesReturn() {
   const [reps, setReps] = useState<RepLine[]>([])
   const [methods, setMethods] = useState<Method[]>([])
   const [methodId, setMethodId] = useState<number | null>(null)
+  /** پرداخت مثبت تعویض با دو ردیف واقعی نقد و کارت، نه یک پرداخت مصنوعی. */
+  const [exSplitPayment, setExSplitPayment] = useState(false)
+  const [exSplitCash, setExSplitCash] = useState('')
+  const [exSplitCard, setExSplitCard] = useState('')
+  const [exSplitCashMethodId, setExSplitCashMethodId] = useState<number | null>(null)
+  const [exSplitCardMethodId, setExSplitCardMethodId] = useState<number | null>(null)
   /** کمبود موجودی کالای جایگزین از انبار مرکزی برداشته شود؟ */
   const [repAutoCentral, setRepAutoCentral] = useState(false)
   /** جایگزینِ کدام قلم برگشتی در حال انتخاب است (فقط یک راهنمای روی صفحه) */
@@ -269,6 +275,8 @@ export default function SalesReturn() {
       .then((list) => {
         setMethods(list ?? [])
         setMethodId((cur) => cur ?? list?.[0]?.id ?? null)
+        setExSplitCashMethodId((cur) => cur ?? list?.find((method) => method.kind === 'CASH')?.id ?? null)
+        setExSplitCardMethodId((cur) => cur ?? list?.find((method) => method.kind === 'CARD')?.id ?? null)
       })
       .catch(() => setMethods([]))
   }, [])
@@ -449,6 +457,16 @@ export default function SalesReturn() {
   }, [reps, totals.amount, exCharges])
 
   const repShort = useMemo(() => reps.filter((l) => l.qty > l.stock), [reps])
+  const cashMethods = useMemo(() => methods.filter((method) => method.kind === 'CASH'), [methods])
+  const cardMethods = useMemo(() => methods.filter((method) => method.kind === 'CARD'), [methods])
+  /** مثل POS: اعشار/منفی/حرف هرگز با حذف‌شدن کاراکترها به مبلغ دیگری تبدیل نمی‌شوند. */
+  const exSplitCashAmount = useMemo(() => parseGroupedInteger(exSplitCash), [exSplitCash])
+  const exSplitCardAmount = useMemo(() => parseGroupedInteger(exSplitCard), [exSplitCard])
+  const exSplitTotal = useMemo(() => {
+    if (exSplitCashAmount == null || exSplitCardAmount == null) return null
+    const total = exSplitCashAmount + exSplitCardAmount
+    return Number.isSafeInteger(total) ? total : null
+  }, [exSplitCashAmount, exSplitCardAmount])
   /** بند ۱۸ — قلم‌هایی که قیمتشان دستی از قیمت واقعی کالا جدا شده است. */
   const priceChanged = useMemo(() => reps.filter((l) => l.unitPrice !== l.realPrice), [reps])
 
@@ -605,6 +623,14 @@ export default function SalesReturn() {
             'یکی از این چهار مورد را صریح انتخاب کنید:\n' +
             EXCHANGE_REFUND_CHOICES.map((c) => `• ${c.title} — ${c.hint}`).join('\n')
         )
+      if (exTotals.diff > 0 && exSplitPayment) {
+        if (!exSplitCashMethodId || !exSplitCardMethodId)
+          return setErr('برای پرداخت ترکیبی، یک روش فعال نقدی و یک روش فعال کارتی انتخاب کنید.')
+        if (exSplitCashAmount == null || exSplitCardAmount == null || exSplitTotal == null)
+          return setErr('مبلغ نقد یا کارت معتبر نیست؛ فقط عدد صحیح ریالیِ بدون اعشار، منفی یا حرف وارد کنید.')
+        if (exSplitCashAmount <= 0 || exSplitCardAmount <= 0 || exSplitTotal !== exTotals.diff)
+          return setErr(`جمع سهم نقد و کارت باید دقیقاً ${money(exTotals.diff)} ریال باشد و هر دو سهم مثبت باشند.`)
+      }
       if (priceOverrideOn && !managerPw.trim())
         return setErr(
           'قیمت دستیِ کالای جایگزین باز است و رمز مدیر وارد نشده.\n' +
@@ -642,7 +668,16 @@ export default function SalesReturn() {
             note: note.trim() || undefined,
             allowRemoved: allowRemoved || undefined,
             force: force || undefined,
-            methodId: exTotals.diff > 0 ? methodId : null,
+            // پرداخت تک‌روشِ قبلی دقیقاً همان payload قبلی است؛ split فقط مسیر افزوده است.
+            methodId: exTotals.diff > 0 && !exSplitPayment ? methodId : null,
+            splitPayment: exTotals.diff > 0 && exSplitPayment ? true : undefined,
+            payments:
+              exTotals.diff > 0 && exSplitPayment
+                ? [
+                    { methodId: exSplitCashMethodId!, amount: exSplitCashAmount!, destination: 'CASH' },
+                    { methodId: exSplitCardMethodId!, amount: exSplitCardAmount!, destination: 'CARD' }
+                  ]
+                : undefined,
             autoCentralWithdraw: repAutoCentral || undefined,
             // ---- بند ۱۲: تسویه‌ی مابه‌التفاوت منفی (انتخاب انحصاری کاربر) ----
             refundMode: exTotals.diff < 0 ? exRefundMode : undefined,
@@ -657,6 +692,9 @@ export default function SalesReturn() {
         setQty({})
         setRepFor(null)
         setExRefundMode(null)
+        setExSplitPayment(false)
+        setExSplitCash('')
+        setExSplitCard('')
         setPriceOverrideOn(false)
         setManagerPw('')
         setLockNeeded(false)
@@ -694,7 +732,8 @@ export default function SalesReturn() {
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
-      lookup, selected, qty, reps, note, allowRemoved, exTotals.diff, methodId, repAutoCentral, exCharges, exScope,
+      lookup, selected, qty, reps, note, allowRemoved, exTotals.diff, methodId, exSplitPayment, exSplitCashAmount,
+      exSplitCardAmount, exSplitTotal, exSplitCashMethodId, exSplitCardMethodId, repAutoCentral, exCharges, exScope,
       removedSelected.length, exRefundMode, priceOverrideOn, managerPw, lockPw, lockReason, loadHistory, lookupCode
     ]
   )
@@ -1455,20 +1494,86 @@ export default function SalesReturn() {
                   </div>
                 )}
                 {exTotals.diff > 0 && (
-                  <label className="col-span-2 md:col-span-1">
-                    <div className="kbd">روش دریافت مابه‌التفاوت</div>
-                    <select
-                      className="inp"
-                      value={methodId ?? ''}
-                      onChange={(e) => setMethodId(e.target.value ? Number(e.target.value) : null)}
-                    >
-                      {methods.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <div className="col-span-2 md:col-span-4 rounded border border-emerald-300 bg-white p-2">
+                    <label className="flex items-center gap-2 cursor-pointer w-fit">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4"
+                        checked={exSplitPayment}
+                        onChange={(e) => setExSplitPayment(e.target.checked)}
+                      />
+                      <span className="font-bold">دریافت ترکیبی نقد + کارت</span>
+                    </label>
+                    <div className="kbd mt-1">در حالت ترکیبی، دو رسید واقعی با جمع دقیق مابه‌التفاوت ثبت می‌شود.</div>
+                    {!exSplitPayment ? (
+                      <label className="block mt-2 max-w-sm">
+                        <div className="kbd">روش دریافت مابه‌التفاوت</div>
+                        <select
+                          className="inp"
+                          value={methodId ?? ''}
+                          onChange={(e) => setMethodId(e.target.value ? Number(e.target.value) : null)}
+                        >
+                          {methods.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+                          <label>
+                            <div className="kbd">سهم نقدی</div>
+                            <input
+                              className="inp"
+                              dir="ltr"
+                              inputMode="numeric"
+                              value={groupThousands(exSplitCash)}
+                              onChange={(e) => {
+                                if (parseGroupedInteger(e.target.value) != null) setExSplitCash(digitsOnly(e.target.value))
+                              }}
+                              placeholder="مبلغ نقد"
+                              title="فقط عدد صحیح ریالی؛ جداکنندهٔ هزارگان و ارقام فارسی پذیرفته می‌شود."
+                            />
+                            <select
+                              className="inp mt-1"
+                              value={exSplitCashMethodId ?? ''}
+                              onChange={(e) => setExSplitCashMethodId(e.target.value ? Number(e.target.value) : null)}
+                            >
+                              <option value="">روش نقدی را انتخاب کنید</option>
+                              {cashMethods.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                            </select>
+                          </label>
+                          <label>
+                            <div className="kbd">سهم کارتی</div>
+                            <input
+                              className="inp"
+                              dir="ltr"
+                              inputMode="numeric"
+                              value={groupThousands(exSplitCard)}
+                              onChange={(e) => {
+                                if (parseGroupedInteger(e.target.value) != null) setExSplitCard(digitsOnly(e.target.value))
+                              }}
+                              placeholder="مبلغ کارت"
+                              title="فقط عدد صحیح ریالی؛ جداکنندهٔ هزارگان و ارقام فارسی پذیرفته می‌شود."
+                            />
+                            <select
+                              className="inp mt-1"
+                              value={exSplitCardMethodId ?? ''}
+                              onChange={(e) => setExSplitCardMethodId(e.target.value ? Number(e.target.value) : null)}
+                            >
+                              <option value="">روش کارتی را انتخاب کنید</option>
+                              {cardMethods.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                            </select>
+                          </label>
+                        </div>
+                        <div className={`kbd mt-2 font-bold ${exSplitTotal === exTotals.diff && (exSplitCashAmount ?? 0) > 0 && (exSplitCardAmount ?? 0) > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                          جمع نقد و کارت: {money(exSplitTotal ?? 0)} ریال · مبلغ لازم: {money(exTotals.diff)} ریال
+                        </div>
+                      </>
+                    )}
+                  </div>
                 )}
                 <label className="col-span-2 md:col-span-3 flex items-start gap-2">
                   <input
