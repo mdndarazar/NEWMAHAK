@@ -8,6 +8,7 @@ import { StocktakeReminderChip } from './StocktakeReminderBadge'
 import { ShiftSessionChip } from './ShiftSessionModal'
 import { CustodyChip } from './CustodyChip'
 import { CustodyAdminChip } from './CustodyAdminChip'
+
 import { DebtReminderBanner } from './DebtReminderBanner'
 // نشست ۲۲۲ · فاز ۳ — میزبان پنجره‌ی «با کدام چاپگر چاپ شود؟» (یک بار در ریشه mount می‌شود)
 import PrinterPickerHost from './PrinterPickerModal'
@@ -102,6 +103,7 @@ export default function Shell() {
         <ShiftSessionChip />
         <CustodyChip />
         <CustodyAdminChip />
+
         {/* وضعیت «مدیر پشت سیستم است» / «کارمند» + خروج مدیر با یک کلیک */}
         {isManager ? (
           <button

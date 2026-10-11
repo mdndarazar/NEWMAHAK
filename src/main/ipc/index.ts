@@ -872,6 +872,7 @@ export function registerIpcHandlers(): void {
   handle(IPC.custodyStaffList, () => custodyService.staffList())
   handle(IPC.custodyStaffProfileSave, (p) => custodyService.upsertProfile(p ?? {}))
   handle(IPC.custodyReport, (p) => custodyService.report(p ?? {}))
+
   handle(IPC.custodyOpen, (p) => custodyService.open(p ?? {}))
   handle(IPC.custodyPlanList, () => custodyPlanService.list())
   handle(IPC.custodyPlanSave, (p) => custodyPlanService.save(p ?? {}))

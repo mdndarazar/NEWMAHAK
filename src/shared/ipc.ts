@@ -307,6 +307,7 @@ export const IPC = {
   custodyStaffList: 'custody:staff:list',
   custodyStaffProfileSave: 'custody:staff:profile:save',
   custodyReport: 'custody:report',
+
   custodyOpen: 'custody:open',
   custodyPlanList: 'custody:plan:list',
   custodyPlanSave: 'custody:plan:save',
