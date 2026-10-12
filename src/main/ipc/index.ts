@@ -1325,6 +1325,14 @@ export function registerIpcHandlers(): void {
   // نشست ۱۵۷ (Y13، S157-D3) — actor از نشست باز، نه userId رندرر؛ گیت رمز مدیر در سرویس
   handle(IPC.settingsShiftByTime, async (p) => settingsService.setShiftByTime(await withOptionalSessionActor(p ?? { byTime: false })))
   handle(IPC.settingsShiftOvertimeMax, async (p) => settingsService.setShiftOvertimeMax(await withOptionalSessionActor(p ?? { minutes: 0 })))
+  handle(IPC.settingsCustodySchedulingWorkflow, async (p) => {
+    assertManagerSession('تغییر روش برنامه‌ریزی حضانت صندوق')
+    // A panel session proves manager authorization but does not carry a
+    // manager user id.  Do not mislabel the current drawer custodian (or any
+    // renderer-provided id) as the approving manager in this configuration audit.
+    const { userId: _ignored, ...safe } = p ?? {}
+    return settingsService.saveCustodySchedulingWorkflow({ ...safe, userId: null })
+  })
   /** بند ۹ — «تاریخ و ساعت رسمی»: افست دستی + بررسی ساعت سیستم (بدون اینترنت) */
   handle(IPC.settingsOfficialTime, () => settingsService.officialTime())
   handle(IPC.settingsOfficialTimeSet, async (p) => settingsService.saveOfficialTime(await withOptionalSessionActor(p ?? {})))

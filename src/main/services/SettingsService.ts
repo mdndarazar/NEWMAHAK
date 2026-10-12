@@ -21,6 +21,7 @@ import {
   parseSaleDefaults,
   parseSecurityConfig,
   parseShiftConfig,
+  parseCustodyConfig,
   parseOfficialTimeConfig,
   applyOfficialOffset,
   parseAccountingPolicy,
@@ -31,6 +32,7 @@ import {
   type SaleDefaults,
   type SecurityConfig,
   type ShiftConfig,
+  type CustodyConfig,
   type OfficialTimeConfig
 } from '@shared/receipt'
 import {
@@ -165,10 +167,17 @@ async function assertCanonicalShiftSchedule(config: ShiftConfig): Promise<void> 
   const names = active.map((template) => template.name.trim())
   if (new Set(names).size !== names.length)
     throw new BusinessError('نام شیفت‌های فعال باید یکتا باشد تا سابقه و گزارش شیفت مبهم نشود.')
-  if (config.custodyMode === 'MULTI_SHIFT' && !active.some((template) => template.staffIds.length > 0))
+  if (config.custodyModeConfigured && config.custodyMode === 'MULTI_SHIFT' && !active.some((template) => template.staffIds.length > 0))
     throw new BusinessError('برای حالت چندشیفت، دست‌کم یک شیفت فعال با کارمند برنامه‌ریزی‌شده لازم است.')
+  if (config.custodyModeConfigured && config.custodyMode === 'SINGLE_SHIFT' && !config.singleShiftCustodianUserId)
+    throw new BusinessError('برای تک‌شیفت، مسئول اصلی روزانه را از کارکنان فعال انتخاب کنید.')
 
-  const requestedStaffIds = [...new Set(active.flatMap((template) => template.staffIds))]
+  const requestedStaffIds = [
+    ...new Set([
+      ...active.flatMap((template) => template.staffIds),
+      ...(config.singleShiftCustodianUserId ? [config.singleShiftCustodianUserId] : [])
+    ])
+  ]
   if (requestedStaffIds.length) {
     const users = await prisma.user.findMany({ where: { id: { in: requestedStaffIds } }, select: { id: true, isActive: true, role: true } })
     if (users.length !== requestedStaffIds.length || users.some((user) => !user.isActive || (user.role !== 'MANAGER' && user.role !== 'CASHIER')))
@@ -206,6 +215,17 @@ async function assertCanonicalShiftSchedule(config: ShiftConfig): Promise<void> 
  * والد ارث نمی‌برد. «تنظیم‌نشده» = نبودِ قانون. (قبلاً صفرها حذف می‌شدند ⇒ ارث بی‌صدا از والد.)
  * مقدار پیش‌فرض صفر همان «بدون پیش‌فرض» است (هر دو مبلغ صفر می‌دهند).
  */
+/** These three values decide who may begin a custody segment.  They never go
+ * through the broad settings bundle: changing them has a dedicated atomic
+ * workflow that also reconciles the old custody.config mode. */
+function sameCustodySchedulingPolicy(a: ShiftConfig, b: ShiftConfig): boolean {
+  return (
+    a.custodyMode === b.custodyMode &&
+    a.custodyModeConfigured === b.custodyModeConfigured &&
+    a.singleShiftCustodianUserId === b.singleShiftCustodianUserId
+  )
+}
+
 function cleanCharge(config: unknown): CategoryChargeConfig {
   const clean = parseCategoryCharge(config)
   if (clean.fallback && clean.fallback.value <= 0) clean.fallback = null
@@ -232,6 +252,102 @@ export const settingsService = {
 
   async shiftConfig(): Promise<ShiftConfig> {
     return parseShiftConfig(await readKey(SETTING_KEYS.shiftConfig))
+  },
+
+  /**
+   * The only writer for custody scheduling policy.  The earlier product had
+   * two mode fields (`shift.config` and `custody.config`) and a checkbox could
+   * update only one of them while a drawer was open.  This deliberately
+   * reconciles both fields in one database transaction.  An open responsibility
+   * segment is fenced, preserved unchanged, then resumed with a new epoch;
+   * financial writers holding the old epoch fail closed instead of slipping
+   * across the policy boundary.
+   */
+  async saveCustodySchedulingWorkflow(input: { shift?: unknown; reason?: unknown; userId?: number | null }): Promise<ShiftConfig> {
+    const submitted = parseShiftConfig(input?.shift)
+    const next: ShiftConfig = {
+      ...submitted,
+      custodyModeConfigured: true,
+      // A primary daily custodian belongs only to the single-shift workflow.
+      singleShiftCustodianUserId: submitted.custodyMode === 'SINGLE_SHIFT' ? submitted.singleShiftCustodianUserId : null
+    }
+    await assertCanonicalShiftSchedule(next)
+    const reason = String(input?.reason ?? '').trim()
+
+    return prisma.$transaction(async (tx) => {
+      const [shiftRow, custodyRow, existingState] = await Promise.all([
+        tx.setting.findUnique({ where: { key: SETTING_KEYS.shiftConfig } }),
+        tx.setting.findUnique({ where: { key: SETTING_KEYS.custodyConfig } }),
+        tx.custodyState.findUnique({ where: { key: 'MAIN' } })
+      ])
+      const beforeShift = parseShiftConfig(shiftRow?.value ?? null)
+      const beforeCustody = parseCustodyConfig(custodyRow?.value ?? null)
+      // A pre-workflow installation keeps its historic custody-config decision
+      // until this explicit manager workflow has recorded the reconciliation.
+      const beforeMode = beforeShift.custodyModeConfigured ? beforeShift.custodyMode : beforeCustody.mode
+      const policyChanged = !sameCustodySchedulingPolicy(beforeShift, next) || beforeMode !== next.custodyMode
+      const state = existingState ?? { state: 'NO_SESSION', activeShiftId: null, pendingHandoverId: null, epoch: 0 }
+      const hasOpenResponsibility = state.state !== 'NO_SESSION'
+
+      if (hasOpenResponsibility && state.state !== 'ACTIVE')
+        throw new BusinessError('تا پایان تحویل/بازیابی در جریان، تغییر روش تک‌شیفت یا چندشیفت مجاز نیست.', 'CUSTODY_MODE_SWITCH_PENDING')
+      if (hasOpenResponsibility && !state.activeShiftId)
+        throw new BusinessError('مسئولیت باز صندوق ناقص است؛ ابتدا بازیابی صندوق را انجام دهید.', 'CUSTODY_INVARIANT_BROKEN')
+      if (hasOpenResponsibility && policyChanged && reason.length < 10)
+        throw new BusinessError('برای تغییر روش حضانت هنگام مسئولیت باز، علت حداقل ۱۰ کاراکتری وارد کنید.', 'CUSTODY_MODE_SWITCH_REASON')
+
+      const nextCustody: CustodyConfig = parseCustodyConfig({ ...beforeCustody, mode: next.custodyMode })
+      let frozenEpoch: number | null = null
+      if (hasOpenResponsibility && policyChanged) {
+        const activeShift = await tx.shift.findUnique({ where: { id: state.activeShiftId! }, select: { id: true, closedAt: true } })
+        const meta = activeShift ? await tx.custodyShiftMeta.findUnique({ where: { shiftId: activeShift.id }, select: { shiftId: true, custodianUserId: true } }) : null
+        if (!activeShift || activeShift.closedAt || !meta)
+          throw new BusinessError('سند مسئولیت باز صندوق کامل نیست؛ ابتدا بازیابی صندوق را انجام دهید.', 'CUSTODY_INVARIANT_BROKEN')
+        frozenEpoch = Number(state.epoch) + 1
+        const frozen = await tx.custodyState.updateMany({
+          where: { key: 'MAIN', state: 'ACTIVE', activeShiftId: state.activeShiftId, epoch: state.epoch },
+          data: { state: 'MODE_SWITCH_FREEZE', epoch: frozenEpoch, updatedAt: new Date() }
+        })
+        if (frozen.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ دوباره تلاش کنید.', 'CUSTODY_STALE')
+        await tx.custodyEvent.create({
+          data: {
+            type: 'CUSTODY_MODE_SWITCH_FREEZE', shiftId: activeShift.id, actorUserId: input?.userId ?? null,
+            actorKind: 'MANAGER', authMethod: 'MANAGER_SESSION', epochBefore: state.epoch, epochAfter: frozenEpoch,
+            payloadJson: JSON.stringify({ fromMode: beforeMode, toMode: next.custodyMode, reason, preservedCustodianUserId: meta.custodianUserId }),
+            operationalDay: toJalaliDate(new Date())
+          }
+        })
+      }
+
+      await writeKey(SETTING_KEYS.shiftConfig, next, tx)
+      await writeKey(SETTING_KEYS.custodyConfig, nextCustody, tx)
+
+      if (frozenEpoch != null) {
+        const resumedEpoch = frozenEpoch + 1
+        const resumed = await tx.custodyState.updateMany({
+          where: { key: 'MAIN', state: 'MODE_SWITCH_FREEZE', activeShiftId: state.activeShiftId, epoch: frozenEpoch },
+          data: { state: 'ACTIVE', epoch: resumedEpoch, updatedAt: new Date() }
+        })
+        if (resumed.count !== 1) throw new BusinessError('بازگرداندن مسئولیت صندوق ناموفق بود؛ هیچ تنظیمی ذخیره نشد.', 'CUSTODY_STALE')
+        await tx.custodyEvent.create({
+          data: {
+            type: 'CUSTODY_MODE_SWITCH_COMMITTED', shiftId: state.activeShiftId, actorUserId: input?.userId ?? null,
+            actorKind: 'MANAGER', authMethod: 'MANAGER_SESSION', epochBefore: frozenEpoch, epochAfter: resumedEpoch,
+            payloadJson: JSON.stringify({ fromMode: beforeMode, toMode: next.custodyMode, reason, responsibilityPreserved: true }),
+            operationalDay: toJalaliDate(new Date())
+          }
+        })
+      }
+      await tx.auditLog.create({
+        data: {
+          action: 'SETTINGS_UPDATE', entity: 'CustodySchedulingWorkflow', userId: input?.userId ?? null,
+          before: JSON.stringify({ custodyMode: beforeMode, configured: beforeShift.custodyModeConfigured, primaryUserId: beforeShift.singleShiftCustodianUserId }),
+          after: JSON.stringify({ custodyMode: next.custodyMode, configured: true, primaryUserId: next.singleShiftCustodianUserId, custodyConfigMode: nextCustody.mode }),
+          note: frozenEpoch == null ? 'ثبت روش برنامه‌ریزی حضانت صندوق' : `ثبت روش برنامه‌ریزی حضانت با حفظ مسئولیت باز: ${reason}`
+        }
+      })
+      return next
+    }, TX_OPTIONS)
   },
 
   /**
@@ -744,7 +860,18 @@ export const settingsService = {
     // به‌خصوص گیت RAW باید قبل از هر upsert اجرا شود؛ وگرنه شکست label می‌توانست
     // receipt / sale / shift را نیمه‌کاره روی دیسک بگذارد.
     const normalizedShift = input.shift ? parseShiftConfig(input.shift) : null
-    if (normalizedShift) await assertCanonicalShiftSchedule(normalizedShift)
+    if (normalizedShift) {
+      const currentShift = await this.shiftConfig()
+      // Older saved schedules did not have an explicit workflow marker.  Keep
+      // their legacy save semantics intact; once the manager reviews either
+      // workflow, every later policy mutation must take the atomic route.
+      if ((currentShift.custodyModeConfigured || normalizedShift.custodyModeConfigured) && !sameCustodySchedulingPolicy(currentShift, normalizedShift))
+        throw new BusinessError(
+          'تغییر تک‌شیفت/چندشیفت یا مسئول اصلی روزانه فقط از بخش «روش مسئولیت و برنامه‌ریزی حضانت» انجام می‌شود؛ این مسیر مسئولیت باز را اتمی حفظ می‌کند.',
+          'CUSTODY_SCHEDULING_WORKFLOW_REQUIRED'
+        )
+      await assertCanonicalShiftSchedule(normalizedShift)
+    }
     const before = await this.bundle()
     // `bundle()` logoی رسید را از لیبل پر می‌کند؛ نسخه‌ی ذخیره‌شده لازم است تا
     // پاسخِ ذخیره‌ی تنها-لیبل هم ارث‌بری تازه را مانند خواندن بعدی نشان دهد.

@@ -273,6 +273,10 @@ export default function Settings() {
   const [receipt, setReceipt] = useState<ReceiptTemplate>(DEFAULT_RECEIPT_TEMPLATE)
   const [sale, setSale] = useState<SaleDefaults>(DEFAULT_SALE_DEFAULTS)
   const [shift, setShift] = useState<ShiftConfig>(DEFAULT_SHIFT_CONFIG)
+  /** تغییر روش حضانت مستقل از ذخیره‌ی عمومی است تا Main بتواند مسئولیت باز را
+   * قبل از commit اتمی fence کند؛ رمز/علت هرگز ذخیره نمی‌شود. */
+  const [custodySchedulingReason, setCustodySchedulingReason] = useState('')
+  const [custodySchedulingBusy, setCustodySchedulingBusy] = useState(false)
   /** legacy ShiftPlanها تا بازبینی صریح مدیر به تنظیمات canonical تبدیل نمی‌شوند. */
   const [legacyShiftPlanReview, setLegacyShiftPlanReview] = useState<LegacyShiftPlanReview | null>(null)
   const [legacyShiftPlanBusy, setLegacyShiftPlanBusy] = useState(false)
@@ -882,6 +886,34 @@ export default function Settings() {
       setErr(e?.message ?? 'برنامه‌های قدیمی برای بازبینی خوانده نشدند.')
     } finally {
       setLegacyShiftPlanBusy(false)
+    }
+  }
+
+  /** Only this action changes the operational custody policy.  It is separate
+   * from the broad Save button so an open drawer can be frozen/preserved by
+   * Main before both historic/new mode records commit. */
+  const saveCustodySchedulingWorkflow = async () => {
+    if (!isManager) return setErr('تغییر روش حضانت فقط با نشست فعال مدیر ممکن است.')
+    if (shift.custodyMode === 'SINGLE_SHIFT' && !shift.singleShiftCustodianUserId)
+      return setErr('برای تک‌شیفت، مسئول اصلی روزانه را انتخاب کنید.')
+    setCustodySchedulingBusy(true)
+    try {
+      const saved = await call<ShiftConfig>(CH.settingsCustodySchedulingWorkflow, {
+        shift: { ...shift, custodyModeConfigured: true },
+        reason: custodySchedulingReason
+      })
+      setShift(parseShiftConfig(saved))
+      setCustodySchedulingReason('')
+      setDirty(false)
+      flash(
+        saved.custodyMode === 'SINGLE_SHIFT'
+          ? 'گردش‌کار تک‌شیفت با مسئول اصلی روزانه ذخیره شد. مسئولیت صندوق فقط با PIN و شمارش فیزیکی او آغاز می‌شود.'
+          : 'گردش‌کار چندشیفت با کارکنان مستقل هر شیفت ذخیره شد. مسئولیت صندوق فقط با PIN و شمارش فیزیکی آغاز می‌شود.'
+      )
+    } catch (e: any) {
+      setErr(e?.message ?? 'ذخیره‌ی روش حضانت انجام نشد.')
+    } finally {
+      setCustodySchedulingBusy(false)
     }
   }
 
@@ -3638,23 +3670,56 @@ export default function Settings() {
                 )}
               </div>
 
-              <div className="rounded border-2 border-indigo-300 bg-indigo-50 p-3 space-y-2">
-                <div className="font-bold text-indigo-950">حالت مسئولیت و برنامه‌ریزی حضانت</div>
-                <label className="flex items-start gap-2 text-sm cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="mt-1"
-                    checked={shift.custodyMode === 'MULTI_SHIFT'}
-                    onChange={(e) => {
-                      setShift((current) => ({ ...current, custodyMode: e.target.checked ? 'MULTI_SHIFT' : 'SINGLE_SHIFT' }))
-                      setDirty(true)
-                    }}
-                  />
-                  <span>
-                    <b>{shift.custodyMode === 'MULTI_SHIFT' ? 'چندشیفت' : 'تک‌شیفت'}</b>
-                    <span className="block kbd leading-6">در تک‌شیفت، مدیر برای بازهٔ فعال مسئول ثبت‌شده را انتخاب می‌کند؛ در چندشیفت، کارکنان همان قالب‌های پایین برنامه‌ریزی می‌شوند. در هر دو حالت، مسئولیت مالی فقط بعد از احراز هویت شخصی و بازکردن صندوق واقعی شروع می‌شود.</span>
-                  </span>
-                </label>
+              <div className="rounded border-2 border-indigo-300 bg-indigo-50 p-3 space-y-3">
+                <div className="font-bold text-indigo-950">گردش‌کار مسئولیت و برنامه‌ریزی حضانت</div>
+                <p className="kbd leading-6">
+                  این دو روش عمداً جدا هستند؛ تیک مشترک یا انتخاب نام، مسئولیت مالی ایجاد نمی‌کند. در هر دو روش فقط PIN شخصی و شمارش فیزیکی هنگام بازکردن صندوق مسئولیت می‌سازد.
+                </p>
+                <div className="grid md:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    className={`rounded border-2 p-3 text-right ${shift.custodyMode === 'SINGLE_SHIFT' ? 'border-brand bg-white' : 'border-slate-300 bg-slate-50'}`}
+                    disabled={!isManager || custodySchedulingBusy}
+                    onClick={() => { setShift((current) => ({ ...current, custodyMode: 'SINGLE_SHIFT' })); setDirty(true) }}
+                  >
+                    <b>تک‌شیفت: یک مسئول اصلی روزانه</b>
+                    <span className="block kbd mt-1 leading-6">یک کارمند فعال برای کل روز انتخاب می‌شود. قالب‌های چندشیفت پایین هیچ کارمند جایگزینی برای او نمی‌سازند.</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`rounded border-2 p-3 text-right ${shift.custodyMode === 'MULTI_SHIFT' ? 'border-brand bg-white' : 'border-slate-300 bg-slate-50'}`}
+                    disabled={!isManager || custodySchedulingBusy}
+                    onClick={() => { setShift((current) => ({ ...current, custodyMode: 'MULTI_SHIFT', singleShiftCustodianUserId: null })); setDirty(true) }}
+                  >
+                    <b>چندشیفت: کارکنان مستقل هر شیفت</b>
+                    <span className="block kbd mt-1 leading-6">کارکنانِ هر قالب زمانی پایین جداگانه تعیین می‌شوند؛ فقط فرد ثبت‌شده در بازهٔ فعال می‌تواند صندوق را تحویل بگیرد.</span>
+                  </button>
+                </div>
+
+                {shift.custodyMode === 'SINGLE_SHIFT' ? (
+                  <div className="rounded border border-indigo-200 bg-white p-3 space-y-2">
+                    <div className="font-bold">تک‌شیفت · مسئول اصلی روزانه</div>
+                    <label className="flex flex-col gap-1 max-w-md">
+                      <span className="text-sm">کارمند فعالِ مسئول</span>
+                      <select
+                        className="inp"
+                        value={String(shift.singleShiftCustodianUserId ?? '')}
+                        disabled={!isManager || custodySchedulingBusy}
+                        onChange={(e) => { const id = Number(e.target.value) || null; setShift((current) => ({ ...current, singleShiftCustodianUserId: id })); setDirty(true) }}
+                      >
+                        <option value="">انتخاب مسئول اصلی روزانه…</option>
+                        {staffRows.filter((staff) => staff.isActive && (staff.role === 'MANAGER' || staff.role === 'CASHIER')).map((staff) => <option key={staff.id} value={staff.id}>{staff.name} · {staff.roleLabel}</option>)}
+                      </select>
+                    </label>
+                    <p className="kbd leading-6">این انتخاب فقط واجدبودن برای تحویل‌گیری را مشخص می‌کند. حتی همین فرد نیز بدون PIN شخصی و ثبت شمارش واقعی نمی‌تواند مسئول صندوق شود.</p>
+                  </div>
+                ) : (
+                  <div className="rounded border border-indigo-200 bg-white p-3">
+                    <b>چندشیفت · برنامهٔ مستقل هر شیفت</b>
+                    <p className="kbd leading-6 mt-1">کارکنان هر بازه در بخش «برنامهٔ چندشیفت» پایین تعیین می‌شوند. ذخیره فقط وقتی ممکن است که دست‌کم یک قالب فعال، کارمند فعال داشته باشد.</p>
+                  </div>
+                )}
+
                 <label className="flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={shift.reminderEnabled} onChange={(e) => { setShift((current) => ({ ...current, reminderEnabled: e.target.checked })); setDirty(true) }} />
                   یادآوری پایان برنامه روشن باشد
@@ -3663,7 +3728,17 @@ export default function Settings() {
                   <span>مهلت هشدار بعد از پایان (دقیقه)</span>
                   <input className="inp w-24" inputMode="numeric" value={String(shift.overrunGraceMinutes)} onChange={(e) => { const minutes = Math.max(0, Math.min(1440, Math.round(Number(toLatinDigits(e.target.value).replace(/\D/g, '')) || 0))); setShift((current) => ({ ...current, overrunGraceMinutes: minutes })); setDirty(true) }} />
                 </label>
-                <p className="kbd leading-6">این تنظیمات با «ذخیرهٔ تنظیمات» اصلی ذخیره می‌شوند. برنامهٔ legacy حضانت از اینجا نوشته نمی‌شود و تا تصمیم انتقال مدیر دست‌نخورده می‌ماند.</p>
+                <label className="flex flex-col gap-1">
+                  <span className="text-sm">علت تغییر روش یا مسئول اصلی (هنگام بازبودن مسئولیت، حداقل ۱۰ کاراکتر و اجباری است)</span>
+                  <input className="inp" value={custodySchedulingReason} onChange={(e) => setCustodySchedulingReason(e.target.value)} disabled={!isManager || custodySchedulingBusy} placeholder="مثلاً تغییر رسمی برنامهٔ کاری امروز" />
+                </label>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button className="btn btn-primary" onClick={() => void saveCustodySchedulingWorkflow()} disabled={!isManager || custodySchedulingBusy}>
+                    {custodySchedulingBusy ? 'در حال حفظ امن مسئولیت…' : 'ثبت گردش‌کار حضانت'}
+                  </button>
+                  <span className="kbd">این دکمه هر دو تنظیم قدیمی/جدید را با هم ذخیره می‌کند؛ اگر صندوق باز باشد، مسئولیت همان شخص در یک تراکنش freeze و سپس با epoch تازه حفظ می‌شود.</span>
+                </div>
+                <p className="kbd leading-6">برنامهٔ legacy حضانت از اینجا نوشته، تبدیل یا حذف نمی‌شود و تا تصمیم انتقال مدیر دست‌نخورده می‌ماند.</p>
               </div>
 
               {/* ---------- سوییچ حالت ---------- */}
@@ -3854,8 +3929,9 @@ export default function Settings() {
                 </table>
               </div>
 
+              {shift.custodyMode === 'MULTI_SHIFT' ? (
               <div className="space-y-2">
-                <div className="font-bold">برنامه، کارکنان و مجوز تحویل میان‌روز هر شیفت</div>
+                <div className="font-bold">برنامهٔ چندشیفت: کارکنان و مجوز تحویل میان‌روز هر شیفت</div>
                 <p className="kbd leading-6">این بخش منبع canonical برنامه‌های جدید است. کارمند برنامه‌ریزی‌شده فقط «واجد انتخاب» می‌شود؛ تا PIN خودش را وارد و صندوق را باز نکند، هیچ مسئولیت مالی ندارد.</p>
                 {shift.templates.map((template, index) => (
                   <details key={`schedule-${template.id}`} className="rounded border bg-slate-50 p-3" open={shift.templates.length === 1}>
@@ -3885,6 +3961,12 @@ export default function Settings() {
                   </details>
                 ))}
               </div>
+              ) : (
+                <div className="rounded border border-indigo-200 bg-indigo-50 p-3 space-y-1">
+                  <b>تک‌شیفت: برنامهٔ کارکنانِ هر قالب غیرفعال است</b>
+                  <p className="kbd leading-6">در این روش فقط مسئول اصلی روزانهٔ بالا برای تحویل‌گیری صندوق واجد است. نام و ساعت قالب‌ها همچنان برای نمایش و گزارش نشست‌های عادی نگه داشته می‌شوند، اما انتخاب کارمند در آن‌ها نمی‌تواند مسئولیت حضانت بسازد.</p>
+                </div>
+              )}
 
               <div className="flex gap-2 flex-wrap items-center">
                 <button className="btn btn-primary" onClick={addShift}>

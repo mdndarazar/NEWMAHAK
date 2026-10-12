@@ -1070,8 +1070,13 @@ export interface ShiftConfig {
   names: string[]
   /** «تعیین شیفت بر اساس ساعت» — پیش‌فرض خاموش */
   byTime: boolean
-  /** منبع واحد mode عملیاتی حضانت؛ داده‌های ShiftPlan قدیمی تا بازبینی مهاجرت نمی‌شوند. */
+  /** منبع mode عملیاتی حضانت پس از تصمیم صریح مدیر. تا وقتی false است، نصبِ
+   * قدیمی با custody.config پیشین خودش رفتار می‌کند و هیچ تبدیل خاموشی رخ نمی‌دهد. */
   custodyMode: 'SINGLE_SHIFT' | 'MULTI_SHIFT'
+  custodyModeConfigured: boolean
+  /** در تک‌شیفت دقیقاً یک مسئول اصلی روزانه مشخص می‌شود؛ در چندشیفت نادیده
+   * گرفته می‌شود و کارکنان هر template مستقل‌اند. */
+  singleShiftCustodianUserId: number | null
   /** یادآوری پایان برنامه‌های canonical روشن است؟ */
   reminderEnabled: boolean
   /** مهلت هشدار بعد از پایان برنامه، دقیقه. */
@@ -1108,8 +1113,10 @@ export function createShiftTemplateId(): string {
 export const DEFAULT_SHIFT_CONFIG: ShiftConfig = {
   names: DEFAULT_SHIFT_TEMPLATES.map((t) => t.name),
   byTime: false,
-  // محصول تازه همان حالت تک‌شیفتِ بی‌اجبار را نگه می‌دارد؛ چندشیفت تصمیم صریح مدیر است.
+  // نصب/دادهٔ قدیمی تا بازبینی صریح مدیر، از custody.config پیشین می‌خواند.
   custodyMode: 'SINGLE_SHIFT',
+  custodyModeConfigured: false,
+  singleShiftCustodianUserId: null,
   reminderEnabled: true,
   overrunGraceMinutes: 60,
   templates: DEFAULT_SHIFT_TEMPLATES.map((t) => ({ ...t, staffIds: [...t.staffIds] })),
@@ -1566,9 +1573,16 @@ export const parseShiftConfig = (raw: unknown): ShiftConfig => {
     })
   }
 
+  const singleShiftCustodianUserId = Math.round(Number(obj.singleShiftCustodianUserId))
   return {
     byTime: Boolean(obj.byTime),
     custodyMode: obj.custodyMode === 'MULTI_SHIFT' ? 'MULTI_SHIFT' : 'SINGLE_SHIFT',
+    // Absence is intentional legacy compatibility—not an implied conversion.
+    custodyModeConfigured: obj.custodyModeConfigured === true,
+    singleShiftCustodianUserId:
+      Number.isSafeInteger(singleShiftCustodianUserId) && singleShiftCustodianUserId > 0
+        ? singleShiftCustodianUserId
+        : null,
     reminderEnabled: obj.reminderEnabled !== false,
     overrunGraceMinutes: Math.min(1440, Math.max(0, Math.round(Number(obj.overrunGraceMinutes)) || 60)),
     templates,

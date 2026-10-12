@@ -556,6 +556,8 @@ export const IPC = {
   settingsShiftByTime: 'settings:shift:byTime',
   /** نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت (۰=خاموش؛ تغییر با رمز مدیر) */
   settingsShiftOvertimeMax: 'settings:shift:overtimeMax',
+  /** تنها مسیر تغییر روش تک‌شیفت/چندشیفت و مسئول اصلی روزانه؛ دو config قدیمی/جدید را اتمی همگام می‌کند. */
+  settingsCustodySchedulingWorkflow: 'settings:shift:custodySchedulingWorkflow',
   /**
    * جلسه ۱۹ · بند ۹ — «تاریخ و ساعت رسمی»: خواندن، ذخیره‌ی افست دستی، و دکمه‌ی
    * «بررسی ساعت سیستم» (بدون نیاز به اینترنت).

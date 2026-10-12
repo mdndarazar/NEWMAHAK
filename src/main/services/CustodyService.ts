@@ -140,6 +140,19 @@ async function shiftSchedulingOf(client: Client = prisma): Promise<ShiftConfig> 
   return parseShiftConfig(row?.value ?? null)
 }
 
+/** There were historically two persisted mode fields.  An old installation is
+ * deliberately left on its custody.config decision until the manager completes
+ * the explicit workflow, which writes both fields atomically.  From that point
+ * onward shift.config is the sole operational scheduling authority. */
+function effectiveCustodyMode(custody: CustodyConfig, scheduling: ShiftConfig): 'SINGLE_SHIFT' | 'MULTI_SHIFT' {
+  if (scheduling.custodyModeConfigured) return scheduling.custodyMode
+  // Pre-workflow canonical multi-shift templates were already an explicit,
+  // persisted scheduling choice.  Keep them governing rather than letting the
+  // newly added marker downgrade an existing installation to custody.config.
+  if (scheduling.custodyMode === 'MULTI_SHIFT' && hasCanonicalAssignments(scheduling)) return 'MULTI_SHIFT'
+  return custody.mode
+}
+
 /** A plan describes expected staffing only. Missing, late, or absent scheduled
  * staff never blocks sales; it merely produces a reminder tied to the actual
  * authenticated custody session. */
@@ -341,7 +354,7 @@ export const custodyService = {
     const overrunGraceMinutes = template ? scheduling.overrunGraceMinutes : cfg.overrunGraceMinutes
     const reminderStart = scheduledEndAt ? new Date(scheduledEndAt.getTime() + overrunGraceMinutes * 60_000) : null
     const repeatMinutes = Math.max(5, Number(template?.reminderRepeatMin ?? scheduledPlan?.reminderRepeatMin ?? 15))
-    const scheduleMode = template ? scheduling.custodyMode : cfg.mode
+    const scheduleMode = effectiveCustodyMode(cfg, scheduling)
     const remindersEnabled = template ? scheduling.reminderEnabled : cfg.reminderEnabled
     const now = Date.now()
     const reminderDue = !!(scheduleMode === 'MULTI_SHIFT' && remindersEnabled && reminderStart && now >= reminderStart.getTime())
@@ -352,6 +365,16 @@ export const custodyService = {
        * must use this durable, fail-closed value—not just the feature flag. */
       governed: cfg.enabled || state.state !== 'NO_SESSION' || unresolved.length > 0,
       config: cfg,
+      /** UI hint only; Main still verifies the selected personal PIN and this
+       * policy again in open().  It prevents a single-shift dialog from
+       * presenting unrelated staff as selectable daily custodians. */
+      schedulingPolicy: {
+        mode: scheduleMode,
+        configured: scheduling.custodyModeConfigured,
+        singleShiftCustodianUserId: scheduling.custodyModeConfigured && scheduleMode === 'SINGLE_SHIFT'
+          ? scheduling.singleShiftCustodianUserId
+          : null
+      },
       state: state.state,
       epoch: state.epoch,
       activeShiftId: state.activeShiftId,
@@ -540,6 +563,13 @@ export const custodyService = {
       await this.verifyPin(input.managerUserId, input.managerPassword, { requireManager: true })
     }
     const next = parseCustodyConfig(input.config)
+    // Once the manager-review workflow has reconciled the two mode records,
+    // mode is no longer a general custody toggle.  Pre-workflow installations
+    // retain their legacy route so an update never silently changes their
+    // active scheduling model before review.
+    const scheduling = await shiftSchedulingOf(prisma)
+    if (scheduling.custodyModeConfigured && current.mode !== next.mode)
+      throw new BusinessError('تغییر تک‌شیفت/چندشیفت فقط از گردش‌کار برنامه‌ریزی حضانت در تنظیمات مجاز است.', 'CUSTODY_MODE_WORKFLOW_REQUIRED')
     /** A fresh install is deliberately SINGLE_SHIFT. MULTI_SHIFT is an explicit
      * staffing policy, not a visual toggle: at least one active named plan must
      * already have a scheduled person before it can govern operations. */
@@ -572,15 +602,23 @@ export const custodyService = {
     return prisma.$transaction(async (tx: Client) => {
       const [cfg, scheduling] = await Promise.all([configOf(tx), shiftSchedulingOf(tx)])
       if (!cfg.enabled) throw new BusinessError('ماژول حضانت صندوق هنوز فعال نشده است.')
-      /** Shift Settings becomes canonical as soon as the manager schedules at
-       * least one active person — in both SINGLE_SHIFT and MULTI_SHIFT modes.
-       * Fresh installs with no scheduled person retain the simple legacy-free
-       * single-shift path; historical ShiftPlan is fallback only for old
-       * multi-shift installations which have not configured canonical staff. */
-      const canonicalConfigured = hasCanonicalAssignments(scheduling)
+      /** Once the explicit workflow is complete, a single daily custodian and
+       * independent multi-shift assignments are two distinct rules—not a
+       * cosmetic checkbox over the same template list.  Before that review,
+       * preserve an old installation's custody.config mode and its legacy plan
+       * fallback without silently converting records. */
+      const custodyMode = effectiveCustodyMode(cfg, scheduling)
+      // Canonical template assignments already saved by pre-Phase-7 versions
+      // remain operational exactly as recorded.  Only a manager-reviewed
+      // workflow switches single shift to its distinct daily-custodian rule.
+      const canonicalConfigured = scheduling.custodyModeConfigured
+        ? custodyMode === 'MULTI_SHIFT'
+        : hasCanonicalAssignments(scheduling)
+      if (scheduling.custodyModeConfigured && custodyMode === 'SINGLE_SHIFT' && scheduling.singleShiftCustodianUserId !== actor.userId)
+        throw new BusinessError('در حالت تک‌شیفت فقط مسئول اصلی روزانهٔ ثبت‌شده می‌تواند با رمز شخصی صندوق را تحویل بگیرد.', 'NOT_DAILY_CUSTODIAN')
       const plan = canonicalConfigured
         ? canonicalPlanForOpen(scheduling, actor.userId)
-        : cfg.mode === 'MULTI_SHIFT'
+        : custodyMode === 'MULTI_SHIFT'
           ? await planForOpen(tx, actor.userId)
           : null
       if (canonicalConfigured && !plan)
@@ -999,7 +1037,9 @@ export const custodyService = {
     if (state.state !== 'ACTIVE' || !state.activeShiftId) throw new BusinessError('نشست فعالی برای تحویل وجود ندارد.', 'NO_OPEN_SESSION')
     const fromMeta = await prisma.custodyShiftMeta.findUnique({ where: { shiftId: state.activeShiftId } })
     if (!fromMeta) throw new BusinessError('اطلاعات حضانت نشست فعلی ناقص است.', 'CUSTODY_INVARIANT_BROKEN')
-    const scheduling = fromMeta.templateId ? await shiftSchedulingOf(prisma) : null
+    const [cfg, scheduling] = fromMeta.templateId
+      ? await Promise.all([configOf(prisma), shiftSchedulingOf(prisma)])
+      : [null, null]
     const canonicalTemplate = fromMeta.templateId
       ? scheduling?.templates.find((row) => row.id === fromMeta.templateId) ?? null
       : null
@@ -1019,7 +1059,7 @@ export const custodyService = {
     if (!receiver?.isActive || !credential || credential.status !== 'ACTIVE' || credential.mustChange)
       throw new BusinessError('تحویل‌گیرنده باید کارمند فعال با رمز شخصیِ غیرموقت باشد.', 'RECEIVER_NO_PIN')
     if (receiver.role !== 'MANAGER' && receiver.role !== 'CASHIER') throw new BusinessError('این نقش مجاز به تحویل‌گیری صندوق نیست.', 'NO_PERMISSION')
-    const canonicalMultiShift = scheduling?.custodyMode === 'MULTI_SHIFT'
+    const canonicalMultiShift = !!(cfg && scheduling && effectiveCustodyMode(cfg, scheduling) === 'MULTI_SHIFT')
     const nextShiftPlan = fromMeta.templateId && canonicalMultiShift && handoverKind === 'SHIFT_CHANGE' && scheduledEnd && scheduling
       // End is exclusive; +1 ms selects the incoming template at the planned boundary.
       ? canonicalPlanForOpen(scheduling, toUserId, new Date(scheduledEnd.getTime() + 1))
@@ -1194,9 +1234,9 @@ export const custodyService = {
           ? { legacyPlanId: null, templateId: String(incomingSnapshot.templateId), title: String(incomingSnapshot.title ?? 'شیفت بعدی برنامه‌ریزی‌شده'), scheduledEndAt: incomingSnapshot.scheduledEndAt ? new Date(String(incomingSnapshot.scheduledEndAt)) : null, reminderRepeatMin: Number(incomingSnapshot.reminderRepeatMin) || 15, allowMidDayHandover: incomingSnapshot.allowMidDayHandover === true }
           : sourceMeta?.templateId
             ? { legacyPlanId: null, templateId: sourceMeta.templateId, title: sourceMeta.planTitle ?? sourceTemplate?.name ?? 'شیفت برنامه‌ریزی‌شده', scheduledEndAt: sourceMeta.scheduledEndAt, reminderRepeatMin: sourceTemplate?.reminderRepeatMin ?? 15, allowMidDayHandover: sourceTemplate?.allowMidDayHandover ?? false }
-            : scheduling.custodyMode === 'MULTI_SHIFT'
+            : scheduling.custodyModeConfigured && effectiveCustodyMode(cfg, scheduling) === 'MULTI_SHIFT'
               ? canonicalPlanForOpen(scheduling, receiver.userId)
-              : cfg.mode === 'MULTI_SHIFT'
+              : effectiveCustodyMode(cfg, scheduling) === 'MULTI_SHIFT'
                 ? await planForOpen(tx, receiver.userId)
                 : null
         const next = await shiftService.createSession(tx, { staffId: receiver.userId, staffConfirmed: true, actorId: receiver.userId, mode: 'HANDOVER', openIdempotencyKey: live.idempotencyKey, openIdempotencyFingerprint: `custody-handover:${handoverId}`, note: 'تحویل احرازشده صندوق' })
