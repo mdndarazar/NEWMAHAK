@@ -21,6 +21,11 @@ process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
 const { harnessClient } = await import(join(root, 'test/harness/stubs/prismaClient.mjs'))
 const { makeSeeder } = await import(join(root, 'test/harness/seed.mjs'))
 const { salesService } = await import(join(root, 'src/main/services/SalesService.ts'))
+const { DEFAULT_MANAGER_PASSWORD: PW } = await import(join(root, 'src/shared/receipt.ts'))
+const RETURN_UPDATE_GATE = {
+  managerPassword: PW,
+  overrideReason: 'اصلاح کنترل‌شدهٔ حجم برگشتی برای آزمون chunk'
+}
 const { toJalaliDate } = await import(join(root, 'src/shared/jalali.ts'))
 const db = harnessClient(); const seed = makeSeeder(db); const sql = db.$harness.db
 
@@ -115,12 +120,22 @@ console.log('\n— ۳) returnUpdate از ۱ قلم به ۵۰۱ قلم و سپس 
   eq('برگشت یک‌قلمی بدون خطا', r0?.__error ?? null, null)
   const ret = seed.one('SELECT id, total FROM "SaleReturn" WHERE invoiceId = ?', sale.id)
   eq('جمع برگشت یک‌قلمی = ۱٬۰۰۰', Number(ret?.total), 1000)
-  const u1 = await safe(() => salesService.returnUpdate({ id: ret.id, lines: items.map((it) => ({ saleItemId: it.id, qty: 1 })), userId }))
+  const u1 = await safe(() => salesService.returnUpdate({
+    id: ret.id,
+    lines: items.map((it) => ({ saleItemId: it.id, qty: 1 })),
+    userId,
+    ...RETURN_UPDATE_GATE
+  }))
   eq('ویرایش به ۵۰۱ قلم بدون خطا', u1?.__error ?? null, null)
   eq('جمع برگشت بعد از ویرایش = ۵۰۷٬۷۷۷', Number(seed.one('SELECT total FROM "SaleReturn" WHERE id = ?', ret.id).total), SUM501)
   eq('۵۰۱ ردیف برگشت بعد از ویرایش', seed.count('SaleReturnItem', 'returnId = ?', ret.id), 501)
   eq('موجودی قلم ۵۰۱ بعد از ویرایش ۹ ⇒ ۱۰', stockOf(vids[500]), 10)
-  const u2 = await safe(() => salesService.returnUpdate({ id: ret.id, lines: items.map((it) => ({ saleItemId: it.id, qty: it.variantId === vids[500] ? 1 : 0 })), userId }))
+  const u2 = await safe(() => salesService.returnUpdate({
+    id: ret.id,
+    lines: items.map((it) => ({ saleItemId: it.id, qty: it.variantId === vids[500] ? 1 : 0 })),
+    userId,
+    ...RETURN_UPDATE_GATE
+  }))
   eq('ویرایش به فقط قلم ۵۰۱ بدون خطا', u2?.__error ?? null, null)
   eq('جمع برگشت = ۷٬۷۷۷', Number(seed.one('SELECT total FROM "SaleReturn" WHERE id = ?', ret.id).total), 7777)
   eq('فقط یک ردیف برگشت (قلم ۵۰۱) با تعداد مثبت', seed.count('SaleReturnItem', 'returnId = ? AND qty > 0', ret.id), 1)

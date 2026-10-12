@@ -70,7 +70,7 @@ seed.insert('StoreCreditRedemption', { creditId: C1, code: 'SC-1', amount: 300_0
 const rA = seed.insert('SaleReturn', { invoiceId: i1, total: 0, kind: 'RETURN', returnedAt: T0 + 300_000, returnedAtJalali: today, userId: A, shiftId: S })
 const rB = seed.insert('SaleReturn', { invoiceId: i1, total: 0, kind: 'RETURN', returnedAt: T0 + 310_000, returnedAtJalali: today, userId: B, shiftId: S })
 seed.insert('StoreCredit', { code: 'SC-A', amount: 250_000, source: 'EXCHANGE', returnId: rA, status: 'ACTIVE', issuedAt: T0 + 300_000, issuedAtJalali: today, userId: A, createdAt: T0 + 300_000 })
-seed.insert('StoreCredit', { code: 'SC-B', amount: 900_000, source: 'EXCHANGE', returnId: rB, status: 'ACTIVE', issuedAt: T0 + 310_000, issuedAtJalali: today, userId: B, createdAt: T0 + 310_000 })
+const SC_B = seed.insert('StoreCredit', { code: 'SC-B', amount: 900_000, source: 'EXCHANGE', returnId: rB, status: 'ACTIVE', issuedAt: T0 + 310_000, issuedAtJalali: today, userId: B, createdAt: T0 + 310_000 })
 
 const KEYS = ['realCash', 'priorCreditSettlements', 'priorClearedCheques', 'storeCreditUsed', 'storeCreditIssued', 'overpayReceived', 'managerAccountReceived',
   // نشست ۱۶۲ · S162-D1 — ردیف‌های Y18/Y19
@@ -128,6 +128,7 @@ console.log('— فیلتر کارمند ب (A108-02 صدور)')
 const rowsB = await bridge({ userId: B })
 check(rowsB, 'storeCreditIssued', '[کارمند ب] ')
 const iss = rowsB.find((r) => r.key === 'storeCreditIssued')
-eq('[کارمند ب] drill صدور فقط SC-B', (iss?.sources ?? []).map((s) => s.label.includes('SC-B')), [true])
+eq('[کارمند ب] drill صدور فقط شناسهٔ امن اعتبار ب است', (iss?.sources ?? []).map((s) => s.id), [SC_B])
+eq('[کارمند ب] drill صدور credential اعتبار را در برچسب افشا نمی‌کند', (iss?.sources ?? []).some((s) => s.label.includes('SC-B')), false)
 console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
 process.exitCode = bad ? 1 : 0

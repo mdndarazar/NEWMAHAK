@@ -21,11 +21,11 @@ let ok = 0, bad = 0
 const eq = (label, got, want) => { if (JSON.stringify(got) === JSON.stringify(want)) { ok++; console.log(`  ✓ ${label}`) } else { bad++; console.log(`  ✗ ${label} — انتظار ${JSON.stringify(want)}، دریافت ${JSON.stringify(got)}`) } }
 const attempt = async (fn) => { try { return { ok: true, v: await fn() } } catch (e) { return { ok: false, m: String(e?.message ?? e) } } }
 const userId = seed.user('مدیر ممیزی ۱۴۴')
-const mkReq = async (amount) => {
+const mkReq = async (amount, paidAmount = amount) => {
   const inv = seed.invoice({ grandTotal: 1_000_000 }); const invId = typeof inv === 'object' ? inv.id : inv
   const retId = seed.insert('SaleReturn', { invoiceId: invId, total: amount, returnedAt: Date.now(), returnedAtJalali: toJalaliDate(new Date()), kind: 'RETURN' })
   const req = await createCardTransferRequest(db, { returnId: retId, amount, userId })
-  await cardTransferService.pay({ id: req.id, userId, managerPassword: PW })
+  await cardTransferService.pay({ id: req.id, userId, paidAmount, managerPassword: PW })
   return { req, retId }
 }
 const adjCount = (id) => seed.count('CardTransferRequest', `kind = 'ADJUSTMENT' AND adjustsRequestId = ?`, id)
@@ -49,21 +49,25 @@ console.log('\n۱) اصلاح منفی بیش از خالص پرداخت‌شد�
 
 console.log('\n۲) اصلاح مثبت روی سند برگشت باطل‌شده')
 {
-  const { req, retId } = await mkReq(400_000)
+  // پرداخت اولیه کمتر از سقف درخواست است؛ بنابراین +۱۰۰٬۰۰۰ از کران مبلغ
+  // عبور نمی‌کند و واقعاً به گیت «سند باطل» می‌رسد.
+  const { req, retId } = await mkReq(400_000, 300_000)
   db.$harness.db.prepare('UPDATE "SaleReturn" SET voidedAt = ? WHERE id = ?').run(Date.now(), retId)
   const r = await attempt(() => cardTransferService.adjust({ id: req.id, amount: 100_000, reason: 'پرداخت بیشتر', userId, managerPassword: PW }))
   eq('+۱۰۰٬۰۰۰ روی برگشت باطل‌شده رد شد', r.ok, false)
   eq('پیام فارسی «باطل شده»', /باطل شده/.test(r.m ?? ''), true)
   eq('هیچ ردیف اصلاحی', adjCount(req.id), 0)
-  const r2 = await attempt(() => cardTransferService.adjust({ id: req.id, amount: -400_000, reason: 'مشتری پول را پس داد', userId, managerPassword: PW }))
-  eq('کنترل: پس‌گرفتن −۴۰۰٬۰۰۰ روی سند باطل مجاز', r2.ok, true)
+  const r2 = await attempt(() => cardTransferService.adjust({ id: req.id, amount: -300_000, reason: 'مشتری پول را پس داد', userId, managerPassword: PW }))
+  eq('کنترل: پس‌گرفتن پرداخت واقعی −۳۰۰٬۰۰۰ روی سند باطل مجاز', r2.ok, true)
 }
 
 console.log('\n۳) کنترل: اصلاح مثبت روی سند سالم')
 {
-  const { req } = await mkReq(300_000)
-  const r = await attempt(() => cardTransferService.adjust({ id: req.id, amount: 50_000, reason: 'کارمزد', userId, managerPassword: PW }))
-  eq('+۵۰٬۰۰۰ پذیرفته', r.ok, true)
+  // اصلاح مثبت تا سقف مبلغ درخواست مجاز است؛ پس پرداخت ناقص ۲۵۰٬۰۰۰ با
+  // +۵۰٬۰۰۰ دقیقاً در مرز ۳۰۰٬۰۰۰ می‌نشیند.
+  const { req } = await mkReq(300_000, 250_000)
+  const r = await attempt(() => cardTransferService.adjust({ id: req.id, amount: 50_000, reason: 'تکمیل پرداخت', userId, managerPassword: PW }))
+  eq('+۵۰٬۰۰۰ تا سقف درخواست پذیرفته', r.ok, true)
 }
 console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
 process.exit(bad ? 1 : 0)
