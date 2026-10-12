@@ -216,9 +216,12 @@ async function readAll(client: PrismaClient, table: string): Promise<Row[]> {
   if (!(await tableExists(client, table))) return []
   try {
     return (await client.$queryRawUnsafe<Row[]>(`SELECT * FROM "${table}"`)) ?? []
-  } catch (e) {
-    console.error('[merge] read failed', table, e)
-    return []
+  } catch (error) {
+    // جدولِ واقعاً غایب برای backup خیلی قدیمی بالا [] برمی‌گردد؛ اما خطای
+    // خواندن جدولِ موجود (خرابی/قفل/schema ناسازگار) نباید به «این بخش خالی
+    // بود» تبدیل شود، چون merge مالیِ نصفه می‌سازد.
+    console.error('[merge] read failed', table, error)
+    throw new BusinessError(`خواندن جدول «${table}» از بکاپ ناموفق بود؛ ادغام انجام نشد تا داده‌ی ناقص وارد نشود.`)
   }
 }
 
@@ -373,11 +376,13 @@ export async function mergeBackup(input: {
     // import/preview را پیش از migration و هر خواندن/نوشتن تکرار می‌کنیم.
     await assertValidBackupFile(src, tmp)
 
-    // ساختار بکاپ قدیمی‌تر؟ روی همان *کپی* به‌روزش می‌کنیم (آرشیو اصلی دست‌نخورده)
+    // ساختار بکاپ قدیمی‌تر؟ روی همان *کپی* به‌روزش می‌کنیم (آرشیو اصلی دست‌نخورده).
+    // ادامه‌دادن با schema نامعلوم، خواندن چند جدول و ردکردن بقیه را ممکن می‌کرد.
     try {
       await applyMigrations(src, tmp, { touchFile: false })
-    } catch (e) {
-      console.error('[merge] migrate temp copy failed (ادامه با خواندن خام)', e)
+    } catch (error) {
+      console.error('[merge] migrate temp copy failed', error)
+      throw new BusinessError('به‌روزرسانی ساختار بکاپ ناموفق بود؛ ادغام برای جلوگیری از ورود ناقص انجام نشد.')
     }
 
     if (!(await tableExists(src, 'SaleInvoice')) && !(await tableExists(src, 'ProductVariant')))
