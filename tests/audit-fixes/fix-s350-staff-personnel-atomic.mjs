@@ -71,12 +71,28 @@ await runWithPanelSessionOwner(owner, async () => {
   await rejects('تضاد کد ملی هم User نیمه‌کاره نمی‌سازد', () => staffService.saveComplete(full('کارمند تکراری', validNationalId('008457594'))))
   eq('پس از تضاد، شمار User تغییر نکرد', seed.count('User'), initialUsers + 1)
   eq('پس از تضاد، شمار Profile تغییر نکرد', seed.count('StaffProfile'), 1)
+
+  const manager = await staffService.saveComplete({
+    name: 'مدیر اتمی',
+    role: 'MANAGER',
+    isActive: true,
+    correctionApprovalPassword: 'تصحیح-۳۵۰'
+  })
+  eq('رمز تأیید مدیر همراه ثبت اتمی تنظیم می‌شود', manager.staff.hasCorrectionApprovalPassword, true)
+  const managerRow = seed.one('SELECT passwordHash FROM "User" WHERE id = ?', manager.staff.id)
+  eq('رمز خام مدیر هرگز در User ذخیره نمی‌شود', String(managerRow?.passwordHash ?? '').includes('تصحیح-۳۵۰'), false)
+  await rejects('رمز تأیید برای مدیر غیرفعال پیش از هر نوشتن رد می‌شود', () =>
+    staffService.saveComplete({ name: 'مدیر غیرفعال', role: 'MANAGER', isActive: false, correctionApprovalPassword: 'تصحیح-۳۵۰' })
+  )
+  eq('رد مدیر غیرفعال User تازه نمی‌سازد', seed.count('User'), initialUsers + 2)
 })
 const audit = seed.rows('SELECT action, before, after, note FROM "AuditLog" ORDER BY id')
 const text = JSON.stringify(audit)
 eq('Audit User و Profile هر دو ثبت شده‌اند', audit.some((row) => row.action === 'STAFF_CREATE') && audit.some((row) => row.action === 'STAFF_PERSONNEL_SENSITIVE_UPDATE'), true)
 eq('Audit ثبت اتمی کد ملی خام ندارد', text.includes(validNationalId('008457594')), false)
 eq('Audit ثبت اتمی شبا خام ندارد', text.includes(validIranIban()), false)
+eq('Audit رمز تأیید مدیر را فقط به‌شکل وضعیت امن ثبت می‌کند', text.includes('تصحیح-۳۵۰'), false)
+eq('Audit تنظیم رمز تأیید مدیر در همان جریان ثبت شده است', audit.some((row) => row.action === 'SETTINGS_UPDATE' && String(row.after).includes('managerCorrectionApprovalConfigured')), true)
 clearPanelSessions(owner)
 
 console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)

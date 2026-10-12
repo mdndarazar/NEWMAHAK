@@ -605,6 +605,25 @@ export function hasManagerCorrectionApprovalSecret(raw: string | null | undefine
   return parseManagerCorrectionApprovalSecret(raw) != null
 }
 
+/**
+ * رمز خام را فقط به envelope هش‌شده تبدیل می‌کند. اعتبار مدیرِ هدف و نوشتن DB
+ * جداست تا یک transaction فراخواننده بتواند تغییر User، راز و Audit را واقعاً
+ * all-or-nothing نگه دارد.
+ */
+export function createManagerCorrectionApprovalSecret(passwordInput: string | null | undefined): string {
+  const password = normalize(passwordInput)
+  if (password.length < 4)
+    throw new BusinessError('رمز شخصی مدیر برای تأیید اصلاح باید دست‌کم ۴ نویسه باشد.')
+  const salt = randomBytes(16).toString('hex')
+  const secret: ManagerCorrectionApprovalSecret = {
+    purpose: 'MANAGER_RETURN_CORRECTION',
+    salt,
+    hash: derive(password, salt),
+    changedAt: new Date().toISOString()
+  }
+  return JSON.stringify(secret)
+}
+
 /** فقط از مسیر محافظت‌شده‌ی تنظیمات کارکنان صدا زده می‌شود؛ رمز خام هرگز Audit نمی‌شود. */
 export async function setManagerCorrectionApprovalPassword(input: {
   userId: number
@@ -613,20 +632,11 @@ export async function setManagerCorrectionApprovalPassword(input: {
 }): Promise<void> {
   const userId = Math.round(Number(input.userId))
   if (!Number.isSafeInteger(userId) || userId <= 0) throw new BusinessError('مدیر تأییدکننده نامعتبر است.')
-  const password = normalize(input.password)
-  if (password.length < 4)
-    throw new BusinessError('رمز شخصی مدیر برای تأیید اصلاح باید دست‌کم ۴ نویسه باشد.')
+  const secret = createManagerCorrectionApprovalSecret(input.password)
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, role: true, isActive: true, displayName: true } })
   if (!user || user.role !== 'MANAGER' || !user.isActive)
     throw new BusinessError('رمز شخصی تأیید فقط برای مدیر فعال قابل ثبت است.')
-  const salt = randomBytes(16).toString('hex')
-  const secret: ManagerCorrectionApprovalSecret = {
-    purpose: 'MANAGER_RETURN_CORRECTION',
-    salt,
-    hash: derive(password, salt),
-    changedAt: new Date().toISOString()
-  }
-  await prisma.user.update({ where: { id: user.id }, data: { passwordHash: JSON.stringify(secret) } })
+  await prisma.user.update({ where: { id: user.id }, data: { passwordHash: secret } })
   await audit(prisma, {
     action: AuditAction.SETTINGS_UPDATE,
     entity: 'User',

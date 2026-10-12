@@ -8,8 +8,8 @@ import { faDigits } from '@shared/jalali'
 import { PANEL_KEYS } from '@shared/panels'
 import {
   assertPanelPassword,
-  hasManagerCorrectionApprovalSecret,
-  setManagerCorrectionApprovalPassword
+  createManagerCorrectionApprovalSecret,
+  hasManagerCorrectionApprovalSecret
 } from './AuthService'
 
 /**
@@ -289,6 +289,13 @@ export const staffService = {
     const correctionApprovalPassword = String(input?.correctionApprovalPassword ?? '').trim()
     if (correctionApprovalPassword && role !== 'MANAGER')
       throw new Error('رمز شخصی تأیید اصلاح فقط برای کارمند با نقش «مدیر» قابل ثبت است.')
+    if (correctionApprovalPassword && input?.isActive === false)
+      throw new Error('رمز شخصی تأیید فقط برای مدیر فعال قابل ثبت است.')
+    /** هش از پیش و بیرون از تراکنش ساخته می‌شود؛ خودِ نوشتن User و Audit پایین
+     * داخل همان transaction است تا شکست یکی راز نیمه‌ثبت‌شده نگذارد. */
+    const correctionApprovalSecret = correctionApprovalPassword
+      ? createManagerCorrectionApprovalSecret(correctionApprovalPassword)
+      : null
 
     /**
      * نشست ۱۶۵ · S165-D4 (بند ۴-۲۹ مورد ۱، بند ۴-۳۰، بند ۵ «هر گیت در main») — فهرست کارمندان داخل پنل
@@ -314,68 +321,76 @@ export const staffService = {
     }
 
     if (id > 0 && before) {
-      const updated = await prisma.user.update({
-        where: { id },
-        // خروج نقش مدیر ⇒ راز شخصی مربوط به اختیار مدیرانه هم باقی نمی‌ماند.
-        data: { displayName: name, role, isActive: input?.isActive !== false, ...(role === 'MANAGER' ? {} : { passwordHash: '' }) },
-        select: SELECT
-      })
-      if (correctionApprovalPassword)
-        await setManagerCorrectionApprovalPassword({
-          userId: updated.id,
-          password: correctionApprovalPassword,
-          actorUserId: input?.userId ?? null
+      const updated = await prisma.$transaction(async (tx: any) => {
+        const row = await tx.user.update({
+          where: { id },
+          // خروج نقش مدیر ⇒ راز شخصی مربوط به اختیار مدیرانه هم باقی نمی‌ماند.
+          data: {
+            displayName: name,
+            role,
+            isActive: input?.isActive !== false,
+            ...(correctionApprovalSecret ? { passwordHash: correctionApprovalSecret } : role === 'MANAGER' ? {} : { passwordHash: '' })
+          },
+          select: SELECT
         })
-      const finalUpdated = correctionApprovalPassword
-        ? await prisma.user.findUniqueOrThrow({ where: { id: updated.id }, select: SELECT })
-        : updated
-      await prisma.auditLog.create({
-        data: {
+        await auditOrThrow(tx, {
           action: 'STAFF_UPDATE',
           entity: 'User',
           entityId: id,
           userId: input?.userId ?? null,
           before: JSON.stringify(shape(before)),
-          after: JSON.stringify(shape(finalUpdated)),
-          note: `ویرایش کارمند «${name}» · نقش ${STAFF_ROLE_LABELS[role]} · ${finalUpdated.isActive ? 'فعال' : 'غیرفعال'}`
-        }
+          after: JSON.stringify(shape(row)),
+          note: `ویرایش کارمند «${name}» · نقش ${STAFF_ROLE_LABELS[role]} · ${row.isActive ? 'فعال' : 'غیرفعال'}`
+        })
+        if (correctionApprovalSecret)
+          await auditOrThrow(tx, {
+            action: 'SETTINGS_UPDATE',
+            entity: 'User',
+            entityId: row.id,
+            userId: input?.userId ?? null,
+            after: JSON.stringify({ managerCorrectionApprovalConfigured: true }),
+            note: `رمز شخصی تأیید اصلاح دیرهنگام برای مدیر «${row.displayName}» تنظیم/تعویض شد (خود رمز ذخیره یا نمایش داده نمی‌شود).`
+          })
+        return row
       })
       // کارمندی که غیرفعال شد، نباید «کارمند فعال» بماند
-      if (!finalUpdated.isActive && (await readActiveId()) === id) await this.setActive({ userId: null })
-      return shape(finalUpdated)
+      if (!updated.isActive && (await readActiveId()) === id) await this.setActive({ userId: null })
+      return shape(updated)
     }
 
-    const created = await prisma.user.create({
-      data: {
-        username: await uniqueUsername(name),
-        // این کاربر جایی وارد برنامه نمی‌شود (سیستم ورود نداریم)، پس رمز معنی ندارد.
-        passwordHash: '',
-        displayName: name,
-        role,
-        isActive: input?.isActive !== false
-      },
-      select: SELECT
-    })
-    if (correctionApprovalPassword)
-      await setManagerCorrectionApprovalPassword({
-        userId: created.id,
-        password: correctionApprovalPassword,
-        actorUserId: input?.userId ?? null
+    const username = await uniqueUsername(name)
+    const created = await prisma.$transaction(async (tx: any) => {
+      const row = await tx.user.create({
+        data: {
+          username,
+          // این کاربر جایی وارد برنامه نمی‌شود (سیستم ورود نداریم)، پس رمز معنی ندارد.
+          passwordHash: correctionApprovalSecret ?? '',
+          displayName: name,
+          role,
+          isActive: input?.isActive !== false
+        },
+        select: SELECT
       })
-    const finalCreated = correctionApprovalPassword
-      ? await prisma.user.findUniqueOrThrow({ where: { id: created.id }, select: SELECT })
-      : created
-    await prisma.auditLog.create({
-      data: {
+      await auditOrThrow(tx, {
         action: 'STAFF_CREATE',
         entity: 'User',
-        entityId: created.id,
+        entityId: row.id,
         userId: input?.userId ?? null,
-        after: JSON.stringify(shape(finalCreated)),
+        after: JSON.stringify(shape(row)),
         note: `ثبت کارمند تازه «${name}» · نقش ${STAFF_ROLE_LABELS[role]}`
-      }
+      })
+      if (correctionApprovalSecret)
+        await auditOrThrow(tx, {
+          action: 'SETTINGS_UPDATE',
+          entity: 'User',
+          entityId: row.id,
+          userId: input?.userId ?? null,
+          after: JSON.stringify({ managerCorrectionApprovalConfigured: true }),
+          note: `رمز شخصی تأیید اصلاح دیرهنگام برای مدیر «${row.displayName}» تنظیم/تعویض شد (خود رمز ذخیره یا نمایش داده نمی‌شود).`
+        })
+      return row
     })
-    return shape(finalCreated)
+    return shape(created)
   },
 
   /**
@@ -480,6 +495,11 @@ export const staffService = {
     const correctionApprovalPassword = String(input?.correctionApprovalPassword ?? '').trim()
     if (correctionApprovalPassword && role !== 'MANAGER')
       throw new BusinessError('رمز شخصی تأیید اصلاح فقط برای کارمند با نقش «مدیر» قابل ثبت است.')
+    if (correctionApprovalPassword && input?.isActive === false)
+      throw new BusinessError('رمز شخصی تأیید فقط برای مدیر فعال قابل ثبت است.')
+    const correctionApprovalSecret = correctionApprovalPassword
+      ? createManagerCorrectionApprovalSecret(correctionApprovalPassword)
+      : null
     const [beforeUser, beforeProfileForMerge] = id > 0
       ? await Promise.all([
           prisma.user.findUnique({ where: { id }, select: SELECT }),
@@ -496,13 +516,18 @@ export const staffService = {
       const user = id > 0
         ? await tx.user.update({
             where: { id },
-            data: { displayName: name, role, isActive: input?.isActive !== false, ...(role === 'MANAGER' ? {} : { passwordHash: '' }) },
+            data: {
+              displayName: name,
+              role,
+              isActive: input?.isActive !== false,
+              ...(correctionApprovalSecret ? { passwordHash: correctionApprovalSecret } : role === 'MANAGER' ? {} : { passwordHash: '' })
+            },
             select: SELECT
           })
         : await tx.user.create({
             data: {
               username: username!,
-              passwordHash: '',
+              passwordHash: correctionApprovalSecret ?? '',
               displayName: name,
               role,
               isActive: input?.isActive !== false
@@ -533,12 +558,17 @@ export const staffService = {
         after: JSON.stringify(redactedPersonnelSummary(profile)),
         note: `ثبت اتمی پروندهٔ حساس کارمند «${name}» با نشست سراسری مدیر · فیلدهای تغییرکرده: ${changedFields.join('، ') || 'بدون تغییر'}`
       })
+      if (correctionApprovalSecret)
+        await auditOrThrow(tx, {
+          action: 'SETTINGS_UPDATE',
+          entity: 'User',
+          entityId: user.id,
+          userId: null,
+          after: JSON.stringify({ managerCorrectionApprovalConfigured: true }),
+          note: `رمز شخصی تأیید اصلاح دیرهنگام برای مدیر «${user.displayName}» تنظیم/تعویض شد (خود رمز ذخیره یا نمایش داده نمی‌شود).`
+        })
       return { user, profile }
     })
-    // راز مستقل «تأیید اصلاح» از دادهٔ پرسنلی نیست و هرگز raw نمی‌شود؛ تنظیمش
-    // پس از transaction اصلی انجام می‌شود تا hash در Audit/DTO پرسنلی وارد نشود.
-    if (correctionApprovalPassword)
-      await setManagerCorrectionApprovalPassword({ userId: result.user.id, password: correctionApprovalPassword, actorUserId: null })
     if (!result.user.isActive && (await readActiveId()) === result.user.id) await this.setActive({ userId: null })
     return { staff: shape(result.user), profile: redactedPersonnelSummary(result.profile) }
   },
