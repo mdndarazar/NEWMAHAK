@@ -654,6 +654,11 @@ model Payment {
   paidAtTime   String?
   /// توضیح آزاد همان پرداختی
   note         String?
+  /// کلید opaque یک درخواست ثبت پرداخت؛ retry/دوبارکلیک با همین کلید هرگز
+  /// یک ردیف مالی دوم نمی‌سازد. null فقط برای داده یا مسیر داخلیِ قدیمی است.
+  idempotencyKey         String? @unique
+  /// اثرانگشت اقتصادی همان درخواست؛ reuse کلید برای مبلغ/فاکتور متفاوت رد می‌شود.
+  idempotencyFingerprint String?
 
   /// شماره چک (فقط برای kind = CHEQUE)
   chequeNo        String?
@@ -708,6 +713,9 @@ model Payment {
 
   chequeStatusHistory PaymentChequeStatusHistory[]
 
+  /// شماره پرداخت در هر فاکتور یک‌بار است؛ این تضمین دیتابیس، محاسبه‌ی max+1
+  /// را در برابر دو تراکنش هم‌زمان fail-closed می‌کند.
+  @@unique([invoiceId, seq])
   @@index([invoiceId])
   @@index([methodId])
   @@index([kind])

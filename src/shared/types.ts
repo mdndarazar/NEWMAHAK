@@ -397,6 +397,11 @@ export interface AddInvoicePaymentInput {
    */
   destination?: string | null
   userId?: number | null
+  /**
+   * کلید یکتای یک تلاش ثبت پرداخت. UI آن را تا پاسخ قطعی نگه می‌دارد تا retry یا
+   * دوبارکلیک همان Payment قبلی را برگرداند، نه یک دریافت مالی تازه بسازد.
+   */
+  idempotencyKey?: string | null
 }
 
 /** ویرایش یک پرداختی/چک ثبت‌شده. */

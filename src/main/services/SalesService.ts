@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { prisma } from '../db/client'
 import { createCardTransferRequest } from './CardTransferService'
 import { inventoryService } from './InventoryService'
@@ -1262,6 +1263,61 @@ async function refreshInvoiceStatus(tx: Prisma.TransactionClient, invoiceId: num
 function isReceivedPayment(p: { kind?: string | null; chequeStatus?: string | null }): boolean {
   if ((p.kind ?? PaymentEntryKind.CASH) !== PaymentEntryKind.CHEQUE) return true
   return p.chequeStatus === ChequeStatus.CLEARED
+}
+
+/**
+ * اثرانگشتِ immutable درخواست پرداخت. خودِ کلید در UI برای retry نگه داشته
+ * می‌شود؛ این hash جلوی reuse تصادفی/مخرب همان کلید برای فاکتور یا مبلغ دیگر را
+ * می‌گیرد، بدون آنکه رمز مدیر را در دیتابیس یا Audit ذخیره کند.
+ */
+function paymentAddFingerprint(input: AddInvoicePaymentInput, invoiceId: number, amount: number, isCheque: boolean): string {
+  const stable = JSON.stringify([
+    invoiceId,
+    amount,
+    isCheque ? PaymentEntryKind.CHEQUE : PaymentEntryKind.CASH,
+    isCheque ? null : input.methodId ?? null,
+    input.destination ?? null,
+    input.reference ?? null,
+    input.note ?? null,
+    input.paidAtJalali ?? null,
+    input.paidAtTime ?? null,
+    isCheque ? input.chequeNo ?? null : null,
+    isCheque ? input.bankName ?? null : null,
+    isCheque ? input.dueDateJalali ?? null : null,
+    input.confirmOverpay === true,
+    input.overpayAsCredit === true,
+    input.userId ?? null
+  ])
+  return createHash('sha256').update(stable).digest('hex')
+}
+
+/**
+ * پاسخ retry برای پرداختی که پیش‌تر commit شده است. settlement با منبع حقیقت
+ * فعلی بازسازی می‌شود (نه از payload retry) تا پاسخِ timeout هرگز ردیف مالی
+ * دوم نسازد یا مبلغی را از ورودی تکراری باور نکند.
+ */
+async function replayPaymentAdd(idempotencyKey: string, fingerprint: string): Promise<any | null> {
+  return prisma.$transaction(async (tx) => {
+    const prior: any = await (tx.payment as any).findUnique({
+      where: { idempotencyKey },
+      include: { method: true }
+    })
+    if (!prior) return null
+    if (prior.idempotencyFingerprint !== fingerprint)
+      throw new BusinessError('این کلید ثبت پرداخت قبلاً برای درخواست متفاوت استفاده شده است؛ درخواست تازه را با کلید جدید ثبت کنید.')
+    const settle = await recalcSettlement(tx, Number(prior.invoiceId))
+    return {
+      payment: shapePaymentRow(prior),
+      ...settle,
+      receiptNo: null,
+      overpaid: settle.paidTotal > settle.grandTotal,
+      overpayAmount: Math.max(0, toNumberRial(prior.overpayAmount ?? 0)),
+      remainingBefore: null,
+      destination: prior.destination ?? null,
+      overpayCredit: null,
+      replayed: true
+    }
+  }, TX_OPTIONS)
 }
 
 /** جمع پرداختی‌های دریافت‌شده از یک فهرست ردیف پرداختی. */
@@ -9591,6 +9647,19 @@ export const salesService = {
     const invoiceId = assertSafeInteger(input?.invoiceId, 'شناسه فاکتور', 1)
     const amount = assertSafeInteger(input?.amount, 'مبلغ پرداختی', 1)
     const isCheque = input?.kind === 'CHEQUE'
+    const idempotencyKey = String(input?.idempotencyKey ?? '').trim() || null
+    if (idempotencyKey && idempotencyKey.length > 200)
+      throw new BusinessError('کلید تکرارنشدن ثبت پرداخت بیش از ۲۰۰ نویسه است؛ درخواست را با کلید کوتاه تازه تکرار کنید.')
+    const idempotencyFingerprint = idempotencyKey ? paymentAddFingerprint(input, invoiceId, amount, isCheque) : null
+    /**
+     * قبل از هر گیتِ رمز/دوره، retry را برگردان: تراکنش اول ممکن است commit شده
+     * باشد ولی پاسخ در مسیر IPC از بین رفته باشد. تکرار نباید نه پول دوم بسازد و
+     * نه حتی شمارنده‌ی تلاش رمز مدیر را بی‌دلیل تغییر دهد.
+     */
+    if (idempotencyKey && idempotencyFingerprint) {
+      const replay = await replayPaymentAdd(idempotencyKey, idempotencyFingerprint)
+      if (replay) return replay
+    }
     /** نشست ۱۴۲ (S142) — methodId اعشاری/منفی دیگر بی‌سنجش به Prisma نمی‌رسد */
     if (!isCheque && input?.methodId != null) assertSafeInteger(input.methodId, 'شناسه روش پرداخت', 1)
 
@@ -9618,7 +9687,8 @@ export const salesService = {
     const addWhat = 'ثبت پرداختی با تاریخ دوره‌ی بسته'
     const addPeriodApproved = await preverifyPaymentPeriods(addMoments, addWhat, periodGate)
 
-    return prisma.$transaction(async (tx) => {
+    try {
+      return await prisma.$transaction(async (tx) => {
       const inv = await tx.saleInvoice.findUnique({
         where: { id: invoiceId },
         select: { id: true, receiptNo: true, grandTotal: true, status: true, voidedAt: true }
@@ -9764,6 +9834,8 @@ export const salesService = {
           note: input?.note?.trim() || null,
           kind: isCheque ? PaymentEntryKind.CHEQUE : PaymentEntryKind.CASH,
           seq,
+          idempotencyKey,
+          idempotencyFingerprint,
           paidAt,
           createdAt: now,
           createdByUserId: input.userId ?? null,
@@ -9844,7 +9916,19 @@ export const salesService = {
         /** نشست ۶۱ — مرجع امنِ اعتبار صادرشده از مبلغ اضافه (null = مرحله ۴: فقط ردیف دریافت پول اضافه) */
         overpayCredit: shapeOverpayCreditSafe(overpayCredit)
       }
-    }, TX_OPTIONS)
+      }, TX_OPTIONS)
+    } catch (error: any) {
+      /**
+       * دو درخواستِ هم‌کلید ممکن است پیش از commit اول هم‌زمان وارد شوند. UNIQUE
+       * دیتابیس دومی را می‌گیرد؛ حالا همان ردیف commit‌شده را برگردان، نه خطای
+       * فنی و نه پرداخت دوم. تصادم seq با کلید متفاوت عمداً replay نمی‌شود.
+       */
+      if ((error?.code === 'P2002' || /unique constraint/i.test(String(error?.message ?? ''))) && idempotencyKey && idempotencyFingerprint) {
+        const replay = await replayPaymentAdd(idempotencyKey, idempotencyFingerprint)
+        if (replay) return replay
+      }
+      throw error
+    }
   },
 
   /**

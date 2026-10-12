@@ -64,6 +64,14 @@ function isDirectPaymentMethod(method: Method): boolean {
   return !['CREDIT', 'STORE_CREDIT', 'EXCHANGE_CREDIT'].includes(method.kind ?? '')
 }
 
+/** همان کلید تا پاسخ قطعی نگه داشته می‌شود؛ fallback فقط برای runtime قدیمی است. */
+function newPaymentRequestKey(): string {
+  const uuid = globalThis.crypto?.randomUUID?.()
+  return uuid
+    ? `payment-add-${uuid}`
+    : `payment-add-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`
+}
+
 export default function InvoicePaymentsModal({
   open,
   invoiceId,
@@ -95,6 +103,8 @@ export default function InvoicePaymentsModal({
     | { paymentId: number; state: 'failed'; msg: string }
   >(null)
   const receiptPrintingRef = useRef(false)
+  /** retry همان کلیک/timeout باید همان ردیف Payment را بخواند، نه ردیف دوم بسازد. */
+  const addPaymentRequestKey = useRef<string | null>(null)
 
   // ---- فرم پرداختی جدید ----
   const [kind, setKind] = useState<'CASH' | 'CHEQUE'>('CASH')
@@ -190,6 +200,7 @@ export default function InvoicePaymentsModal({
   useEffect(() => {
     if (!open) {
       issuedCreditOpenRef.current = false
+      addPaymentRequestKey.current = null
       return
     }
     setKind('CASH')
@@ -333,10 +344,12 @@ export default function InvoicePaymentsModal({
     }
     setBusy(true)
     setDestWarn(null)
+    const idempotencyKey = addPaymentRequestKey.current ?? (addPaymentRequestKey.current = newPaymentRequestKey())
     let printedPaymentId: number | null = null
     try {
       const res = await call<any>(CH.salePaymentAdd, {
         invoiceId,
+        idempotencyKey,
         kind,
         amount: value,
         // نشست ۶۲ — confirmOverpay / overpayAsCredit / managerPassword فقط از ماشین حالت فلو
@@ -351,6 +364,9 @@ export default function InvoicePaymentsModal({
         dueDateJalali: kind === 'CHEQUE' ? dueDateJalali : null,
         ...lockFields()
       })
+      // پاسخ commit شد؛ اقدام بعدی باید کلید تازه داشته باشد. اگر call خطا بدهد
+      // این خط اجرا نمی‌شود و همان کلید برای retry امن حفظ می‌ماند.
+      addPaymentRequestKey.current = null
       clearLock()
       setNote('')
       setChequeNo('')
