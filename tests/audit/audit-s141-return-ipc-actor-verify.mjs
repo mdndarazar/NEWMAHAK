@@ -18,6 +18,10 @@ process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
 const electron = await import('electron')
 const handlers = new Map()
 electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
+// Main-first IPC فقط event.sender معتبر را می‌پذیرد؛ این mock، آزمون actor
+// را از مرز مستقلِ مالکیت پنجره عبور می‌دهد.
+electron.BrowserWindow.fromWebContents = () => ({ isDestroyed: () => false })
+const sender = { id: 14101, isDestroyed: () => false, once: () => {} }
 const { harnessClient } = await import(join(root, 'test/harness/stubs/prismaClient.mjs'))
 const { makeSeeder } = await import(join(root, 'test/harness/seed.mjs'))
 const db = harnessClient(); const seed = makeSeeder(db)
@@ -25,8 +29,9 @@ const { registerIpcHandlers } = await import(join(root, 'src/main/ipc/index.ts')
 const { IPC } = await import(join(root, 'src/shared/ipc.ts'))
 const { salesService } = await import(join(root, 'src/main/services/SalesService.ts'))
 const { jalaliToday } = await import(join(root, 'src/shared/jalali.ts'))
+const { DEFAULT_MANAGER_PASSWORD: PW } = await import(join(root, 'src/shared/receipt.ts'))
 registerIpcHandlers()
-const ipc = (ch, payload) => handlers.get(ch)(null, payload)
+const ipc = (ch, payload) => handlers.get(ch)({ sender }, payload)
 const today = jalaliToday()
 const A = seed.user('فروشنده الف ۱۴۱')
 const forged = seed.user('همکار جعلی ۱۴۱')
@@ -55,7 +60,14 @@ let retId, sale
 {
   sale = await salesService.create({ userId: A, shiftId: shiftA, lines: [{ variantId: v1, qty: 1, unitPrice: 500_000, discount: 0, tax: 0 }, { variantId: v2, qty: 1, unitPrice: 500_000, discount: 0, tax: 0 }], payments: [{ methodId: cash, amount: 1_000_000, destination: 'CASH' }] })
   const [i1] = itemsOf(sale.id)
-  const r = await ipc(IPC.saleReturn, { invoiceId: sale.id, full: false, lines: [{ saleItemId: i1, qty: 1 }], refundMethod: 'NONE', userId: forged })
+  const r = await ipc(IPC.saleReturn, {
+    invoiceId: sale.id,
+    full: false,
+    lines: [{ saleItemId: i1, qty: 1 }],
+    refundMethod: 'NONE',
+    confirmOverpay: true,
+    userId: forged
+  })
   eq('برگشت ثبت شد', r?.ok ? true : r?.error, true)
   const row = seed.one('SELECT id, userId FROM "SaleReturn" WHERE invoiceId = ? ORDER BY id DESC', sale.id)
   retId = Number(row?.id)
@@ -65,7 +77,13 @@ let retId, sale
 console.log('\n— ۲) saleReturnUpdate با userId جعلی')
 {
   const [i1, i2] = itemsOf(sale.id)
-  const r = await ipc(IPC.saleReturnUpdate, { id: retId, lines: [{ saleItemId: i1, qty: 0 }, { saleItemId: i2, qty: 1 }], userId: forged })
+  const r = await ipc(IPC.saleReturnUpdate, {
+    id: retId,
+    lines: [{ saleItemId: i1, qty: 0 }, { saleItemId: i2, qty: 1 }],
+    panelPassword: PW,
+    overrideReason: 'جابجایی امن قلم برگشتی',
+    userId: forged
+  })
   eq('ویرایش ثبت شد', r?.ok ? true : r?.error, true)
   const a = seed.one(`SELECT userId FROM "AuditLog" WHERE entity = 'SaleReturn' AND entityId = ? ORDER BY id DESC LIMIT 1`, retId)
   eq('actor Audit ویرایش = کارمند نشست باز', Number(a?.userId), A)
@@ -85,7 +103,12 @@ console.log('\n— ۳) saleExchangeCreate با userId جعلی')
 
 console.log('\n— ۴) saleReturnDelete با userId جعلی')
 {
-  const r = await ipc(IPC.saleReturnDelete, { id: retId, reason: 'ثبت اشتباه مشتری', userId: forged })
+  const r = await ipc(IPC.saleReturnDelete, {
+    id: retId,
+    reason: 'ثبت اشتباه مشتری',
+    panelPassword: PW,
+    userId: forged
+  })
   eq('ابطال ثبت شد', r?.ok ? true : r?.error, true)
   const row = seed.one('SELECT voidedAt, voidedByUserId FROM "SaleReturn" WHERE id = ?', retId)
   eq('برگشت باطل شد', row?.voidedAt != null, true)

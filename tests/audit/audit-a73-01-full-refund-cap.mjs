@@ -7,7 +7,8 @@
  *  • A73-02: بعد از آن، مانده‌ی بدهی مشتری نباید «۱۰۰٬۰۰۰ بدهکار» شود (بدهی کاذب).
  *  • A73-01: برگشت کالای دوم با override ⇒ ۱٬۰۰۰٬۰۰۰ درخواست، ولی فقط ۸۰۰٬۰۰۰ از پول
  *    مشتری مانده ⇒ رد (قبل از رفع: ۲٬۰۰۰٬۰۰۰ از کشو بیرون می‌رفت در برابر ۱٬۸۰۰٬۰۰۰ دریافتی).
- *  • A73-01: فاکتور نسیه‌ی پرداخت‌نشده + override نقدی ⇒ رد (بند ۴-۴: پولی رد و بدل نشده).
+ *  • A73-01: فاکتور نسیه‌ی پرداخت‌نشده + override نقدی ⇒ بازپرداخت تا پولِ واقعاً
+ *    دریافت‌شده محدود می‌شود؛ پس صفر است و سند بدهی پنهان یا خروج نقد نمی‌سازد (S194).
  *  • A73-03: دلیل مدیر عیناً در Audit بنشیند.
  */
 import { mkdtempSync } from 'node:fs'
@@ -67,7 +68,8 @@ const credit = await salesService.create({ userId, shiftId, lines: [{ variantId:
 const [c1] = itemIds(credit.id)
 const before = drawerOut()
 const r3 = await attempt(() => salesService.createReturn({ invoiceId: credit.id, full: false, lines: [{ saleItemId: c1, qty: 1 }], refundMethod: RefundMethod.CASH, ...pw }))
-eq('A73-01: override نقدی روی نسیه‌ی پرداخت‌نشده رد شد', !!r3.error, true)
+eq('A73-01: override نقدی روی نسیه‌ی پرداخت‌نشده ثبت شد اما ردِ پولی نساخت', !!r3.error, false)
+eq('A73-01: بازپرداخت نقدی فقط تا پول واقعاً دریافت‌شده سقف شد', Number(r3.value?.refundAmount ?? -1), 0)
 eq('A73-01: هیچ پولی از کشو خارج نشد', drawerOut(), before)
 console.log(`\n✓ ${ok} بررسی موفق · ${bad} ناموفق`)
 if (bad) process.exitCode = 1
