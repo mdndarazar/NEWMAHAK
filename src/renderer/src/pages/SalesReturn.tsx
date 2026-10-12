@@ -8,6 +8,7 @@ import { printWith } from '../lib/printFlow'
 import { isUnknownPrintMessage } from '../lib/printErrors'
 import { useBarcodeScanner, useFieldScanDetector } from '../hooks/useBarcodeScanner'
 import ConfirmDialog from '../components/ConfirmDialog'
+import PasswordField from '../components/PasswordField'
 import OverpayFlowDialogs, { printOverpayCredit, type OverpayCreditPrintProblem } from '../components/OverpayFlowDialogs'
 import {
   isOverpayWarning,
@@ -29,6 +30,9 @@ import InvoiceFinanceBadge from '../components/returns/InvoiceFinanceBadge'
 import SmartSettlementPanel from '../components/returns/SmartSettlementPanel'
 import CardPosOverrideDialog from '../components/returns/CardPosOverrideDialog'
 import { useReturnGuidance } from '../hooks/useReturnGuidance'
+import { usePanelLock, usePanelOpen } from '../hooks/usePanelLocks'
+import { useManagerSession } from '../hooks/useManagerSession'
+import { PANEL_KEYS } from '@shared/panels'
 
 /**
  * ===================== برگشت از فروش و تعویض کالا =====================
@@ -80,6 +84,10 @@ import { useReturnGuidance } from '../hooks/useReturnGuidance'
 interface QtyMap {
   [saleItemId: number]: number
 }
+
+/** عملیاتی که فقط پس از بازشدن قفل مستقل اصلاح/ابطال اجرا می‌شود. */
+type ReturnCorrectionAction = 'EDIT' | 'VOID' | 'RECONCILE'
+type PendingReturnCorrectionAction = { action: ReturnCorrectionAction; row: any }
 
 interface Method {
   id: number
@@ -170,6 +178,17 @@ const canReturn = (i: ReturnLookupItem) => i.stockState !== 'MISSING' && i.remai
 
 export default function SalesReturn() {
   const nav = useNavigate()
+  /**
+   * اصلاح/ابطال یک قفل عملیاتی مستقل دارد: باز بودن خودِ صفحه‌ی برگشت مجوز
+   * تغییر سند قبلی نیست. تا بارگیری سیاست هم fail-closed می‌مانیم.
+   */
+  const correctionOpen = usePanelOpen(PANEL_KEYS.salesReturnCorrection)
+  const { loaded: correctionLockLoaded } = usePanelLock(PANEL_KEYS.salesReturnCorrection)
+  const { unlockPanel } = useManagerSession()
+  const [correctionUnlockRequest, setCorrectionUnlockRequest] = useState<PendingReturnCorrectionAction | null>(null)
+  const [correctionUnlockPassword, setCorrectionUnlockPassword] = useState('')
+  const [correctionUnlockBusy, setCorrectionUnlockBusy] = useState(false)
+  const [correctionUnlockError, setCorrectionUnlockError] = useState<string | null>(null)
   const [code, setCode] = useState('')
   const [lookup, setLookup] = useState<ReturnLookup | null>(null)
   const [qty, setQty] = useState<QtyMap>({})
@@ -307,6 +326,91 @@ export default function SalesReturn() {
     setMsg(m)
     setErr(null)
     window.setTimeout(() => setMsg((c) => (c === m ? null : c)), 10000)
+  }
+
+  /** مدیرهای فعال فقط برای مسیرهای دیرهنگام/دوره‌بسته خوانده می‌شوند. */
+  const loadCorrectionManagers = () => {
+    void call<{
+      rows?: { id: number; name: string; role: string; isActive: boolean; hasCorrectionApprovalPassword?: boolean }[]
+    }>(CH.staffDirectory, { includeInactive: false })
+      .then((res) => setVoidManagers((res?.rows ?? []).filter((u) => u.role === 'MANAGER' && u.isActive)))
+      .catch(() => setVoidManagers([]))
+  }
+
+  /** فقط پس از گیت، مودال/دیالوگِ تغییر واقعی باز می‌شود. */
+  const launchReturnCorrectionAction = (request: PendingReturnCorrectionAction) => {
+    const { action, row } = request
+    if (action === 'EDIT') {
+      setEditId(row.id)
+      return
+    }
+    if (action === 'VOID') {
+      setVoidReason('')
+      setVoidAuthPassword('')
+      setVoidApproverUserId(null)
+      setVoidApproverPassword('')
+      setVoidReasonErr(null)
+      setDeleteTarget(row)
+      loadCorrectionManagers()
+      return
+    }
+    setCorrectionReason('')
+    setCorrectionAuthPassword('')
+    setCorrectionApproverUserId(null)
+    setCorrectionApproverPassword('')
+    setCorrectionCash('')
+    setCorrectionCard('')
+    setCorrectionCardReference('')
+    setCorrectionCreditOutcome(row.storeCreditReference ? 'REMAINS_ACTIVE' : 'NONE')
+    setCorrectionNote('')
+    setCorrectionErr(null)
+    setCorrectionTarget(row)
+    loadCorrectionManagers()
+  }
+
+  /**
+   * 🔒 درخواست کاربر: با قفل روشن، فرم تغییر هرگز زودتر از احراز هویت باز
+   * نمی‌شود. پیام، مسیر درست را نشان می‌دهد؛ «فرم بسته بود ولی بعداً در سرور
+   * رد شد» برای عملیات مالی تجربه‌ی امن یا قابل‌فهمی نیست.
+   */
+  const requestReturnCorrectionAction = (action: ReturnCorrectionAction, row: any) => {
+    if (!correctionLockLoaded) {
+      setMsg(null)
+      setErr('وضعیت قفل اصلاح و ابطال هنوز در حال بررسی است. چند لحظه صبر کنید و دوباره تلاش کنید؛ تا آن زمان هیچ فرم تغییری باز نمی‌شود.')
+      return
+    }
+    const request = { action, row }
+    if (correctionOpen) {
+      launchReturnCorrectionAction(request)
+      return
+    }
+    setCorrectionUnlockError(null)
+    setCorrectionUnlockPassword('')
+    setCorrectionUnlockRequest(request)
+  }
+
+  /** همان گیت استاندارد برنامه: رمز مدیر، رمز دوم، یا رمز سومِ شیفت جاری. */
+  const unlockReturnCorrectionAction = async () => {
+    const request = correctionUnlockRequest
+    const password = correctionUnlockPassword.trim()
+    if (!request) return
+    if (!password) {
+      setCorrectionUnlockError('برای باز کردن قفل این عملیات، رمز مدیر یا رمز دوم/سوم همین بخش را وارد کنید.')
+      return
+    }
+    setCorrectionUnlockBusy(true)
+    setCorrectionUnlockError(null)
+    try {
+      await unlockPanel(PANEL_KEYS.salesReturnCorrection, password)
+      setCorrectionUnlockRequest(null)
+      setCorrectionUnlockPassword('')
+      launchReturnCorrectionAction(request)
+    } catch (e: any) {
+      setCorrectionUnlockError(String(e?.message ?? 'رمز پذیرفته نشد.'))
+      setCorrectionUnlockPassword('')
+    } finally {
+      setCorrectionUnlockBusy(false)
+    }
   }
 
   const printIssuedOverpayCredit = async (credit: any | null, opts?: { reprintPassword?: string }) => {
@@ -1951,7 +2055,7 @@ export default function SalesReturn() {
                   <td>
                     <button
                       className="text-brand"
-                      onClick={() => setEditId(r.id)}
+                      onClick={() => requestReturnCorrectionAction('EDIT', r)}
                       disabled={rowBusy}
                       title="اصلاح تعداد یا اقلام این برگشت (اختلاف روی موجودی انبار اعمال می‌شود)"
                     >
@@ -1961,20 +2065,7 @@ export default function SalesReturn() {
                   <td>
                     <button
                       className="text-red-600"
-                      onClick={() => {
-                        setVoidReason('')
-                        setVoidAuthPassword('')
-                        setVoidApproverUserId(null)
-                        setVoidApproverPassword('')
-                        setVoidReasonErr(null)
-                        setDeleteTarget(r)
-                        void call<{ rows?: { id: number; name: string; role: string; isActive: boolean; hasCorrectionApprovalPassword?: boolean }[] }>(
-                          CH.staffDirectory,
-                          { includeInactive: false }
-                        )
-                          .then((res) => setVoidManagers((res?.rows ?? []).filter((u) => u.role === 'MANAGER' && u.isActive)))
-                          .catch(() => setVoidManagers([]))
-                      }}
+                      onClick={() => requestReturnCorrectionAction('VOID', r)}
                       disabled={rowBusy}
                       title="ابطال این برگشت (سند با مهر «باطل» و دلیل می‌ماند) و بازگرداندن اثرش روی موجودی انبار"
                     >
@@ -1982,25 +2073,7 @@ export default function SalesReturn() {
                     </button>
                     <button
                       className="text-amber-700 mr-2"
-                      onClick={() => {
-                        setCorrectionReason('')
-                        setCorrectionAuthPassword('')
-                        setCorrectionApproverUserId(null)
-                        setCorrectionApproverPassword('')
-                        setCorrectionCash('')
-                        setCorrectionCard('')
-                        setCorrectionCardReference('')
-                        setCorrectionCreditOutcome(r.storeCreditReference ? 'REMAINS_ACTIVE' : 'NONE')
-                        setCorrectionNote('')
-                        setCorrectionErr(null)
-                        setCorrectionTarget(r)
-                        void call<{ rows?: { id: number; name: string; role: string; isActive: boolean; hasCorrectionApprovalPassword?: boolean }[] }>(
-                          CH.staffDirectory,
-                          { includeInactive: false }
-                        )
-                          .then((res) => setVoidManagers((res?.rows ?? []).filter((u) => u.role === 'MANAGER' && u.isActive)))
-                          .catch(() => setVoidManagers([]))
-                      }}
+                      onClick={() => requestReturnCorrectionAction('RECONCILE', r)}
                       disabled={rowBusy}
                       title="ثبت اثر جبرانی جدید برای پول، کارت، اعتبار و موجودی؛ سند برگشت اصلی دست‌نخورده می‌ماند"
                     >
@@ -2035,6 +2108,54 @@ export default function SalesReturn() {
         onReprint={(pw) => void printIssuedOverpayCredit(issuedOverpayCredit, { reprintPassword: pw })}
         creditPrinting={overpayCreditPrinting}
         creditPrintProblem={overpayCreditPrintProblem}
+      />
+
+      {/*
+       * قفل عملیاتیِ ویرایش/ابطال: این گیت عمداً قبل از خودِ فرم‌های تغییر
+       * قرار دارد. پس با قفل روشن، کارمند نه اقلام ویرایش را می‌بیند و نه
+       * دیالوگ ابطال/اصلاح جبرانی را؛ اول باید همین اختیار محدود را باز کند.
+       */}
+      <ConfirmDialog
+        open={!!correctionUnlockRequest}
+        title="قفل عملیات اصلاح و ابطال"
+        confirmLabel="تأیید و باز کردن قفل"
+        busy={correctionUnlockBusy}
+        message={
+          <div className="space-y-3">
+            <p className="font-bold text-amber-900">
+              این صفحه قفل است؛ شما نمی‌توانید ویرایش، اصلاح جبرانی یا ابطال برگشت/تعویض انجام دهید.
+            </p>
+            <p className="kbd leading-6">
+              برای ادامه، رمز مدیر، رمز دوم اختصاصی «اصلاح و ابطال برگشت / تعویض»، یا رمز سومِ تعریف‌شده برای شیفت جاری را وارد کنید.
+              این رمز فقط همین اختیار را باز می‌کند و نشست مدیر ایجاد نمی‌کند مگر رمز مدیر وارد شود.
+            </p>
+            <label className="block">
+              <span className="font-bold">رمز مجوز عملیات</span>
+              <PasswordField
+                className="inp w-full mt-1"
+                value={correctionUnlockPassword}
+                onChange={(e) => {
+                  setCorrectionUnlockPassword(e.target.value)
+                  setCorrectionUnlockError(null)
+                }}
+                autoComplete="off"
+                autoFocus
+                placeholder="رمز مدیر یا رمز دوم/سوم این عملیات"
+              />
+            </label>
+            {correctionUnlockError && <p className="text-red-600 whitespace-pre-line">{correctionUnlockError}</p>}
+            <p className="kbd leading-6">
+              پس از باز شدن قفل، فقط فرمِ عملیات انتخاب‌شده باز می‌شود. هنگام ثبت نهایی نیز کنترل‌های مالی و ثبت سابقهٔ سمت سرور برقرار می‌مانند.
+            </p>
+          </div>
+        }
+        onConfirm={() => void unlockReturnCorrectionAction()}
+        onCancel={() => {
+          if (correctionUnlockBusy) return
+          setCorrectionUnlockRequest(null)
+          setCorrectionUnlockPassword('')
+          setCorrectionUnlockError(null)
+        }}
       />
 
       {/* ---------------- ویرایش یک برگشت ثبت‌شده ---------------- */}
