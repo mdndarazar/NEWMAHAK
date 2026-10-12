@@ -294,10 +294,12 @@ export function parseDiscountPolicy(raw: unknown): DiscountPolicy {
     fixedValue,
     allowLine: obj.allowLine !== false,
     allowInvoice: obj.allowInvoice !== false,
-    maxPercent: clampPercent(num(obj.maxPercent, 100) || 100),
+    // صفر یک سقف صریح و سخت‌گیرانه است، نه مقدارِ غایب. استفاده از `|| 100`
+    // این تصمیم مدیر را به بی‌سقف تبدیل می‌کرد.
+    maxPercent: clampPercent(num(obj.maxPercent, 100)),
     maxAmount: num(obj.maxAmount),
-    // نشست ۱۸۵: نبودِ کلید در تنظیمات قدیمی ⇒ بی‌سقف (بدون رگرسیون)
-    wholesaleMaxPercent: clampPercent(num(obj.wholesaleMaxPercent, 100) || 100),
+    // نشست ۱۸۵: نبودِ کلید در تنظیمات قدیمی ⇒ بی‌سقف؛ صفرِ صریح ⇒ بدون تخفیف.
+    wholesaleMaxPercent: clampPercent(num(obj.wholesaleMaxPercent, 100)),
     wholesaleMaxAmount: num(obj.wholesaleMaxAmount)
   }
 }
@@ -335,7 +337,8 @@ export function discountCeilingFor(policy: DiscountPolicy | null | undefined, ba
   const b = Math.max(0, Math.round(base || 0))
   if (!policy || policy.mode === 'OFF') return 0
   if (policy.mode === 'FIXED') return fixedDiscountFor(policy, b)
-  const byPercent = Math.round((b * clampPercent(policy.maxPercent || 100)) / 100)
+  // `0` یک سقف معتبر است؛ فقط نبود سیاست در ابتدای تابع به حالت پیش‌فرض می‌رود.
+  const byPercent = Math.round((b * clampPercent(policy.maxPercent)) / 100)
   const byAmount = policy.maxAmount > 0 ? policy.maxAmount : b
   return Math.max(0, Math.min(b, byPercent, byAmount))
 }
