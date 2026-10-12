@@ -691,7 +691,9 @@ export const salesLedger = {
         dateJalali: r.atJalali || toJalaliDate(r.at),
         time: r.atTime || toClock(r.at),
         receiptNo: r.receiptNo ?? null,
-        documentLabel: `اعتبار ${r.code} · نوبت ${faDigits(r.seq)}`,
+        // `code` یک credential قابل‌مصرف است، نه شناسه‌ی نمایشی گزارش؛ reveal آن
+        // فقط مسیر manager-only خودِ اعتبار را دارد. دفتر مالی فقط شماره مصرف را نشان می‌دهد.
+        documentLabel: `مصرف اعتبار خرید · نوبت ${faDigits(r.seq)}`,
         customerName: c.customerName ?? 'مشتری عمومی',
         userName: r.userId != null ? scUserName.get(r.userId) ?? '—' : '—',
         shiftName: r.shiftId != null ? scShiftName.get(r.shiftId) ?? '—' : '—',
