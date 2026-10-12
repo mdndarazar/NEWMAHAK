@@ -83,6 +83,20 @@ await rejects(
 )
 eq('نقد صندوق بعد از تلاش همان ۰ است', await exp(), 0)
 eq('هیچ پرداختی ثبت نشد', Number(sql.prepare('SELECT COUNT(*) AS n FROM "Payment" WHERE invoiceId = ?').get(inv.id)?.n ?? 0), 0)
+await rejects(
+  'saleUpdate روی فاکتور لغوشده پرداخت تازه نمی‌سازد',
+  () => salesService.update({
+    id: inv.id,
+    userId,
+    shiftId,
+    keepPayments: false,
+    lines: [{ variantId: v, qty: 1, unitPrice: 1000, discount: 0, tax: 0 }],
+    payments: [{ methodId: cash, amount: 1000, destination: 'CASH' }]
+  }),
+  'لغوشده'
+)
+eq('saleUpdate هم هیچ پرداختی روی فاکتور لغوشده نساخت', Number(sql.prepare('SELECT COUNT(*) AS n FROM "Payment" WHERE invoiceId = ?').get(inv.id)?.n ?? 0), 0)
+eq('نقد صندوق پس از saleUpdate لغوشده همان ۰ است', await exp(), 0)
 
 console.log('\\n۲) کلید idempotency اعتبار بین دو فاکتور')
 const issued = await storeCreditService.issueManual({ amount: 2000, userId, managerPassword: PW })

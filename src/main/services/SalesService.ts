@@ -4378,6 +4378,10 @@ export const salesService = {
         issuedAtJalali: true,
         receiptNo: true,
         orderType: true,
+        // سند لغو یا پیش‌نویس مدرک فروش قابل‌ویرایش نیست: ویرایش آن می‌توانست پس از
+        // باطل‌شدن همهٔ پرداخت‌ها، پرداخت تازه‌ای بسازد و paidTotal را دوباره پر کند.
+        status: true,
+        voidedAt: true,
         // نشست ۱۵۶ (S151-c2) — عوارض/حق سرویس ذخیره‌شده برای «ویرایش بدون تغییر عوارض»
         taxTotal: true,
         serviceCharge: true,
@@ -4391,6 +4395,8 @@ export const salesService = {
      * سیاست تخفیف با orderType نهایی (ورودی یا همان فاکتور) سنجیده می‌شود.
      */
     if (!pre) throw new BusinessError('این فاکتور پیدا نشد؛ ممکن است حذف شده باشد. لیست فاکتورها را تازه کنید.')
+    if (pre.status === SaleStatus.CANCELED || pre.status === SaleStatus.DRAFT || pre.voidedAt != null)
+      throw new BusinessError('فاکتور لغوشده یا پیش‌نویس قابل ویرایش نیست؛ هیچ کالا یا پرداختی تغییر نکرد.')
     const pricing = await preverifySalePolicy(input, {
       orderType: input.orderType ?? pre.orderType,
       // نشست ۱۸۱: `unitPrice` حالا BigInt است؛ سیاست‌سنج با number کار می‌کند.
@@ -4453,6 +4459,9 @@ export const salesService = {
         }
       })
       if (!current) throw new BusinessError('این فاکتور پیدا نشد؛ ممکن است حذف شده باشد. لیست فاکتورها را تازه کنید.')
+      // بررسی دوباره داخل تراکنش، فاصلهٔ بین preflight و نوشتن را هم fail-closed می‌کند.
+      if (current.status === SaleStatus.CANCELED || current.status === SaleStatus.DRAFT || current.voidedAt != null)
+        throw new BusinessError('فاکتور لغوشده یا پیش‌نویس قابل ویرایش نیست؛ هیچ کالا یا پرداختی تغییر نکرد.')
 
       // بند ۱۷ — ویرایش فاکتوری که تاریخش در دوره‌ی بسته‌شده است
       await periodLockService.assertOpen(tx, {
