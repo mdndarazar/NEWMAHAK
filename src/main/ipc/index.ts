@@ -67,6 +67,7 @@ import {
   clearPanelSessions,
   clearPanelSessionsForOwner,
   panelSessionStatus,
+  touchManagerSession,
   runWithPanelSessionOwner,
   applyPanelSessionTtlMinutes,
   CREDIT_READ_PANEL
@@ -1288,6 +1289,11 @@ export function registerIpcHandlers(): void {
   })
   /** Renderer بعد از startup یا پاسخ گم‌شده، فقط حقیقت Main را می‌خواند. */
   handle(IPC.managerSessionStatus, () => panelSessionStatus())
+  /**
+   * keep-alive فقط برای نشستِ از پیش معتبر مدیر همین webContents است. payload
+   * عمداً نادیده گرفته می‌شود؛ credential/PIN/owner از renderer اختیار نمی‌گیرد.
+   */
+  handle(IPC.managerSessionTouch, () => touchManagerSession())
   handle(IPC.managerChangePassword, async (p) => authService.changePassword(await withOptionalSessionActor(p ?? {})))
   handle(IPC.managerInfo, () => authService.info())
   /**

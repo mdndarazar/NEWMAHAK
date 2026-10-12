@@ -162,6 +162,20 @@ export function isManagerSessionUnlocked(explicitOwner?: number): boolean {
   return !!alive(MANAGER_KEY, ownerOf(explicitOwner), true)
 }
 
+/**
+ * Keep-alive محدودِ نشست سراسری مدیر. این تابع فقط ورودی موجودِ همین
+ * webContents را تازه می‌کند: نه از payload هویت/owner می‌گیرد، نه scope پنل را
+ * به مدیر ارتقا می‌دهد و نه نشست منقضی/غایب را دوباره می‌سازد.
+ *
+ * Renderer می‌تواند تنها پس از فعالیت واقعی کاربر آن را صدا بزند؛ تصمیمِ نهایی
+ * دربارهٔ وجود و تمدید نشست همچنان منحصراً در Main است.
+ */
+export function touchManagerSession(explicitOwner?: number): PanelSessionStatus {
+  const owner = ownerOf(explicitOwner)
+  alive(MANAGER_KEY, owner, true)
+  return panelSessionStatus(owner)
+}
+
 export type PanelSessionStatus = {
   manager: boolean
   sinceIso: string | null

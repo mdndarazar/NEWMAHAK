@@ -3,6 +3,7 @@
  * - Main sessions are isolated by webContents owner;
  * - global manager logout clears every panel scope for that owner only;
  * - a status read never revives an expired entry;
+ * - a dedicated touch extends only an already-valid Main manager session;
  * - the phase-one source keeps logout Main-first and provides a status sync IPC.
  *
  * node --import ./test/harness/register.mjs tests/audit-fixes/fix-s347-manager-session-main-first.mjs
@@ -22,6 +23,7 @@ const {
   isPanelUnlocked,
   notePanelUnlocked,
   panelSessionStatus,
+  touchManagerSession,
   runWithPanelSessionOwner,
   applyPanelSessionTtlMs
 } = await import('../../src/main/services/panelSession.ts')
@@ -89,9 +91,27 @@ eq(
   true
 )
 
-applyPanelSessionTtlMs(20)
+eq(
+  'touch نشست محدود پنجره را به مدیر ارتقا نمی‌دهد',
+  runWithPanelSessionOwner(ownerB, () => touchManagerSession().manager),
+  false
+)
+
+applyPanelSessionTtlMs(90)
 runWithPanelSessionOwner(ownerA, () => notePanelUnlocked('products', 'MANAGER'))
-await new Promise((resolve) => setTimeout(resolve, 45))
+await new Promise((resolve) => setTimeout(resolve, 55))
+eq(
+  'touch فقط مدیر موجود همان پنجره را در Main تمدید می‌کند',
+  runWithPanelSessionOwner(ownerA, () => touchManagerSession().manager),
+  true
+)
+await new Promise((resolve) => setTimeout(resolve, 55))
+eq(
+  'نشست پس از عبور از TTL اولیه، به‌خاطر touch معتبر است',
+  runWithPanelSessionOwner(ownerA, () => isManagerSessionUnlocked()),
+  true
+)
+await new Promise((resolve) => setTimeout(resolve, 110))
 eq(
   'status نشست منقضی را زنده نمی‌کند',
   runWithPanelSessionOwner(ownerA, () => panelSessionStatus().manager),
@@ -116,6 +136,8 @@ eq('renderer startup وضعیت Main را می‌خواند', /void syncFromMain
 eq('logout renderer پیش از پاسخ Main state را پاک نمی‌کند', /await call\(CH\.managerLogout\)/.test(hook), true)
 eq('Main logout همه scopeهای owner جاری را clear می‌کند', /handle\(IPC\.managerLogout[\s\S]{0,500}clearPanelSessions\(\)/.test(ipc), true)
 eq('IPC وضعیت session برای sync تعریف شده است', /managerSessionStatus:\s*'manager:session:status'/.test(channels), true)
+eq('IPC touch جداگانه و Main-owned است', /managerSessionTouch:\s*'manager:session:touch'/.test(channels) && /handle\(IPC\.managerSessionTouch[\s\S]{0,180}touchManagerSession\(\)/.test(ipc), true)
+eq('touch مدیر renderer فقط پس از فعالیت و با throttle صدا می‌خورد', /const touchManagerSession = useCallback/.test(hook) && /CH\.managerSessionTouch/.test(hook) && /now - lastManagerTouch\.current < 15_000/.test(hook) && /touchManagerSession\(\)/.test(hook), true)
 eq('عملیات مدیریتی حضانت پشت نشست اصلی مدیر در Main هستند', /IPC\.custodyConfigSet[\s\S]{0,180}assertManagerSession/.test(ipc) && /IPC\.custodyPlanSave[\s\S]{0,180}assertManagerSession/.test(ipc) && /IPC\.custodyReport[\s\S]{0,180}assertManagerSession/.test(ipc), true)
 eq('Header گروه وضعیت ثابت دارد', /shrink-0 flex items-center gap-1 border-s/.test(shell), true)
 eq('Header nav مستقل و اسکرولی دارد', /min-w-0 flex-1 overflow-x-auto/.test(shell), true)

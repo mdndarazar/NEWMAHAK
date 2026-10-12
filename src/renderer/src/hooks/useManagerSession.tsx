@@ -73,6 +73,8 @@ export function ManagerSessionProvider({ children }: { children: ReactNode }) {
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [idleMs, setIdleMs] = useState(idleMsOf(DEFAULT_SECURITY_CONFIG.idleLockMinutes))
   const lastActivity = useRef(Date.now())
+  /** جلوگیری از IPC بی‌دلیل برای هر حرکت ماوس؛ TTL واقعی فقط در Main است. */
+  const lastManagerTouch = useRef(0)
 
   const applyMainStatus = useCallback((status: MainSessionStatus | null | undefined) => {
     const manager = status?.manager === true
@@ -89,6 +91,27 @@ export function ManagerSessionProvider({ children }: { children: ReactNode }) {
     applyMainStatus(status)
     return status
   }, [applyMainStatus])
+
+  /**
+   * تمدید نشست فقط پس از فعالیت واقعی کاربر و فقط برای مدیرِ از پیش واردشده.
+   * اگر Main آن را منقضی کرده باشد، پاسخ false است و UI دسترسی را بازسازی
+   * نمی‌کند. payload هیچ credential یا شناسهٔ قابل‌اعتمادی ندارد.
+   */
+  const touchManagerSession = useCallback(() => {
+    if (!isManager || securityError) return
+    const now = Date.now()
+    if (now - lastManagerTouch.current < 15_000) return
+    lastManagerTouch.current = now
+    void call<MainSessionStatus>(CH.managerSessionTouch)
+      .then((status) => applyMainStatus(status))
+      .catch(() => {
+        // ارتباط با Main قابل‌راستی‌آزمایی نیست: ظاهر UI نیز fail-closed می‌شود.
+        setIsManager(false)
+        setSince(null)
+        setPanels([])
+        setSecurityError('وضعیت نشست مدیر قابل بررسی نیست؛ پنل‌های حساس قفل شدند.')
+      })
+  }, [applyMainStatus, isManager, securityError])
 
   useEffect(() => {
     let alive = true
@@ -186,6 +209,7 @@ export function ManagerSessionProvider({ children }: { children: ReactNode }) {
     lastActivity.current = Date.now()
     const bump = () => {
       lastActivity.current = Date.now()
+      touchManagerSession()
     }
     const evts: Array<keyof WindowEventMap> = ['pointerdown', 'keydown', 'click', 'touchstart']
     for (const event of evts) window.addEventListener(event, bump, { passive: true })
@@ -196,7 +220,7 @@ export function ManagerSessionProvider({ children }: { children: ReactNode }) {
       for (const event of evts) window.removeEventListener(event, bump)
       window.clearInterval(id)
     }
-  }, [sessionOpen, idleMs, logout])
+  }, [sessionOpen, idleMs, logout, touchManagerSession])
 
   const canOpen = useCallback(
     (panel: string) => ready && !securityError && (isManager || panels.includes(panel)),

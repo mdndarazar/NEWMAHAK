@@ -404,6 +404,8 @@ export const IPC = {
   managerLogout: 'manager:logout',
   /** وضعیت مشتق‌شده‌ی نشست‌های همان پنجره؛ token یا actor را هرگز برنمی‌گرداند. */
   managerSessionStatus: 'manager:session:status',
+  /** تمدید محدود نشست از پیش موجودِ مدیر در Main؛ هرگز نشست/اختیار تازه نمی‌سازد. */
+  managerSessionTouch: 'manager:session:touch',
   /** تغییر رمز مدیریتی از داخل پنل تنظیمات */
   managerChangePassword: 'manager:changePassword',
   /** آیا رمز از حالت پیش‌فرض عوض شده است (فقط برای نمایش راهنما) */
