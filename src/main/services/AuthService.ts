@@ -917,11 +917,12 @@ export const authService = {
    * -------------------------------------------------------------------------
    */
   async setPanelLocks(input: { managerPassword?: string; locks?: Record<string, unknown>; userId?: number | null } = {}) {
-    const managerPassword = normalize(input.managerPassword)
-    if (!managerPassword)
-      throw new BusinessError('برای تغییر قفل ماژول‌ها، اول «رمز مدیر» را وارد کنید.')
-    if (!(await matches(managerPassword)))
-      throw new BusinessError('رمز مدیر درست نیست؛ هیچ قفلی تغییر نکرد.')
+    /**
+     * SET-002 — این مسیر قبلاً مستقیم `matches()` را صدا می‌زد؛ بنابراین رمز
+     * اشتباه نه در AuthLockout شمرده می‌شد و نه قفل موقتِ مدیر را رعایت می‌کرد.
+     * همه‌ی تاییدهای رمز مدیر باید از گیت مشترک عبور کنند.
+     */
+    await assertManagerPassword(normalize(input.managerPassword), 'تغییر قفل ماژول‌ها')
 
     const before = await readPanelLocks()
     const next: PanelLockConfig = { ...before }
