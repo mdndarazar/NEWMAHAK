@@ -61,10 +61,14 @@ assert.match(reports, /r\.storeCreditTotal/, 'سلول ردیف باید مقد�
 assert.match(reports, /t\.storeCreditUsedTotal/, 'جمع ستون باید مقدار رسمی accounting باشد')
 assert.match(reports, /onOpenCreditSettlement=\{\(invoiceId\) => setCreditSettlementFor\(invoiceId\)\}/,
   'کلیک ستون باید به نمای فقط‌خواندنیِ تسویهٔ همان فاکتور برود')
-assert.match(settlementModal, /payment\.isStoreCredit/,
-  'نمای اختصاصی فقط پرداخت‌های اعتبار را با برچسب امن نشان می‌دهد')
-assert.doesNotMatch(settlementModal, /salePayment(Add|Update|Delete)|PaymentForm/,
-  'کلیک ستون نباید mutationهای پنجرهٔ عمومی پرداخت را باز کند')
+assert.match(settlementModal, /CH\.saleCreditSettlementLineage/,
+  'نمای اختصاصی زنجیرهٔ فقط‌خواندنی و باریک تسویه را از endpoint خودش می‌گیرد')
+assert.match(settlementModal, /view\.rows\.map/,
+  'نمای اختصاصی فقط ردیف‌های lineage اعتبار را نشان می‌دهد')
+assert.match(settlementModal, /row\.credit\.publicReference/,
+  'نمای اختصاصی به‌جای credential، مرجع امن اعتبار را نشان می‌دهد')
+assert.doesNotMatch(settlementModal, /(?:row|view)\.(?:code|legacyCode|storeCreditCode)\b|row\.credit\.(?:code|legacyCode)\b|salePayment(Add|Update|Delete)|PaymentForm/,
+  'کلیک ستون نباید credential یا mutationهای پنجرهٔ عمومی پرداخت را باز کند')
 assert.doesNotMatch(reports, /storeCreditCode/, 'گزارش فروش نباید کد اعتبار را برای ستون جدید بخواند')
 console.log('  ✓ جدول، چاپ/خروجی و جزئیات فاکتور به عدد امن متصل‌اند')
 
