@@ -579,6 +579,10 @@ export const backupService = {
         : 'جایگزینی کامل داده‌ی فعلی با یک فایل بکاپ'
     )
     const path = await this.resolve(input?.id)
+    // فایل imported قدیمی یا auto روی دیسک ممکن است از نسخه‌ای قبل از gate
+    // آمده باشد؛ پیش از safety-backup یا replace، SQLite/schema آن را دوباره
+    // می‌سنجیم. summarize در خطا throw می‌کند و هیچ تغییری رخ نمی‌دهد.
+    await summarizeBackup(path)
     const fileName = (await readLedger()).find((r) => r.id === input.id)?.fileName ?? basename(path)
 
     if (input?.mode === 'merge') {

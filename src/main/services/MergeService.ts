@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 import { app } from 'electron'
-import { copyFile, mkdir, unlink } from 'node:fs/promises'
+import { copyFile, mkdir, unlink, open } from 'node:fs/promises'
 import { join } from 'node:path'
 import { prisma } from '../db/client'
 import { applyMigrations } from '../db/migrator'
@@ -159,6 +159,54 @@ async function tableExists(client: PrismaClient, table: string): Promise<boolean
   return num(rows?.[0]?.n) > 0
 }
 
+const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000', 'ascii')
+/** این‌ها از migration پایه‌اند و حداقل هویت یک بکاپ کامل MAHAK را می‌سازند. */
+const REQUIRED_BACKUP_TABLES = [
+  'Setting',
+  'User',
+  'Product',
+  'ProductVariant',
+  'PaymentMethod',
+  'SaleInvoice',
+  'SaleInvoiceItem',
+  'Payment'
+]
+
+const invalidBackup = () => new BusinessError('این فایل یک بکاپ SQLite معتبر از همین برنامه نیست.')
+
+/**
+ * پیش از هر preview/restore/merge فایل را به‌عنوان SQLite سالم و schema خودمان
+ * تأیید می‌کنیم. summarizeBackup سابقاً خطای هر query را صفر می‌کرد؛ بنابراین
+ * یک PDF/متن یا SQLite نامرتبط با «خلاصه‌ی صفر» وارد فهرست و حتی restore می‌شد.
+ */
+async function assertValidBackupFile(client: PrismaClient, file: string): Promise<void> {
+  let handle: Awaited<ReturnType<typeof open>> | null = null
+  try {
+    handle = await open(file, 'r')
+    const header = Buffer.alloc(SQLITE_HEADER.length)
+    const { bytesRead } = await handle.read(header, 0, header.length, 0)
+    if (bytesRead !== SQLITE_HEADER.length || !header.equals(SQLITE_HEADER)) throw invalidBackup()
+  } catch (error) {
+    if (error instanceof BusinessError) throw error
+    throw invalidBackup()
+  } finally {
+    await handle?.close().catch(() => {})
+  }
+
+  try {
+    const check = await client.$queryRawUnsafe<Record<string, unknown>[]>('PRAGMA quick_check(1)')
+    const integrity = check?.[0] ? Object.values(check[0]).some((value) => String(value).toLowerCase() === 'ok') : false
+    if (!integrity) throw invalidBackup()
+
+    const missing: string[] = []
+    for (const table of REQUIRED_BACKUP_TABLES) if (!(await tableExists(client, table))) missing.push(table)
+    if (missing.length) throw invalidBackup()
+  } catch (error) {
+    if (error instanceof BusinessError) throw error
+    throw invalidBackup()
+  }
+}
+
 /** خواندن کل یک جدول (جدول نبود = فهرست خالی، نه خطا). */
 async function readAll(client: PrismaClient, table: string): Promise<Row[]> {
   if (!(await tableExists(client, table))) return []
@@ -231,6 +279,7 @@ async function insertRows(tx: any, model: string, rows: any[], stats: Record<str
 export async function summarizeBackup(file: string): Promise<BackupSummary> {
   const client = clientFor(file)
   try {
+    await assertValidBackupFile(client, file)
     const one = async (sql: string): Promise<Row> => {
       try {
         const rows = await client.$queryRawUnsafe<Row[]>(sql)
@@ -311,6 +360,10 @@ export async function mergeBackup(input: {
   const bump = (m: Record<string, number>, k: string, n = 1) => (m[k] = (m[k] ?? 0) + n)
 
   try {
+    // merge ممکن است خارج از BackupService هم صدا زده شود؛ همان اعتبارسنجی
+    // import/preview را پیش از migration و هر خواندن/نوشتن تکرار می‌کنیم.
+    await assertValidBackupFile(src, tmp)
+
     // ساختار بکاپ قدیمی‌تر؟ روی همان *کپی* به‌روزش می‌کنیم (آرشیو اصلی دست‌نخورده)
     try {
       await applyMigrations(src, tmp, { touchFile: false })
