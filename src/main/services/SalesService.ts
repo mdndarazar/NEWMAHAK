@@ -174,6 +174,25 @@ function shapeOverpayCreditSafe(row: OverpayCreditResult | null): OverpayCreditS
   return { ...safe, publicReference: `اعتبار #${safe.id}` }
 }
 
+/**
+ * جزئیات فاکتور (`sale:get`) برای فرم ویرایش لازم است، اما Payment مصرفِ اعتبار
+ * همواره reference/note را با بارکدِ قابل‌مصرف ذخیره می‌کند. همان بارکد نباید
+ * از یک خوانش عمومی فاکتور به renderer برسد.
+ */
+function shapeSaleGetPaymentSafe(payment: any): any {
+  const isStoreCredit = payment?.storeCreditId != null || payment?.method?.kind === PaymentKind.STORE_CREDIT
+  if (!isStoreCredit) return payment
+  const { storeCreditId: _creditId, reference: _creditCode, note: _creditNote, ...safe } = payment
+  return { ...safe, storeCreditApplied: true }
+}
+
+/** کدِ اعتبار صادرشده در برگشت هم credential است، نه جزئیات استاندارد فاکتور. */
+function shapeSaleGetReturnSafe(ret: any): any {
+  const issuedStoreCredit = ret?.storeCreditId != null || !!ret?.storeCreditCode
+  const { storeCreditId: _creditId, storeCreditCode: _creditCode, ...safe } = ret
+  return issuedStoreCredit ? { ...safe, storeCreditIssued: true } : safe
+}
+
 function reportIdChunks(ids: Iterable<number>): number[][] {
   const unique = [...new Set([...ids].map(Number).filter((id) => Number.isFinite(id)))]
   const chunks: number[][] = []
@@ -4963,8 +4982,8 @@ export const salesService = {
     }, TX_OPTIONS)
   },
 
-  get(id: number) {
-    return prisma.saleInvoice.findUnique({
+  async get(id: number) {
+    const invoice = await prisma.saleInvoice.findUnique({
       where: { id },
       include: {
         items: { include: { variant: { include: { product: true } } } },
@@ -4975,6 +4994,12 @@ export const salesService = {
         returns: { where: { voidedAt: null }, include: { items: true } }
       }
     })
+    if (!invoice) return null
+    return {
+      ...invoice,
+      payments: (invoice.payments ?? []).map(shapeSaleGetPaymentSafe),
+      returns: (invoice.returns ?? []).map(shapeSaleGetReturnSafe)
+    }
   },
 
   async list(filter: {
