@@ -119,6 +119,7 @@ const rial = (v: unknown): bigint => {
   }
   return BigInt(t)
 }
+const rialOrNull = (v: unknown): bigint | null => (v === null || v === undefined || v === '' ? null : rial(v))
 const intOrNull = (v: unknown): number | null => {
   if (v === null || v === undefined || v === '') return null
   const n = num(v, NaN)
@@ -179,7 +180,7 @@ const invalidBackup = () => new BusinessError('این فایل یک بکاپ SQL
  * تأیید می‌کنیم. summarizeBackup سابقاً خطای هر query را صفر می‌کرد؛ بنابراین
  * یک PDF/متن یا SQLite نامرتبط با «خلاصه‌ی صفر» وارد فهرست و حتی restore می‌شد.
  */
-async function assertValidBackupFile(client: PrismaClient, file: string): Promise<void> {
+async function assertSqliteHeader(file: string): Promise<void> {
   let handle: Awaited<ReturnType<typeof open>> | null = null
   try {
     handle = await open(file, 'r')
@@ -192,7 +193,10 @@ async function assertValidBackupFile(client: PrismaClient, file: string): Promis
   } finally {
     await handle?.close().catch(() => {})
   }
+}
 
+async function assertValidBackupFile(client: PrismaClient, file: string): Promise<void> {
+  await assertSqliteHeader(file)
   try {
     const check = await client.$queryRawUnsafe<Record<string, unknown>[]>('PRAGMA quick_check(1)')
     const integrity = check?.[0] ? Object.values(check[0]).some((value) => String(value).toLowerCase() === 'ok') : false
@@ -277,6 +281,9 @@ async function insertRows(tx: any, model: string, rows: any[], stats: Record<str
 
 /** خلاصه‌ی محتوای یک فایل بکاپ (برای نمایش قبل از اعمال). */
 export async function summarizeBackup(file: string): Promise<BackupSummary> {
+  // اعتبارسنجی magic باید قبل از ساخت PrismaClient باشد: بعضی driverها اتصال به
+  // bytes خراب را همان لحظه throw می‌کنند و نباید آن خطای خام از gate عبور کند.
+  await assertSqliteHeader(file)
   const client = clientFor(file)
   try {
     await assertValidBackupFile(client, file)
@@ -348,6 +355,8 @@ export async function mergeBackup(input: {
 }): Promise<MergeReport> {
   const started = Date.now()
   const fileName = input.fileName || input.file.split(/[\\/]/).pop() || 'backup.db'
+  // mergeBackup مسیر عمومی هم دارد؛ non-SQLite نباید حتی به driver یا tmp copy برسد.
+  await assertSqliteHeader(input.file)
   const tmpDir = join(app.getPath('userData'), 'backups', 'tmp')
   await mkdir(tmpDir, { recursive: true })
   const tmp = join(tmpDir, `merge-${Date.now()}.db`)
@@ -394,12 +403,15 @@ export async function mergeBackup(input: {
       'PaymentMethod',
       'Shift',
       'CashSession',
+      'CashMovement',
       'Consolidation',
       'SaleInvoice',
       'SaleInvoiceItem',
       'Payment',
+      'PaymentChequeStatusHistory',
       'SaleReturn',
       'SaleReturnItem',
+      'CardTransferRequest',
       'PurchaseInvoice',
       'PurchaseInvoiceItem',
       'StockMovement',
@@ -429,6 +441,7 @@ export async function mergeBackup(input: {
     const invoiceMap = new Map<number, number>()
     const saleItemMap = new Map<number, number>()
     const returnMap = new Map<number, number>()
+    const paymentMap = new Map<number, number>()
 
     /**
      * همه‌ی نوشتن‌ها (هم جدول‌های هویتی و هم رویدادی) در *یک* تراکنش:
@@ -799,7 +812,30 @@ export async function mergeBackup(input: {
               otherTotal: rial(s.otherTotal),
               grandTotal: rial(s.grandTotal),
               invoiceCount: num(s.invoiceCount),
-              countedTotal: intOrNull(s.countedTotal),
+              countedTotal: rialOrNull(s.countedTotal),
+              // snapshot بستن صندوق یک سند مالی تاریخی است، نه عدد قابل محاسبه
+              // از وضعیت امروز؛ همه‌ی اجزایش باید همراه CashMovement بمانند.
+              openingFloat: rial(s.openingFloat),
+              cashSales: rial(s.cashSales),
+              cardSales: rial(s.cardSales),
+              otherSales: rial(s.otherSales),
+              clearedChequeSales: rial(s.clearedChequeSales),
+              priorCreditSettlements: rial(s.priorCreditSettlements),
+              cashReturnRefunds: rial(s.cashReturnRefunds),
+              cardReturnRefunds: rial(s.cardReturnRefunds),
+              cashExchangeRefunds: rial(s.cashExchangeRefunds),
+              storeCreditIssued: rial(s.storeCreditIssued),
+              storeCreditUsed: rial(s.storeCreditUsed),
+              pendingCheques: rial(s.pendingCheques),
+              bouncedCheques: rial(s.bouncedCheques),
+              withdrawals: rial(s.withdrawals),
+              deposits: rial(s.deposits),
+              expectedCash: rial(s.expectedCash),
+              cashDifference: rial(s.cashDifference),
+              managerAccountReceived: rial(s.managerAccountReceived),
+              destinationUnknownReceived: rial(s.destinationUnknownReceived),
+              accountingSnapshotJson: strOrNull(s.accountingSnapshotJson),
+              reportVersion: strOrNull(s.reportVersion),
               closedAt: dateOrNull(s.closedAt),
               closedBy: s.closedBy != null ? userMap.get(num(s.closedBy)) ?? null : null,
               note: strOrNull(s.note),
@@ -880,8 +916,10 @@ export async function mergeBackup(input: {
             const invoiceId = invoiceMap.get(num(p.invoiceId))
             const methodId = methodMap.get(num(p.methodId))
             if (!invoiceId || !methodId) continue
+            const id = takeId('Payment')
+            paymentMap.set(num(p.id), id)
             data.push({
-              id: takeId('Payment'),
+              id,
               invoiceId,
               methodId,
               amount: rial(p.amount),
@@ -912,6 +950,32 @@ export async function mergeBackup(input: {
             })
           }
           await insertRows(tx, 'payment', data, inserted)
+        })
+
+        // --- دفتر append-only وضعیت چک ---
+        await eachChunk(src, 'PaymentChequeStatusHistory', async (rows) => {
+          const data: any[] = []
+          for (const history of rows) {
+            const paymentId = paymentMap.get(num(history.paymentId))
+            // سابقه‌ی چک بدون Payment متناظر سند مالی معتبری نیست؛ skip کردن آن
+            // چیزی را نصفه وارد می‌کرد، پس کل merge rollback می‌شود.
+            if (!paymentId)
+              throw new BusinessError('سابقه‌ی وضعیت چک در بکاپ به پرداختی ناموجود وصل است؛ ادغام انجام نشد.')
+            data.push({
+              id: takeId('PaymentChequeStatusHistory'),
+              paymentId,
+              status: str(history.status, 'PENDING'),
+              destination: strOrNull(history.destination),
+              clearedAt: dateOrNull(history.clearedAt),
+              clearedAtJalali: strOrNull(history.clearedAtJalali),
+              clearedShiftId:
+                history.clearedShiftId != null ? shiftMap.get(num(history.clearedShiftId)) ?? null : null,
+              userId: history.userId != null ? userMap.get(num(history.userId)) ?? null : null,
+              changedAt: date(history.changedAt),
+              changedAtJalali: strOrNull(history.changedAtJalali)
+            })
+          }
+          await insertRows(tx, 'paymentChequeStatusHistory', data, inserted)
         })
 
         // --- برگشت از فروش ---
@@ -973,6 +1037,70 @@ export async function mergeBackup(input: {
           }
           await insertRows(tx, 'saleReturnItem', data, inserted)
         })
+
+        /**
+         * --- درخواست‌های کارت‌به‌کارت ---
+         * این‌ها دفتر مستقل «پول پرداخت‌شده/در انتظار» هستند و هیچ CashMovement
+         * ندارند؛ حذفشان در merge، بدهی پرداخت‌نشده یا پرداخت مدیر را ناپدید
+         * می‌کرد. ابتدا همه IDها تخصیص می‌گیرند تا adjustment به ردیف اصلیِ
+         * بازشماره‌گذاری‌شده وصل شود، حتی اگر ترتیب ردیف‌ها برعکس باشد.
+         */
+        const cardTransferRows = await readAll(src, 'CardTransferRequest')
+        const cardTransferMap = new Map<number, number>()
+        for (const row of cardTransferRows) cardTransferMap.set(num(row.id), takeId('CardTransferRequest'))
+        for (const row of cardTransferRows) {
+          const id = cardTransferMap.get(num(row.id)) as number
+          const returnId = returnMap.get(num(row.returnId))
+          if (!returnId)
+            throw new BusinessError('درخواست کارت‌به‌کارت در بکاپ به سند برگشت ناموجود وصل است؛ ادغام انجام نشد.')
+          const adjustsRequestId =
+            row.adjustsRequestId != null ? cardTransferMap.get(num(row.adjustsRequestId)) ?? null : null
+          if (row.adjustsRequestId != null && !adjustsRequestId)
+            throw new BusinessError('اصلاح کارت‌به‌کارت در بکاپ به درخواست اصلی ناموجود وصل است؛ ادغام انجام نشد.')
+          await tx.cardTransferRequest.create({
+            data: {
+              id,
+              kind: str(row.kind, 'REQUEST'),
+              status: str(row.status, 'PENDING'),
+              operationKind: str(row.operationKind, 'RETURN'),
+              returnId,
+              sourceInvoiceId: row.sourceInvoiceId != null ? invoiceMap.get(num(row.sourceInvoiceId)) ?? null : null,
+              sourceReceiptNo: intOrNull(row.sourceReceiptNo),
+              exchangeInvoiceId: row.exchangeInvoiceId != null ? invoiceMap.get(num(row.exchangeInvoiceId)) ?? null : null,
+              exchangeReceiptNo: intOrNull(row.exchangeReceiptNo),
+              invoiceTotal: rial(row.invoiceTotal),
+              returnTotal: rial(row.returnTotal),
+              amount: rial(row.amount),
+              itemsJson: strOrNull(row.itemsJson),
+              stockNote: strOrNull(row.stockNote),
+              userId: row.userId != null ? userMap.get(num(row.userId)) ?? null : null,
+              userName: strOrNull(row.userName),
+              shiftId: row.shiftId != null ? shiftMap.get(num(row.shiftId)) ?? null : null,
+              shiftName: strOrNull(row.shiftName),
+              createdAt: date(row.createdAt),
+              createdAtJalali: str(row.createdAtJalali, stamp),
+              createdAtTime: str(row.createdAtTime, ''),
+              paidAmount: rialOrNull(row.paidAmount),
+              paidAt: dateOrNull(row.paidAt),
+              paidAtJalali: strOrNull(row.paidAtJalali),
+              paidAtTime: strOrNull(row.paidAtTime),
+              paidMethod: strOrNull(row.paidMethod),
+              trackingNo: strOrNull(row.trackingNo),
+              paidByUserId: row.paidByUserId != null ? userMap.get(num(row.paidByUserId)) ?? null : null,
+              paidByUserName: strOrNull(row.paidByUserName),
+              paidShiftId: row.paidShiftId != null ? shiftMap.get(num(row.paidShiftId)) ?? null : null,
+              paidShiftName: strOrNull(row.paidShiftName),
+              canceledAt: dateOrNull(row.canceledAt),
+              cancelReason: strOrNull(row.cancelReason),
+              stockReleasedAt: dateOrNull(row.stockReleasedAt),
+              stockReleasedQty: intOrNull(row.stockReleasedQty),
+              adjustsRequestId,
+              adjustReason: strOrNull(row.adjustReason),
+              note: strOrNull(row.note)
+            }
+          })
+          bump(inserted, 'CardTransferRequest')
+        }
 
         // --- فاکتور خرید (شماره فاکتور دوباره شماره‌گذاری می‌شود) ---
         const purchaseMap = new Map<number, number>()
@@ -1048,6 +1176,52 @@ export async function mergeBackup(input: {
             })
           }
           await insertRows(tx, 'stockMovement', data, inserted)
+        })
+
+        /**
+         * --- دفتر گردش نقدی ---
+         *
+         * این جدول صرفاً cache گزارش نیست: موجودی اول، واریز، برداشت و پرداخت
+         * نقدیِ برگشت‌ها فقط همین‌جا append-only ثبت می‌شوند و expectedCash از آن
+         * ساخته می‌شود. حذف خاموش آن در merge، صورت صندوقِ بایگانی را دروغ می‌کرد.
+         *
+         * بعضی refها (اصلاح برگشت/حضانتی) هنوز در merge منتقل نمی‌شوند؛ برای آن
+         * موارد refId را null می‌کنیم، اما نوع، مبلغ، زمان و توضیح سند مالی را
+         * نگه می‌داریم و شناسه‌ی مبدأ را در note می‌نویسیم تا به یک سند مقصدِ
+         * اشتباه وصل نشود.
+         */
+        await eachChunk(src, 'CashMovement', async (rows) => {
+          const data: any[] = []
+          for (const movement of rows) {
+            const refType = strOrNull(movement.refType)
+            const sourceRefId = intOrNull(movement.refId)
+            let refId: number | null = null
+            if (sourceRefId != null) {
+              if (refType === 'SaleInvoice') refId = invoiceMap.get(sourceRefId) ?? null
+              else if (refType === 'SaleReturn') refId = returnMap.get(sourceRefId) ?? null
+              else if (refType === 'Payment') refId = paymentMap.get(sourceRefId) ?? null
+              else if (refType === 'PurchaseInvoice') refId = purchaseMap.get(sourceRefId) ?? null
+            }
+            const refNote = sourceRefId != null && refId == null ? ` · ${tag} مرجع مبدأ ${refType ?? '—'}#${sourceRefId}` : ''
+            data.push({
+              id: takeId('CashMovement'),
+              amount: rial(movement.amount),
+              type: str(movement.type, 'CASH_IN'),
+              occurredAt: date(movement.occurredAt),
+              occurredAtJalali: strOrNull(movement.occurredAtJalali),
+              occurredAtTime: strOrNull(movement.occurredAtTime),
+              shiftId: movement.shiftId != null ? shiftMap.get(num(movement.shiftId)) ?? null : null,
+              userId: movement.userId != null ? userMap.get(num(movement.userId)) ?? null : null,
+              description: `${strOrNull(movement.description) ?? ''}${refNote}` || null,
+              refType,
+              refId,
+              // AuditLog در انتهای merge ساخته می‌شود و این scalar FK نیست؛ لینک
+              // مبدأ را به ID نامعتبر مقصد تبدیل نمی‌کنیم.
+              auditLogId: null,
+              createdAt: date(movement.createdAt, date(movement.occurredAt))
+            })
+          }
+          await insertRows(tx, 'cashMovement', data, inserted)
         })
 
         // --- AuditLog: entityId بکاپ در دیتابیس جدید معنایی ندارد ⇒ null ---

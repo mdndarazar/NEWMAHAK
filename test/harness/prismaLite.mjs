@@ -20,6 +20,7 @@
  *     «دو صندوق هم‌زمان» (§۹) روی همان مکانیزمِ محصول اجرا می‌شود.
  * ===========================================================================
  */
+import { DatabaseSync } from 'node:sqlite'
 import { buildDatabase, introspect, parseSchema } from './schema.mjs'
 
 const fail = (msg) => {
@@ -43,8 +44,10 @@ const OPS = new Set([
   'mode'
 ])
 
-export function createClient(file) {
-  const { db: rawDb } = buildDatabase(file)
+export function createClient(file, { fresh = true } = {}) {
+  // کلاینت اصلی هر تست از صفر ساخته می‌شود، اما PrismaClient موقتِ MergeService
+  // باید یک backup موجود را *باز کند* نه این‌که با migrationها بازنویسی‌اش کند.
+  const rawDb = fresh ? buildDatabase(file).db : new DatabaseSync(file)
 
   /**
    * ===========================================================================

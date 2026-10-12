@@ -16,7 +16,18 @@ export function harnessClient() {
 }
 
 export class PrismaClient {
-  constructor() {
+  constructor(options = {}) {
+    /**
+     * سرویس ادغام برای فایل backup یک PrismaClient با datasource موقت می‌سازد.
+     * هارنس قبلاً آن URL را نادیده می‌گرفت و در نتیجه هر تست merge ناخواسته
+     * دیتابیس مقصد را به‌عنوان مبدأ هم می‌خواند. URL صریح باید واقعاً یک اتصال
+     * مستقل به همان فایل SQLite بسازد؛ سایر مسیرهای محصول همچنان shared هستند.
+     */
+    const url = options?.datasources?.db?.url
+    if (typeof url === 'string' && url.startsWith('file:')) {
+      const path = decodeURIComponent(url.slice('file:'.length).split('?')[0])
+      return createClient(path, { fresh: false })
+    }
     return harnessClient()
   }
 }
