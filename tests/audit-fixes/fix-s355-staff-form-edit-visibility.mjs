@@ -32,6 +32,7 @@ eq('ویرایش موفق فرم را به دید کاربر می‌آورد', e
 eq('ویرایش موفق نام کارمند را فوکوس می‌کند', edit.includes('staffNameInputRef.current?.focus()'), true)
 eq('فرم ثبت به ref اسکرول متصل است', source.includes('<div ref={staffFormRef}'), true)
 eq('دکمهٔ ذخیره پس از فیلدهای محرمانه قرار دارد', saveStart > personnelStart && personnelStart > publicFieldsStart, true)
+eq('خطای فرم همان‌جا به کاربر نشان داده می‌شود', source.includes('const [staffError, setStaffError]') && source.includes('role="alert"') && source.includes('showStaffError'), true)
 eq('ذخیرهٔ فرم همچنان از مسیر اتمی کامل استفاده می‌کند', source.includes('CH.staffPersonnelSaveComplete'), true)
 
 console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)

@@ -450,7 +450,21 @@ export default function Settings() {
    * نه این‌که state تغییر کند و پایین جدول بی‌صدا بماند. */
   const staffFormRef = useRef<HTMLDivElement | null>(null)
   const staffNameInputRef = useRef<HTMLInputElement | null>(null)
+  const [staffError, setStaffError] = useState<string | null>(null)
   const [delMessage, setDelMessage] = useState('')
+
+  const revealStaffForm = () => {
+    window.requestAnimationFrame(() => {
+      staffFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
+  /** خطای فرم نباید فقط در اعلان کلیِ بالای صفحه بماند؛ کاربر معمولاً پس از پر
+   * کردن اطلاعات در انتهای فرم است و باید همان‌جا علت را ببیند. */
+  const showStaffError = (message: string) => {
+    setStaffError(message)
+    setErr(message)
+    revealStaffForm()
+  }
 
   const flash = (m: string) => {
     setMsg(m)
@@ -1686,17 +1700,18 @@ export default function Settings() {
   }, [])
 
   const saveStaff = async () => {
-    if (!staffDraft.name.trim()) return setErr('نام کارمند را وارد کنید.')
+    if (!staffDraft.name.trim()) return showStaffError('نام کارمند را وارد کنید.')
     const requiredPersonnel: Array<[keyof StaffDraft, string]> = [
       ['jobTitle', 'عنوان شغلی'], ['phone', 'شماره تماس'], ['nationalId', 'کد ملی'],
       ['employmentStartJalali', 'تاریخ شروع همکاری'], ['bankName', 'نام بانک'],
       ['bankAccountNo', 'شماره حساب'], ['bankIban', 'شماره شبا'], ['bankAccountHolder', 'نام صاحب حساب']
     ]
     const missing = requiredPersonnel.filter(([key]) => !String(staffDraft[key] ?? '').trim()).map(([, label]) => label)
-    if (missing.length) return setErr(`تکمیل پروندهٔ پرسنلی لازم است: ${missing.join('، ')}.`)
+    if (missing.length) return showStaffError(`تکمیل پروندهٔ پرسنلی لازم است: ${missing.join('، ')}.`)
     if (staffDraft.employmentStatus === 'TERMINATED' && !staffDraft.employmentEndJalali.trim())
-      return setErr('برای وضعیت «پایان همکاری»، تاریخ پایان همکاری لازم است.')
+      return showStaffError('برای وضعیت «پایان همکاری»، تاریخ پایان همکاری لازم است.')
     setStaffBusy(true)
+    setStaffError(null)
     try {
       /** یک IPC تراکنشی: User پایه و پروندهٔ محرمانه یا هر دو ثبت می‌شوند یا هیچ‌کدام. */
       await call(CH.staffPersonnelSaveComplete, {
@@ -1720,7 +1735,7 @@ export default function Settings() {
       await loadStaff()
       flash(staffDraft.id ? 'پروندهٔ کارمند ویرایش شد.' : 'کارمند و پروندهٔ اولیه ثبت شد.')
     } catch (e: any) {
-      setErr(e.message)
+      showStaffError(e?.message ?? 'ثبت پروندهٔ کارمند انجام نشد.')
     } finally {
       setStaffBusy(false)
       setStaffCorrectionApprovalPw('')
@@ -1729,6 +1744,7 @@ export default function Settings() {
 
   const editStaff = async (row: { id: number; name: string; role: string; isActive: boolean }) => {
     setStaffBusy(true)
+    setStaffError(null)
     setErr(null)
     try {
       const result = await call<{ profile: Partial<StaffDraft> }>(CH.staffPersonnelGet, { userId: row.id })
@@ -1756,7 +1772,7 @@ export default function Settings() {
         staffNameInputRef.current?.focus()
       })
     } catch (e: any) {
-      setErr(e.message)
+      showStaffError(e?.message ?? 'بازکردن پروندهٔ کارمند انجام نشد.')
     } finally {
       setStaffBusy(false)
     }
@@ -1775,6 +1791,7 @@ export default function Settings() {
       setStaffDraft(blankStaffDraft())
       setStaffRows([])
       setStaffCorrectionApprovalPw('')
+      setStaffError(null)
     }
     if (!isManager && (tab === 'staff' || tab === 'custody')) {
       setTab('receipt')
@@ -4199,6 +4216,7 @@ export default function Settings() {
               <div ref={staffFormRef} className="rounded border p-3 space-y-2 scroll-mt-24">
                 <div className="font-bold">{staffDraft.id ? `ویرایش کارمند شماره ${faDigits(staffDraft.id)}` : 'ثبت کارمند تازه'}</div>
                 <p className="kbd leading-6">اطلاعات را کامل کنید و از دکمهٔ «ثبت/ذخیره» در انتهای همین فرم استفاده کنید؛ دکمهٔ کلی «ذخیرهٔ تنظیمات» بالای صفحه برای پروندهٔ کارمندان نیست.</p>
+                {staffError && <div role="alert" className="rounded border border-red-300 bg-red-50 px-3 py-2 text-red-800">{staffError}</div>}
                 <div className="flex flex-wrap items-end gap-2">
                   <label>
                     <div className="mb-1">نام کارمند</div>
