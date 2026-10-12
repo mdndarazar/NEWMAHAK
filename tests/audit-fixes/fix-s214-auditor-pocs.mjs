@@ -15,6 +15,10 @@ process.env.HARNESS_BIGINT = '1'
 const electron = await import('electron')
 const handlers = new Map()
 electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
+// مسیر IPC جدید، مالکیت پنجره را پیش از هر PoC بررسی می‌کند؛ sender معتبرِ
+// ساختگی، آزمون قراردادهای مالی را از این مرز مستقل عبور می‌دهد.
+electron.BrowserWindow.fromWebContents = () => ({ isDestroyed: () => false })
+const sender = { id: 21401, isDestroyed: () => false, once: () => {} }
 
 const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
@@ -25,7 +29,7 @@ const { toJalaliDate } = await import('@shared/jalali')
 const { DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/receipt')
 
 registerIpcHandlers()
-const ipc = (ch, p) => handlers.get(ch)(null, p)
+const ipc = (ch, p) => handlers.get(ch)({ sender }, p)
 
 const db = harnessClient()
 const seed = makeSeeder(db)
