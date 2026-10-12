@@ -446,6 +446,10 @@ export default function Settings() {
 
   const [staffDraft, setStaffDraft] = useState<StaffDraft>(blankStaffDraft)
   const [staffBusy, setStaffBusy] = useState(false)
+  /** فرم کارمند بالای فهرست است؛ پس «ویرایش» باید کاربر را واقعاً به فرم ببرد،
+   * نه این‌که state تغییر کند و پایین جدول بی‌صدا بماند. */
+  const staffFormRef = useRef<HTMLDivElement | null>(null)
+  const staffNameInputRef = useRef<HTMLInputElement | null>(null)
   const [delMessage, setDelMessage] = useState('')
 
   const flash = (m: string) => {
@@ -1744,6 +1748,12 @@ export default function Settings() {
         bankAccountNo: p.bankAccountNo ?? '',
         bankIban: p.bankIban ?? '',
         bankAccountHolder: p.bankAccountHolder ?? ''
+      })
+      /** فرم بالای جدول است. بدون این حرکت، کلیک «ویرایش» برای کاربری که پایین
+       * فهرست است هیچ اثر ظاهری ندارد و به‌اشتباه خرابی دکمه برداشت می‌شود. */
+      window.requestAnimationFrame(() => {
+        staffFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        staffNameInputRef.current?.focus()
       })
     } catch (e: any) {
       setErr(e.message)
@@ -4186,12 +4196,14 @@ export default function Settings() {
               </div>
 
               {/* ---------- فرم ثبت/ویرایش ---------- */}
-              <div className="rounded border p-3 space-y-2">
+              <div ref={staffFormRef} className="rounded border p-3 space-y-2 scroll-mt-24">
                 <div className="font-bold">{staffDraft.id ? `ویرایش کارمند شماره ${faDigits(staffDraft.id)}` : 'ثبت کارمند تازه'}</div>
+                <p className="kbd leading-6">اطلاعات را کامل کنید و از دکمهٔ «ثبت/ذخیره» در انتهای همین فرم استفاده کنید؛ دکمهٔ کلی «ذخیرهٔ تنظیمات» بالای صفحه برای پروندهٔ کارمندان نیست.</p>
                 <div className="flex flex-wrap items-end gap-2">
                   <label>
                     <div className="mb-1">نام کارمند</div>
                     <input
+                      ref={staffNameInputRef}
                       className="inp w-56"
                       value={staffDraft.name}
                       onChange={(e) => setStaffDraft({ ...staffDraft, name: e.target.value })}
@@ -4234,18 +4246,6 @@ export default function Settings() {
                       />
                     </label>
                   )}
-                  <button className="btn btn-primary" onClick={() => void saveStaff()} disabled={staffBusy}>
-                    {staffBusy ? 'در حال ذخیره…' : staffDraft.id ? 'ذخیره‌ی ویرایش' : 'ثبت کارمند'}
-                  </button>
-                  {staffDraft.id && (
-                    <button
-                      className="btn"
-                      onClick={() => setStaffDraft(blankStaffDraft())}
-                      disabled={staffBusy}
-                    >
-                      انصراف
-                    </button>
-                  )}
                 </div>
                 <fieldset className="rounded border border-rose-200 bg-rose-50/50 p-3 space-y-3">
                   <legend className="px-1 font-bold text-rose-950">پروندهٔ پرسنلی محرمانه — فقط مدیر</legend>
@@ -4265,8 +4265,23 @@ export default function Settings() {
                     <label><div className="mb-1">شماره شبا (IR…)</div><input className="inp w-full uppercase" value={staffDraft.bankIban} onChange={(e) => setStaffDraft({ ...staffDraft, bankIban: e.target.value })} /></label>
                   </div>
                 </fieldset>
+                <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+                  <button className="btn btn-primary" onClick={() => void saveStaff()} disabled={staffBusy}>
+                    {staffBusy ? 'در حال ذخیره…' : staffDraft.id ? 'ذخیرهٔ ویرایش کارمند' : 'ثبت کارمند'}
+                  </button>
+                  {staffDraft.id && (
+                    <button
+                      className="btn"
+                      onClick={() => setStaffDraft(blankStaffDraft())}
+                      disabled={staffBusy}
+                    >
+                      انصراف از ویرایش
+                    </button>
+                  )}
+                  <span className="kbd">پس از ذخیره، اطلاعات عمومی و پروندهٔ محرمانه با هم ثبت می‌شوند.</span>
+                </div>
                 <div className="kbd leading-6">
-                  ثبت ساختاری کارمند و این پرونده فقط با <b>نشست اصلی مدیر</b> انجام می‌شود؛ رمز دوم Settings کافی نیست. کارمند هیچ‌وقت <b>حذف</b> نمی‌شود، فقط «غیرفعال» می‌شود؛ وگرنه سابقه‌ی فروش و برگشتِ گذشته‌اش بی‌صاحب می‌شد.
+                  ثبت ساختاری کارمند و این پرونده فقط با <b>نشست اصلی مدیر</b> انجام می‌شود؛ رمز دوم Settings کافی نیست. کارمند هیچ‌وقت <b>حذف</b> نمی‌شود، فقط «غیرفعال» می‌شود؛ وگرنه سابقه‌ی فروش و برگشتِ گذشته‌اش بی‌صاحب می‌ماند.
                 </div>
               </div>
 
