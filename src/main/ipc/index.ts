@@ -853,8 +853,16 @@ export function registerIpcHandlers(): void {
     await assertSalesCreditRead('دیدن فهرست بدهکاران و تسویه‌های نسیه')
     return salesService.creditList(p ?? {})
   })
-  handle(IPC.saleReportSummary, (p) => salesService.summary(p ?? {}))
-  handle(IPC.saleReportRows, (p) => salesService.reportRows(p ?? {}))
+  // سرجمع و ردیف‌های گزارش فروش، جمع‌های مالی و جزئیات پرداخت را برمی‌گردانند.
+  // ManagerGate رندرر کافی نیست: invoke مستقیم باید همان scope گزارش را داشته باشد.
+  handle(IPC.saleReportSummary, async (p) => {
+    await assertSalesReportsRead('دیدن سرجمع گزارش فروش')
+    return salesService.summary(p ?? {})
+  })
+  handle(IPC.saleReportRows, async (p) => {
+    await assertSalesReportsRead('دیدن ردیف‌های گزارش فروش')
+    return salesService.reportRows(p ?? {})
+  })
   // ریزبین مالی: فقط‌خواندنی و با authorization سمت main، مستقل از gate ظاهری renderer.
   handle(IPC.saleReportFinancialSources, (p) => financialInspectorService.sources(p))
   handle(IPC.saleReportFinancialDocument, (p) => financialInspectorService.document(p))
