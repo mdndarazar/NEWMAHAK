@@ -137,17 +137,20 @@ console.log('\n۱۱) baselining کامل')
 const payCash = (amount) => [{ methodId: cash, amount, destination: 'CASH' }]
 const line = (price, extra = {}) => ({ variantId, qty: 1, unitPrice: price, discount: 0, tax: 0, name: 'کالا', ...extra })
 
-console.log('\n۱۲ب) نوشتن snapshot هنگام فروش')
+console.log('\n۱۲ب) snapshot فروش فقط از دیتابیس main ساخته می‌شود، نه payload قابل جعل')
 {
   const sale = await salesService.create({
     userId: user,
     shiftId,
-    lines: [line(10_000, { name: 'نام روز فروش', code: 'SNAP-1' })],
+    // این دو مقدار renderer عمداً جعلی‌اند و نباید روی سند بنشینند.
+    lines: [line(10_000, { name: 'نام جعلی رندرر', code: 'FORGED-CODE' })],
     payments: payCash(10_000)
   })
   const item = sql.prepare('SELECT variantName, variantCode FROM "SaleInvoiceItem" WHERE invoiceId = ?').get(sale.id)
-  eq('variantName ذخیره شد', item?.variantName, 'نام روز فروش')
-  eq('variantCode ذخیره شد', item?.variantCode, 'SNAP-1')
+  eq('variantName از نام/سایز موجودی لحظهٔ فروش ذخیره شد', item?.variantName, 'کالا زنده سایز سایز')
+  eq('variantCode از موجودی لحظهٔ فروش ذخیره شد', item?.variantCode, 'LIVE-CODE')
+  eq('نام payload جعلی روی سند ننشست', item?.variantName === 'نام جعلی رندرر', false)
+  eq('کد payload جعلی روی سند ننشست', item?.variantCode === 'FORGED-CODE', false)
 }
 
 console.log('\n۲) تعویض CUSTOM بدون مقصد')
