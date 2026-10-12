@@ -1135,8 +1135,8 @@ export const authService = {
 
     const managerPassword = normalize(input.managerPassword)
     if (!managerPassword) throw new BusinessError('برای تعیین رمز دوم، اول رمز مدیر را وارد کنید.')
-    if (!(await matches(managerPassword)))
-      throw new BusinessError('رمز مدیر درست نیست؛ هیچ رمزی تغییر نکرد.')
+    // ZIP-AUDIT-HIGH-01: matches() خام، شمارنده/قفل __manager__ را دور می‌زد.
+    await assertManagerPassword(managerPassword, `تعیین یا حذف رمز دوم پنل «${panelTitle(panel)}»`)
 
     const next = normalize(input.password)
     const map = await readPanels()
@@ -1216,7 +1216,8 @@ export const authService = {
 
     const managerPassword = normalize(input.managerPassword)
     if (!managerPassword) throw new BusinessError('برای تعیین رمز سوم، اول رمز مدیر را وارد کنید.')
-    if (!(await matches(managerPassword))) throw new BusinessError('رمز مدیر درست نیست؛ هیچ رمزی تغییر نکرد.')
+    // ZIP-AUDIT-HIGH-01: همان گیت lockout مدیر، پیش از هر تغییر رمز سوم.
+    await assertManagerPassword(managerPassword, `تعیین یا حذف رمز سوم پنل «${panelTitle(panel)}»`)
 
     const cfg = await readShiftConfig()
     const tpl = (cfg.templates ?? [])[shiftNo - 1]
@@ -1292,7 +1293,8 @@ export const authService = {
     if (!panel) throw new BusinessError('پنل مشخص نشده است.')
     const managerPassword = normalize(input.managerPassword)
     if (!managerPassword) throw new BusinessError('برای دیدن رمز ذخیره‌شده، اول رمز مدیر را وارد کنید.')
-    if (!(await matches(managerPassword))) throw new BusinessError('رمز مدیر درست نیست.')
+    // ZIP-AUDIT-HIGH-01: نمایش credential نیز نباید brute-force manager را باز کند.
+    await assertManagerPassword(managerPassword, 'نمایش رمز ذخیره‌شده‌ی پنل')
 
     const rawShift = toLatinDigits(String(input.shift ?? '')).trim()
     const shiftNo = rawShift ? Number(rawShift) : null
@@ -1344,7 +1346,8 @@ export const authService = {
     const current = normalize(input.current)
     const next = normalize(input.next)
     if (!current) throw new BusinessError('برای تغییر رمز، اول رمز فعلی را وارد کنید.')
-    if (!(await matches(current))) throw new BusinessError('رمز فعلی درست نیست؛ رمز تغییر نکرد.')
+    // ZIP-AUDIT-HIGH-01: تغییر رمز از IPC نیز یک تلاش مدیر است، نه matches خام.
+    await assertManagerPassword(current, 'تغییر رمز مدیر')
     if (next.length < 4) throw new BusinessError('رمز جدید باید حداقل ۴ رقم/کاراکتر باشد.')
     if (next === current) throw new BusinessError('رمز جدید با رمز فعلی یکی است؛ چیزی تغییر نکرد.')
     if (next === DEFAULT_MANAGER_PASSWORD)
