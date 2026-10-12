@@ -210,6 +210,8 @@ type StaffDraft = {
   employmentStartJalali: string
   employmentEndJalali: string
   employmentStatus: 'ACTIVE' | 'LEAVE' | 'SUSPENDED' | 'TERMINATED'
+  /** Required only if this edit archives the currently active custodian. */
+  custodyArchiveReason: string
   bankName: string
   bankAccountNo: string
   bankIban: string
@@ -227,6 +229,7 @@ const blankStaffDraft = (): StaffDraft => ({
   employmentStartJalali: '',
   employmentEndJalali: '',
   employmentStatus: 'ACTIVE',
+  custodyArchiveReason: '',
   bankName: '',
   bankAccountNo: '',
   bankIban: '',
@@ -1765,7 +1768,7 @@ export default function Settings() {
     setStaffError(null)
     try {
       /** یک IPC تراکنشی: User پایه و پروندهٔ محرمانه یا هر دو ثبت می‌شوند یا هیچ‌کدام. */
-      await call(CH.staffPersonnelSaveComplete, {
+      const saved = await call<{ reactivated?: boolean; requiresTemporaryCustodyPin?: boolean }>(CH.staffPersonnelSaveComplete, {
         id: staffDraft.id,
         name: staffDraft.name.trim(),
         role: staffDraft.role,
@@ -1777,6 +1780,7 @@ export default function Settings() {
         employmentStartJalali: staffDraft.employmentStartJalali,
         employmentEndJalali: staffDraft.employmentEndJalali,
         employmentStatus: staffDraft.employmentStatus,
+        custodyArchiveReason: staffDraft.custodyArchiveReason.trim() || undefined,
         bankName: staffDraft.bankName,
         bankAccountNo: staffDraft.bankAccountNo,
         bankIban: staffDraft.bankIban,
@@ -1784,7 +1788,9 @@ export default function Settings() {
       })
       setStaffDraft(blankStaffDraft())
       await loadStaff()
-      flash(staffDraft.id ? 'اطلاعات کارمند ذخیره شد.' : 'کارمند ثبت شد؛ تکمیل پروندهٔ محرمانه را می‌توانید بعداً انجام دهید.')
+      flash(saved.requiresTemporaryCustodyPin
+        ? 'کارمند دوباره فعال شد، اما PIN قبلی عمداً باطل مانده است؛ از «حضانت صندوق» برای او رمز موقت تازه صادر کنید.'
+        : staffDraft.id ? 'اطلاعات کارمند ذخیره شد.' : 'کارمند ثبت شد؛ تکمیل پروندهٔ محرمانه را می‌توانید بعداً انجام دهید.')
     } catch (e: any) {
       showStaffError(e?.message ?? 'ثبت پروندهٔ کارمند انجام نشد.')
     } finally {
@@ -1811,6 +1817,7 @@ export default function Settings() {
         employmentStartJalali: p.employmentStartJalali ?? '',
         employmentEndJalali: p.employmentEndJalali ?? '',
         employmentStatus: p.employmentStatus ?? 'ACTIVE',
+        custodyArchiveReason: '',
         bankName: p.bankName ?? '',
         bankAccountNo: p.bankAccountNo ?? '',
         bankIban: p.bankIban ?? '',
@@ -4395,7 +4402,7 @@ export default function Settings() {
                       type="checkbox"
                       className="w-4 h-4"
                       checked={staffDraft.isActive}
-                      onChange={(e) => setStaffDraft({ ...staffDraft, isActive: e.target.checked })}
+                      onChange={(e) => setStaffDraft({ ...staffDraft, isActive: e.target.checked, ...(e.target.checked ? { employmentStatus: 'ACTIVE', employmentEndJalali: '' } : {}) })}
                     />
                     فعال
                   </label>
@@ -4426,6 +4433,7 @@ export default function Settings() {
                     <label><div className="mb-1">پایان همکاری</div><input className="inp w-full" value={staffDraft.employmentEndJalali} onChange={(e) => setStaffDraft({ ...staffDraft, employmentEndJalali: e.target.value })} /></label>
                     <label><div className="mb-1">وضعیت استخدام</div><select className="inp w-full" value={staffDraft.employmentStatus} onChange={(e) => setStaffDraft({ ...staffDraft, employmentStatus: e.target.value as StaffDraft['employmentStatus'] })}><option value="ACTIVE">فعال</option><option value="LEAVE">مرخصی / غیبت</option><option value="SUSPENDED">تعلیق</option><option value="TERMINATED">پایان همکاری</option></select></label>
                   </div>
+                  {(staffDraft.id && (!staffDraft.isActive || staffDraft.employmentStatus === 'TERMINATED')) ? <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm space-y-2"><b>آرشیو / پایان همکاری</b><p className="leading-6">اگر این شخص همین حالا مسئول صندوق باشد، ذخیره ابتدا فروش را کوتاه‌مدت freeze می‌کند، نشست او را با مبلغ مورد انتظار محفوظ می‌بندد و یک پروندهٔ شمارش بازیابی می‌سازد؛ سپس آرشیو انجام می‌شود. PIN قبلی او نیز باطل می‌شود.</p><label className="block"><span className="mb-1 block">دلیل آرشیو مسئول فعال صندوق (در صورت مسئول‌بودن، حداقل ۱۰ حرف)</span><textarea className="inp w-full" value={staffDraft.custodyArchiveReason} onChange={(e) => setStaffDraft({ ...staffDraft, custodyArchiveReason: e.target.value })} /></label></div> : null}
                   <div className="grid md:grid-cols-2 gap-3 border-t border-rose-200 pt-3">
                     <label><div className="mb-1">نام بانک</div><input className="inp w-full" value={staffDraft.bankName} onChange={(e) => setStaffDraft({ ...staffDraft, bankName: e.target.value })} /></label>
                     <label><div className="mb-1">نام صاحب حساب</div><input className="inp w-full" value={staffDraft.bankAccountHolder} onChange={(e) => setStaffDraft({ ...staffDraft, bankAccountHolder: e.target.value })} /></label>

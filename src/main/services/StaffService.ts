@@ -4,8 +4,9 @@ import { auditOrThrow } from './AuditService'
 import { assertManagerSession } from './panelSession'
 import { SETTING_KEYS } from '@shared/receipt'
 import { STAFF_ROLES, STAFF_ROLE_LABELS, normalizeStaffRole } from '@shared/enums'
-import { faDigits } from '@shared/jalali'
+import { faDigits, toJalaliDate } from '@shared/jalali'
 import { PANEL_KEYS } from '@shared/panels'
+import { custodyService } from './CustodyService'
 import {
   assertPanelPassword,
   createManagerCorrectionApprovalSecret,
@@ -253,19 +254,44 @@ async function assertNationalIdAvailable(nationalId: string | null, selfUserId: 
  * while they own the drawer or are the independently authenticated recipient
  * of a pending handover. The manager must first close/cancel/complete that
  * custody action; otherwise an audit trail would have a live person disappear. */
-async function assertOperationalDeactivationAllowed(client: any, userId: number): Promise<void> {
+async function assertOperationalDeactivationAllowed(client: any, userId: number, opts: { allowActiveCustodian?: boolean } = {}): Promise<boolean> {
   const state = await client.custodyState.findUnique({ where: { key: 'MAIN' } })
-  if (!state) return
-  if (state.activeShiftId) {
-    const meta = await client.custodyShiftMeta.findUnique({ where: { shiftId: state.activeShiftId } })
-    if (meta?.custodianUserId === userId)
-      throw new BusinessError('تا وقتی این کارمند مسئول فعال صندوق است، غیرفعال‌سازی یا پایان همکاری ممکن نیست. ابتدا صندوق را تحویل یا نهایی ببندید.', 'ACTIVE_CUSTODIAN')
-  }
+  if (!state) return false
   if (state.state === 'HANDOVER_PENDING' && state.pendingHandoverId) {
     const handover = await client.custodyHandover.findUnique({ where: { id: state.pendingHandoverId } })
     if (handover?.selectedRecipientUserId === userId)
       throw new BusinessError('این کارمند تحویل‌گیرندهٔ یک تحویل در انتظار است. ابتدا تحویل را لغو یا تعیین تکلیف کنید.', 'PENDING_HANDOVER_RECIPIENT')
   }
+  if (state.activeShiftId) {
+    const meta = await client.custodyShiftMeta.findUnique({ where: { shiftId: state.activeShiftId } })
+    if (meta?.custodianUserId === userId) {
+      if (opts.allowActiveCustodian) return true
+      throw new BusinessError('تا وقتی این کارمند مسئول فعال صندوق است، غیرفعال‌سازی یا پایان همکاری فقط از مسیر بازیابی امن حضانت ممکن است.', 'ACTIVE_CUSTODIAN')
+    }
+  }
+  return false
+}
+
+/** Archiving invalidates the old secret without deleting its hash/history. A
+ * reactivated worker therefore cannot silently resume using an old PIN: the
+ * manager must issue a new temporary one through the existing custody flow. */
+async function disableCustodyCredentialInTx(tx: any, userId: number, setKind: string) {
+  return tx.custodyCredential.updateMany({
+    where: { userId, purpose: 'CUSTODY_PIN' },
+    data: { status: 'DISABLED', mustChange: true, setKind, version: { increment: 1 } }
+  })
+}
+
+async function recordCustodyStaffEvent(tx: any, input: { type: string; userId: number; payload?: unknown }) {
+  await tx.custodyEvent.create({
+    data: {
+      type: input.type,
+      actorKind: 'GLOBAL_MANAGER',
+      authMethod: 'MANAGER_SESSION',
+      payloadJson: JSON.stringify({ targetUserId: input.userId, ...(input.payload ?? {}) }),
+      operationalDay: toJalaliDate(new Date())
+    }
+  })
 }
 
 async function readActiveId(): Promise<number | null> {
@@ -300,6 +326,8 @@ export const staffService = {
     managerSession?: boolean
     /** فقط برای نقش MANAGER؛ خالی = رمز فعلی دست‌نخورده بماند. */
     correctionApprovalPassword?: string | null
+    /** Required when this edit archives the active drawer custodian. */
+    custodyArchiveReason?: unknown
   }) {
     const name = String(input?.name ?? '').trim()
     if (!name) throw new Error('نام کارمند را وارد کنید.')
@@ -340,8 +368,39 @@ export const staffService = {
     }
 
     if (id > 0 && before) {
+      const deactivating = before.isActive && input?.isActive === false
+      const activeCustodian = deactivating
+        ? await assertOperationalDeactivationAllowed(prisma, id, { allowActiveCustodian: true })
+        : false
+      const writeArchived = async (tx: any) => {
+        const row = await tx.user.update({
+          where: { id },
+          data: {
+            displayName: name,
+            role,
+            isActive: false,
+            ...(correctionApprovalSecret ? { passwordHash: correctionApprovalSecret } : role === 'MANAGER' ? {} : { passwordHash: '' })
+          },
+          select: SELECT
+        })
+        await disableCustodyCredentialInTx(tx, id, 'ARCHIVED')
+        await auditOrThrow(tx, {
+          action: 'STAFF_UPDATE', entity: 'User', entityId: id, userId: input?.userId ?? null,
+          before: JSON.stringify(shape(before)), after: JSON.stringify(shape(row)),
+          note: `آرشیو کارمند «${name}» از مسیر بازیابی امن حضانت؛ رمز شخصی قبلی غیرفعال شد.`
+        })
+        return row
+      }
+      if (activeCustodian) {
+        const archived = await custodyService.archiveActiveCustodian({
+          userId: id,
+          reason: input.custodyArchiveReason,
+          archiveInTx: writeArchived
+        })
+        if ((await readActiveId()) === id) await this.setActive({ userId: null })
+        return shape(archived.archived as any)
+      }
       const updated = await prisma.$transaction(async (tx: any) => {
-        if (before.isActive && input?.isActive === false) await assertOperationalDeactivationAllowed(tx, id)
         const row = await tx.user.update({
           where: { id },
           // خروج نقش مدیر ⇒ راز شخصی مربوط به اختیار مدیرانه هم باقی نمی‌ماند.
@@ -353,6 +412,12 @@ export const staffService = {
           },
           select: SELECT
         })
+        if (!row.isActive) await disableCustodyCredentialInTx(tx, id, 'ARCHIVED')
+        if (!before.isActive && row.isActive) {
+          await tx.staffProfile.updateMany({ where: { userId: id }, data: { employmentStatus: 'ACTIVE', employmentEndJalali: null, version: { increment: 1 } } })
+          await disableCustodyCredentialInTx(tx, id, 'REACTIVATION_PIN_REQUIRED')
+          await recordCustodyStaffEvent(tx, { type: 'CUSTODIAN_REACTIVATED_PIN_REQUIRED', userId: id })
+        }
         await auditOrThrow(tx, {
           action: 'STAFF_UPDATE',
           entity: 'User',
@@ -495,6 +560,7 @@ export const staffService = {
       })
       if (terminateOperationally) {
         const inactive = await tx.user.update({ where: { id: userId }, data: { isActive: false }, select: SELECT })
+        await disableCustodyCredentialInTx(tx, userId, 'ARCHIVED')
         await auditOrThrow(tx, {
           action: 'STAFF_UPDATE', entity: 'User', entityId: userId, userId: null,
           before: JSON.stringify(shape(user)), after: JSON.stringify(shape(inactive)),
@@ -517,6 +583,8 @@ export const staffService = {
     role?: string
     isActive?: boolean
     correctionApprovalPassword?: string | null
+    /** Required only while archiving the current active drawer custodian. */
+    custodyArchiveReason?: unknown
   } & PersonnelInput) {
     assertManagerSession('ثبت یا ویرایش کامل کارمند')
     const name = String(input?.name ?? '').trim()
@@ -538,7 +606,15 @@ export const staffService = {
         ])
       : [null, null]
     if (id > 0 && !beforeUser) throw new BusinessError('این کارمند پیدا نشد.')
-    const personnel = preparePersonnel(mergePersonnelInput(beforeProfileForMerge, input))
+    const reactivating = !!beforeUser && !beforeUser.isActive && input?.isActive !== false
+    const mergedPersonnel = mergePersonnelInput(beforeProfileForMerge, input)
+    /** Reactivation is deliberately one-way: a terminated marker and its old
+     * end date cannot survive while the User becomes operational again. */
+    if (reactivating) {
+      mergedPersonnel.employmentStatus = 'ACTIVE'
+      mergedPersonnel.employmentEndJalali = ''
+    }
+    const personnel = preparePersonnel(mergedPersonnel)
     await assertNationalIdAvailable(personnel.nationalId, id > 0 ? id : null)
     const username = id > 0 ? null : await uniqueUsername(name)
     /** TERMINATED is never merely a decorative profile label: the same atomic
@@ -547,9 +623,12 @@ export const staffService = {
     if (correctionApprovalPassword && !willBeActive)
       throw new BusinessError('رمز شخصی تأیید فقط برای مدیر فعال قابل ثبت است.')
 
-    const result = await prisma.$transaction(async (tx: any) => {
+    const deactivating = !!beforeUser && beforeUser.isActive && !willBeActive
+    const activeCustodian = deactivating
+      ? await assertOperationalDeactivationAllowed(prisma, id, { allowActiveCustodian: true })
+      : false
+    const writeComplete = async (tx: any) => {
       const beforeProfile = id > 0 ? await tx.staffProfile.findUnique({ where: { userId: id } }) : null
-      if (id > 0 && beforeUser?.isActive && !willBeActive) await assertOperationalDeactivationAllowed(tx, id)
       const user = id > 0
         ? await tx.user.update({
             where: { id },
@@ -576,6 +655,11 @@ export const staffService = {
         update: { ...personnel, version: { increment: 1 } },
         create: { userId: user.id, kind: 'STAFF', ...personnel }
       })
+      if (!user.isActive) await disableCustodyCredentialInTx(tx, user.id, 'ARCHIVED')
+      if (reactivating && user.isActive) {
+        await disableCustodyCredentialInTx(tx, user.id, 'REACTIVATION_PIN_REQUIRED')
+        await recordCustodyStaffEvent(tx, { type: 'CUSTODIAN_REACTIVATED_PIN_REQUIRED', userId: user.id })
+      }
       const changedFields = Object.keys(personnel).filter((key) => String((beforeProfile as any)?.[key] ?? '') !== String((personnel as any)[key] ?? ''))
       await auditOrThrow(tx, {
         action: id > 0 ? 'STAFF_UPDATE' : 'STAFF_CREATE',
@@ -584,7 +668,9 @@ export const staffService = {
         userId: null,
         before: id > 0 ? JSON.stringify(shape(beforeUser!)) : null,
         after: JSON.stringify(shape(user)),
-        note: `${id > 0 ? 'ویرایش' : 'ثبت'} کارمند «${name}» با نشست سراسری مدیر`
+        note: activeCustodian
+          ? `آرشیو کارمند «${name}» از مسیر بازیابی امن حضانت؛ رمز شخصی قبلی غیرفعال شد.`
+          : `${id > 0 ? 'ویرایش' : 'ثبت'} کارمند «${name}» با نشست سراسری مدیر`
       })
       await auditOrThrow(tx, {
         action: 'STAFF_PERSONNEL_SENSITIVE_UPDATE',
@@ -605,9 +691,12 @@ export const staffService = {
           note: `رمز شخصی تأیید اصلاح دیرهنگام برای مدیر «${user.displayName}» تنظیم/تعویض شد (خود رمز ذخیره یا نمایش داده نمی‌شود).`
         })
       return { user, profile }
-    })
+    }
+    const result = activeCustodian
+      ? (await custodyService.archiveActiveCustodian({ userId: id, reason: input.custodyArchiveReason, archiveInTx: writeComplete })).archived
+      : await prisma.$transaction(writeComplete)
     if (!result.user.isActive && (await readActiveId()) === result.user.id) await this.setActive({ userId: null })
-    return { staff: shape(result.user), profile: redactedPersonnelSummary(result.profile) }
+    return { staff: shape(result.user), profile: redactedPersonnelSummary(result.profile), reactivated: reactivating, requiresTemporaryCustodyPin: reactivating }
   },
 
   /** «چه کسی همین حالا پشت سیستم است؟» — `null` = مثل قبل، بدون کارمند. */

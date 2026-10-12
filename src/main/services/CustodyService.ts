@@ -362,7 +362,7 @@ export const custodyService = {
       pendingHandover: state.pendingHandoverId
         ? await prisma.custodyHandover.findUnique({ where: { id: state.pendingHandoverId }, select: { id: true, fromUserId: true, selectedRecipientUserId: true, startedAt: true, status: true, resolutionKind: true, countedAtStart: true, resolutionReason: true } })
         : null,
-      unresolved: unresolved.map((row: any) => ({ id: row.id, shiftId: row.shiftId, openedAt: row.openedAt, nightExpectedCash: row.nightExpectedCash })),
+      unresolved: unresolved.map((row: any) => ({ id: row.id, shiftId: row.shiftId, openedAt: row.openedAt, nightExpectedCash: row.nightExpectedCash, evidence: row.evidence })),
       unresolvedCount: unresolved.length
     }
   },
@@ -441,7 +441,10 @@ export const custodyService = {
    */
   async staffList() {
     const [users, credentials] = await Promise.all([
-      prisma.user.findMany({ orderBy: [{ isActive: 'desc' }, { id: 'asc' }] }),
+      /** This is an operational authentication roster, never a personnel
+       * directory: archived people remain in history/Staff Settings but must
+       * not leak back into an opening, handover, recovery or PIN workflow. */
+      prisma.user.findMany({ where: { isActive: true }, orderBy: [{ id: 'asc' }] }),
       prisma.custodyCredential.findMany({ where: { purpose: PURPOSE }, select: { userId: true, mustChange: true, status: true } })
     ])
     const c = new Map(credentials.map((r: any) => [r.userId, r]))
@@ -681,10 +684,110 @@ export const custodyService = {
       afterCloseInTx: async (tx: Client, session: any) => {
         const changed = await tx.custodyResolution.updateMany({ where: { id: resolutionId, status: 'OPEN', shiftId: shift.id }, data: { status: 'RESOLVED', cashSessionId: session.id, decisionByUserId: manager.userId, decisionReason: reason, differenceAttribution: attribution, attributedToUserId, resolvedAt: new Date() } })
         if (changed.count !== 1) throw new BusinessError('پرونده شب هم‌زمان تغییر کرد؛ عملیات ثبت نشد.', 'CUSTODY_STALE')
-        await tx.custodyShiftMeta.updateMany({ where: { shiftId: shift.id, endKind: { in: ['UNRESOLVED', 'EXPIRED_UNRESOLVED'] } }, data: { endKind: 'FINAL_CLOSE', cashSessionId: session.id } })
+        await tx.custodyShiftMeta.updateMany({ where: { shiftId: shift.id, endKind: { in: ['UNRESOLVED', 'EXPIRED_UNRESOLVED', 'CUSTODIAN_ARCHIVED_UNRESOLVED'] } }, data: { endKind: 'FINAL_CLOSE', cashSessionId: session.id } })
         await writeEvent(tx, { type: 'UNRESOLVED_RESOLVED', shiftId: shift.id, resolutionId, actorUserId: manager.userId, actorKind: 'MANAGER', authMethod: 'MANAGER_CUSTODY_PIN', payload: { cashSessionId: session.id, attribution } })
       }
     } as any)
+  },
+
+  /**
+   * Archive/deactivate is not allowed to strand an active drawer behind an
+   * inactive person's PIN. The manager-session Staff service supplies the
+   * in-transaction archive callback; this service owns the financial freeze,
+   * expected-ledger snapshot and unresolved physical-count recovery record.
+   *
+   * No client-provided actor establishes custody here: the outgoing custodian
+   * is read from `CustodyShiftMeta`, while the archive actor is deliberately
+   * recorded only as the already-authorized global manager session.
+   */
+  async archiveActiveCustodian<T>(input: { userId: unknown; reason: unknown; archiveInTx: (tx: Client) => Promise<T> }) {
+    const userId = asSafeId(input.userId, 'شناسه کارمند')
+    const reason = String(input.reason ?? '').trim()
+    if (reason.length < 10)
+      throw new BusinessError('برای آرشیو مسئول فعال صندوق، دلیل روشنِ حداقل ۱۰ حرف وارد کنید.', 'CUSTODIAN_ARCHIVE_REASON_REQUIRED')
+
+    const frozen = await prisma.$transaction(async (tx: Client) => {
+      const state = await ensureState(tx)
+      if (!state.activeShiftId) throw new BusinessError('این کارمند مسئول فعال صندوق نیست.', 'ACTIVE_CUSTODIAN_REQUIRED')
+      const [shift, meta] = await Promise.all([
+        tx.shift.findUnique({ where: { id: state.activeShiftId } }),
+        tx.custodyShiftMeta.findUnique({ where: { shiftId: state.activeShiftId } })
+      ])
+      if (!shift || shift.closedAt || !shift.userId || !meta || meta.custodianUserId !== userId || shift.userId !== userId)
+        throw new BusinessError('این کارمند مسئول فعال صندوق نیست.', 'ACTIVE_CUSTODIAN_REQUIRED')
+      const existing = await tx.custodyResolution.findUnique({ where: { shiftId: shift.id } })
+      if (state.state === 'CUSTODIAN_ARCHIVE_FREEZE') {
+        if (!existing || existing.status !== 'ARCHIVE_FREEZE' || existing.evidence !== 'CUSTODIAN_ARCHIVED' || String(existing.decisionReason ?? '') !== reason)
+          throw new BusinessError('آرشیو حضانت در حال ثبت است؛ فقط با همان دلیل ثبت‌شده قابل ادامه است.', 'CUSTODIAN_ARCHIVE_IN_PROGRESS')
+        return { shiftId: shift.id, epoch: Number(state.epoch), resolutionId: existing.id, resumed: true }
+      }
+      if (state.state !== 'ACTIVE')
+        throw new BusinessError('برای آرشیو این کارمند، ابتدا تحویل یا عملیات در حال انجام صندوق را تعیین تکلیف کنید.', 'CUSTODIAN_ARCHIVE_BLOCKED')
+      if (existing && !['ARCHIVE_ABORTED'].includes(existing.status))
+        throw new BusinessError('برای این بخش صندوق از قبل پروندهٔ بازیابی وجود دارد.', 'CUSTODY_INVARIANT_BROKEN')
+      if (existing && String(existing.decisionReason ?? '') !== reason)
+        throw new BusinessError('تلاش آرشیو پیشین با دلیل دیگری ثبت شده است؛ برای حفظ تاریخچه همان دلیل را دوباره وارد کنید.', 'CUSTODIAN_ARCHIVE_RETRY_MISMATCH')
+      const freezeEpoch = Number(state.epoch) + 1
+      const resolution = existing
+        ? await tx.custodyResolution.update({ where: { id: existing.id }, data: { status: 'ARCHIVE_FREEZE', evidence: 'CUSTODIAN_ARCHIVED', differenceAttribution: 'PENDING_DECISION', decisionReason: reason, resolvedAt: null } })
+        : await tx.custodyResolution.create({ data: { shiftId: shift.id, status: 'ARCHIVE_FREEZE', evidence: 'CUSTODIAN_ARCHIVED', differenceAttribution: 'PENDING_DECISION', decisionReason: reason } })
+      const changed = await tx.custodyState.updateMany({
+        where: { key: MAIN, state: 'ACTIVE', activeShiftId: shift.id, epoch: state.epoch },
+        data: { state: 'CUSTODIAN_ARCHIVE_FREEZE', epoch: freezeEpoch, updatedAt: new Date() }
+      })
+      if (changed.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ آرشیو مسئول ثبت نشد.', 'CUSTODY_STALE')
+      await writeEvent(tx, { type: 'CUSTODIAN_ARCHIVE_FREEZE', shiftId: shift.id, resolutionId: resolution.id, actorKind: 'GLOBAL_MANAGER', authMethod: 'MANAGER_SESSION', epochBefore: state.epoch, epochAfter: freezeEpoch, payload: { targetUserId: userId, reason } })
+      return { shiftId: shift.id, epoch: freezeEpoch, resolutionId: resolution.id, resumed: false }
+    })
+
+    const abort = async (failure: string) => {
+      await prisma.$transaction(async (tx: Client) => {
+        const state = await ensureState(tx)
+        if (state.state !== 'CUSTODIAN_ARCHIVE_FREEZE' || state.activeShiftId !== frozen.shiftId || state.epoch !== frozen.epoch) return
+        const resolution = await tx.custodyResolution.findUnique({ where: { id: frozen.resolutionId } })
+        if (!resolution || resolution.status !== 'ARCHIVE_FREEZE') return
+        const nextEpoch = Number(state.epoch) + 1
+        await tx.custodyResolution.update({ where: { id: resolution.id }, data: { status: 'ARCHIVE_ABORTED' } })
+        const changed = await tx.custodyState.updateMany({ where: { key: MAIN, state: 'CUSTODIAN_ARCHIVE_FREEZE', activeShiftId: frozen.shiftId, epoch: state.epoch }, data: { state: 'ACTIVE', activeShiftId: frozen.shiftId, pendingHandoverId: null, epoch: nextEpoch, updatedAt: new Date() } })
+        if (changed.count === 1)
+          await writeEvent(tx, { type: 'CUSTODIAN_ARCHIVE_ABORTED', shiftId: frozen.shiftId, resolutionId: resolution.id, actorKind: 'GLOBAL_MANAGER', authMethod: 'MANAGER_SESSION', epochBefore: state.epoch, epochAfter: nextEpoch, payload: { targetUserId: userId, failure } })
+      })
+    }
+
+    let expectedCash: number
+    try {
+      expectedCash = Number((await cashboxService.expected({ shiftId: frozen.shiftId })).expectedCash)
+    } catch (error) {
+      await abort('EXPECTED_CALCULATION_FAILED')
+      throw error
+    }
+
+    try {
+      return await prisma.$transaction(async (tx: Client) => {
+        const state = await ensureState(tx)
+        if (state.state !== 'CUSTODIAN_ARCHIVE_FREEZE' || state.activeShiftId !== frozen.shiftId || state.epoch !== frozen.epoch)
+          throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ آرشیو مسئول ثبت نشد.', 'CUSTODY_STALE')
+        const [shift, meta, resolution] = await Promise.all([
+          tx.shift.findUnique({ where: { id: frozen.shiftId } }),
+          tx.custodyShiftMeta.findUnique({ where: { shiftId: frozen.shiftId } }),
+          tx.custodyResolution.findUnique({ where: { id: frozen.resolutionId } })
+        ])
+        if (!shift || shift.closedAt || shift.userId !== userId || !meta || meta.custodianUserId !== userId || !resolution || resolution.status !== 'ARCHIVE_FREEZE')
+          throw new BusinessError('اطلاعات آرشیو مسئول صندوق ناسازگار است.', 'CUSTODY_INVARIANT_BROKEN')
+        const nextEpoch = Number(state.epoch) + 1
+        const closed = await shiftService.closeInTx(tx, { shiftId: shift.id, userId, note: `آرشیو مسئول فعال صندوق؛ نیازمند شمارش بازیابی: ${reason}` })
+        await tx.custodyShiftMeta.update({ where: { shiftId: shift.id }, data: { endKind: 'CUSTODIAN_ARCHIVED_UNRESOLVED', endedAt: closed.closedAt, countStatus: 'COUNT_PENDING' } })
+        await tx.custodyResolution.update({ where: { id: resolution.id }, data: { status: 'OPEN', nightExpectedCash: BigInt(expectedCash), evidence: 'CUSTODIAN_ARCHIVED', differenceAttribution: 'PENDING_DECISION' } })
+        const archived = await input.archiveInTx(tx)
+        const changed = await tx.custodyState.updateMany({ where: { key: MAIN, state: 'CUSTODIAN_ARCHIVE_FREEZE', activeShiftId: shift.id, epoch: state.epoch }, data: { state: 'NO_SESSION', activeShiftId: null, pendingHandoverId: null, epoch: nextEpoch, updatedAt: new Date() } })
+        if (changed.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ آرشیو مسئول ثبت نشد.', 'CUSTODY_STALE')
+        await writeEvent(tx, { type: 'CUSTODIAN_ARCHIVED_UNRESOLVED', shiftId: shift.id, resolutionId: resolution.id, actorKind: 'GLOBAL_MANAGER', authMethod: 'MANAGER_SESSION', epochBefore: state.epoch, epochAfter: nextEpoch, payload: { targetUserId: userId, reason, expectedCash } })
+        return { archived, resolutionId: resolution.id, shiftId: shift.id, expectedCash, resumed: frozen.resumed }
+      })
+    } catch (error) {
+      try { await abort('COMPLETION_FAILED') } catch { /* retain the original completion failure */ }
+      throw error
+    }
   },
 
   /**
@@ -705,6 +808,7 @@ export const custodyService = {
     if (!resolution || resolution.status !== 'OPEN') throw new BusinessError('این پرونده شب قبلاً تعیین تکلیف شده یا پیدا نشد.', 'RECOVERY_NOT_OPEN')
     const shift = await prisma.shift.findUnique({ where: { id: resolution.shiftId } })
     if (!shift?.closedAt) throw new BusinessError('پرونده فقط پس از بسته‌شدن نشست منقضی قابل بازیابی است.', 'CUSTODY_INVARIANT_BROKEN')
+    const archivedCustodian = resolution.evidence === 'CUSTODIAN_ARCHIVED'
 
     return cashboxService.close({
       shiftId: shift.id,
@@ -724,7 +828,7 @@ export const custodyService = {
         const count = await tx.custodyCount.create({
           data: {
             shiftId: shift.id,
-            kind: 'MORNING_WITNESS',
+            kind: archivedCustodian ? 'ARCHIVED_CUSTODIAN_WITNESS' : 'MORNING_WITNESS',
             countedCash: BigInt(countedCash),
             expectedCash: session.expectedCash,
             differenceCash: session.cashDifference,
@@ -743,22 +847,22 @@ export const custodyService = {
             nightExpectedCash: live.nightExpectedCash ?? session.expectedCash,
             morningWitnessCountId: count.id,
             provisionalDifference: session.cashDifference,
-            evidence: 'MORNING_WITNESS',
+            evidence: archivedCustodian ? 'CUSTODIAN_ARCHIVED_RECOVERED' : 'MORNING_WITNESS',
             differenceAttribution: 'UNASSIGNED',
             cashSessionId: session.id,
             resolvedAt: new Date()
           }
         })
         if (changed.count !== 1) throw new BusinessError('پرونده شب هم‌زمان تغییر کرد؛ شمارش شاهد ثبت نشد.', 'CUSTODY_STALE')
-        await tx.custodyShiftMeta.updateMany({ where: { shiftId: shift.id, endKind: { in: ['UNRESOLVED', 'EXPIRED_UNRESOLVED'] } }, data: { endKind: 'RECOVERED_MORNING_WITNESS', cashSessionId: session.id } })
+        await tx.custodyShiftMeta.updateMany({ where: { shiftId: shift.id, endKind: { in: ['UNRESOLVED', 'EXPIRED_UNRESOLVED', 'CUSTODIAN_ARCHIVED_UNRESOLVED'] } }, data: { endKind: archivedCustodian ? 'CUSTODIAN_ARCHIVED_RECOVERED' : 'RECOVERED_MORNING_WITNESS', cashSessionId: session.id } })
         await writeEvent(tx, {
-          type: 'UNATTENDED_RECOVERED',
+          type: archivedCustodian ? 'CUSTODIAN_ARCHIVE_RECOVERED' : 'UNATTENDED_RECOVERED',
           shiftId: shift.id,
           resolutionId,
           actorUserId: witness.userId,
-          actorKind: 'MORNING_WITNESS',
+          actorKind: archivedCustodian ? 'ARCHIVE_RECOVERY_WITNESS' : 'MORNING_WITNESS',
           authMethod: 'CUSTODY_PIN',
-          payload: { cashSessionId: session.id, countId: count.id, expectedCash: session.expectedCash, countedCash, differenceCash: session.cashDifference }
+          payload: { cashSessionId: session.id, countId: count.id, expectedCash: session.expectedCash, countedCash, differenceCash: session.cashDifference, archivedCustodian }
         })
       }
     } as any)
@@ -1435,6 +1539,7 @@ export const custodyService = {
      * through the short-lived HANDOVER_RECOUNT state to establish a watermark. */
     if (state.state !== 'ACTIVE' && state.state !== 'HANDOVER_PENDING') {
       if (state.state === 'HANDOVER_RECOUNT') throw new BusinessError('تحویل‌گیرنده در حال شمارش نهایی است؛ چند لحظه بعد فروش را دوباره ثبت کنید.', 'HANDOVER_RECOUNT')
+      if (state.state === 'CUSTODIAN_ARCHIVE_FREEZE') throw new BusinessError('آرشیو مسئول فعال صندوق در حال ثبت است؛ تا ایجاد پروندهٔ بازیابی هیچ عملیات مالی انجام ندهید.', 'CUSTODIAN_ARCHIVE_FREEZE')
       throw new BusinessError('برای ادامهٔ فروش، ابتدا مسئول صندوق را مشخص کنید.', 'CUSTODY_AUTH_REQUIRED')
     }
     if (!state.activeShiftId) throw new BusinessError('برای ادامهٔ فروش، ابتدا مسئول صندوق را مشخص کنید.', 'CUSTODY_AUTH_REQUIRED')

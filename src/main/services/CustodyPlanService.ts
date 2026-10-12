@@ -53,6 +53,13 @@ export const custodyPlanService = {
     const reminderRepeatMin = whole(input.reminderRepeatMin ?? 15, 'فاصله یادآوری', 5, 60)
     const sortOrder = whole(input.sortOrder ?? 0, 'ترتیب برنامه', 0, 100000)
     const staffIds = [...new Set(Array.isArray(input.staffIds) ? input.staffIds.map((x) => whole(x, 'شناسه کارمند', 1, Number.MAX_SAFE_INTEGER)) : [])]
+    /** Historical plan assignments remain read-only evidence. A new/save action
+     * must never reintroduce an archived worker into an operational schedule. */
+    if (staffIds.length) {
+      const active = await prisma.user.findMany({ where: { id: { in: staffIds }, isActive: true }, select: { id: true } })
+      if (active.length !== staffIds.length)
+        throw new BusinessError('کارمند آرشیوشده یا غیرفعال نمی‌تواند در برنامهٔ عملیاتی شیفت ثبت شود.', 'INACTIVE_SCHEDULE_STAFF')
+    }
     return prisma.$transaction(async (tx: any) => {
       const data = { title, startMinute, durationMinutes, crossesMidnight: startMinute + durationMinutes > 1440, daysMask, isActive: input.isActive !== false, sortOrder, reminderRepeatMin }
       const plan = id
