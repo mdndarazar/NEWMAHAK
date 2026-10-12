@@ -82,7 +82,9 @@ eq('audit تغییر پرونده مقدار خام شبا ندارد', auditTex
 eq('audit پروندهٔ حساس ثبت شده است', audits.at(-1)?.action, 'STAFF_PERSONNEL_SENSITIVE_UPDATE')
 
 await runWithPanelSessionOwner(owner, async () => {
-  await rejects('پروندهٔ ناقص رد می‌شود', () => staffService.savePersonnel({ userId: employee, jobTitle: '', phone: '', nationalId: '', employmentStartJalali: '', bankName: '', bankAccountNo: '', bankIban: '', bankAccountHolder: '' }))
+  const incomplete = await staffService.savePersonnel({ userId: employee, jobTitle: '', phone: '', nationalId: '', employmentStartJalali: '', bankName: '', bankAccountNo: '', bankIban: '', bankAccountHolder: '' })
+  eq('پروندهٔ ناقص ذخیره می‌شود و ویرایش پایه را قفل نمی‌کند', incomplete.profile.jobTitle, null)
+  eq('وضعیت تکمیل پروندهٔ ناقص صریح است', incomplete.profile.completion?.isComplete, false)
   await rejects('کد ملی نامعتبر رد می‌شود', () => staffService.savePersonnel({ userId: employee, nationalId: '1111111111' }))
   await rejects('شبای نامعتبر رد می‌شود', () => staffService.savePersonnel({ userId: employee, bankIban: 'IR000000000000000000000000' }))
   await rejects('وضعیت استخدام نامعتبر رد می‌شود', () => staffService.savePersonnel({ userId: employee, employmentStatus: 'UNKNOWN' }))

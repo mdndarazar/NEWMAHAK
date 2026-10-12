@@ -230,6 +230,24 @@ const blankStaffDraft = (): StaffDraft => ({
   bankAccountHolder: ''
 })
 
+/** Only the presence count reaches this marker; sensitive values stay inside the
+ * manager-only form and are never copied to the directory. */
+const STAFF_PROFILE_COMPLETION_FIELDS: readonly (keyof StaffDraft)[] = [
+  'jobTitle',
+  'phone',
+  'nationalId',
+  'employmentStartJalali',
+  'bankName',
+  'bankAccountNo',
+  'bankIban',
+  'bankAccountHolder'
+]
+
+function staffProfileCompletion(draft: StaffDraft) {
+  const completed = STAFF_PROFILE_COMPLETION_FIELDS.filter((key) => String(draft[key] ?? '').trim().length > 0).length
+  return { completed, total: STAFF_PROFILE_COMPLETION_FIELDS.length, isComplete: completed === STAFF_PROFILE_COMPLETION_FIELDS.length }
+}
+
 export default function Settings() {
   const nav = useNavigate()
   /** رمز دوم Settings فقط بخش‌های غیرحساس را می‌بیند؛ پرونده کارکنان و حضانت مدیر اصلی می‌خواهند. */
@@ -451,6 +469,7 @@ export default function Settings() {
   const staffFormRef = useRef<HTMLDivElement | null>(null)
   const staffNameInputRef = useRef<HTMLInputElement | null>(null)
   const [staffError, setStaffError] = useState<string | null>(null)
+  const staffProfileProgress = useMemo(() => staffProfileCompletion(staffDraft), [staffDraft])
   const [delMessage, setDelMessage] = useState('')
 
   const revealStaffForm = () => {
@@ -1701,13 +1720,8 @@ export default function Settings() {
 
   const saveStaff = async () => {
     if (!staffDraft.name.trim()) return showStaffError('نام کارمند را وارد کنید.')
-    const requiredPersonnel: Array<[keyof StaffDraft, string]> = [
-      ['jobTitle', 'عنوان شغلی'], ['phone', 'شماره تماس'], ['nationalId', 'کد ملی'],
-      ['employmentStartJalali', 'تاریخ شروع همکاری'], ['bankName', 'نام بانک'],
-      ['bankAccountNo', 'شماره حساب'], ['bankIban', 'شماره شبا'], ['bankAccountHolder', 'نام صاحب حساب']
-    ]
-    const missing = requiredPersonnel.filter(([key]) => !String(staffDraft[key] ?? '').trim()).map(([, label]) => label)
-    if (missing.length) return showStaffError(`تکمیل پروندهٔ پرسنلی لازم است: ${missing.join('، ')}.`)
+    // نام و نقش، رکورد پایه‌اند. داده‌های شغلی/هویتی/بانکی اختیاری‌اند، اما هر
+    // مقداری که وارد شود در Main دوباره و مستقل از UI اعتبارسنجی می‌شود.
     if (staffDraft.employmentStatus === 'TERMINATED' && !staffDraft.employmentEndJalali.trim())
       return showStaffError('برای وضعیت «پایان همکاری»، تاریخ پایان همکاری لازم است.')
     setStaffBusy(true)
@@ -1733,7 +1747,7 @@ export default function Settings() {
       })
       setStaffDraft(blankStaffDraft())
       await loadStaff()
-      flash(staffDraft.id ? 'پروندهٔ کارمند ویرایش شد.' : 'کارمند و پروندهٔ اولیه ثبت شد.')
+      flash(staffDraft.id ? 'اطلاعات کارمند ذخیره شد.' : 'کارمند ثبت شد؛ تکمیل پروندهٔ محرمانه را می‌توانید بعداً انجام دهید.')
     } catch (e: any) {
       showStaffError(e?.message ?? 'ثبت پروندهٔ کارمند انجام نشد.')
     } finally {
@@ -4215,7 +4229,7 @@ export default function Settings() {
               {/* ---------- فرم ثبت/ویرایش ---------- */}
               <div ref={staffFormRef} className="rounded border p-3 space-y-2 scroll-mt-24">
                 <div className="font-bold">{staffDraft.id ? `ویرایش کارمند شماره ${faDigits(staffDraft.id)}` : 'ثبت کارمند تازه'}</div>
-                <p className="kbd leading-6">اطلاعات را کامل کنید و از دکمهٔ «ثبت/ذخیره» در انتهای همین فرم استفاده کنید؛ دکمهٔ کلی «ذخیرهٔ تنظیمات» بالای صفحه برای پروندهٔ کارمندان نیست.</p>
+                <p className="kbd leading-6">برای ثبت اولیه فقط «نام کارمند» و «نقش» لازم است. پروندهٔ شغلی، هویتی و بانکی را می‌توانید اکنون یا بعداً تکمیل کنید؛ دکمهٔ کلی «ذخیرهٔ تنظیمات» بالای صفحه برای پروندهٔ کارمندان نیست.</p>
                 {staffError && <div role="alert" className="rounded border border-red-300 bg-red-50 px-3 py-2 text-red-800">{staffError}</div>}
                 <div className="flex flex-wrap items-end gap-2">
                   <label>
@@ -4268,6 +4282,11 @@ export default function Settings() {
                 <fieldset className="rounded border border-rose-200 bg-rose-50/50 p-3 space-y-3">
                   <legend className="px-1 font-bold text-rose-950">پروندهٔ پرسنلی محرمانه — فقط مدیر</legend>
                   <p className="text-sm leading-6 text-slate-700">این اطلاعات در فهرست کارکنان، گزارش‌ها، خروجی‌ها و لاگ‌های عادی نشان داده نمی‌شوند. فقط نشست اصلی مدیر در همین پنجره اجازهٔ مشاهده یا تغییر دارد.</p>
+                  <div className={`rounded border px-3 py-2 text-sm ${staffProfileProgress.isComplete ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : 'border-amber-300 bg-amber-50 text-amber-950'}`}>
+                    <b>{staffProfileProgress.isComplete ? 'پرونده کامل است' : 'پرونده در حال تکمیل است'}</b>
+                    {' · '}
+                    {faDigits(staffProfileProgress.completed)} از {faDigits(staffProfileProgress.total)} بخش تکمیل شده. خالی‌بودن این بخش‌ها ثبت یا ویرایش پایهٔ کارمند را متوقف نمی‌کند؛ برای احراز صلاحیت صندوق و مسئولیت شیفت، شرایط جداگانه اعمال می‌شود.
+                  </div>
                   <div className="grid md:grid-cols-3 gap-3">
                     <label><div className="mb-1">عنوان شغلی</div><input className="inp w-full" value={staffDraft.jobTitle} onChange={(e) => setStaffDraft({ ...staffDraft, jobTitle: e.target.value })} /></label>
                     <label><div className="mb-1">شماره تماس</div><input className="inp w-full" inputMode="tel" value={staffDraft.phone} onChange={(e) => setStaffDraft({ ...staffDraft, phone: e.target.value })} /></label>

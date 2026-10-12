@@ -34,6 +34,8 @@ eq('فرم ثبت به ref اسکرول متصل است', source.includes('<div 
 eq('دکمهٔ ذخیره پس از فیلدهای محرمانه قرار دارد', saveStart > personnelStart && personnelStart > publicFieldsStart, true)
 eq('خطای فرم همان‌جا به کاربر نشان داده می‌شود', source.includes('const [staffError, setStaffError]') && source.includes('role="alert"') && source.includes('showStaffError'), true)
 eq('ذخیرهٔ فرم همچنان از مسیر اتمی کامل استفاده می‌کند', source.includes('CH.staffPersonnelSaveComplete'), true)
+eq('UI پروندهٔ محرمانه را شرط ثبت پایه نمی‌کند', source.includes('const requiredPersonnel'), false)
+eq('UI وضعیت تکمیل پرونده را بدون افشای مقدار نشان می‌دهد', source.includes('staffProfileProgress') && source.includes('پرونده در حال تکمیل است'), true)
 
 console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
 process.exitCode = bad ? 1 : 0

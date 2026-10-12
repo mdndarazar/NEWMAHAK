@@ -137,6 +137,28 @@ function personnelStatus(value: unknown): PersonnelStatus {
   return status as PersonnelStatus
 }
 
+/** Fields that make the optional personnel record visibly complete. Values are
+ * never exposed through this summary; it contains only safe completion state. */
+const PERSONNEL_COMPLETION_FIELDS = [
+  'jobTitle',
+  'phone',
+  'nationalId',
+  'employmentStartJalali',
+  'bankName',
+  'bankAccountNo',
+  'bankIban',
+  'bankAccountHolder'
+] as const
+
+function personnelCompletion(row: any) {
+  const completedFields = PERSONNEL_COMPLETION_FIELDS.filter((key) => String(row?.[key] ?? '').trim().length > 0).length
+  return {
+    isComplete: completedFields === PERSONNEL_COMPLETION_FIELDS.length,
+    completedFields,
+    totalFields: PERSONNEL_COMPLETION_FIELDS.length
+  }
+}
+
 function redactedPersonnelSummary(row: any) {
   return {
     hasNationalId: !!row?.nationalId,
@@ -144,7 +166,8 @@ function redactedPersonnelSummary(row: any) {
     hasBankAccountNo: !!row?.bankAccountNo,
     hasBankIban: !!row?.bankIban,
     hasBankAccountHolder: !!row?.bankAccountHolder,
-    employmentStatus: row?.employmentStatus ?? 'ACTIVE'
+    employmentStatus: row?.employmentStatus ?? 'ACTIVE',
+    completion: personnelCompletion(row)
   }
 }
 
@@ -159,6 +182,33 @@ type PersonnelInput = {
   bankAccountNo?: unknown
   bankIban?: unknown
   bankAccountHolder?: unknown
+}
+
+const PERSONNEL_INPUT_KEYS = [
+  'jobTitle',
+  'phone',
+  'nationalId',
+  'employmentStartJalali',
+  'employmentEndJalali',
+  'employmentStatus',
+  'bankName',
+  'bankAccountNo',
+  'bankIban',
+  'bankAccountHolder'
+] as const
+
+/**
+ * A basic edit must not erase a profile merely because the caller did not send
+ * sensitive fields. Empty string/null are deliberate clears; an omitted (or
+ * `undefined`) property inherits the saved value.
+ */
+function mergePersonnelInput(previous: any | null | undefined, input: PersonnelInput): PersonnelInput {
+  const merged: PersonnelInput = {}
+  for (const key of PERSONNEL_INPUT_KEYS) {
+    const supplied = Object.prototype.hasOwnProperty.call(input, key) && input[key] !== undefined
+    ;(merged as any)[key] = supplied ? input[key] : previous?.[key]
+  }
+  return merged
 }
 
 /** Validate and normalize once, then reuse the exact same policy from both
@@ -182,18 +232,11 @@ function preparePersonnel(input: PersonnelInput) {
     bankIban: ibanOrNull(input.bankIban),
     bankAccountHolder: textOrNull(input.bankAccountHolder, 'نام صاحب حساب', 120)
   }
-  const required: Array<[keyof typeof data, string]> = [
-    ['jobTitle', 'عنوان شغلی'],
-    ['phone', 'شماره تماس'],
-    ['nationalId', 'کد ملی'],
-    ['employmentStartJalali', 'تاریخ شروع همکاری'],
-    ['bankName', 'نام بانک'],
-    ['bankAccountNo', 'شماره حساب'],
-    ['bankIban', 'شماره شبا'],
-    ['bankAccountHolder', 'نام صاحب حساب']
-  ]
-  const missing = required.filter(([key]) => !data[key]).map(([, label]) => label)
-  if (missing.length) throw new BusinessError(`تکمیل پروندهٔ پرسنلی لازم است: ${missing.join('، ')}.`)
+  /**
+   * پروندهٔ پرسنلی تدریجی است: نام و نقش برای ساخت کارمند کافی‌اند و داده‌های
+   * هویتی/بانکی در زمان تکمیل‌شدن جداگانه اعتبارسنجی می‌شوند. این باعث نمی‌شود
+   * مقدار ناقص/خراب پذیرفته شود؛ فقط «نداشتنِ» آن، ویرایش پایه را قفل نمی‌کند.
+   */
   if (data.employmentStatus === 'TERMINATED' && !data.employmentEndJalali)
     throw new BusinessError('برای وضعیت «پایان همکاری»، تاریخ پایان همکاری لازم است.')
   return data
@@ -363,7 +406,8 @@ export const staffService = {
         bankIban: profile?.bankIban ?? null,
         bankAccountHolder: profile?.bankAccountHolder ?? null,
         version: profile?.version ?? 0,
-        updatedAt: profile?.updatedAt ?? null
+        updatedAt: profile?.updatedAt ?? null,
+        completion: personnelCompletion(profile)
       }
     }
   },
@@ -394,7 +438,7 @@ export const staffService = {
       prisma.staffProfile.findUnique({ where: { userId } })
     ])
     if (!user) throw new BusinessError('این کارمند پیدا نشد.')
-    const data = preparePersonnel(input)
+    const data = preparePersonnel(mergePersonnelInput(before, input))
     await assertNationalIdAvailable(data.nationalId, userId)
     const changedFields = Object.keys(data).filter((key) => String((before as any)?.[key] ?? '') !== String((data as any)[key] ?? ''))
     await prisma.$transaction(async (tx: any) => {
@@ -433,12 +477,17 @@ export const staffService = {
     if (!name) throw new BusinessError('نام کارمند را وارد کنید.')
     const role = normalizeStaffRole(input?.role)
     const id = Math.round(Number(input?.id ?? 0))
-    const personnel = preparePersonnel(input)
     const correctionApprovalPassword = String(input?.correctionApprovalPassword ?? '').trim()
     if (correctionApprovalPassword && role !== 'MANAGER')
       throw new BusinessError('رمز شخصی تأیید اصلاح فقط برای کارمند با نقش «مدیر» قابل ثبت است.')
-    const beforeUser = id > 0 ? await prisma.user.findUnique({ where: { id }, select: SELECT }) : null
+    const [beforeUser, beforeProfileForMerge] = id > 0
+      ? await Promise.all([
+          prisma.user.findUnique({ where: { id }, select: SELECT }),
+          prisma.staffProfile.findUnique({ where: { userId: id } })
+        ])
+      : [null, null]
     if (id > 0 && !beforeUser) throw new BusinessError('این کارمند پیدا نشد.')
+    const personnel = preparePersonnel(mergePersonnelInput(beforeProfileForMerge, input))
     await assertNationalIdAvailable(personnel.nationalId, id > 0 ? id : null)
     const username = id > 0 ? null : await uniqueUsername(name)
 
