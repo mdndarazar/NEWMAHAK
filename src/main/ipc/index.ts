@@ -784,7 +784,15 @@ export function registerIpcHandlers(): void {
   handle(IPC.creditHolderChange, async (p) => storeCreditService.changeHolder(await withOptionalSessionActor(p ?? {})))
   handle(IPC.creditRestrictionChange, async (p) => storeCreditService.changeRestrictions(await withOptionalSessionActor(p ?? {})))
   handle(IPC.creditDelete, async (p) => storeCreditService.remove(await withOptionalSessionActor(p ?? {})))
-  handle(IPC.creditMarkPrinted, async (p) => storeCreditService.markPrinted(await withOptionalSessionActor(p ?? {})))
+  /**
+   * شمارنده و Audit چاپ را فقط مسیر چاپ main باید جلو ببرد. کانال legacy برای
+   * سازگاری مانده، اما بدون نشست واقعی مدیر، invoke مستقیم نمی‌تواند یک چاپ
+   * جعلی/نسخهٔ مجدد ساختگی ثبت کند.
+   */
+  handle(IPC.creditMarkPrinted, async (p) => {
+    assertManagerSession('ثبت چاپ سند اعتبار خرید')
+    return storeCreditService.markPrinted(await withOptionalSessionActor(p ?? {}))
+  })
   handle(IPC.creditReminderCandidates, async (p) => {
     await assertCreditRead('دیدن فهرست یادآوری اعتبار')
     return storeCreditService.reminderCandidates(p ?? {})

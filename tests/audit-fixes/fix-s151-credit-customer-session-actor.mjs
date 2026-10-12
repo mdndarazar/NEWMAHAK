@@ -144,7 +144,7 @@ eq('userId در Audit SETTINGS_UPDATE (Customer) بدون نشست', uid(lastAud
 console.log('\n۵) ساختاری: هیچ کانال این دسته دیگر withUser(p) یا payload خام ندارد')
 const src = readFileSync(resolve('src/main/ipc/index.ts'), 'utf8')
 const names = ['storeCreditLookup', 'creditPreview', 'creditVoid', 'creditSuspend', 'creditReactivate', 'creditExpiryChange',
-  'creditAmountChange', 'creditUsesChange', 'creditHolderChange', 'creditRestrictionChange', 'creditDelete', 'creditMarkPrinted',
+  'creditAmountChange', 'creditUsesChange', 'creditHolderChange', 'creditRestrictionChange', 'creditDelete',
   'customerCreate', 'customerUpdate', 'customerDelete']
 for (const n of names) {
   const line = src.split('\n').find((l) => l.includes(`handle(IPC.${n},`)) ?? ''
@@ -156,7 +156,7 @@ truthy('IPC.creditReminderQueue ⇒ قفل اعتبار + actor امن + force �
   /handle\(IPC\.creditReminderQueue, async \(p\) => \{[\s\S]{0,600}?assertCreditPanel\([\s\S]{0,600}?withOptionalSessionActor\(\{ id: \(p as any\)\?\.id \}\)/.test(src) &&
   !/queueReminder\([^\n]*force/.test(src)
 )
-for (const n of ['printCredit', 'printCreditBatch', 'creditPdf']) {
+for (const n of ['creditMarkPrinted', 'printCredit', 'printCreditBatch', 'creditPdf']) {
   const pattern = new RegExp(`handle\\(IPC\\.${n}, async \\(p\\) => \\{[\\s\\S]{0,500}?assertManagerSession\\([\\s\\S]{0,500}?withOptionalSessionActor\\(p \\?\\? \\{\\}`)
   truthy(`IPC.${n} ⇒ نشست مدیر + withOptionalSessionActor`, pattern.test(src))
 }
