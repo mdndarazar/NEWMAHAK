@@ -20,6 +20,26 @@ export const custodyPlanService = {
     return plans.map((plan: any) => ({ ...plan, staffIds: staff.get(plan.id) ?? [] }))
   },
 
+  /**
+   * Phase-zero transition inventory. Legacy ShiftPlan records are intentionally
+   * neither converted nor deleted here: a manager must review them against the
+   * new template identities before the canonical scheduler is allowed to take
+   * responsibility for them.
+   */
+  async reviewLegacy() {
+    assertManagerSession('بازبینی برنامه‌های قدیمی شیفت/حضانت')
+    const plans = await this.list()
+    return {
+      state: plans.length ? 'REVIEW_REQUIRED' as const : 'EMPTY' as const,
+      total: plans.length,
+      plans: plans.map((plan: any) => ({
+        ...plan,
+        migrationState: 'REVIEW_REQUIRED' as const,
+        migrationNote: 'این برنامه هنوز به قالب جدید تبدیل نشده و بدون تصمیم صریح مدیر دست‌نخورده می‌ماند.'
+      }))
+    }
+  },
+
   async save(input: { id?: unknown; title?: unknown; startMinute?: unknown; durationMinutes?: unknown; daysMask?: unknown; isActive?: unknown; sortOrder?: unknown; reminderRepeatMin?: unknown; staffIds?: unknown; managerUserId?: unknown; managerPassword?: unknown; managerSession?: boolean }) {
     if (input.managerSession === true) assertManagerSession('ثبت یا ویرایش برنامه کاری حضانت')
     else await custodyService.verifyPin(input.managerUserId, input.managerPassword, { requireManager: true })

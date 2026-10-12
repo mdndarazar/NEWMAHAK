@@ -309,6 +309,8 @@ export const IPC = {
 
   custodyOpen: 'custody:open',
   custodyPlanList: 'custody:plan:list',
+  /** فهرست read-only انتقال برنامه‌های قدیمی؛ هیچ تبدیل/حذفی انجام نمی‌دهد. */
+  custodyPlanLegacyReview: 'custody:plan:legacy-review',
   custodyPlanSave: 'custody:plan:save',
   custodyPlanDelete: 'custody:plan:delete',
   custodyHandoverStart: 'custody:handover:start',

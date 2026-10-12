@@ -963,6 +963,8 @@ export function registerIpcHandlers(): void {
     assertManagerSession('دیدن برنامه‌های کاری حضانت')
     return custodyPlanService.list()
   })
+  /** فقط inventory انتقال؛ Manager session لازم است و این مسیر هیچ legacy data را تغییر نمی‌دهد. */
+  handle(IPC.custodyPlanLegacyReview, () => custodyPlanService.reviewLegacy())
   handle(IPC.custodyPlanSave, (p) => {
     assertManagerSession('ثبت یا ویرایش برنامه کاری حضانت')
     const { managerSession: _ignored, managerUserId: _managerId, managerPassword: _managerPassword, ...safe } = p ?? {}

@@ -249,6 +249,12 @@ function staffProfileCompletion(draft: StaffDraft) {
   return { completed, total: STAFF_PROFILE_COMPLETION_FIELDS.length, isComplete: completed === STAFF_PROFILE_COMPLETION_FIELDS.length }
 }
 
+type LegacyShiftPlanReview = {
+  state: 'EMPTY' | 'REVIEW_REQUIRED'
+  total: number
+  plans: Array<{ id: number; title: string; startMinute: number; durationMinutes: number; daysMask: number; isActive: boolean; staffIds: number[]; migrationState: 'REVIEW_REQUIRED'; migrationNote: string }>
+}
+
 export default function Settings() {
   const nav = useNavigate()
   /** رمز دوم Settings فقط بخش‌های غیرحساس را می‌بیند؛ پرونده کارکنان و حضانت مدیر اصلی می‌خواهند. */
@@ -262,6 +268,9 @@ export default function Settings() {
   const [receipt, setReceipt] = useState<ReceiptTemplate>(DEFAULT_RECEIPT_TEMPLATE)
   const [sale, setSale] = useState<SaleDefaults>(DEFAULT_SALE_DEFAULTS)
   const [shift, setShift] = useState<ShiftConfig>(DEFAULT_SHIFT_CONFIG)
+  /** legacy ShiftPlanها تا بازبینی صریح مدیر به تنظیمات canonical تبدیل نمی‌شوند. */
+  const [legacyShiftPlanReview, setLegacyShiftPlanReview] = useState<LegacyShiftPlanReview | null>(null)
+  const [legacyShiftPlanBusy, setLegacyShiftPlanBusy] = useState(false)
   /**
    * جلسه ۱۹ · بند ۹ — «تاریخ و ساعت رسمی».
    * `timeCheck` خروجی دکمه‌ی «بررسی ساعت سیستم» است (بدون نیاز به اینترنت).
@@ -853,6 +862,19 @@ export default function Settings() {
    * نباید باعث سردرگمی شود. تعریف/ویرایش خود شیفت‌ها مثل قبل با دکمه‌ی ذخیره‌ی
    * عمومی است.
    */
+  const loadLegacyShiftPlanReview = async () => {
+    if (!isManager) return
+    setLegacyShiftPlanBusy(true)
+    setErr(null)
+    try {
+      setLegacyShiftPlanReview(await call<LegacyShiftPlanReview>(CH.custodyPlanLegacyReview, {}))
+    } catch (e: any) {
+      setErr(e?.message ?? 'برنامه‌های قدیمی برای بازبینی خوانده نشدند.')
+    } finally {
+      setLegacyShiftPlanBusy(false)
+    }
+  }
+
   const setByTime = async (byTime: boolean) => {
     const previous = shift.byTime
     setShift((p) => ({ ...p, byTime })) // نمایش فوری
@@ -1810,6 +1832,7 @@ export default function Settings() {
       setStaffRows([])
       setStaffCorrectionApprovalPw('')
       setStaffError(null)
+      setLegacyShiftPlanReview(null)
     }
     if (!isManager && (tab === 'staff' || tab === 'custody')) {
       setTab('receipt')
@@ -3564,6 +3587,39 @@ export default function Settings() {
             <section className="space-y-3">
               <h2 className="font-bold border-b pb-1">شیفت‌های روز</h2>
 
+              {/* انتقالِ بدون حدس: ShiftPlan قدیمی هرگز با خواندن تنظیمات تبدیل یا حذف نمی‌شود. */}
+              <div className="rounded border-2 border-amber-300 bg-amber-50 p-3 space-y-2">
+                <div className="font-bold text-amber-950">بازبینی برنامه‌های قدیمی حضانت</div>
+                <p className="text-sm leading-6 text-amber-950">
+                  برنامه‌های قدیمیِ حضانت هنوز مستقل‌اند. تا زمانی که مدیر هر مورد را با قالب شیفت جدید بررسی و تصمیم
+                  نگرفته، هیچ برنامه، کارمند زمان‌بندی‌شده یا یادآوری به‌صورت خودکار تبدیل یا حذف نمی‌شود.
+                </p>
+                {isManager ? (
+                  <button className="btn" disabled={legacyShiftPlanBusy} onClick={() => void loadLegacyShiftPlanReview()}>
+                    {legacyShiftPlanBusy ? 'در حال خواندن…' : 'بررسی فقط‌خواندنی برنامه‌های قدیمی'}
+                  </button>
+                ) : (
+                  <p className="kbd">بازبینی انتقال فقط با نشست سراسری مدیر ممکن است.</p>
+                )}
+                {legacyShiftPlanReview?.state === 'EMPTY' && <p className="text-sm text-emerald-800">برنامهٔ قدیمی برای انتقال پیدا نشد.</p>}
+                {legacyShiftPlanReview?.state === 'REVIEW_REQUIRED' && (
+                  <div className="overflow-auto rounded border border-amber-200 bg-white">
+                    <table className="tbl text-sm">
+                      <thead><tr><th>برنامهٔ قدیمی</th><th>شروع</th><th>مدت</th><th>کارکنان</th><th>وضعیت</th></tr></thead>
+                      <tbody>{legacyShiftPlanReview.plans.map((plan) => (
+                        <tr key={plan.id}>
+                          <td>{plan.title}</td>
+                          <td dir="ltr">{String(Math.floor(plan.startMinute / 60)).padStart(2, '0')}:{String(plan.startMinute % 60).padStart(2, '0')}</td>
+                          <td>{faDigits(plan.durationMinutes)} دقیقه</td>
+                          <td>{faDigits(plan.staffIds.length)} نفر</td>
+                          <td title={plan.migrationNote}>نیازمند تصمیم مدیر</td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
               {/* ---------- سوییچ حالت ---------- */}
               <div
                 className={`rounded p-2 border-2 space-y-1 ${
@@ -3675,7 +3731,7 @@ export default function Settings() {
                   </thead>
                   <tbody>
                     {shift.templates.map((t, i) => (
-                      <tr key={i}>
+                      <tr key={t.id}>
                         <td className="font-bold">{faDigits(i + 1)}</td>
                         <td>
                           <input
