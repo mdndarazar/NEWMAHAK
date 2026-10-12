@@ -1014,7 +1014,13 @@ export function registerIpcHandlers(): void {
 
   // ---- صندوق و تجمیع ----
   handle(IPC.cashSummary, (p) => cashboxService.summary(p ?? {}))
-  handle(IPC.cashClose, async (p) => cashboxService.close(await withSessionActor(p ?? {}, 'بستن صندوق')))
+  handle(IPC.cashClose, async (p) => {
+    /** A custody-controlled drawer can only be reconciled through its PIN and
+     * append-only final-close path; the legacy Cash Close form must not close
+     * the live custody session behind its state machine. */
+    await custodyService.guardLegacyPath()
+    return cashboxService.close(await withSessionActor(p ?? {}, 'بستن صندوق'))
+  })
   handle(IPC.cashSessions, (p) => cashboxService.sessions(p ?? {}))
   handle(IPC.consolidationPreview, (p) => cashboxService.preview(p ?? {}))
   /**

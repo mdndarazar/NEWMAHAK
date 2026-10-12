@@ -75,7 +75,7 @@ seed.setting(SETTING_KEYS.shiftConfig, {
   }]
 })
 const handover = await custodyService.handoverStart({ password: 'Giver1234!', countedCash: 0, toUserId: receiver, idempotencyKey: 's360-on' })
-const accepted = await custodyService.handoverAccept({ handoverId: handover.id, password: 'Recv1234!' })
+const accepted = await custodyService.handoverAccept({ handoverId: handover.id, password: 'Recv1234!', countedCash: 0 })
 const receivingMeta = seed.one('SELECT templateId, planId, scheduledEndAt FROM "CustodyShiftMeta" WHERE shiftId = ?', accepted.shiftId)
 eq('تحویل مجاز با PIN مستقل گیرنده پذیرفته می‌شود', accepted.shiftId > opened.shiftId, true)
 eq('segment گیرنده template identity شیفت قبلی را به ارث می‌برد', receivingMeta?.templateId, 'canonical-s360')

@@ -86,7 +86,7 @@ try {
   eq('fence قدیمی پس از شروع تحویل رد می‌شود', error?.code, 'CUSTODY_STALE')
 }
 eq('تحویل CashSession نمی‌سازد', db.$harness.db.prepare('SELECT COUNT(*) AS n FROM "CashSession"').get().n, 0)
-const accepted = await custodyService.handoverAccept({ handoverId: handover.id, password: 'B123457!' })
+const accepted = await custodyService.handoverAccept({ handoverId: handover.id, password: 'B123457!', countedCash: 1000 })
 truthy('پذیرش تحویل Shift جدید می‌سازد', accepted.shiftId > opened.shiftId)
 eq('پس از تحویل فقط یک Shift باز است', db.$harness.db.prepare('SELECT COUNT(*) AS n FROM "Shift" WHERE closedAt IS NULL').get().n, 1)
 eq('Shift جدید به گیرنده منتسب است', db.$harness.db.prepare('SELECT userId FROM "Shift" WHERE id=?').get(accepted.shiftId).userId, b)

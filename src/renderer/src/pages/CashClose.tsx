@@ -133,6 +133,7 @@ export default function CashClose() {
   /** Manager-only, read-only custody evidence. This never controls sale/close
    * actions; if the main manager session ends, the timeline fails closed. */
   const [custodyTimeline, setCustodyTimeline] = useState<CustodyTimeline | null>(null)
+  const [custodyEnabled, setCustodyEnabled] = useState(false)
   const [payFilter, setPayFilter] = useState<PayFilter>('ALL')
   const [onlyCurrentShift, setOnlyCurrentShift] = useState(true)
   const [counted, setCounted] = useState<string>('')
@@ -248,6 +249,11 @@ export default function CashClose() {
     catch { setCustodyTimeline(null) } // manager session is authoritative; do not leak a stale timeline.
   }, [isManager])
   useEffect(() => { void loadCustodyTimeline() }, [loadCustodyTimeline])
+  useEffect(() => {
+    let live = true
+    void call<{ enabled: boolean }>(CH.custodyStatus, {}).then((status) => { if (live) setCustodyEnabled(status.enabled === true) }).catch(() => { if (live) setCustodyEnabled(false) })
+    return () => { live = false }
+  }, [])
 
   /**
    * پیش‌نمایش شفافِ `expectedCash` *قبل* از زدن دکمه‌ی نهایی. فقط می‌خواند و
@@ -739,6 +745,8 @@ export default function CashClose() {
           فقط شیفت جاری
         </label>
       </ReportFilterBar>
+
+      {custodyEnabled && <div className="rounded border border-sky-300 bg-sky-50 p-3 text-sm leading-6" dir="rtl"><b>حضانت صندوق فعال است.</b> این صفحه تاریخچه و تطبیق را فقط‌خواندنی نشان می‌دهد؛ بستن یا تحویلِ نشست فعال باید از کنترل «صندوق» در نوار بالای برنامه و با رمز شخصی مسئول انجام شود.</div>}
 
       {isManager && custodyTimeline && (
         <section className="rounded border border-indigo-200 bg-indigo-50/50 p-3 space-y-3" dir="rtl">
@@ -1237,8 +1245,8 @@ export default function CashClose() {
         <button
           className="btn btn-primary"
           onClick={() => setConfirmClose(true)}
-          disabled={busy || (needsNote && !note.trim())}
-          title={needsNote && !note.trim() ? 'اول دلیل مغایرت را در یادداشت بنویسید' : undefined}
+          disabled={custodyEnabled || busy || (needsNote && !note.trim())}
+          title={custodyEnabled ? 'در حالت حضانت، بستن نهایی فقط با رمز مسئول در کنترل «صندوق» نوار بالا انجام می‌شود.' : needsNote && !note.trim() ? 'اول دلیل مغایرت را در یادداشت بنویسید' : undefined}
         >
           بستن صندوق
         </button>
