@@ -93,7 +93,9 @@ eq('مقصد ردیف قدیمی بی‌صدا عوض نشد', seed.one('SELECT 
 console.log('\n۵) ساختاری: UI همان تابع مشترک را می‌خواند')
 const read = (p) => readFileSync(resolve(p), 'utf8')
 eq('PaymentDestinationBox از allowedDestinationsFor', /allowedDestinationsFor\(methodKind\)/.test(read('src/renderer/src/components/PaymentDestinationBox.tsx')), true)
-eq('Pos.tsx از allowedDestinationsFor', /allowedDestinationsFor\(method\.kind\)/.test(read('src/renderer/src/pages/Pos.tsx')), true)
+// `method` پس از guard خالی‌نبودن با non-null assertion مصرف می‌شود؛ همچنان
+// همان تابع مشترک UI/server است، نه یک قاعدهٔ محلی جدا.
+eq('Pos.tsx از allowedDestinationsFor', /allowedDestinationsFor\(method!?\.kind\)/.test(read('src/renderer/src/pages/Pos.tsx')), true)
 
 console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)
 process.exit(bad ? 1 : 0)
