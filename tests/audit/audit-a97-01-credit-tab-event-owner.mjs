@@ -44,26 +44,32 @@ const C2 = credit('A97-C2', 300_000, { source: 'EXCHANGE', returnId: R2, exchang
 const C3 = credit('A97-C3', 100_000, { source: 'OVERPAY', sourceInvoiceId: inv, userId: B }, now - 2 * 3600_000)
 const C4 = credit('A97-C4', 200_000, { source: 'OVERPAY', sourceInvoiceId: canceled, userId: A }, now - 6 * 3600_000)
 
-// تب legacy از کانال storeCreditList می‌آید؛ بعد از رفع = reportList (وضعیت نوار ⇒ وضعیت فاکتور)
+// تب legacy از کانال storeCreditList می‌آید؛ بعد از رفع = reportList (وضعیت نوار ⇒ وضعیت فاکتور).
+// فهرست عمومی عمداً credential قابل‌مصرف را برنمی‌گرداند؛ تنها شناسهٔ امنِ نمایش
+// (`publicReference`) برای سنجش همان ردیف‌ها استفاده می‌شود.
 const tabList = typeof storeCreditService.reportList === 'function' ? storeCreditService.reportList.bind(storeCreditService) : storeCreditService.list.bind(storeCreditService)
 const base = { fromJalali: today, toJalali: today, channels: ['RETAIL', 'WHOLESALE'] }
-const codes = async (f) => {
+const refs = (...ids) => ids.map((id) => `اعتبار #${id}`).sort()
+const publicRefs = async (f) => {
   try {
     const r = await tabList({ ...base, ...f })
-    return (Array.isArray(r) ? r : r?.rows ?? []).map((x) => x.code).sort()
+    return (Array.isArray(r) ? r : r?.rows ?? []).map((x) => x.publicReference).sort()
   } catch (e) { return `ERR ${String(e?.message).slice(0, 60)}` }
 }
-eq('بدون فیلتر ⇒ هر چهار اعتبار (رفتار قبلی حفظ)', await codes({}), ['A97-C1', 'A97-C2', 'A97-C3', 'A97-C4'])
-eq('شیفت شب (ثبت برگشت/تعویض/اضافه‌دریافت) ⇒ C1,C2,C3', await codes({ shiftId: S2 }), ['A97-C1', 'A97-C2', 'A97-C3'])
-eq('شیفت صبح (فقط فاکتور مرجع) ⇒ هیچ', await codes({ shiftId: S1 }), [])
-eq('کارمند ب ⇒ C1,C2,C3', await codes({ userId: B }), ['A97-C1', 'A97-C2', 'A97-C3'])
-eq('کارمند الف (فروشنده فاکتور؛ C4 روی فاکتور لغوشده) ⇒ هیچ', await codes({ userId: A }), [])
-eq('شماره‌ی نشست ۱ ⇒ هیچ (قبلاً نادیده گرفته می‌شد)', await codes({ shiftNumber: 1 }), [])
-eq('شماره‌ی نشست ۲ ⇒ C1,C2,C3', await codes({ shiftNumber: 2 }), ['A97-C1', 'A97-C2', 'A97-C3'])
-eq('شماره فیش لغوشده ۹۷۰۳ ⇒ هیچ (دروازه‌ی CANCELED)', await codes({ receiptNo: 9703 }), [])
-eq('شماره فیش ۹۷۰۱ ⇒ C1,C2,C3 (هویت روی فاکتور)', await codes({ receiptNo: 9701 }), ['A97-C1', 'A97-C2', 'A97-C3'])
-eq('وضعیت نوار «تسویه شده» (فاکتور) ⇒ C1,C2,C3؛ نه تب خالی', await codes({ status: 'SETTLED' }), ['A97-C1', 'A97-C2', 'A97-C3'])
-eq('وضعیت نوار «لغو شده» ⇒ فقط اعتبار فاکتور لغوشده (C4)', await codes({ status: 'CANCELED' }), ['A97-C4'])
+const unfiltered = await tabList(base)
+const unfilteredRows = Array.isArray(unfiltered) ? unfiltered : unfiltered?.rows ?? []
+eq('فهرست عمومی credential قابل‌مصرف اعتبار را افشا نمی‌کند', unfilteredRows.every((row) => !('code' in row) && !('legacyCode' in row)), true)
+eq('بدون فیلتر ⇒ هر چهار اعتبار (رفتار قبلی حفظ)', await publicRefs({}), refs(C1, C2, C3, C4))
+eq('شیفت شب (ثبت برگشت/تعویض/اضافه‌دریافت) ⇒ C1,C2,C3', await publicRefs({ shiftId: S2 }), refs(C1, C2, C3))
+eq('شیفت صبح (فقط فاکتور مرجع) ⇒ هیچ', await publicRefs({ shiftId: S1 }), [])
+eq('کارمند ب ⇒ C1,C2,C3', await publicRefs({ userId: B }), refs(C1, C2, C3))
+eq('کارمند الف (فروشنده فاکتور؛ C4 روی فاکتور لغوشده) ⇒ هیچ', await publicRefs({ userId: A }), [])
+eq('شماره‌ی نشست ۱ ⇒ هیچ (قبلاً نادیده گرفته می‌شد)', await publicRefs({ shiftNumber: 1 }), [])
+eq('شماره‌ی نشست ۲ ⇒ C1,C2,C3', await publicRefs({ shiftNumber: 2 }), refs(C1, C2, C3))
+eq('شماره فیش لغوشده ۹۷۰۳ ⇒ هیچ (دروازه‌ی CANCELED)', await publicRefs({ receiptNo: 9703 }), [])
+eq('شماره فیش ۹۷۰۱ ⇒ C1,C2,C3 (هویت روی فاکتور)', await publicRefs({ receiptNo: 9701 }), refs(C1, C2, C3))
+eq('وضعیت نوار «تسویه شده» (فاکتور) ⇒ C1,C2,C3؛ نه تب خالی', await publicRefs({ status: 'SETTLED' }), refs(C1, C2, C3))
+eq('وضعیت نوار «لغو شده» ⇒ فقط اعتبار فاکتور لغوشده (C4)', await publicRefs({ status: 'CANCELED' }), refs(C4))
 
 // هم‌سنجی با پل تطبیق: «اعتبار صادرشده» برای همان فیلتر
 const sumOf = async (f) => {
