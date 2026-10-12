@@ -51,13 +51,17 @@ jobs:
             exit $LASTEXITCODE
           }
 
-      - name: Create installable ZIP
+      - name: Create installable and source ZIPs
         if: success()
         shell: pwsh
         run: |
           $installer = Get-ChildItem -Path dist -Filter '*.exe' | Select-Object -First 1
           if (-not $installer) { throw 'Windows installer was not produced.' }
           Compress-Archive -Path $installer.FullName -DestinationPath "dist/MahakPOS-$env:GITHUB_SHA-win-x64-installer.zip" -Force
+          git archive --format=zip --prefix=MahakPOS/ $env:GITHUB_SHA --output "dist/MahakPOS-$env:GITHUB_SHA-source.zip"
+          $releaseFiles = Get-ChildItem -Path dist -File | Where-Object { $_.Name -match '\.exe$|-installer\.zip$|-source\.zip$' }
+          $lines = $releaseFiles | ForEach-Object { "$( (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() )  $($_.Name)" }
+          Set-Content -Path 'dist/SHA256SUMS.txt' -Value $lines -NoNewline
 
       - name: Publish public GitHub release
         # Ordinary development pushes only build and upload an artifact. A public
@@ -67,9 +71,9 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || 'v0.1.0-financial-controls-20261012' }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || 'v0.1.0-financial-controls-20261012-final' }}
         run: |
-          gh release create "$env:RELEASE_TAG" dist/*.exe dist/*-installer.zip --target "$env:GITHUB_SHA" --title "MahakPOS $env:RELEASE_TAG" --notes "Windows x64 installer built and validated by GitHub Actions from commit $env:GITHUB_SHA."
+          gh release create "$env:RELEASE_TAG" dist/*.exe dist/*-installer.zip dist/*-source.zip dist/SHA256SUMS.txt --target "$env:GITHUB_SHA" --title "MahakPOS $env:RELEASE_TAG" --notes "Windows x64 installer and CMD-ready source package built and validated by GitHub Actions from commit $env:GITHUB_SHA."
 
       - name: Upload Windows installer
         if: success()
@@ -79,6 +83,8 @@ jobs:
           path: |
             dist/*.exe
             dist/*-installer.zip
+            dist/*-source.zip
+            dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
 
