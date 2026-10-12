@@ -1,4 +1,5 @@
 import { prisma } from '../db/client'
+import type { Prisma } from '@prisma/client'
 import { audit } from './AuditService'
 /**
  * نشست ۱۵۴ (S151-b) — گیت‌های رمز سمت سرور. AuthService خودش SettingsService را
@@ -9,6 +10,7 @@ import { BusinessError } from '../errors'
 // نشست ۲۲۲ · فاز ۵ — دروازه‌ی روشن‌کردن مسیر RAW (بخش ۷.۱ طرح)
 import { assertRawMethodAllowed } from '../print/raw/gate'
 import { applyPanelSessionTtlMinutes } from './panelSession'
+import { TX_OPTIONS } from '../db/tx'
 import { PANEL_KEYS } from '@shared/panels'
 import { AuditAction } from '@shared/enums'
 import { toClock, toJalaliDate } from '@shared/jalali'
@@ -129,9 +131,13 @@ async function readKey(key: string): Promise<string | null> {
   return row?.value ?? null
 }
 
-async function writeKey(key: string, value: unknown): Promise<void> {
+async function writeKey(
+  key: string,
+  value: unknown,
+  client: Prisma.TransactionClient | typeof prisma = prisma
+): Promise<void> {
   const json = JSON.stringify(value)
-  await prisma.setting.upsert({ where: { key }, update: { value: json }, create: { key, value: json } })
+  await client.setting.upsert({ where: { key }, update: { value: json }, create: { key, value: json } })
 }
 
 const normalizeKind = (k: unknown): ChargeKind => (k === 'service' ? 'service' : 'tax')
@@ -733,80 +739,105 @@ export const settingsService = {
           'تغییر سیاست تخفیف پنل فروش از ذخیره‌ی کلی تنظیمات'
         )
     }
+    // همه‌ی ورودی‌ها را پیش از نخستین write نرمال‌سازی و اعتبارسنجی می‌کنیم.
+    // به‌خصوص گیت RAW باید قبل از هر upsert اجرا شود؛ وگرنه شکست label می‌توانست
+    // receipt / sale / shift را نیمه‌کاره روی دیسک بگذارد.
     const normalizedShift = input.shift ? parseShiftConfig(input.shift) : null
     if (normalizedShift) await assertCanonicalShiftSchedule(normalizedShift)
     const before = await this.bundle()
+    // `bundle()` logoی رسید را از لیبل پر می‌کند؛ نسخه‌ی ذخیره‌شده لازم است تا
+    // پاسخِ ذخیره‌ی تنها-لیبل هم ارث‌بری تازه را مانند خواندن بعدی نشان دهد.
+    const storedReceipt = parseReceiptTemplate(await readKey(SETTING_KEYS.receiptTemplate))
+    const nextReceipt = input.receipt ? parseReceiptTemplate(input.receipt) : null
+    const nextSale = input.sale ? parseSaleDefaults(input.sale) : null
+    const nextTime = input.time ? parseOfficialTimeConfig(input.time) : null
+    const nextLabel = input.label ? parseLabelTemplate(input.label) : null
+    const nextSecurity = input.security ? parseSecurityConfig(input.security) : null
+    const nextDiscount = input.discount ? parseDiscountPolicy(input.discount) : null
 
     /**
      * بند ۷ (جلسه ۳۱) — قرینه‌ی ارث‌بری لوگو: اگر `logoDataUrl` همان لوگوی
      * لیبل باشد (چون `receiptTemplate()` پرش کرده بود)، خالی ذخیره می‌شود تا
      * ارث‌بری زنده بماند و عوض کردن لوگوی لیبل روی سند اعتبار هم اثر بگذارد.
-     * لوگوی جدا و صریحِ کاربر دست‌نخورده می‌ماند.
      */
-    if (input.receipt) {
-      const receipt = parseReceiptTemplate(input.receipt)
-      /**
-       * نشست ۲۲۲ · فاز ۵ (بخش ۷.۱ طرح) — تغییر روش چاپ به «دقیق (RAW)» فقط بعد
-       * از یک «چاپ آزمایشی RAW» موفق در همین اجرای برنامه مجاز است.
-       */
-      assertRawMethodAllowed('INVOICE', receipt.printMethod, before.receipt.printMethod)
+    if (nextReceipt) {
+      assertRawMethodAllowed('INVOICE', nextReceipt.printMethod, before.receipt.printMethod)
       // لوگوی لیبلِ *همین ذخیره* مرجع است (اگر هر دو بخش با هم عوض شده باشند)
-      const labelLogo = input.label ? parseLabelTemplate(input.label).logoDataUrl : before.label.logoDataUrl
-      receipt.logoDataUrl = receiptLogoForSave(receipt.logoDataUrl, labelLogo)
-      await writeKey(SETTING_KEYS.receiptTemplate, receipt)
+      nextReceipt.logoDataUrl = receiptLogoForSave(nextReceipt.logoDataUrl, nextLabel?.logoDataUrl ?? before.label.logoDataUrl)
     }
-    if (input.sale) await writeKey(SETTING_KEYS.saleDefaults, parseSaleDefaults(input.sale))
-    if (normalizedShift) await writeKey(SETTING_KEYS.shiftConfig, normalizedShift)
-    // بند ۹ — «تاریخ و ساعت رسمی» (افست دستی). صفر = رفتار قبلی.
-    if (input.time) await writeKey(SETTING_KEYS.officialTime, parseOfficialTimeConfig(input.time))
-    // تنظیمات چاپ لیبل: فقط همین کلید، پس تنظیمات چاپ فاکتور دست‌نخورده می‌ماند
-    if (input.label) {
-      const label = parseLabelTemplate(input.label)
-      assertRawMethodAllowed('LABEL', label.printMethod, before.label.printMethod)
-      await writeKey(SETTING_KEYS.labelTemplate, label)
+    // این گیت باید کنار گیت receipt و قبل از transaction باشد: هر دو تغییر RAW
+    // در یک درخواست یا هیچ‌کدام ذخیره می‌شوند.
+    if (nextLabel) assertRawMethodAllowed('LABEL', nextLabel.printMethod, before.label.printMethod)
+
+    const nextCharges: ChargesBundle = {
+      pos: { tax: before.charges.pos.tax, service: before.charges.pos.service },
+      wholesale: { tax: before.charges.wholesale.tax, service: before.charges.wholesale.service }
     }
-    /**
-     * بخش ۲ — تنظیمات قفل موقت. `parseSecurityConfig` عددهای بی‌معنا را خودش
-     * اصلاح می‌کند (تلاش ۱..۲۰ و قفل ۱..۱۴۴۰ دقیقه)، پس مقدار خراب هیچ‌وقت روی
-     * دیتابیس نمی‌نشیند و کارمند را برای همیشه بیرون نمی‌گذارد.
-     */
-    if (input.security) {
-      const security = parseSecurityConfig(input.security)
-      await writeKey(SETTING_KEYS.securityConfig, security)
-      applyPanelSessionTtlMinutes(security.idleLockMinutes)
-    }
-    /**
-     * بند ۳ — سیاست تخفیف. `parseDiscountPolicy` حالت ناشناس و عدد بی‌معنا را
-     * خودش به پیش‌فرض برمی‌گرداند، پس مقدار خراب روی دیتابیس نمی‌نشیند و پنل
-     * فروش هیچ‌وقت با یک سیاست نامعتبر قفل نمی‌شود.
-     */
-    if (input.discount) await writeKey(SETTING_KEYS.discountPolicy, parseDiscountPolicy(input.discount))
     if (input.charges) {
       for (const scope of CHARGE_SCOPES) {
         const bucket = (input.charges as any)[scope]
         if (!bucket) continue
         for (const kind of CHARGE_KINDS) {
-          if (bucket[kind]) await writeKey(chargeSettingKey(kind, scope), cleanCharge(bucket[kind]))
+          if (bucket[kind]) nextCharges[scope][kind] = cleanCharge(bucket[kind])
         }
       }
     }
+    const receiptForAfter = nextReceipt ?? storedReceipt
+    const after: SettingsBundle = {
+      receipt: {
+        ...receiptForAfter,
+        logoDataUrl: receiptLogoInherit(receiptForAfter.logoDataUrl, nextLabel?.logoDataUrl ?? before.label.logoDataUrl)
+      },
 
-    const after = await this.bundle()
-    await audit(prisma, {
-      action: 'SETTINGS_UPDATE',
-      entity: 'Setting',
-      userId: input.userId ?? null,
-      before: JSON.stringify(before),
-      after: JSON.stringify(after),
-      note:
-        'تنظیمات قالب فاکتور / فروش / شیفت / چاپ لیبل / امنیت' +
-        (printChanged === null ? '' : printChanged ? ' · چاپ فاکتور روشن شد' : ' · چاپ فاکتور خاموش شد') +
-        (debtReceiptPrintChanged === null
-          ? ''
-          : debtReceiptPrintChanged
-            ? ' · فیش وصول نسیه روشن شد'
-            : ' · فیش وصول نسیه خاموش شد')
-    })
+      sale: nextSale ?? before.sale,
+      shift: normalizedShift ?? before.shift,
+      label: nextLabel ?? before.label,
+      charges: nextCharges,
+      security: nextSecurity ?? before.security,
+      discount: nextDiscount ?? before.discount,
+      credit: before.credit,
+      time: nextTime ?? before.time
+    }
+
+    /**
+     * SET-001 — تمام upsertهای bundle و AuditLog یک واحد شکست‌ناپذیرند. هیچ
+     * اعتبارسنجی یا گیتِ ممکن‌الخطایی داخل یا بعد از نخستین write نیست.
+     */
+    await prisma.$transaction(async (tx) => {
+      if (nextReceipt) await writeKey(SETTING_KEYS.receiptTemplate, nextReceipt, tx)
+      if (nextSale) await writeKey(SETTING_KEYS.saleDefaults, nextSale, tx)
+      if (normalizedShift) await writeKey(SETTING_KEYS.shiftConfig, normalizedShift, tx)
+      if (nextTime) await writeKey(SETTING_KEYS.officialTime, nextTime, tx)
+      if (nextLabel) await writeKey(SETTING_KEYS.labelTemplate, nextLabel, tx)
+      if (nextSecurity) await writeKey(SETTING_KEYS.securityConfig, nextSecurity, tx)
+      if (nextDiscount) await writeKey(SETTING_KEYS.discountPolicy, nextDiscount, tx)
+      if (input.charges) {
+        for (const scope of CHARGE_SCOPES) {
+          const bucket = (input.charges as any)[scope]
+          if (!bucket) continue
+          for (const kind of CHARGE_KINDS) {
+            if (bucket[kind]) await writeKey(chargeSettingKey(kind, scope), nextCharges[scope][kind], tx)
+          }
+        }
+      }
+      await audit(tx, {
+        action: 'SETTINGS_UPDATE',
+        entity: 'Setting',
+        userId: input.userId ?? null,
+        before: JSON.stringify(before),
+        after: JSON.stringify(after),
+        note:
+          'تنظیمات قالب فاکتور / فروش / شیفت / چاپ لیبل / امنیت' +
+          (printChanged === null ? '' : printChanged ? ' · چاپ فاکتور روشن شد' : ' · چاپ فاکتور خاموش شد') +
+          (debtReceiptPrintChanged === null
+            ? ''
+            : debtReceiptPrintChanged
+              ? ' · فیش وصول نسیه روشن شد'
+              : ' · فیش وصول نسیه خاموش شد')
+      })
+    }, TX_OPTIONS)
+    // اثر حافظه‌ای TTL فقط پس از commit موفق مجاز است.
+    if (nextSecurity) applyPanelSessionTtlMinutes(nextSecurity.idleLockMinutes)
     return after
   }
 }
