@@ -135,6 +135,13 @@ async function planForOpen(client: Client, userId: number, now = new Date()) {
 /** New schedules are read exclusively from Shift Settings. This code never
  * writes/changes ShiftPlan; the legacy fallback remains only for already
  * enabled legacy installations until their manager reviews the inventory. */
+/** A schedule becomes operational once Settings contains an active named shift
+ * with a selected person. Until then the deliberately simple fresh-install
+ * single-shift path remains unscheduled and backwards compatible. */
+function hasCanonicalAssignments(cfg: ShiftConfig): boolean {
+  return cfg.templates.some((template) => template.isActive && template.staffIds.length > 0)
+}
+
 function canonicalPlanForOpen(cfg: ShiftConfig, userId: number, now = new Date()) {
   const candidates: Array<{ template: ShiftTemplate; start: Date; end: Date }> = []
   const minutesOf = (value: string) => {
@@ -494,13 +501,19 @@ export const custodyService = {
     return prisma.$transaction(async (tx: Client) => {
       const [cfg, scheduling] = await Promise.all([configOf(tx), shiftSchedulingOf(tx)])
       if (!cfg.enabled) throw new BusinessError('ماژول حضانت صندوق هنوز فعال نشده است.')
-      /** Shift Settings is canonical once the manager deliberately selects
-       * MULTI_SHIFT there. Legacy plans remain a compatibility fallback only. */
-      const plan = scheduling.custodyMode === 'MULTI_SHIFT'
+      /** Shift Settings becomes canonical as soon as the manager schedules at
+       * least one active person — in both SINGLE_SHIFT and MULTI_SHIFT modes.
+       * Fresh installs with no scheduled person retain the simple legacy-free
+       * single-shift path; historical ShiftPlan is fallback only for old
+       * multi-shift installations which have not configured canonical staff. */
+      const canonicalConfigured = hasCanonicalAssignments(scheduling)
+      const plan = canonicalConfigured
         ? canonicalPlanForOpen(scheduling, actor.userId)
         : cfg.mode === 'MULTI_SHIFT'
           ? await planForOpen(tx, actor.userId)
           : null
+      if (canonicalConfigured && !plan)
+        throw new BusinessError('برای باز کردن صندوق، کارمند باید در شیفت فعالِ همین زمان در تنظیمات شیفت ثبت شده باشد.', 'NO_SCHEDULED_SHIFT')
       const state = await ensureState(tx)
       if (state.state !== 'NO_SESSION') throw new BusinessError('صندوق هم‌اکنون یک مسئول فعال دارد.', 'SESSION_ALREADY_OPEN')
       if (await shiftService.anyOpenShift(tx)) throw new BusinessError('یک نشست بازِ قدیمی وجود دارد؛ ابتدا وضعیت حضانت را بررسی کنید.', 'CUSTODY_INVARIANT_BROKEN')
@@ -742,13 +755,18 @@ export const custodyService = {
     if (!receiver?.isActive || !credential || credential.status !== 'ACTIVE' || credential.mustChange)
       throw new BusinessError('تحویل‌گیرنده باید کارمند فعال با رمز شخصیِ غیرموقت باشد.', 'RECEIVER_NO_PIN')
     if (receiver.role !== 'MANAGER' && receiver.role !== 'CASHIER') throw new BusinessError('این نقش مجاز به تحویل‌گیری صندوق نیست.', 'NO_PERMISSION')
-    const nextShiftPlan = fromMeta.templateId && handoverKind === 'SHIFT_CHANGE' && scheduledEnd && scheduling
+    const canonicalMultiShift = scheduling?.custodyMode === 'MULTI_SHIFT'
+    const nextShiftPlan = fromMeta.templateId && canonicalMultiShift && handoverKind === 'SHIFT_CHANGE' && scheduledEnd && scheduling
       // End is exclusive; +1 ms selects the incoming template at the planned boundary.
       ? canonicalPlanForOpen(scheduling, toUserId, new Date(scheduledEnd.getTime() + 1))
       : null
-    if (fromMeta.templateId && handoverKind === 'MIDDAY' && (!canonicalTemplate || !canonicalTemplate.staffIds.includes(toUserId)))
+    /** In multi-shift mode a recipient must be assigned to the same (mid-day)
+     * or next (boundary) template. In single-shift mode the manager has picked
+     * the primary planned worker already; any other active, PIN-authenticated
+     * registered cashier/manager is an eligible deliberate replacement. */
+    if (fromMeta.templateId && canonicalMultiShift && handoverKind === 'MIDDAY' && (!canonicalTemplate || !canonicalTemplate.staffIds.includes(toUserId)))
       throw new BusinessError('تحویل‌گیرنده باید برای همین شیفت در تنظیمات شیفت ثبت شده باشد.', 'RECEIVER_NOT_SCHEDULED')
-    if (fromMeta.templateId && handoverKind === 'SHIFT_CHANGE' && !nextShiftPlan)
+    if (fromMeta.templateId && canonicalMultiShift && handoverKind === 'SHIFT_CHANGE' && !nextShiftPlan)
       throw new BusinessError('در ۱۵ دقیقهٔ پایانی، تحویل‌گیرنده باید در شیفت بعدیِ زمان‌بندی‌شده ثبت شده باشد.', 'RECEIVER_NOT_SCHEDULED')
     const countedCash = asCash(input.countedCash, 'شمارش تحویل صندوق')
     const idempotencyKey = String(input.idempotencyKey ?? '').trim() || randomBytes(16).toString('hex')
