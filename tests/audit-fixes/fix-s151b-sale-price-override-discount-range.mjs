@@ -26,6 +26,10 @@ process.env.HARNESS_DB = join(DIR, 'shop.db')
 const electron = await import('electron')
 const handlers = new Map()
 electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
+// قرارداد IPC جدید، sender معتبر می‌خواهد. این sender ساختگی مرز پنجره را
+// عبور می‌دهد تا آزمون، گیت‌های قیمت/تخفیف/تنظیمات را از خودِ main بسنجد.
+electron.BrowserWindow.fromWebContents = () => ({ isDestroyed: () => false })
+const sender = { id: 15102, isDestroyed: () => false, once: () => {} }
 
 const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
@@ -39,7 +43,7 @@ const { SETTING_KEYS, DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/rec
 const { PANEL_KEYS } = await import('@shared/panels')
 const { jalaliToday } = await import('@shared/jalali')
 registerIpcHandlers()
-const ipc = (ch, payload) => handlers.get(ch)(null, payload)
+const ipc = (ch, payload) => handlers.get(ch)({ sender }, payload)
 
 let ok = 0
 let bad = 0
