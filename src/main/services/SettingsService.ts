@@ -155,6 +155,21 @@ function chargePanelKey(kind: ChargeKind, scope: ChargeScope): string {
 /** مقایسه‌ی «تغییر» بر پایه‌ی مقدار نرمال‌شده (نه متن خام) تا ارسال همان مقدار قبلی رمز نخواهد. */
 const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 
+/**
+ * صفحهٔ Settings در نخستین نمایش، bundle را خودکار می‌خواند. اگر یک رکورد
+ * نصب قدیمی/خراب یا ساختار ناقص باعث شکست آن شد، خطای فنی نباید به جملهٔ مبهم
+ * «چیزی ذخیره نشد» تبدیل شود؛ کاربر اصلاً عملیاتی برای ذخیره انجام نداده است.
+ * نام بخش در لاگِ main و یک پیام خوانا در UI می‌ماند.
+ */
+async function readBundleSection<T>(title: string, work: () => Promise<T>): Promise<T> {
+  try {
+    return await work()
+  } catch (error) {
+    console.error(`[settings:bundle] cannot read ${title}`, error)
+    throw new BusinessError(`تنظیمات «${title}» خوانده نشد. برنامه را یک‌بار ببندید و باز کنید؛ اگر تکرار شد، از داده‌ها پشتیبان بگیرید و اطلاع دهید.`, 'SETTINGS_BUNDLE_LOAD_FAILED')
+  }
+}
+
 /** Server-side integrity for canonical Shift Settings. Renderer hints are for
  * usability only; direct IPC calls cannot create overlapping schedules or
  * assign inactive/non-operational staff. */
@@ -487,15 +502,15 @@ export const settingsService = {
   /** همه‌ی تنظیمات با یک رفت‌و‌برگشت (صفحه‌ی تنظیمات و پنل‌های فروش). */
   async bundle(): Promise<SettingsBundle> {
     const [receipt, sale, shift, label, charges, security, discount, time, credit] = await Promise.all([
-      this.receiptTemplate(),
-      this.saleDefaults(),
-      this.shiftConfig(),
-      this.labelTemplate(),
-      this.charges(),
-      this.securityConfig(),
-      this.discountPolicy(),
-      this.officialTime(),
-      this.creditSettings()
+      readBundleSection('قالب رسید', () => this.receiptTemplate()),
+      readBundleSection('پیش‌فرض‌های فروش', () => this.saleDefaults()),
+      readBundleSection('شیفت‌ها', () => this.shiftConfig()),
+      readBundleSection('چاپ لیبل', () => this.labelTemplate()),
+      readBundleSection('عوارض و حق سرویس', () => this.charges()),
+      readBundleSection('امنیت', () => this.securityConfig()),
+      readBundleSection('سیاست تخفیف', () => this.discountPolicy()),
+      readBundleSection('تاریخ و ساعت رسمی', () => this.officialTime()),
+      readBundleSection('اعتبار خرید', () => this.creditSettings())
     ])
     return { receipt, sale, shift, label, charges, security, discount, time, credit }
   },

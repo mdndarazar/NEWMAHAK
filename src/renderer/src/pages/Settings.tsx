@@ -504,6 +504,10 @@ export default function Settings() {
   }
 
   const load = useCallback(async () => {
+    // این فراخوانی در لحظه‌ی ورود به صفحه هم خودکار انجام می‌شود. خطای یک
+    // بارخوانی قدیمی نباید بعد از یک بازخوانی موفق، به‌صورت نوار زردِ دائمی
+    // باقی بماند و کاربر را به اشتباه متهم به «ذخیره کردن» کند.
+    setErr(null)
     setBusy(true)
     try {
       const b = await call<{
@@ -535,6 +539,9 @@ export default function Settings() {
       setTime(t)
       setTimeOffset(String(t.offsetHours))
       setDirty(false)
+      // `load()` ممکن است پس از یک خطای گذرای شروع برنامه دوباره از دکمهٔ
+      // «بازگردانی از دیتابیس» اجرا شود؛ موفقیت باید هشدار قبلی را قطعاً پاک کند.
+      setErr(null)
     } catch (e: any) {
       setErr(e.message)
     } finally {
