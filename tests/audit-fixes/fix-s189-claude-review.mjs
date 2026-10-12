@@ -187,12 +187,13 @@ console.log('\nP1-13) آخرین پرداختی بر اساس paidAt است نه
   }
 }
 
-console.log('\n۱-۲) تولید گروهی در شکست حذف فیزیکی نمی‌کند')
+console.log('\n۱-۲) تولید گروهی اتمیک است؛ شکست/کرش هیچ DRAFT نیمه‌کاره‌ای نمی‌گذارد')
 {
   const CREDIT = read('src/main/services/StoreCreditService.ts')
-  truthy('درج گروهی با وضعیت DRAFT شروع می‌شود', /status: StoreCreditStatus\.DRAFT/.test(CREDIT))
-  truthy('شکست، void می‌کند نه deleteMany', /voidedReason: 'شکست تولید گروهی/.test(CREDIT))
-  truthy('deleteMany روی batchId در bulk نیست', !/storeCredit\.deleteMany\(\{\s*where: \{\s*batchId/.test(CREDIT))
+  const bulkSource = CREDIT.slice(CREDIT.indexOf('export async function bulkIssueCredits'))
+  truthy('درج گروهی با وضعیت DRAFT شروع می‌شود', /status: StoreCreditStatus\.DRAFT/.test(bulkSource))
+  truthy('درج DRAFT و تبدیل به ACTIVE در همان تراکنش است', /prisma\.\$transaction\(async \(tx\) =>[\s\S]*status: StoreCreditStatus\.DRAFT[\s\S]*updateMany\([\s\S]*status: StoreCreditStatus\.ACTIVE/.test(bulkSource))
+  truthy('deleteMany روی batchId در bulk نیست', !/storeCredit\.deleteMany\(\{\s*where: \{\s*batchId/.test(bulkSource))
   const issued = await safe('bulk موفق ۳ تا', () => storeCreditService.bulkIssue({
     count: 3, amountEach: 50_000, userId, managerPassword: PW
   }))
