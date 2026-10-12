@@ -195,6 +195,13 @@ function toEntry(row: LedgerRow, path: string, source: 'auto' | 'imported'): Bac
 export const backupService = {
   /** «تهیه بکاپ» با انتخاب مسیر توسط کاربر. */
   async createManual(input: { userId?: number | null; managerPassword?: string | null } = {}) {
+    // RE-AUDIT-HIGH-03: این خروجی یک کپی کاملِ قابل‌انتقال از دیتابیس مالی است؛
+    // دیالوگ ویندوز گیت امنیتی نیست و IPC مستقیم نباید آن را دور بزند.
+    const scope = await assertPanelPasswordStrict(
+      PANEL_KEYS.settings,
+      input?.managerPassword ?? null,
+      'تهیه‌ی فایل بکاپ کامل در مسیر دلخواه'
+    )
     const win = focusedWindow()
     const defaultPath = join(app.getPath('documents'), `پشتیبان-فروشگاه-${stamp()}.db`)
     const options = {
@@ -219,8 +226,8 @@ export const backupService = {
       action: AuditAction.BACKUP_CREATE,
       entity: 'Backup',
       userId: input.userId ?? null,
-      after: JSON.stringify({ path: target, size: info.size }),
-      note: 'تهیه‌ی بکاپ دستی با انتخاب مسیر'
+      after: JSON.stringify({ path: target, size: info.size, approvedBy: scope }),
+      note: `تهیه‌ی بکاپ دستی با انتخاب مسیر (تأیید: ${scope})`
     })
     return { canceled: false, path: target, size: info.size }
   },
@@ -378,10 +385,28 @@ export const backupService = {
     return { canceled: false, config }
   },
 
-  /** «بکاپ فوری» خودکار در همان مسیر تنظیم‌شده (بدون پنجره‌ی ذخیره). */
-  async runNow() {
+  /** «بکاپ فوری» در همان مسیر تنظیم‌شده (بدون پنجره‌ی ذخیره). */
+  async runNow(input: { userId?: number | null; managerPassword?: string | null } = {}) {
+    /**
+     * RE-AUDIT-HIGH-03 — runBackup طبق `keep` نسخه‌های قبلی را حذف می‌کند؛ پس
+     * این فقط «خواندن/کپی» نیست و بدون رمز می‌توانست مسیر دلخواه + keep=1 را
+     * به پاک‌سازی اسناد تبدیل کند. زمان‌بند داخلی همچنان مستقیماً runBackup را
+     * صدا می‌زند و نیازی به رمز ندارد؛ این گیت فقط IPC دستی است.
+     */
+    const scope = await assertPanelPasswordStrict(
+      PANEL_KEYS.settings,
+      input?.managerPassword ?? null,
+      'تهیه‌ی بکاپ فوری و چرخش نسخه‌های قبلی'
+    )
     const path = await runBackup()
     const info = path ? await stat(path).catch(() => null) : null
+    await audit(prisma, {
+      action: AuditAction.BACKUP_CREATE,
+      entity: 'Backup',
+      userId: input.userId ?? null,
+      after: JSON.stringify({ path, size: info?.size ?? 0, approvedBy: scope, automatic: false }),
+      note: `تهیه‌ی بکاپ فوری در مسیر تنظیم‌شده (تأیید: ${scope})`
+    })
     return { path, size: info?.size ?? 0 }
   },
 

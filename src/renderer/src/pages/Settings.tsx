@@ -1469,7 +1469,9 @@ export default function Settings() {
   const backupNow = async () => {
     setBackupBusy(true)
     try {
-      const res = await call<{ path: string | null; size: number }>(CH.backupNow)
+      const res = await call<{ path: string | null; size: number }>(CH.backupNow, {
+        managerPassword: backupGatePw.trim() || undefined
+      })
       await Promise.all([loadBackups(), loadBackupConfig()])
       flash(res.path ? `بکاپ گرفته شد (${fileSize(res.size)}):\n${res.path}` : 'بکاپ گرفته نشد.')
     } catch (e: any) {
@@ -1495,7 +1497,9 @@ export default function Settings() {
   const createBackup = async () => {
     setBackupBusy(true)
     try {
-      const res = await call<{ canceled: boolean; path: string | null; size: number }>(CH.backupCreate)
+      const res = await call<{ canceled: boolean; path: string | null; size: number }>(CH.backupCreate, {
+        managerPassword: backupGatePw.trim() || undefined
+      })
       if (res.canceled) flash('تهیه‌ی بکاپ لغو شد؛ هیچ فایلی ساخته نشد.')
       else flash(`بکاپ ساخته شد (${fileSize(res.size)}):\n${res.path}`)
       await loadBackups()
@@ -4619,10 +4623,10 @@ export default function Settings() {
               {/* ==================== بکاپ خودکار: مسیر و بازه (مورد ۶) ==================== */}
               <h2 className="font-bold border-b pb-1">بکاپ خودکار (مسیر و بازه‌ی زمانی)</h2>
               <div className="border rounded p-2 space-y-1">
-                <b>رمز مدیر برای حذف بکاپ و تغییر تنظیمات خودکار</b>
+                <b>رمز مدیر برای تهیه، حذف و تنظیم بکاپ</b>
                 <div className="kbd leading-6">
-                  حذف فایل بکاپ و کم‌کردن تعداد نسخه‌ها مدرک را از بین می‌برد. رمز مدیر (یا رمز دوم پنل تنظیمات) لازم
-                  است.
+                  تهیه‌ی نسخهٔ کامل، بکاپ فوری، حذف فایل و کم‌کردن تعداد نسخه‌ها به داده یا ردّ آن دسترسی دارند. رمز مدیر
+                  (یا رمز دوم پنل تنظیمات) لازم است.
                 </div>
                 <PasswordField
                   className="inp max-w-xs"

@@ -291,9 +291,7 @@ async function withCustodyFenceOrOptionalActor<T extends Record<string, any> | n
  */
 const RAW_SETTING_SAFE_KEYS = new Set<string>([
   SETTING_KEYS.receiptTemplate,
-  SETTING_KEYS.labelTemplate,
-  SETTING_KEYS.backupConfig,
-  SETTING_KEYS.backupImports
+  SETTING_KEYS.labelTemplate
 ])
 
 const RAW_SETTING_MANAGER_KEYS = new Set<string>([
@@ -1256,7 +1254,9 @@ export function registerIpcHandlers(): void {
   handle(IPC.printDiagnose, (p) => runPrintDiagnose(p ?? {}))
 
   // ---- بکاپ و بازگردانی ----
-  handle(IPC.backupNow, () => backupService.runNow())
+  // RE-AUDIT-HIGH-03: بکاپ فوری هم ممکن است با keep کوچک فایل‌های قدیمی را
+  // بچرخاند؛ actor و رمز باید مانند config/createManual از مسیر امن بیاید.
+  handle(IPC.backupNow, async (p) => backupService.runNow(await withOptionalSessionActor(p ?? {})))
   handle(IPC.backupCreate, async (p) => backupService.createManual(await withOptionalSessionActor(p ?? {})))
   handle(IPC.backupList, () => backupService.list())
   handle(IPC.backupImport, () => backupService.importPick())
