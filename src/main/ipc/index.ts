@@ -503,6 +503,22 @@ export function registerIpcHandlers(): void {
   // ---- فروش ----
   /** گزارشات مالی فقط‌خواندنی هم باید Main-side gate داشته باشند؛ ManagerGate رندرر امنیت نیست. */
   const assertSalesReportsRead = (what: string) => assertPanelUnlocked(PANEL_KEYS.salesReports, what)
+  /**
+   * سند تعویض ممکن است بارکدِ اعتبار خریدِ قابل‌مصرف داشته باشد. کاربرِ یکی از
+   * دو مسیر مجاز (پنل برگشت برای چاپ همان‌جا، یا گزارشات برای چاپ مجدد) می‌تواند
+   * آن را چاپ کند؛ invoke مستقیمِ بدون هیچ‌کدام نباید تصویر بارکد بسازد.
+   */
+  const assertExchangePrintRead = async (what: string) => {
+    try {
+      await assertPanelUnlocked(PANEL_KEYS.salesReturn, what)
+    } catch (salesReturnGateError) {
+      try {
+        await assertSalesReportsRead(what)
+      } catch {
+        throw salesReturnGateError
+      }
+    }
+  }
   /** تب نسیه قفل مستقل خودش را درون گزارشات فروش دارد. */
   const assertSalesCreditRead = (what: string) => assertPanelUnlocked(PANEL_KEYS.salesCredit, what)
   // نشست ۱۵۴ (S151-b) — actor فاکتور و Audit قیمت دستی از نشست باز، نه userId ارسالی رندرر
@@ -622,7 +638,10 @@ export function registerIpcHandlers(): void {
    * داده‌اش کامل از `exchangeGet` می‌آید و بارکد اعتبار — اگر صادر شده باشد —
    * با همان روش رسید فروش (`barcodePng`) روی سند چاپ می‌شود.
    */
-  handle(IPC.printExchange, (p) => printService.printExchange(p ?? {}))
+  handle(IPC.printExchange, async (p) => {
+    await assertExchangePrintRead('چاپ سند تعویض کالا')
+    return printService.printExchange(p ?? {})
+  })
   // ---- افزوده‌های جلسه ۱۴ ----
   handle(IPC.printReturn, (p) => printService.printReturn(p ?? {}))
   handle(IPC.printDebtPayment, (p) => printService.printDebtPayment(p ?? {}))
