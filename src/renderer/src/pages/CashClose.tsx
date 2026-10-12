@@ -38,6 +38,7 @@ import {
  */
 import { usePendingRestock, pendingToneBox } from '../hooks/usePendingRestock'
 import { PENDING_RESTOCK_EXPLAINER, PENDING_RESTOCK_LABEL } from '@shared/pendingRestock'
+import { useManagerSession } from '../hooks/useManagerSession'
 
 /**
  * ===================== بستن صندوق (پایان شیفت) =====================
@@ -90,6 +91,32 @@ const HEADERS = [
 
 type PayFilter = 'ALL' | 'CASH' | 'CARD' | 'CREDIT'
 
+type CustodyTimeline = {
+  segments: Array<{
+    shiftId: number
+    startedAt: string
+    endedAt: string | null
+    custodianName: string | null
+    templateId: string | null
+    scheduleTitleSnapshot: string | null
+    scheduledEndAt: string | null
+    scheduleKind: 'CANONICAL' | 'LEGACY' | 'UNSCHEDULED'
+    endKind: string | null
+  }>
+  handovers: Array<{
+    id: number
+    status: string
+    startedAt: string
+    finishedAt: string | null
+    fromShiftId: number
+    toShiftId: number | null
+    fromUser: string | null
+    selectedRecipient: string | null
+    finalCustodian: string | null
+    resolutionKind: string | null
+  }>
+}
+
 
 /** ممیزی A77-01 — رد «بستن تکراری» از main (هر دو مسیر: بیرون و داخل تراکنش) */
 function isRepeatCloseRejection(message: string): boolean {
@@ -98,10 +125,14 @@ function isRepeatCloseRejection(message: string): boolean {
 
 export default function CashClose() {
   const nav = useNavigate()
+  const { isManager } = useManagerSession()
   const [filters, setFilters] = useState<ReportFilters>(todayFilters())
   const [report, setReport] = useState<SaleReportResult | null>(null)
   const [shift, setShift] = useState<ShiftInfo | null>(null)
   const [sessions, setSessions] = useState<any[]>([])
+  /** Manager-only, read-only custody evidence. This never controls sale/close
+   * actions; if the main manager session ends, the timeline fails closed. */
+  const [custodyTimeline, setCustodyTimeline] = useState<CustodyTimeline | null>(null)
   const [payFilter, setPayFilter] = useState<PayFilter>('ALL')
   const [onlyCurrentShift, setOnlyCurrentShift] = useState(true)
   const [counted, setCounted] = useState<string>('')
@@ -211,6 +242,13 @@ export default function CashClose() {
   const sessionsPage = (sessions as any).page as { skip: number; take: number; totalCount: number; truncated: boolean } | undefined
   const sessionsWarnings = ((sessions as any).warnings as string[] | undefined) ?? []
 
+  const loadCustodyTimeline = useCallback(async () => {
+    if (!isManager) { setCustodyTimeline(null); return }
+    try { setCustodyTimeline(await call<CustodyTimeline>(CH.custodyReport, { take: 150 })) }
+    catch { setCustodyTimeline(null) } // manager session is authoritative; do not leak a stale timeline.
+  }, [isManager])
+  useEffect(() => { void loadCustodyTimeline() }, [loadCustodyTimeline])
+
   /**
    * پیش‌نمایش شفافِ `expectedCash` *قبل* از زدن دکمه‌ی نهایی. فقط می‌خواند و
    * هیچ چیزی ثبت نمی‌کند، پس با هر تغییر «شمارش دستی» بی‌خطر تازه می‌شود.
@@ -318,6 +356,14 @@ export default function CashClose() {
    * نیستند و اگر این کانال خطا بدهد، فقط همین هشدار دیده نمی‌شود.
    */
   const pending = usePendingRestock()
+  const custodySegments = useMemo(() => {
+    const all = custodyTimeline?.segments ?? []
+    return shift ? all.filter((segment) => segment.shiftId === shift.id) : all.slice(0, 8)
+  }, [custodyTimeline, shift])
+  const custodyHandovers = useMemo(() => {
+    const all = custodyTimeline?.handovers ?? []
+    return shift ? all.filter((handover) => handover.fromShiftId === shift.id || handover.toShiftId === shift.id) : all.slice(0, 8)
+  }, [custodyTimeline, shift])
 
   /**
    * «شمارش دستی» و «موجودی اول» با تأخیر کوتاه به سرور می‌روند تا مغایرت زنده
@@ -406,6 +452,7 @@ export default function CashClose() {
       setOpeningFloat('')
       await loadShift()
       await load()
+      await loadCustodyTimeline()
       setRepeatRequired(false)
     } catch (e: any) {
       const msg = String(e?.message ?? e)
@@ -435,6 +482,7 @@ export default function CashClose() {
     }
     await loadShift()
     await load()
+    await loadCustodyTimeline()
   }
 
   const rowValues = (r: SaleReportRow) => [
@@ -691,6 +739,27 @@ export default function CashClose() {
           فقط شیفت جاری
         </label>
       </ReportFilterBar>
+
+      {isManager && custodyTimeline && (
+        <section className="rounded border border-indigo-200 bg-indigo-50/50 p-3 space-y-3" dir="rtl">
+          <div className="flex flex-wrap gap-2 items-center">
+            <h2 className="font-bold text-indigo-950">خط زمانی حضانت صندوق</h2>
+            <span className="text-xs text-indigo-800">فقط‌خواندنی · نام و الگوی شیفت از snapshot زمان بازشدن نشست خوانده می‌شود.</span>
+            <button className="btn py-0.5 mr-auto" disabled={busy} onClick={() => void loadCustodyTimeline()}>تازه‌سازی</button>
+          </div>
+          {custodySegments.length ? <div className="grid lg:grid-cols-2 gap-2">
+            {custodySegments.map((segment) => <div key={segment.shiftId} className="rounded border border-indigo-200 bg-white p-2 text-sm leading-6">
+              <div className="font-bold">مسئول: {segment.custodianName ?? '—'} <span className="font-normal text-slate-500">· نشست {faDigits(segment.shiftId)}</span></div>
+              <div>شیفتِ snapshot: <b>{segment.scheduleTitleSnapshot ?? 'بدون برنامه'}</b>{segment.scheduleKind === 'CANONICAL' ? ' · canonical' : segment.scheduleKind === 'LEGACY' ? ' · Legacy' : ''}</div>
+              <div className="text-slate-600">شروع {faDigits(new Date(segment.startedAt).toLocaleString('fa-IR'))}{segment.endedAt ? ` · پایان ${faDigits(new Date(segment.endedAt).toLocaleString('fa-IR'))}` : ' · باز'}</div>
+              {segment.scheduledEndAt ? <div className="text-slate-600">پایان برنامهٔ snapshot: {faDigits(new Date(segment.scheduledEndAt).toLocaleString('fa-IR'))}</div> : null}
+            </div>)}
+          </div> : <p className="text-sm text-slate-600">{shift ? 'برای این نشست، segment حضانت ثبت نشده است.' : 'در بازهٔ اخیر segment حضانتی ثبت نشده است.'}</p>}
+          {custodyHandovers.length ? <div className="border-t border-indigo-200 pt-3"><h3 className="font-bold text-sm mb-2">تحویل‌ها</h3><div className="space-y-1 text-sm">
+            {custodyHandovers.map((handover) => <div key={handover.id} className="rounded bg-white border border-indigo-100 px-2 py-1">تحویل‌دهنده: <b>{handover.fromUser ?? '—'}</b> · گیرندهٔ انتخابی: {handover.selectedRecipient ?? '—'} · دریافت‌کنندهٔ نهایی: <b>{handover.finalCustodian ?? '—'}</b> · {handover.status}</div>)}
+          </div></div> : null}
+        </section>
+      )}
 
       {expectedWarnings.length > 0 && (
         <div className="rounded border-2 border-amber-500 bg-amber-50 px-3 py-2 text-amber-900 whitespace-pre-line">

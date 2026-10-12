@@ -388,19 +388,26 @@ export const custodyService = {
     const parsedFrom = input.from == null ? new Date(Date.now() - 90 * 24 * 60 * 60_000) : new Date(String(input.from))
     const from = Number.isFinite(parsedFrom.getTime()) ? parsedFrom : new Date(Date.now() - 90 * 24 * 60 * 60_000)
     const take = Math.min(500, Math.max(1, Math.round(Number(input.take ?? 150)) || 150))
-    const [events, counts, handovers, resolutions, dispositions] = await Promise.all([
+    const [events, counts, handovers, resolutions, dispositions, shifts] = await Promise.all([
       prisma.custodyEvent.findMany({ where: { at: { gte: from } }, orderBy: { at: 'desc' }, take }),
       prisma.custodyCount.findMany({ where: { at: { gte: from } }, orderBy: { at: 'desc' }, take }),
       prisma.custodyHandover.findMany({ where: { startedAt: { gte: from } }, orderBy: { startedAt: 'desc' }, take }),
       prisma.custodyResolution.findMany({ where: { openedAt: { gte: from } }, orderBy: { openedAt: 'desc' }, take }),
-      prisma.custodyDisposition.findMany({ where: { at: { gte: from } }, orderBy: { at: 'desc' }, take })
+      prisma.custodyDisposition.findMany({ where: { at: { gte: from } }, orderBy: { at: 'desc' }, take }),
+      // CustodyShiftMeta is append-only evidence.  Join it manually rather than
+      // adding a Prisma relation so the schema stays additive for old databases.
+      prisma.shift.findMany({ where: { openedAt: { gte: from } }, orderBy: { openedAt: 'desc' }, take })
     ])
+    const shiftIds = shifts.map((row: any) => row.id)
+    const metas = shiftIds.length ? await prisma.custodyShiftMeta.findMany({ where: { shiftId: { in: shiftIds } } }) : []
+    const metaByShift = new Map(metas.map((row: any) => [row.shiftId, row]))
     const ids = new Set<number>()
     for (const e of events) if (e.actorUserId) ids.add(e.actorUserId)
     for (const c of counts) ids.add(c.countedByUserId)
     for (const h of handovers) { ids.add(h.fromUserId); ids.add(h.selectedRecipientUserId); if (h.finalCustodianUserId) ids.add(h.finalCustodianUserId) }
     for (const r of resolutions) { if (r.decisionByUserId) ids.add(r.decisionByUserId); if (r.attributedToUserId) ids.add(r.attributedToUserId) }
     for (const d of dispositions) { if (d.recipientUserId) ids.add(d.recipientUserId); if (d.confirmedByUserId) ids.add(d.confirmedByUserId) }
+    for (const meta of metas) ids.add(meta.custodianUserId)
     const users = ids.size ? await prisma.user.findMany({ where: { id: { in: [...ids] } }, select: { id: true, displayName: true } }) : []
     const userName = new Map(users.map((row: any) => [row.id, row.displayName]))
     return {
@@ -412,6 +419,29 @@ export const custodyService = {
         totalCountDifference: counts.reduce((sum: bigint, row: any) => sum + BigInt(row.differenceCash ?? 0), BigInt(0))
       },
       events: events.map((row: any) => ({ id: row.id, type: row.type, at: row.at, shiftId: row.shiftId, handoverId: row.handoverId, resolutionId: row.resolutionId, actorUserId: row.actorUserId, actorName: row.actorUserId ? userName.get(row.actorUserId) ?? null : null, actorKind: row.actorKind, payload: row.payloadJson ? JSON.parse(row.payloadJson) : null })),
+      /** A segment retains the schedule title/identity captured when its drawer
+       * opened. Never look up the current template title here: a later rename,
+       * deactivation or deletion must not rewrite cash-close history. */
+      segments: shifts
+        .map((shift: any) => {
+          const meta = metaByShift.get(shift.id)
+          if (!meta) return null
+          return {
+            shiftId: shift.id,
+            startedAt: shift.openedAt,
+            endedAt: meta.endedAt ?? shift.closedAt ?? null,
+            custodianUserId: meta.custodianUserId,
+            custodianName: userName.get(meta.custodianUserId) ?? null,
+            templateId: meta.templateId ?? null,
+            scheduleTitleSnapshot: meta.planTitle ?? null,
+            scheduledEndAt: meta.scheduledEndAt ?? null,
+            scheduleKind: meta.templateId ? 'CANONICAL' : meta.planId ? 'LEGACY' : 'UNSCHEDULED',
+            endKind: meta.endKind ?? null,
+            countStatus: meta.countStatus,
+            operationalDay: meta.operationalDay
+          }
+        })
+        .filter(Boolean),
       counts: counts.map((row: any) => ({ id: row.id, at: row.at, shiftId: row.shiftId, kind: row.kind, countedCash: row.countedCash, expectedCash: row.expectedCash, differenceCash: row.differenceCash, countedByUserId: row.countedByUserId, countedByName: userName.get(row.countedByUserId) ?? null, operationalDay: row.operationalDay })),
       handovers: handovers.map((row: any) => ({ id: row.id, status: row.status, startedAt: row.startedAt, finishedAt: row.finishedAt, fromShiftId: row.fromShiftId, toShiftId: row.toShiftId, fromUser: userName.get(row.fromUserId) ?? null, selectedRecipient: userName.get(row.selectedRecipientUserId) ?? null, finalCustodian: row.finalCustodianUserId ? userName.get(row.finalCustodianUserId) ?? null : null, expectedAtStart: row.expectedAtStart, countedAtStart: row.countedAtStart, differenceCash: row.differenceCash, resolutionKind: row.resolutionKind })),
       resolutions: resolutions.map((row: any) => ({ id: row.id, shiftId: row.shiftId, status: row.status, openedAt: row.openedAt, resolvedAt: row.resolvedAt, nightExpectedCash: row.nightExpectedCash, provisionalDifference: row.provisionalDifference, differenceAttribution: row.differenceAttribution, decisionByName: row.decisionByUserId ? userName.get(row.decisionByUserId) ?? null : null, decisionReason: row.decisionReason })),

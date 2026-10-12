@@ -81,6 +81,13 @@ eq('تحویل مجاز با PIN مستقل گیرنده پذیرفته می‌�
 eq('segment گیرنده template identity شیفت قبلی را به ارث می‌برد', receivingMeta?.templateId, 'canonical-s360')
 eq('segment گیرنده ShiftPlan جدید نمی‌سازد', receivingMeta?.planId, null)
 eq('segment گیرنده پایان برنامه را بازطبقه‌بندی نمی‌کند', String(receivingMeta?.scheduledEndAt), String(openingMeta?.scheduledEndAt))
+const timeline = await custodyService.report({ managerUserId: manager, managerPassword: 'مدیر123!' })
+const history = timeline.segments.find((segment) => segment.shiftId === accepted.shiftId)
+eq('تاریخچه custody همان template snapshot را می‌خواند', history?.templateId, 'canonical-s360')
+eq('تاریخچه نام شیفت را از snapshot ذخیره‌شده می‌خواند', history?.scheduleTitleSnapshot, 'شیفت canonical')
+eq('تاریخچه segment گیرنده را با نام واقعی شخص نشان می‌دهد', history?.custodianName, 'تحویل‌گیرنده S360')
+eq('handover history هر دو طرف تحویل را نگه می‌دارد', timeline.handovers[0]?.fromUser, 'تحویل‌دهنده S360')
+eq('handover history دریافت‌کنندهٔ نهایی را نگه می‌دارد', timeline.handovers[0]?.finalCustodian, 'تحویل‌گیرنده S360')
 
 console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
 process.exitCode = bad ? 1 : 0
