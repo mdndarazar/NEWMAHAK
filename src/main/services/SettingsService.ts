@@ -5,7 +5,7 @@ import { audit } from './AuditService'
  * نشست ۱۵۴ (S151-b) — گیت‌های رمز سمت سرور. AuthService خودش SettingsService را
  * import نمی‌کند (فقط db/client، AuditService، errors، PanelVault و shared)، پس چرخه‌ای ساخته نمی‌شود.
  */
-import { assertManagerPassword, assertPanelPassword } from './AuthService'
+import { assertManagerPassword, assertPanelPassword, assertPanelPasswordStrict } from './AuthService'
 import { BusinessError } from '../errors'
 // نشست ۲۲۲ · فاز ۵ — دروازه‌ی روشن‌کردن مسیر RAW (بخش ۷.۱ طرح)
 import { assertRawMethodAllowed } from '../print/raw/gate'
@@ -279,8 +279,9 @@ export const settingsService = {
    * محافظه‌کار در `@shared/credit`، و یک ردیف AuditLog روی هر تغییر — چون این
    * تنظیمات مستقیم روی پول (طول کد، دفعات مصرف، مدت اعتبار) اثر دارند.
    *
-   * نشست ۱۵۴ (S151-b) — قفل UI کافی نبود (هر تماس IPC دورش می‌زد)؛ حالا خودِ
-   * سرویس رمز پنل `creditSettings` را می‌سنجد (قفل خاموش ⇒ OPEN، سیاست قفل ماژول‌ها).
+   * نشست ۱۵۴ (S151-b) — قفل UI کافی نبود (هر تماس IPC دورش می‌زد). CRED-MED-03:
+   * این تنظیمات روی اعتبارِ قابل‌خرج اثر دارد، پس حتی با خاموش‌بودن قفل ظاهریِ
+   * پنل نیز همیشه رمز مدیر یا رمز دوم/سوم creditSettings لازم است.
    */
   async creditSettings(): Promise<CreditSettings> {
     return parseCreditSettings(await readKey(SETTING_KEYS.creditSettings))
@@ -289,7 +290,7 @@ export const settingsService = {
   async saveCreditSettings(
     input: { settings?: unknown; userId?: number | null; panelPassword?: string | null } = {}
   ): Promise<CreditSettings> {
-    await assertPanelPassword(
+    await assertPanelPasswordStrict(
       PANEL_KEYS.creditSettings,
       input?.panelPassword ?? null,
       'ذخیره‌ی تنظیمات اعتبار خرید (طول کد، دفعات مصرف، مدت اعتبار)'

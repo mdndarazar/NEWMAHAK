@@ -20,6 +20,7 @@ const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mj
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
 const { settingsService } = await import('../../src/main/services/SettingsService.ts')
 const { DEFAULT_CREDIT_SETTINGS, exchangeCreditDays } = await import('../../src/shared/credit.ts')
+const { DEFAULT_MANAGER_PASSWORD } = await import('../../src/shared/receipt.ts')
 const { PANEL_KEYS } = await import('../../src/shared/panels.ts')
 const { SETTING_KEYS } = await import('../../src/shared/receipt.ts')
 
@@ -31,7 +32,7 @@ const userId = seed.user('مدیر تست تنظیم بدون انقضا')
 console.log('--- ۱. صفر صریح از مسیر واقعی تنظیمات ذخیره و reload می‌شود ---')
 const noExpiry = structuredClone(DEFAULT_CREDIT_SETTINGS)
 noExpiry.types.EXCHANGE.days = 0
-await settingsService.saveCreditSettings({ settings: noExpiry, userId })
+await settingsService.saveCreditSettings({ settings: noExpiry, userId, panelPassword: DEFAULT_MANAGER_PASSWORD })
 const reloaded = await settingsService.creditSettings()
 assert.equal(reloaded.types.EXCHANGE.days, 0, 'صفر نباید هنگام parse/save حذف یا به ۷ تبدیل شود')
 console.log('  ✓ EXCHANGE.days=0 بعد از ذخیره و خواندن همچنان صفر است')

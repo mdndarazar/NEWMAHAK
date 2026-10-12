@@ -191,7 +191,8 @@ await ipcRejects('IPC.creditSettingsSet بی‌رمز با قفل روشن', IPC
 await ipcOk('IPC.creditSettingsSet با رمز و userId جعلی', IPC.creditSettingsSet, { settings: cs, panelPassword: PW, userId: forged })
 eq('actor Audit CREDIT_SETTINGS_UPDATE = کارمند نشست', Number(seed.one('SELECT userId FROM "AuditLog" WHERE action = ? ORDER BY id DESC LIMIT 1', 'CREDIT_SETTINGS_UPDATE')?.userId), actor)
 seed.setting(SETTING_KEYS.panelLocks, { [PANEL_KEYS.creditSettings]: false })
-await ipcOk('IPC.creditSettingsSet بی‌رمز با قفل خاموش ⇒ OPEN', IPC.creditSettingsSet, { settings: cs })
+await ipcRejects('IPC.creditSettingsSet بی‌رمز با قفل خاموش هم ⇒ رد سخت‌گیرانه', IPC.creditSettingsSet, { settings: cs }, 'همیشه رمز')
+await ipcOk('IPC.creditSettingsSet با رمز و قفل خاموش ⇒ پذیرفته', IPC.creditSettingsSet, { settings: cs, panelPassword: PW })
 
 console.log('\n۸) سیم‌کشی UI (ساختاری؛ رندر واقعی Electron اجرا نمی‌شود)')
 const settingsPage = readFileSync(resolve('src/renderer/src/pages/Settings.tsx'), 'utf8')
