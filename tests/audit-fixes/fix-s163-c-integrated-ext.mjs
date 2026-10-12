@@ -29,6 +29,8 @@ const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mj
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
 const { salesService } = await import('../../src/main/services/SalesService.ts')
 const { cashboxService } = await import('../../src/main/services/CashboxService.ts')
+const { DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/receipt')
+const GATE = { managerPassword: PW, overrideReason: 'اصلاح کنترل‌شده برای آزمون چرخهٔ برگشت' }
 const { RefundMethod } = await import('@shared/enums')
 const { toJalaliDate } = await import('@shared/jalali')
 
@@ -193,7 +195,9 @@ eq('بدهی ۰ همه‌جا', await remainingEverywhere(I.inv.id, yday), [0, 0
   eq('چک در جریان در پنجره‌ی پرداختی‌ها ۰', v?.pendingChequeTotal, 0)
 }
 await extInvariants('ط-۱')
-await safe('ابطال برگشت ۴۰۰', () => salesService.returnDelete({ id: i2?.id, userId, reason: 'برگشت اشتباه' }))
+await safe('ابطال برگشت ۴۰۰', () => salesService.returnDelete({
+  id: i2?.id, userId, reason: 'برگشت اشتباه', ...GATE
+}))
 {
   const c = chq(I.inv.id)
   eq('ابطال برگشت ⇒ چک خودکار برگشت (۴-۲۲)', c?.voidedAt == null && c?.chequeStatus === 'PENDING', true)
