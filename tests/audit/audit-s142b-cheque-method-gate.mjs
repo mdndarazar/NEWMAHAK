@@ -20,6 +20,10 @@ process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
 const electron = await import('electron')
 const handlers = new Map()
 electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
+// IPCهای Main-first فقط sender واقعی را می‌پذیرند؛ mock معتبر، آزمون گیت چک
+// را از کنترل مستقل مالکیت پنجره عبور می‌دهد.
+electron.BrowserWindow.fromWebContents = () => ({ isDestroyed: () => false })
+const sender = { id: 14202, isDestroyed: () => false, once: () => {} }
 const { harnessClient } = await import(join(root, 'test/harness/stubs/prismaClient.mjs'))
 const { makeSeeder } = await import(join(root, 'test/harness/seed.mjs'))
 const db = harnessClient(); const seed = makeSeeder(db)
@@ -27,8 +31,10 @@ const { registerIpcHandlers } = await import(join(root, 'src/main/ipc/index.ts')
 const { IPC } = await import(join(root, 'src/shared/ipc.ts'))
 const { salesService } = await import(join(root, 'src/main/services/SalesService.ts'))
 const { jalaliToday } = await import(join(root, 'src/shared/jalali.ts'))
+const { DEFAULT_MANAGER_PASSWORD: PW } = await import(join(root, 'src/shared/receipt.ts'))
+const GATE = { managerPassword: PW, overrideReason: 'اصلاح تست ۱۴۲ب چک' }
 registerIpcHandlers()
-const ipc = (ch, payload) => handlers.get(ch)(null, payload)
+const ipc = (ch, payload) => handlers.get(ch)({ sender }, payload)
 const safe = async (fn) => { try { return await fn() } catch (e) { return { __error: String(e?.message ?? e) } } }
 const errOf = (r) => (r && r.__error) || (r && r.ok === false ? String(r.error) : null)
 const TARGET = /چک فقط از فرم «ثبت چک»/
@@ -65,7 +71,7 @@ console.log('\n— ۲) updatePayment نقدی ⇒ روش چک')
 {
   const inv = await salesService.create({ userId: A, shiftId, lines: [line], payments: [{ methodId: cash, amount: 500_000, destination: 'CASH' }] })
   const pay = seed.one('SELECT id FROM "Payment" WHERE invoiceId = ?', inv.id).id
-  const r = await safe(() => ipc(IPC.salePaymentUpdate, { id: pay, methodId: chq, destination: 'MANAGER' }))
+  const r = await safe(() => ipc(IPC.salePaymentUpdate, { id: pay, methodId: chq, destination: 'MANAGER', ...GATE }))
   eq('نقدی ⇒ «چک · حساب مدیر» رد شد', TARGET.test(errOf(r) ?? ''), true)
   const row = seed.one('SELECT methodId, destination, amount FROM "Payment" WHERE id = ?', pay)
   eq('ردیف دست‌نخورده (نقدی، CASH، ۵۰۰٬۰۰۰)', [Number(row.methodId), row.destination, Number(row.amount)], [cash, 'CASH', 500_000])

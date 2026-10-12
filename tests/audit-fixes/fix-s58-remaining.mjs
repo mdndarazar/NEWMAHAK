@@ -22,6 +22,7 @@ const { makeSeeder } = await import('../../test/harness/seed.mjs')
 const { salesService, saleWhere } = await import('../../src/main/services/SalesService.ts')
 const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
 const { RefundMethod } = await import('@shared/enums')
+const { DEFAULT_MANAGER_PASSWORD } = await import('@shared/receipt')
 const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
 
 const db = harnessClient()
@@ -103,15 +104,15 @@ console.log('\n— C2/الف — مثال بک‌لاگ: فاکتور ۱٬۰۰۰
   eq('settledAt فاکتور پر شد', invRow(inv.id).settledAt != null, true)
 }
 
-console.log('\n— C2/ب — بازپرداخت نقدی تا وقتی بدهی مانده باشد از صندوق خارج نمی‌شود')
+console.log('\n— C2/ب — بازپرداخت نقدی فقط تا مازاد واقعی پس از برگشت محدود می‌شود')
 {
-  // فاکتور ۱٬۰۰۰، پرداخت ۵۰۰، برگشت کالای ۶۰۰ نقدی: مشتری هنوز بدهکار است ⇒ خروج از صندوق رد.
+  // فاکتور ۱٬۰۰۰، پرداخت ۵۰۰، برگشت کالای ۶۰۰: پس از برگشت فقط ۱۰۰ اضافه
+  // پرداخت مانده است. درخواست ۵۰۰ نباید ۵۰۰ از صندوق خارج کند یا بدهی پنهان
+  // بسازد؛ قرارداد فعلی به همان ۱۰۰ امن محدودش می‌کند.
   const inv = await twoItemSale(500)
-  await throwsWith(
-    'بازپرداخت نقدی با بدهی باقی',
-    () => ret(inv.id, itemsOf(inv.id)[0].id, RefundMethod.CASH, 500),
-    'بدهی'
-  )
+  const result = await safe('بازپرداخت نقدی با سقف تسویه', () => ret(inv.id, itemsOf(inv.id)[0].id, RefundMethod.CASH, 500))
+  eq('بازپرداخت نقدی فقط مازاد واقعی است', result?.refundAmount, 100)
+  eq('فاکتور پس از برگشت و بازپرداختِ سقف‌دار بدهی ندارد', (await salesService.payments({ invoiceId: inv.id })).remaining, 0)
 }
 
 console.log('\n— C2/ج — برگشت کامل فاکتور نسیه‌ی پرداخت‌نشده ⇒ تسویه، از تب نسیه بیرون')
@@ -131,7 +132,13 @@ console.log('\n— C3/الف — ویرایش پرداخت ۲۵۰ ⇒ ۵۰: اض
   const inv = await twoItemSale(900)
   const r = await pay(inv.id, 250, { confirmOverpay: true })
   eq('اضافه‌دریافت لحظه‌ی ثبت', r.overpayAmount, 150)
-  await salesService.updatePayment({ id: r.payment.id, amount: 50, userId })
+  await salesService.updatePayment({
+    id: r.payment.id,
+    amount: 50,
+    userId,
+    managerPassword: DEFAULT_MANAGER_PASSWORD,
+    overrideReason: 'اصلاح امن تستی پرداخت'
+  })
   eq('اضافه‌دریافت بعد از ویرایش به ۵۰', overpaySum(inv.id), 0)
   eq('باقی‌مانده بعد از ویرایش', (await salesService.payments({ invoiceId: inv.id })).remaining, 50)
 }
@@ -141,7 +148,13 @@ console.log('\n— C3/ب — حذف پرداخت اول ⇒ اضافه‌دری�
   const inv = await twoItemSale(900)
   const r = await pay(inv.id, 250, { confirmOverpay: true })
   const first = payRows(inv.id)[0]
-  await salesService.deletePayment({ id: first.id, userId })
+  await salesService.deletePayment({
+    id: first.id,
+    userId,
+    managerPassword: DEFAULT_MANAGER_PASSWORD,
+    reason: 'ابطال امن تستی پرداخت',
+    overrideReason: 'ابطال امن تستی پرداخت'
+  })
   eq('اضافه‌دریافت بعد از حذف پرداخت ۹۰۰', overpaySum(inv.id), 0)
   eq('اضافه‌دریافت پرداخت ۲۵۰', Number(payRows(inv.id).find((p) => p.id === r.payment.id)?.overpayAmount), 0)
 }

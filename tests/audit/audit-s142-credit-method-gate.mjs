@@ -21,6 +21,10 @@ process.env.HARNESS_DB = join(process.env.HARNESS_DIR, 'shop.db')
 const electron = await import('electron')
 const handlers = new Map()
 electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
+// مرز IPC فعلی فقط webContents واقعی را می‌پذیرد؛ sender ساختگیِ معتبر،
+// آزمون قرارداد روش پرداخت را از گیت مالکیت پنجره عبور می‌دهد.
+electron.BrowserWindow.fromWebContents = () => ({ isDestroyed: () => false })
+const sender = { id: 14201, isDestroyed: () => false, once: () => {} }
 const { harnessClient } = await import(join(root, 'test/harness/stubs/prismaClient.mjs'))
 const { makeSeeder } = await import(join(root, 'test/harness/seed.mjs'))
 const db = harnessClient(); const seed = makeSeeder(db)
@@ -31,9 +35,11 @@ const { jalaliToday } = await import(join(root, 'src/shared/jalali.ts'))
 const { DEFAULT_MANAGER_PASSWORD: PW } = await import(join(root, 'src/shared/receipt.ts'))
 const GATE = { managerPassword: PW, overrideReason: 'اصلاح تست ۱۴۲ روش' }
 registerIpcHandlers()
-const ipc = (ch, payload) => handlers.get(ch)(null, payload)
+const ipc = (ch, payload) => handlers.get(ch)({ sender }, payload)
 const safe = async (fn) => { try { return await fn() } catch (e) { return { __error: String(e?.message ?? e) } } }
-const TARGET = /پرداخت با اعتبار خرید فقط با کد اعتبار از پنل فروش ثبت می‌شود و هرگز جایگزین نقد نمی‌شود/
+// متن سیاست ممکن است راهنمای نسیه/تعویض هم داشته باشد؛ قرارداد امنیتی این است
+// که اعتبار خرید فقط از مسیر کد اعتبار پنل فروش مصرف می‌شود.
+const TARGET = /اعتبار خرید.*فقط با کد اعتبار.*پنل فروش/s
 const EDIT_TARGET = /(مصرف اعتبار خرید|ارزش کالای برگشتی)[^]*قابل ویرایش نیست/
 const errOf = (r) => (r && r.__error) || (r && r.ok === false ? String(r.error) : null)
 const today = jalaliToday()
@@ -109,7 +115,12 @@ console.log('\n— ۳) ردیف EXCHANGE_CREDIT سند تعویض (بی storeCre
   eq('ردیف باطل نشد', seed.one('SELECT voidedAt FROM "Payment" WHERE id = ?', exPay.id).voidedAt ?? null, null)
   eq('سند تعویض بدهکار نشد (paidTotal ۵۰۰٬۰۰۰)', Number(invRow(exInvId).paidTotal), 500_000)
   const retId = Number(seed.one('SELECT id FROM "SaleReturn" WHERE invoiceId = ? ORDER BY id DESC', src.id).id)
-  const rd = await safe(() => salesService.returnDelete({ id: retId, userId: A, reason: 'اشتباه در تعویض' }))
+  const rd = await safe(() => salesService.returnDelete({
+    id: retId,
+    userId: A,
+    reason: 'اشتباه در تعویض',
+    panelPassword: PW
+  }))
   eq('مسیر درست: ابطال سند تعویض پذیرفته', errOf(rd), null)
   eq('سند تعویض با ابطال گراف لغو شد (CANCELED + voidedAt)', (() => { const r = seed.one('SELECT status, voidedAt FROM "SaleInvoice" WHERE id = ?', exInvId); return [r.status, r.voidedAt != null] })(), ['CANCELED', true])
   const cashPay = seed.one('SELECT id FROM "Payment" WHERE invoiceId = ? AND methodId = ?', src.id, cash).id
