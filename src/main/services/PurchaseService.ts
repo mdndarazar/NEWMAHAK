@@ -62,6 +62,14 @@ function cleanLines(input: { lines?: PLine[]; force?: boolean; issuedAtJalali?: 
   return lines
 }
 
+/** مبلغِ ورودی فاکتور خرید فقط ریالِ صحیح و نامنفی است؛ گردکردن یا coercion مجاز نیست. */
+function safeNonNegativeRial(raw: unknown, label: string): number {
+  const value = raw ?? 0
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)
+    throw new BusinessError(`«${label}» باید عدد صحیحِ نامنفی به ریال باشد؛ اعشار، متن و عدد خیلی بزرگ پذیرفته نمی‌شود.`)
+  return value
+}
+
 /** برای سازگاری با کد قبلی؛ منبع واحد تایپ در src/shared/types.ts است. */
 export type PurchaseInput = CreatePurchaseInput
 
@@ -86,6 +94,9 @@ export const purchaseService = {
    */
   async create(input: CreatePurchaseInput & { panelPassword?: string | null; supplierName?: string | null; custodyFence?: any }) {
     const lines = cleanLines(input)
+    // PUR-002: مبلغ‌های ورودی پیش از رمز و تراکنش به‌طور سخت‌گیرانه بررسی می‌شوند.
+    const requestedDiscount = safeNonNegativeRial(input.discountTotal, 'تخفیف فاکتور خرید')
+    const paidTotal = safeNonNegativeRial(input.paidTotal, 'مبلغ پرداخت‌شده‌ی فاکتور خرید')
     /**
      * نشست ۱۵۵ (S151-c1، بند ۴-۳۹ «ثبت خرید» و بند ۵ «هر گیت در main») — قفل پنل خرید فقط در
      * UI بود؛ هر تماس IPC موجودی را بی‌رمز بالا می‌برد و قیمت خرید را عوض می‌کرد. حالا بعد از
@@ -97,10 +108,10 @@ export const purchaseService = {
 
     const issuedAt = input.issuedAtJalali ? jalaliToDateTime(input.issuedAtJalali) : new Date()
     const goodsTotal = lines.reduce((s, l) => s + l.qty * l.unitPrice, 0)
-    const discountTotal = Math.min(Math.max(input.discountTotal ?? 0, 0), goodsTotal)
+    if (!Number.isSafeInteger(goodsTotal))
+      throw new BusinessError('جمع کالاهای فاکتور خرید از محدوده‌ی مبلغ صحیحِ قابل‌ثبت خارج است.')
+    const discountTotal = Math.min(requestedDiscount, goodsTotal)
     const grandTotal = goodsTotal - discountTotal
-    if (input.paidTotal != null && (typeof input.paidTotal !== 'number' || !Number.isSafeInteger(input.paidTotal) || input.paidTotal < 0))
-      throw new BusinessError('مبلغ پرداخت‌شده‌ی فاکتور خرید نمی‌تواند منفی باشد.')
 
     return prisma.$transaction(async (tx) => {
       if (input.custodyFence) await custodyService.assertFenceInTx(tx, input.custodyFence)
@@ -113,7 +124,7 @@ export const purchaseService = {
           goodsTotal,
           discountTotal,
           grandTotal,
-          paidTotal: input.paidTotal ?? 0,
+          paidTotal,
           settlementType: input.settlementType ?? 'CASH',
           note: input.note,
           items: {
@@ -185,6 +196,9 @@ export const purchaseService = {
    */
   async update(input: UpdatePurchaseInput & { panelPassword?: string | null; supplierName?: string | null; custodyFence?: any }) {
     const lines = cleanLines(input)
+    // PUR-002: همان قرارداد سخت‌گیرانه‌ی create، پیش از رمز و transaction.
+    const requestedDiscount = safeNonNegativeRial(input.discountTotal, 'تخفیف فاکتور خرید')
+    const paidTotal = safeNonNegativeRial(input.paidTotal, 'مبلغ پرداخت‌شده‌ی فاکتور خرید')
     if (!input.id) throw new BusinessError('فاکتوری برای ویرایش مشخص نشده است')
     // نشست ۱۵۵ (S151-c1) — همان گیت ثبت خرید، پیش از تراکنش
     await assertPanelPassword(PANEL_KEYS.purchase, input?.panelPassword ?? null, 'ویرایش فاکتور خرید (اصلاح موجودی و قیمت خرید)')
@@ -201,10 +215,10 @@ export const purchaseService = {
 
       const issuedAt = input.issuedAtJalali ? jalaliToDateTime(input.issuedAtJalali) : current.issuedAt
       const goodsTotal = lines.reduce((s, l) => s + l.qty * l.unitPrice, 0)
-      const discountTotal = Math.min(Math.max(input.discountTotal ?? 0, 0), goodsTotal)
+      if (!Number.isSafeInteger(goodsTotal))
+        throw new BusinessError('جمع کالاهای فاکتور خرید از محدوده‌ی مبلغ صحیحِ قابل‌ثبت خارج است.')
+      const discountTotal = Math.min(requestedDiscount, goodsTotal)
       const grandTotal = goodsTotal - discountTotal
-      if (input.paidTotal != null && (typeof input.paidTotal !== 'number' || !Number.isSafeInteger(input.paidTotal) || input.paidTotal < 0))
-        throw new BusinessError('مبلغ پرداخت‌شده‌ی فاکتور خرید نمی‌تواند منفی باشد.')
 
       // delta موجودی: مثبت = باید اضافه شود، منفی = باید کم شود.
       const old = qtyByVariant(current.items)
@@ -240,7 +254,7 @@ export const purchaseService = {
           goodsTotal,
           discountTotal,
           grandTotal,
-          paidTotal: input.paidTotal ?? 0,
+          paidTotal,
           settlementType: input.settlementType ?? current.settlementType,
           note: input.note ?? null,
           items: {
