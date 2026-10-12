@@ -249,6 +249,25 @@ async function assertNationalIdAvailable(nationalId: string | null, selfUserId: 
     throw new BusinessError('این کد ملی پیش‌تر برای کارمند دیگری ثبت شده است.', 'STAFF_NATIONAL_ID_EXISTS')
 }
 
+/** A terminated/disabled person cannot be removed from the operational roster
+ * while they own the drawer or are the independently authenticated recipient
+ * of a pending handover. The manager must first close/cancel/complete that
+ * custody action; otherwise an audit trail would have a live person disappear. */
+async function assertOperationalDeactivationAllowed(client: any, userId: number): Promise<void> {
+  const state = await client.custodyState.findUnique({ where: { key: 'MAIN' } })
+  if (!state) return
+  if (state.activeShiftId) {
+    const meta = await client.custodyShiftMeta.findUnique({ where: { shiftId: state.activeShiftId } })
+    if (meta?.custodianUserId === userId)
+      throw new BusinessError('تا وقتی این کارمند مسئول فعال صندوق است، غیرفعال‌سازی یا پایان همکاری ممکن نیست. ابتدا صندوق را تحویل یا نهایی ببندید.', 'ACTIVE_CUSTODIAN')
+  }
+  if (state.state === 'HANDOVER_PENDING' && state.pendingHandoverId) {
+    const handover = await client.custodyHandover.findUnique({ where: { id: state.pendingHandoverId } })
+    if (handover?.selectedRecipientUserId === userId)
+      throw new BusinessError('این کارمند تحویل‌گیرندهٔ یک تحویل در انتظار است. ابتدا تحویل را لغو یا تعیین تکلیف کنید.', 'PENDING_HANDOVER_RECIPIENT')
+  }
+}
+
 async function readActiveId(): Promise<number | null> {
   const row = await prisma.setting.findUnique({ where: { key: SETTING_KEYS.activeStaff } })
   const id = Math.round(Number(row?.value))
@@ -322,6 +341,7 @@ export const staffService = {
 
     if (id > 0 && before) {
       const updated = await prisma.$transaction(async (tx: any) => {
+        if (before.isActive && input?.isActive === false) await assertOperationalDeactivationAllowed(tx, id)
         const row = await tx.user.update({
           where: { id },
           // خروج نقش مدیر ⇒ راز شخصی مربوط به اختیار مدیرانه هم باقی نمی‌ماند.
@@ -456,7 +476,9 @@ export const staffService = {
     const data = preparePersonnel(mergePersonnelInput(before, input))
     await assertNationalIdAvailable(data.nationalId, userId)
     const changedFields = Object.keys(data).filter((key) => String((before as any)?.[key] ?? '') !== String((data as any)[key] ?? ''))
+    const terminateOperationally = data.employmentStatus === 'TERMINATED' && user.isActive
     await prisma.$transaction(async (tx: any) => {
+      if (terminateOperationally) await assertOperationalDeactivationAllowed(tx, userId)
       const after = await tx.staffProfile.upsert({
         where: { userId },
         update: { ...data, version: { increment: 1 } },
@@ -471,7 +493,16 @@ export const staffService = {
         after: JSON.stringify(redactedPersonnelSummary(after)),
         note: `ویرایش پروندهٔ حساس کارمند «${user.displayName || user.username}» با نشست سراسری مدیر · فیلدهای تغییرکرده: ${changedFields.join('، ') || 'بدون تغییر'}`
       })
+      if (terminateOperationally) {
+        const inactive = await tx.user.update({ where: { id: userId }, data: { isActive: false }, select: SELECT })
+        await auditOrThrow(tx, {
+          action: 'STAFF_UPDATE', entity: 'User', entityId: userId, userId: null,
+          before: JSON.stringify(shape(user)), after: JSON.stringify(shape(inactive)),
+          note: `کارمند «${inactive.displayName}» هم‌زمان با ثبت «پایان همکاری» از عملیات صندوق غیرفعال شد.`
+        })
+      }
     })
+    if (terminateOperationally && (await readActiveId()) === userId) await this.setActive({ userId: null })
     return this.personnel({ userId })
   },
 
@@ -510,16 +541,22 @@ export const staffService = {
     const personnel = preparePersonnel(mergePersonnelInput(beforeProfileForMerge, input))
     await assertNationalIdAvailable(personnel.nationalId, id > 0 ? id : null)
     const username = id > 0 ? null : await uniqueUsername(name)
+    /** TERMINATED is never merely a decorative profile label: the same atomic
+     * save removes operational eligibility after the custody safety guard. */
+    const willBeActive = input?.isActive !== false && personnel.employmentStatus !== 'TERMINATED'
+    if (correctionApprovalPassword && !willBeActive)
+      throw new BusinessError('رمز شخصی تأیید فقط برای مدیر فعال قابل ثبت است.')
 
     const result = await prisma.$transaction(async (tx: any) => {
       const beforeProfile = id > 0 ? await tx.staffProfile.findUnique({ where: { userId: id } }) : null
+      if (id > 0 && beforeUser?.isActive && !willBeActive) await assertOperationalDeactivationAllowed(tx, id)
       const user = id > 0
         ? await tx.user.update({
             where: { id },
             data: {
               displayName: name,
               role,
-              isActive: input?.isActive !== false,
+              isActive: willBeActive,
               ...(correctionApprovalSecret ? { passwordHash: correctionApprovalSecret } : role === 'MANAGER' ? {} : { passwordHash: '' })
             },
             select: SELECT
@@ -530,7 +567,7 @@ export const staffService = {
               passwordHash: correctionApprovalSecret ?? '',
               displayName: name,
               role,
-              isActive: input?.isActive !== false
+              isActive: willBeActive
             },
             select: SELECT
           })
