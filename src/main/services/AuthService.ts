@@ -413,6 +413,30 @@ interface LockoutState {
 
 const EMPTY_LOCK: LockoutState = { failCount: 0, lockedUntil: null, remainingMs: 0 }
 
+/**
+ * همه‌ی درخواست‌های احراز هویت Electron در همین main process اجرا می‌شوند. صف
+ * کوتاهِ هر گیت، کل توالی «دیدن قفل → سنجش رمز/کد → ثبت موفق یا شکست» را
+ * سری می‌کند؛ بنابراین ۴۰ IPC هم‌زمان نمی‌توانند همگی failCount=0 را بخوانند
+ * و یکدیگر را overwrite کنند. Map فقط promiseهای درحال اجرا را نگه می‌دارد.
+ */
+const gateAttemptQueues = new Map<string, Promise<void>>()
+async function withGateAttempt<T>(gate: string, task: () => Promise<T>): Promise<T> {
+  const previous = gateAttemptQueues.get(gate) ?? Promise.resolve()
+  let release: () => void = () => undefined
+  const current = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const queued = previous.then(() => current)
+  gateAttemptQueues.set(gate, queued)
+  await previous
+  try {
+    return await task()
+  } finally {
+    release()
+    if (gateAttemptQueues.get(gate) === queued) gateAttemptQueues.delete(gate)
+  }
+}
+
 /** وضعیت خام یک گیت. هر خطای دیتابیسی = «قفل نیست» تا کاربر بیرون نماند. */
 async function readLock(gate: string): Promise<LockoutState> {
   try {
@@ -501,6 +525,9 @@ async function noteFailure(gate: string, fallbackMessage: string): Promise<strin
   if (!cfg.lockoutEnabled) return fallbackMessage
 
   const state = await readLock(gate)
+  // دفاع دوم: حتی اگر یک caller قدیمی خارج از صف به این تابع برسد، یک قفل
+  // فعال نباید با failCount=0 دوباره به «تلاش اول» تبدیل و باز شود.
+  if (state.lockedUntil && state.remainingMs > 0) return lockedMessage(gate, state.remainingMs, state.lockedUntil)
   const failCount = (state.failCount ?? 0) + 1
   const now = new Date()
 
@@ -552,15 +579,19 @@ async function noteSuccess(gate: string): Promise<void> {
  * ===========================================================================
  */
 export async function assertManagerPassword(password: string | null | undefined, action: string): Promise<void> {
-  const gate = 'manager'
-  await assertGateOpen(gate)
-  const pass = String(password ?? '')
-  if (!pass) throw new BusinessError(`«${action}» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.`)
-  if (!(await matches(pass))) {
-    const message = await noteFailure(gate, 'رمز مدیر درست نیست.')
-    throw new BusinessError(message)
-  }
-  await noteSuccess(gate)
+  // RE-AUDIT-HIGH-02: این باید دقیقاً همان گیت authService.verify باشد؛ نام
+  // قدیمیِ 'manager' یک شمارنده‌ی جدا می‌ساخت و قفل __manager__ را دور می‌زد.
+  const gate = MANAGER_GATE
+  return withGateAttempt(gate, async () => {
+    await assertGateOpen(gate)
+    const pass = normalize(password)
+    if (!pass) throw new BusinessError(`«${action}» تایید مدیر لازم دارد. رمز مدیر را وارد کنید.`)
+    if (!(await matches(pass))) {
+      const message = await noteFailure(gate, 'رمز مدیر درست نیست.')
+      throw new BusinessError(message)
+    }
+    await noteSuccess(gate)
+  })
 }
 
 /**
@@ -660,26 +691,28 @@ export async function verifyManagerCorrectionApproval(input: {
   if (!Number.isSafeInteger(userId) || userId <= 0)
     throw new BusinessError(`«${input.action}» باید با انتخاب مدیر تأییدکننده و رمز شخصی همان مدیر ثبت شود.`)
   const gate = `manager-correction:${userId}`
-  await assertGateOpen(gate)
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { id: true, displayName: true, role: true, isActive: true, passwordHash: true }
+  return withGateAttempt(gate, async () => {
+    await assertGateOpen(gate)
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, displayName: true, role: true, isActive: true, passwordHash: true }
+    })
+    if (!user || user.role !== 'MANAGER' || !user.isActive)
+      throw new BusinessError('مدیر تأییدکننده انتخاب‌شده فعال یا مجاز نیست.')
+    const secret = parseManagerCorrectionApprovalSecret(user.passwordHash)
+    if (!secret)
+      throw new BusinessError(
+        `برای مدیر «${user.displayName}» هنوز رمز شخصی تأیید اصلاح تعریف نشده است. ` +
+          'از تنظیمات ← کارکنان، مدیر را ویرایش و «رمز شخصی تأیید اصلاح دیرهنگام» را ثبت کنید.'
+      )
+    const password = normalize(input.password)
+    if (!password || !sameHash(secret.hash, derive(password, secret.salt))) {
+      const message = await noteFailure(gate, 'رمز شخصی مدیر تأییدکننده درست نیست.')
+      throw new BusinessError(message)
+    }
+    await noteSuccess(gate)
+    return { userId: user.id, displayName: user.displayName }
   })
-  if (!user || user.role !== 'MANAGER' || !user.isActive)
-    throw new BusinessError('مدیر تأییدکننده انتخاب‌شده فعال یا مجاز نیست.')
-  const secret = parseManagerCorrectionApprovalSecret(user.passwordHash)
-  if (!secret)
-    throw new BusinessError(
-      `برای مدیر «${user.displayName}» هنوز رمز شخصی تأیید اصلاح تعریف نشده است. ` +
-        'از تنظیمات ← کارکنان، مدیر را ویرایش و «رمز شخصی تأیید اصلاح دیرهنگام» را ثبت کنید.'
-    )
-  const password = normalize(input.password)
-  if (!password || !sameHash(secret.hash, derive(password, secret.salt))) {
-    const message = await noteFailure(gate, 'رمز شخصی مدیر تأییدکننده درست نیست.')
-    throw new BusinessError(message)
-  }
-  await noteSuccess(gate)
-  return { userId: user.id, displayName: user.displayName }
 }
 
 /**
@@ -783,6 +816,11 @@ export async function assertPanelPasswordStrict(
  * سطح حمله‌ی واقعی هم هست.
  * ===========================================================================
  */
+/** StoreCreditService کل lookup و ثبت نتیجه را در این صف واحد نگه می‌دارد. */
+export function withCreditCodeGateAttempt<T>(task: () => Promise<T>): Promise<T> {
+  return withGateAttempt(CREDIT_CODE_GATE, task)
+}
+
 export async function assertCreditCodeGateOpen(): Promise<void> {
   await assertGateOpen(CREDIT_CODE_GATE)
 }
@@ -813,15 +851,17 @@ export const authService = {
    * پیام خطا عمداً کوتاه و بدون جزئیات است.
    */
   async verify(input: { password?: string } = {}): Promise<{ ok: true; isDefault: boolean }> {
-    // بخش ۲: اگر این گیت قفل است، حتی رمز درست هم بررسی نمی‌شود
-    await assertGateOpen(MANAGER_GATE)
-    const password = normalize(input.password)
-    if (!password) throw new BusinessError('رمز مدیریتی را وارد کنید.')
-    if (!(await matches(password)))
-      throw new BusinessError(await noteFailure(MANAGER_GATE, 'رمز مدیریتی درست نیست؛ دوباره تلاش کنید.'))
-    await noteSuccess(MANAGER_GATE)
-    const stored = await read()
-    return { ok: true, isDefault: stored?.isDefault ?? true }
+    // RE-AUDIT-HIGH-01: assert/read/match/note یک تلاش اتمیکِ درون main است.
+    return withGateAttempt(MANAGER_GATE, async () => {
+      await assertGateOpen(MANAGER_GATE)
+      const password = normalize(input.password)
+      if (!password) throw new BusinessError('رمز مدیریتی را وارد کنید.')
+      if (!(await matches(password)))
+        throw new BusinessError(await noteFailure(MANAGER_GATE, 'رمز مدیریتی درست نیست؛ دوباره تلاش کنید.'))
+      await noteSuccess(MANAGER_GATE)
+      const stored = await read()
+      return { ok: true, isDefault: stored?.isDefault ?? true }
+    })
   },
 
   /**
@@ -1000,9 +1040,10 @@ export const authService = {
      * قفل نمی‌کند. رمز مدیر هم روی همین گیت شمرده می‌شود: کسی نمی‌تواند با
      * حدس‌زدنِ بی‌نهایتِ رمز مدیر روی یک پنل، قفل را دور بزند.
      */
-    await assertGateOpen(panel)
+    return withGateAttempt(panel, async () => {
+      await assertGateOpen(panel)
 
-    const password = normalize(input.password)
+      const password = normalize(input.password)
     if (!password) throw new BusinessError('رمز را وارد کنید.')
 
     // ۱) رمز مدیر: همیشه و برای همه‌ی پنل‌ها معتبر است
@@ -1070,7 +1111,8 @@ export const authService = {
       return { ok: true, scope: 'PANEL', panel, isDefault: false }
     }
 
-    throw new BusinessError(await noteFailure(panel, 'رمز درست نیست؛ دوباره تلاش کنید.'))
+      throw new BusinessError(await noteFailure(panel, 'رمز درست نیست؛ دوباره تلاش کنید.'))
+    })
   },
 
   /**

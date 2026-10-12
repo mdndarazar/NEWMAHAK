@@ -15,6 +15,7 @@ import { normalizeReturnCode, DAY_MS } from './ReturnCodeService'
 import {
   assertManagerPassword,
   assertPanelPasswordStrict,
+  withCreditCodeGateAttempt,
   assertCreditCodeGateOpen,
   noteCreditCodeFailure,
   noteCreditCodeSuccess
@@ -1027,23 +1028,27 @@ export async function findRedeemable(client: Client, rawCode: string): Promise<a
  * بدون این‌که سیستم Rate Limit دومی ساخته شود.
  */
 export async function guardCreditCode(rawCode: string, userId?: number | null): Promise<any> {
-  await assertCreditCodeGateOpen()
-  try {
-    const row = await findRedeemable(prisma, rawCode)
-    await noteCreditCodeSuccess()
-    return row
-  } catch (e) {
-    const base = e instanceof BusinessError ? e.message : 'کد اعتبار پیدا نشد.'
-    const message = await noteCreditCodeFailure(base)
-    await audit(prisma, {
-      action: AuditAction.CREDIT_REDEEM_BLOCKED,
-      entity: 'StoreCredit',
-      userId: userId ?? null,
-      after: JSON.stringify({ codeLength: normalizeCreditCode(rawCode).length, credentialRedacted: true }),
-      note: `تلاش ناموفق برای استفاده از کد اعتبار · ${base.split('\n')[0]}`
-    })
-    throw new BusinessError(message)
-  }
+  // RE-AUDIT-HIGH-01: check، lookup و افزایش شمارنده باید یک تلاش سری باشند؛
+  // جدا بودن این سه await به درخواست‌های هم‌زمان اجازه می‌داد failCount را گم کنند.
+  return withCreditCodeGateAttempt(async () => {
+    await assertCreditCodeGateOpen()
+    try {
+      const row = await findRedeemable(prisma, rawCode)
+      await noteCreditCodeSuccess()
+      return row
+    } catch (e) {
+      const base = e instanceof BusinessError ? e.message : 'کد اعتبار پیدا نشد.'
+      const message = await noteCreditCodeFailure(base)
+      await audit(prisma, {
+        action: AuditAction.CREDIT_REDEEM_BLOCKED,
+        entity: 'StoreCredit',
+        userId: userId ?? null,
+        after: JSON.stringify({ codeLength: normalizeCreditCode(rawCode).length, credentialRedacted: true }),
+        note: `تلاش ناموفق برای استفاده از کد اعتبار · ${base.split('\n')[0]}`
+      })
+      throw new BusinessError(message)
+    }
+  })
 }
 
 // ---------------------------------------------------------------------------

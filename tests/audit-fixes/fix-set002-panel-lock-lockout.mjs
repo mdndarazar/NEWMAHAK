@@ -17,7 +17,7 @@ process.env.HARNESS_DB = join(DIR, 'shop.db')
 const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
 const { authService } = await import('../../src/main/services/AuthService.ts')
 const { DEFAULT_MANAGER_PASSWORD, SETTING_KEYS } = await import('@shared/receipt')
-const { PANEL_KEYS } = await import('@shared/panels')
+const { PANEL_KEYS, MANAGER_GATE } = await import('@shared/panels')
 const db = harnessClient()
 
 let ok = 0
@@ -49,18 +49,18 @@ await db.setting.upsert({
 const target = PANEL_KEYS.salesReports
 let error = await rejects({ managerPassword: 'wrong-set002', locks: { [target]: false } })
 check('اولین رمز نادرست رد شد', /رمز مدیر درست نیست/.test(error ?? ''))
-let lock = await db.authLockout.findUnique({ where: { gate: 'manager' } })
+let lock = await db.authLockout.findUnique({ where: { gate: MANAGER_GATE } })
 check('اولین خطا در AuthLockout ثبت شد', lock?.failCount === 1 && !lock?.lockedUntil)
 
 await authService.setPanelLocks({ managerPassword: DEFAULT_MANAGER_PASSWORD, locks: { [target]: false } })
-lock = await db.authLockout.findUnique({ where: { gate: 'manager' } })
+lock = await db.authLockout.findUnique({ where: { gate: MANAGER_GATE } })
 check('رمز صحیح شمارنده‌ی تلاش قبلی را پاک کرد', lock?.failCount === 0 && !lock?.lockedUntil)
 check('فقط درخواست تاییدشده قفل پنل را تغییر داد', (await authService.panelLocks()).locks[target] === false)
 
 error = await rejects({ managerPassword: 'wrong-set002-a', locks: { [target]: true } })
 check('رمز نادرست دوم (پس از reset) رد شد', /۱ تلاش دیگر|1 تلاش دیگر/.test(error ?? ''))
 error = await rejects({ managerPassword: 'wrong-set002-b', locks: { [target]: true } })
-lock = await db.authLockout.findUnique({ where: { gate: 'manager' } })
+lock = await db.authLockout.findUnique({ where: { gate: MANAGER_GATE } })
 check('رسیدن به سقف، قفل موقت مدیر را فعال کرد', /قفل/.test(error ?? '') && lock?.failCount === 0 && !!lock?.lockedUntil && lock.lockCount === 1)
 
 error = await rejects({ managerPassword: DEFAULT_MANAGER_PASSWORD, locks: { [target]: true } })
