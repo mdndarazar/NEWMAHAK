@@ -607,8 +607,6 @@ export const backupService = {
     await prisma.$queryRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => null)
     await copyFile(databaseFile(), safety)
 
-    await this.markApplied(input.id, 'replace')
-
     const db = databaseFile()
     await prisma.$disconnect().catch(() => {})
     // ژورنال‌های SQLite نباید از داده‌ی قبلی باقی بمانند
@@ -625,6 +623,9 @@ export const backupService = {
      */
     try {
       await prisma.$connect()
+      // فقط بعد از کپی موفق و اتصال به دیتابیس جایگزین‌شده، applied ثبت می‌شود.
+      // پیش از copy این پرچم در صورت خطای I/O یک restore انجام‌نشده را موفق نشان می‌داد.
+      await this.markApplied(input.id, 'replace')
       await audit(prisma, {
         action: AuditAction.BACKUP_RESTORE,
         entity: 'Backup',
