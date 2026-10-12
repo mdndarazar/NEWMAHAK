@@ -149,6 +149,52 @@ function chargePanelKey(kind: ChargeKind, scope: ChargeScope): string {
 /** مقایسه‌ی «تغییر» بر پایه‌ی مقدار نرمال‌شده (نه متن خام) تا ارسال همان مقدار قبلی رمز نخواهد. */
 const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 
+/** Server-side integrity for canonical Shift Settings. Renderer hints are for
+ * usability only; direct IPC calls cannot create overlapping schedules or
+ * assign inactive/non-operational staff. */
+async function assertCanonicalShiftSchedule(config: ShiftConfig): Promise<void> {
+  const active = config.templates.filter((template) => template.isActive)
+  if (active.some((template) => template.daysMask <= 0))
+    throw new BusinessError('برای هر شیفت فعال دست‌کم یک روز برنامه را انتخاب کنید.')
+  const names = active.map((template) => template.name.trim())
+  if (new Set(names).size !== names.length)
+    throw new BusinessError('نام شیفت‌های فعال باید یکتا باشد تا سابقه و گزارش شیفت مبهم نشود.')
+  if (config.custodyMode === 'MULTI_SHIFT' && !active.some((template) => template.staffIds.length > 0))
+    throw new BusinessError('برای حالت چندشیفت، دست‌کم یک شیفت فعال با کارمند برنامه‌ریزی‌شده لازم است.')
+
+  const requestedStaffIds = [...new Set(active.flatMap((template) => template.staffIds))]
+  if (requestedStaffIds.length) {
+    const users = await prisma.user.findMany({ where: { id: { in: requestedStaffIds } }, select: { id: true, isActive: true, role: true } })
+    if (users.length !== requestedStaffIds.length || users.some((user) => !user.isActive || (user.role !== 'MANAGER' && user.role !== 'CASHIER')))
+      throw new BusinessError('کارمند برنامه‌ریزی‌شده باید مدیر یا صندوقدارِ فعال باشد.')
+  }
+
+  const toMinute = (time: string) => {
+    const [hour, minute] = time.split(':').map(Number)
+    return hour * 60 + minute
+  }
+  const intervalsOf = (template: ShiftConfig['templates'][number]) => {
+    const startMinute = toMinute(template.startTime)
+    const endMinute = toMinute(template.endTime)
+    const duration = ((endMinute - startMinute + 1440) % 1440) || 1440
+    const out: Array<{ from: number; to: number }> = []
+    // one preceding and one following week expose every overnight boundary.
+    for (let day = -7; day < 14; day++) {
+      const weekday = ((day % 7) + 7) % 7
+      if ((template.daysMask & (1 << weekday)) !== 0) out.push({ from: day * 1440 + startMinute, to: day * 1440 + startMinute + duration })
+    }
+    return out
+  }
+  for (let left = 0; left < active.length; left++) {
+    const a = intervalsOf(active[left])
+    for (let right = left + 1; right < active.length; right++) {
+      const b = intervalsOf(active[right])
+      if (a.some((one) => b.some((two) => one.from < two.to && two.from < one.to)))
+        throw new BusinessError(`بازهٔ شیفت‌های «${active[left].name}» و «${active[right].name}» هم‌پوشانی دارد.`)
+    }
+  }
+}
+
 /**
  * نشست ۱۵۶ (S151-c2، بند ۴-۴۵) — قانون value=0 ذخیره می‌ماند: یعنی «عمداً صفر» و از
  * والد ارث نمی‌برد. «تنظیم‌نشده» = نبودِ قانون. (قبلاً صفرها حذف می‌شدند ⇒ ارث بی‌صدا از والد.)
@@ -687,6 +733,8 @@ export const settingsService = {
           'تغییر سیاست تخفیف پنل فروش از ذخیره‌ی کلی تنظیمات'
         )
     }
+    const normalizedShift = input.shift ? parseShiftConfig(input.shift) : null
+    if (normalizedShift) await assertCanonicalShiftSchedule(normalizedShift)
     const before = await this.bundle()
 
     /**
@@ -708,7 +756,7 @@ export const settingsService = {
       await writeKey(SETTING_KEYS.receiptTemplate, receipt)
     }
     if (input.sale) await writeKey(SETTING_KEYS.saleDefaults, parseSaleDefaults(input.sale))
-    if (input.shift) await writeKey(SETTING_KEYS.shiftConfig, parseShiftConfig(input.shift))
+    if (normalizedShift) await writeKey(SETTING_KEYS.shiftConfig, normalizedShift)
     // بند ۹ — «تاریخ و ساعت رسمی» (افست دستی). صفر = رفتار قبلی.
     if (input.time) await writeKey(SETTING_KEYS.officialTime, parseOfficialTimeConfig(input.time))
     // تنظیمات چاپ لیبل: فقط همین کلید، پس تنظیمات چاپ فاکتور دست‌نخورده می‌ماند

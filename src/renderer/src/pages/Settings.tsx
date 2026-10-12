@@ -175,6 +175,8 @@ type Tab =
  * ===========================================================================
  */
 const PREVIEW_TABS: readonly Tab[] = ['receipt', 'print', 'sale']
+/** همان ترتیب Date#getDay و ShiftPlan قدیمی؛ فقط برچسب نمایش در Shift Settings. */
+const SHIFT_WEEKDAY_NAMES = ['ی', 'د', 'س', 'چ', 'پ', 'ج', 'ش']
 
 /** این تب پیش‌نمایش زنده‌ی رسید را نشان می‌دهد؟ */
 function showsPreview(tab: Tab): boolean {
@@ -839,7 +841,12 @@ export default function Settings() {
           id: createShiftTemplateId(),
           name: `شیفت ${p.templates.length + 1}`,
           startTime: start,
-          endTime: `${String(endHour).padStart(2, '0')}:${start.slice(3)}`
+          endTime: `${String(endHour).padStart(2, '0')}:${start.slice(3)}`,
+          isActive: true,
+          daysMask: 127,
+          staffIds: [],
+          reminderRepeatMin: 15,
+          allowMidDayHandover: false
         }
       ]
       return { ...p, templates, names: templates.map((t) => t.name) }
@@ -1848,7 +1855,7 @@ export default function Settings() {
       const t = window.setInterval(() => setTimeNow(new Date()), 1000)
       return () => window.clearInterval(t)
     }
-    if (tab === 'staff') void loadStaff()
+    if (tab === 'staff' || (tab === 'shift' && isManager)) void loadStaff()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, isManager])
 
@@ -3620,6 +3627,34 @@ export default function Settings() {
                 )}
               </div>
 
+              <div className="rounded border-2 border-indigo-300 bg-indigo-50 p-3 space-y-2">
+                <div className="font-bold text-indigo-950">حالت مسئولیت و برنامه‌ریزی حضانت</div>
+                <label className="flex items-start gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={shift.custodyMode === 'MULTI_SHIFT'}
+                    onChange={(e) => {
+                      setShift((current) => ({ ...current, custodyMode: e.target.checked ? 'MULTI_SHIFT' : 'SINGLE_SHIFT' }))
+                      setDirty(true)
+                    }}
+                  />
+                  <span>
+                    <b>{shift.custodyMode === 'MULTI_SHIFT' ? 'چندشیفت' : 'تک‌شیفت'}</b>
+                    <span className="block kbd leading-6">در تک‌شیفت، مدیر برای بازهٔ فعال مسئول ثبت‌شده را انتخاب می‌کند؛ در چندشیفت، کارکنان همان قالب‌های پایین برنامه‌ریزی می‌شوند. در هر دو حالت، مسئولیت مالی فقط بعد از احراز هویت شخصی و بازکردن صندوق واقعی شروع می‌شود.</span>
+                  </span>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={shift.reminderEnabled} onChange={(e) => { setShift((current) => ({ ...current, reminderEnabled: e.target.checked })); setDirty(true) }} />
+                  یادآوری پایان برنامه روشن باشد
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <span>مهلت هشدار بعد از پایان (دقیقه)</span>
+                  <input className="inp w-24" inputMode="numeric" value={String(shift.overrunGraceMinutes)} onChange={(e) => { const minutes = Math.max(0, Math.min(1440, Math.round(Number(toLatinDigits(e.target.value).replace(/\D/g, '')) || 0))); setShift((current) => ({ ...current, overrunGraceMinutes: minutes })); setDirty(true) }} />
+                </label>
+                <p className="kbd leading-6">این تنظیمات با «ذخیرهٔ تنظیمات» اصلی ذخیره می‌شوند. برنامهٔ legacy حضانت از اینجا نوشته نمی‌شود و تا تصمیم انتقال مدیر دست‌نخورده می‌ماند.</p>
+              </div>
+
               {/* ---------- سوییچ حالت ---------- */}
               <div
                 className={`rounded p-2 border-2 space-y-1 ${
@@ -3806,6 +3841,38 @@ export default function Settings() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+
+              <div className="space-y-2">
+                <div className="font-bold">برنامه، کارکنان و مجوز تحویل میان‌روز هر شیفت</div>
+                <p className="kbd leading-6">این بخش منبع canonical برنامه‌های جدید است. کارمند برنامه‌ریزی‌شده فقط «واجد انتخاب» می‌شود؛ تا PIN خودش را وارد و صندوق را باز نکند، هیچ مسئولیت مالی ندارد.</p>
+                {shift.templates.map((template, index) => (
+                  <details key={`schedule-${template.id}`} className="rounded border bg-slate-50 p-3" open={shift.templates.length === 1}>
+                    <summary className="cursor-pointer font-bold">{template.name || `شیفت ${faDigits(index + 1)}`} · {faDigits(index + 1)}</summary>
+                    <div className="mt-3 grid gap-3">
+                      <div className="flex flex-wrap gap-4 text-sm">
+                        <label className="flex items-center gap-2"><input type="checkbox" checked={template.isActive} onChange={(e) => setShiftRow(index, { isActive: e.target.checked })} /> قالب فعال</label>
+                        <label className="flex items-center gap-2"><input type="checkbox" checked={template.allowMidDayHandover} onChange={(e) => setShiftRow(index, { allowMidDayHandover: e.target.checked })} /> تحویل میان‌روز با تأیید مستقل گیرنده مجاز است</label>
+                        <label className="flex items-center gap-2">یادآوری هر <input className="inp w-16 py-0.5" inputMode="numeric" value={String(template.reminderRepeatMin)} onChange={(e) => setShiftRow(index, { reminderRepeatMin: Math.max(5, Math.min(60, Math.round(Number(toLatinDigits(e.target.value).replace(/\D/g, '')) || 5))) })} /> دقیقه</label>
+                      </div>
+                      <div className="text-sm">
+                        <div className="mb-1 font-bold">روزهای برنامه</div>
+                        <div className="flex flex-wrap gap-1">{SHIFT_WEEKDAY_NAMES.map((day, dayIndex) => {
+                          const selected = (template.daysMask & (1 << dayIndex)) !== 0
+                          return <button key={`${template.id}-day-${dayIndex}`} type="button" className={`w-9 h-8 rounded ${selected ? 'bg-brand text-white' : 'bg-slate-200'}`} onClick={() => setShiftRow(index, { daysMask: selected ? template.daysMask & ~(1 << dayIndex) : template.daysMask | (1 << dayIndex) })}>{day}</button>
+                        })}</div>
+                      </div>
+                      <div className="text-sm">
+                        <div className="mb-1 font-bold">کارکنان برنامه‌ریزی‌شده</div>
+                        {isManager ? (
+                          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-1">{staffRows.filter((staff) => staff.isActive && (staff.role === 'MANAGER' || staff.role === 'CASHIER')).map((staff) => (
+                            <label key={`${template.id}-staff-${staff.id}`} className="flex items-center gap-2"><input type="checkbox" checked={template.staffIds.includes(staff.id)} onChange={() => setShiftRow(index, { staffIds: template.staffIds.includes(staff.id) ? template.staffIds.filter((id) => id !== staff.id) : [...template.staffIds, staff.id] })} />{staff.name}</label>
+                          ))}</div>
+                        ) : <span className="kbd">مشاهده و ویرایش برنامهٔ کارکنان فقط برای مدیر ممکن است.</span>}
+                      </div>
+                    </div>
+                  </details>
+                ))}
               </div>
 
               <div className="flex gap-2 flex-wrap items-center">

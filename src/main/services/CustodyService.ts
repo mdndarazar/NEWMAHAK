@@ -3,7 +3,7 @@ import { prisma } from '../db/client'
 import { BusinessError } from '../errors'
 import { auditOrThrow } from './AuditService'
 import { AuditAction } from '@shared/enums'
-import { DEFAULT_CUSTODY_CONFIG, parseCustodyConfig, SETTING_KEYS, type CustodyConfig } from '@shared/receipt'
+import { DEFAULT_CUSTODY_CONFIG, parseCustodyConfig, parseShiftConfig, SETTING_KEYS, type CustodyConfig, type ShiftConfig, type ShiftTemplate } from '@shared/receipt'
 import { toJalaliDate } from '@shared/jalali'
 import { shiftService } from './ShiftService'
 import { recordCashMovement } from './CashMovementService'
@@ -93,6 +93,14 @@ async function configOf(client: Client = prisma): Promise<CustodyConfig> {
   return parseCustodyConfig(row?.value ?? DEFAULT_CUSTODY_CONFIG)
 }
 
+/** Canonical schedule lives in shift.config. The legacy custody config remains
+ * only as an execution/feature flag during transition; legacy ShiftPlan rows
+ * are never silently copied into this model. */
+async function shiftSchedulingOf(client: Client = prisma): Promise<ShiftConfig> {
+  const row = await client.setting.findUnique({ where: { key: SETTING_KEYS.shiftConfig } })
+  return parseShiftConfig(row?.value ?? null)
+}
+
 /** A plan describes expected staffing only. Missing, late, or absent scheduled
  * staff never blocks sales; it merely produces a reminder tied to the actual
  * authenticated custody session. */
@@ -117,7 +125,44 @@ async function planForOpen(client: Client, userId: number, now = new Date()) {
   }
   candidates.sort((a, b) => b.start.getTime() - a.start.getTime() || a.plan.id - b.plan.id)
   const match = candidates[0] ?? null
-  return match ? { id: match.plan.id, title: match.plan.title, scheduledEndAt: match.end, reminderRepeatMin: Number(match.plan.reminderRepeatMin) } : null
+  return match ? { legacyPlanId: match.plan.id, templateId: null, title: match.plan.title, scheduledEndAt: match.end, reminderRepeatMin: Number(match.plan.reminderRepeatMin), allowMidDayHandover: false } : null
+}
+
+/** New schedules are read exclusively from Shift Settings. This code never
+ * writes/changes ShiftPlan; the legacy fallback remains only for already
+ * enabled legacy installations until their manager reviews the inventory. */
+function canonicalPlanForOpen(cfg: ShiftConfig, userId: number, now = new Date()) {
+  const candidates: Array<{ template: ShiftTemplate; start: Date; end: Date }> = []
+  const minutesOf = (value: string) => {
+    const [hour, minute] = String(value ?? '00:00').split(':').map(Number)
+    return (Number(hour) || 0) * 60 + (Number(minute) || 0)
+  }
+  for (const template of cfg.templates) {
+    if (!template.isActive || !template.staffIds.includes(userId)) continue
+    const startMinute = minutesOf(template.startTime)
+    const endMinute = minutesOf(template.endTime)
+    const durationMinutes = ((endMinute - startMinute + 1440) % 1440) || 1440
+    for (const dayOffset of [0, -1]) {
+      const start = new Date(now)
+      start.setDate(start.getDate() + dayOffset)
+      start.setHours(Math.floor(startMinute / 60), startMinute % 60, 0, 0)
+      if ((template.daysMask & (1 << start.getDay())) === 0) continue
+      const end = new Date(start.getTime() + durationMinutes * 60_000)
+      if (now >= start && now < end) candidates.push({ template, start, end })
+    }
+  }
+  candidates.sort((a, b) => b.start.getTime() - a.start.getTime() || a.template.id.localeCompare(b.template.id))
+  const match = candidates[0] ?? null
+  return match
+    ? {
+        legacyPlanId: null,
+        templateId: match.template.id,
+        title: match.template.name,
+        scheduledEndAt: match.end,
+        reminderRepeatMin: match.template.reminderRepeatMin,
+        allowMidDayHandover: match.template.allowMidDayHandover
+      }
+    : null
 }
 
 async function writeEvent(client: Client, input: {
@@ -217,13 +262,20 @@ export const custodyService = {
     const state = await ensureState(prisma)
     const shift = state.activeShiftId ? await prisma.shift.findUnique({ where: { id: state.activeShiftId }, include: { user: true } }) : null
     const meta = state.activeShiftId ? await prisma.custodyShiftMeta.findUnique({ where: { shiftId: state.activeShiftId } }) : null
-    const unresolved = await prisma.custodyResolution.findMany({ where: { status: 'OPEN' }, orderBy: { openedAt: 'asc' } })
+    const [unresolved, scheduling] = await Promise.all([
+      prisma.custodyResolution.findMany({ where: { status: 'OPEN' }, orderBy: { openedAt: 'asc' } }),
+      shiftSchedulingOf(prisma)
+    ])
     const scheduledPlan = meta?.planId ? await prisma.shiftPlan.findUnique({ where: { id: meta.planId }, select: { reminderRepeatMin: true } }) : null
+    const template = meta?.templateId ? scheduling.templates.find((row) => row.id === meta.templateId) ?? null : null
     const scheduledEndAt = meta?.scheduledEndAt ? new Date(meta.scheduledEndAt) : null
-    const reminderStart = scheduledEndAt ? new Date(scheduledEndAt.getTime() + cfg.overrunGraceMinutes * 60_000) : null
-    const repeatMinutes = Math.max(5, Number(scheduledPlan?.reminderRepeatMin ?? 15))
+    const overrunGraceMinutes = template ? scheduling.overrunGraceMinutes : cfg.overrunGraceMinutes
+    const reminderStart = scheduledEndAt ? new Date(scheduledEndAt.getTime() + overrunGraceMinutes * 60_000) : null
+    const repeatMinutes = Math.max(5, Number(template?.reminderRepeatMin ?? scheduledPlan?.reminderRepeatMin ?? 15))
+    const scheduleMode = template ? scheduling.custodyMode : cfg.mode
+    const remindersEnabled = template ? scheduling.reminderEnabled : cfg.reminderEnabled
     const now = Date.now()
-    const reminderDue = !!(cfg.mode === 'MULTI_SHIFT' && cfg.reminderEnabled && reminderStart && now >= reminderStart.getTime())
+    const reminderDue = !!(scheduleMode === 'MULTI_SHIFT' && remindersEnabled && reminderStart && now >= reminderStart.getTime())
     const reminderBucket = reminderDue ? Math.floor((now - reminderStart!.getTime()) / (repeatMinutes * 60_000)) : null
     return {
       enabled: cfg.enabled,
@@ -233,7 +285,7 @@ export const custodyService = {
       activeShiftId: state.activeShiftId,
       custodian: shift?.userId ? { id: shift.userId, name: shift.user?.displayName ?? null, openAuth: meta?.openAuth ?? null } : null,
       shift: shift ? { id: shift.id, openedAt: shift.openedAt, closedAt: shift.closedAt, name: shift.name } : null,
-      schedule: meta?.planId ? { planId: meta.planId, title: meta.planTitle, scheduledEndAt: meta.scheduledEndAt } : null,
+      schedule: meta?.planId || meta?.templateId ? { planId: meta?.planId ?? null, templateId: meta?.templateId ?? null, title: meta?.planTitle, scheduledEndAt: meta?.scheduledEndAt, allowMidDayHandover: template?.allowMidDayHandover ?? false } : null,
       reminder: { due: reminderDue, bucket: reminderBucket, repeatMinutes, scheduledEndAt: scheduledEndAt?.toISOString() ?? null },
       pendingHandover: state.pendingHandoverId
         ? await prisma.custodyHandover.findUnique({ where: { id: state.pendingHandoverId }, select: { id: true, fromUserId: true, selectedRecipientUserId: true, startedAt: true } })
@@ -406,9 +458,15 @@ export const custodyService = {
     if (actor.role !== 'MANAGER' && actor.role !== 'CASHIER') throw new BusinessError('این نقش مجاز به تحویل‌گیری صندوق نیست.', 'NO_PERMISSION')
     const countedCash = input.countedCash == null ? null : asCash(input.countedCash, 'شمارش نقدی')
     return prisma.$transaction(async (tx: Client) => {
-      const cfg = await configOf(tx)
+      const [cfg, scheduling] = await Promise.all([configOf(tx), shiftSchedulingOf(tx)])
       if (!cfg.enabled) throw new BusinessError('ماژول حضانت صندوق هنوز فعال نشده است.')
-      const plan = cfg.mode === 'MULTI_SHIFT' ? await planForOpen(tx, actor.userId) : null
+      /** Shift Settings is canonical once the manager deliberately selects
+       * MULTI_SHIFT there. Legacy plans remain a compatibility fallback only. */
+      const plan = scheduling.custodyMode === 'MULTI_SHIFT'
+        ? canonicalPlanForOpen(scheduling, actor.userId)
+        : cfg.mode === 'MULTI_SHIFT'
+          ? await planForOpen(tx, actor.userId)
+          : null
       const state = await ensureState(tx)
       if (state.state !== 'NO_SESSION') throw new BusinessError('صندوق هم‌اکنون یک مسئول فعال دارد.', 'SESSION_ALREADY_OPEN')
       if (await shiftService.anyOpenShift(tx)) throw new BusinessError('یک نشست بازِ قدیمی وجود دارد؛ ابتدا وضعیت حضانت را بررسی کنید.', 'CUSTODY_INVARIANT_BROKEN')
@@ -420,7 +478,7 @@ export const custodyService = {
         count = await tx.custodyCount.create({ data: { shiftId: shift.id, kind: 'OPENING', countedCash: BigInt(countedCash), countedByUserId: actor.userId, authMethod: 'CUSTODY_PIN', epochAtCount: nextEpoch, idempotencyKey: `open:${shift.id}`, operationalDay: toJalaliDate(new Date()) } })
         if (countedCash > 0) await recordCashMovement(tx, { amount: countedCash, type: CashMovementType.OPENING_FLOAT, shiftId: shift.id, userId: actor.userId, refType: 'CustodyOpen', refId: count.id, description: 'موجودی اول صندوق حضانت' })
       }
-      await tx.custodyShiftMeta.create({ data: { shiftId: shift.id, custodianUserId: actor.userId, openAuth: 'CUSTODY_PIN', openCountId: count?.id ?? null, planId: plan?.id ?? null, planTitle: plan?.title ?? null, scheduledEndAt: plan?.scheduledEndAt ?? null, rolloverAt: rolloverAt(new Date(), cfg), dayCutoverSnapshot: cfg.dayCutoverMinute, operationalDay: toJalaliDate(new Date()), countStatus: countedCash == null ? 'COUNT_PENDING' : 'COUNTED', openEpoch: nextEpoch } })
+      await tx.custodyShiftMeta.create({ data: { shiftId: shift.id, custodianUserId: actor.userId, openAuth: 'CUSTODY_PIN', openCountId: count?.id ?? null, templateId: plan?.templateId ?? null, planId: plan?.legacyPlanId ?? null, planTitle: plan?.title ?? null, scheduledEndAt: plan?.scheduledEndAt ?? null, rolloverAt: rolloverAt(new Date(), cfg), dayCutoverSnapshot: cfg.dayCutoverMinute, operationalDay: toJalaliDate(new Date()), countStatus: countedCash == null ? 'COUNT_PENDING' : 'COUNTED', openEpoch: nextEpoch } })
       const changed = await tx.custodyState.updateMany({ where: { key: MAIN, state: 'NO_SESSION', epoch: beforeEpoch }, data: { state: 'ACTIVE', activeShiftId: shift.id, pendingHandoverId: null, epoch: nextEpoch, updatedAt: new Date() } })
       if (changed.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ دوباره تلاش کنید.', 'CUSTODY_STALE')
       await writeEvent(tx, { type: 'OPEN', shiftId: shift.id, actorUserId: actor.userId, actorKind: 'CUSTODIAN', authMethod: 'CUSTODY_PIN', epochBefore: beforeEpoch, epochAfter: nextEpoch, payload: { counted: countedCash != null } })
@@ -630,6 +688,11 @@ export const custodyService = {
     if (state.state !== 'ACTIVE' || !state.activeShiftId) throw new BusinessError('نشست فعالی برای تحویل وجود ندارد.', 'NO_OPEN_SESSION')
     const fromMeta = await prisma.custodyShiftMeta.findUnique({ where: { shiftId: state.activeShiftId } })
     if (!fromMeta) throw new BusinessError('اطلاعات حضانت نشست فعلی ناقص است.', 'CUSTODY_INVARIANT_BROKEN')
+    const canonicalTemplate = fromMeta.templateId
+      ? (await shiftSchedulingOf(prisma)).templates.find((row) => row.id === fromMeta.templateId) ?? null
+      : null
+    if (fromMeta.templateId && !canonicalTemplate?.allowMidDayHandover)
+      throw new BusinessError('مدیر برای این شیفت اجازهٔ تحویل میان‌روز را فعال نکرده است.', 'MIDDAY_HANDOVER_DISABLED')
     const giver = await this.verifyPin(fromMeta.custodianUserId, input.password)
     const toUserId = asSafeId(input.toUserId, 'شناسه تحویل‌گیرنده')
     if (toUserId === giver.userId) throw new BusinessError('تحویل‌گیرنده باید شخص دیگری باشد.', 'RECEIVER_SAME')
@@ -640,6 +703,8 @@ export const custodyService = {
     if (!receiver?.isActive || !credential || credential.status !== 'ACTIVE' || credential.mustChange)
       throw new BusinessError('تحویل‌گیرنده باید کارمند فعال با رمز شخصیِ غیرموقت باشد.', 'RECEIVER_NO_PIN')
     if (receiver.role !== 'MANAGER' && receiver.role !== 'CASHIER') throw new BusinessError('این نقش مجاز به تحویل‌گیری صندوق نیست.', 'NO_PERMISSION')
+    if (fromMeta.templateId && (!canonicalTemplate || !canonicalTemplate.staffIds.includes(toUserId)))
+      throw new BusinessError('تحویل‌گیرنده باید برای همین شیفت در تنظیمات شیفت ثبت شده باشد.', 'RECEIVER_NOT_SCHEDULED')
     const countedCash = asCash(input.countedCash, 'شمارش تحویل صندوق')
     const idempotencyKey = String(input.idempotencyKey ?? '').trim() || randomBytes(16).toString('hex')
     const started = await prisma.$transaction(async (tx: Client) => {
@@ -684,12 +749,25 @@ export const custodyService = {
       if (!live || live.status !== 'PENDING' || live.fromShiftId !== state.activeShiftId) throw new BusinessError('اطلاعات تحویل ناسازگار است.', 'CUSTODY_INVARIANT_BROKEN')
       const closed = await shiftService.closeInTx(tx, { shiftId: live.fromShiftId, userId: live.fromUserId, note: 'تحویل احرازشده صندوق' })
       const nextEpoch = Number(state.epoch) + 1
-      const cfg = await configOf(tx)
-      const plan = cfg.mode === 'MULTI_SHIFT' ? await planForOpen(tx, receiver.userId) : null
+      const [cfg, scheduling, sourceMeta] = await Promise.all([
+        configOf(tx),
+        shiftSchedulingOf(tx),
+        tx.custodyShiftMeta.findUnique({ where: { shiftId: live.fromShiftId } })
+      ])
+      /** A mid-day replacement remains in the same planned template; it must
+       * not reclassify the overall shift based on the receiver's own schedule. */
+      const sourceTemplate = sourceMeta?.templateId ? scheduling.templates.find((row) => row.id === sourceMeta.templateId) ?? null : null
+      const plan = sourceMeta?.templateId
+        ? { legacyPlanId: null, templateId: sourceMeta.templateId, title: sourceMeta.planTitle ?? sourceTemplate?.name ?? 'شیفت برنامه‌ریزی‌شده', scheduledEndAt: sourceMeta.scheduledEndAt, reminderRepeatMin: sourceTemplate?.reminderRepeatMin ?? 15, allowMidDayHandover: sourceTemplate?.allowMidDayHandover ?? false }
+        : scheduling.custodyMode === 'MULTI_SHIFT'
+          ? canonicalPlanForOpen(scheduling, receiver.userId)
+          : cfg.mode === 'MULTI_SHIFT'
+            ? await planForOpen(tx, receiver.userId)
+            : null
       const next = await shiftService.createSession(tx, { staffId: receiver.userId, staffConfirmed: true, actorId: receiver.userId, mode: 'HANDOVER', openIdempotencyKey: live.idempotencyKey, openIdempotencyFingerprint: `custody-handover:${handoverId}`, note: 'تحویل احرازشده صندوق' })
       if (Number(live.countedAtStart) > 0) await recordCashMovement(tx, { amount: Number(live.countedAtStart), type: CashMovementType.OPENING_FLOAT, shiftId: next.id, userId: receiver.userId, refType: 'CustodyHandover', refId: handoverId, description: 'موجودی اول ناشی از تحویل صندوق' })
       await tx.custodyShiftMeta.update({ where: { shiftId: live.fromShiftId }, data: { endKind: 'HANDED_OVER', endedAt: closed.closedAt } })
-      await tx.custodyShiftMeta.create({ data: { shiftId: next.id, custodianUserId: receiver.userId, openAuth: 'HANDOVER_RECEIVER_PIN', planId: plan?.id ?? null, planTitle: plan?.title ?? null, scheduledEndAt: plan?.scheduledEndAt ?? null, rolloverAt: rolloverAt(new Date(), cfg), dayCutoverSnapshot: cfg.dayCutoverMinute, operationalDay: toJalaliDate(new Date()), countStatus: 'COUNTED', openEpoch: nextEpoch } })
+      await tx.custodyShiftMeta.create({ data: { shiftId: next.id, custodianUserId: receiver.userId, openAuth: 'HANDOVER_RECEIVER_PIN', templateId: plan?.templateId ?? null, planId: plan?.legacyPlanId ?? null, planTitle: plan?.title ?? null, scheduledEndAt: plan?.scheduledEndAt ?? null, rolloverAt: rolloverAt(new Date(), cfg), dayCutoverSnapshot: cfg.dayCutoverMinute, operationalDay: toJalaliDate(new Date()), countStatus: 'COUNTED', openEpoch: nextEpoch } })
       await tx.custodyHandover.update({ where: { id: handoverId }, data: { status: 'COMPLETED', finalCustodianUserId: receiver.userId, acceptedByUserId: receiver.userId, resolutionKind: 'RECEIVER_ACCEPTED', toShiftId: next.id, finishedAt: new Date(), version: { increment: 1 } } })
       const changed = await tx.custodyState.updateMany({ where: { key: MAIN, state: 'HANDOVER_PENDING', pendingHandoverId: handoverId, epoch: state.epoch }, data: { state: 'ACTIVE', activeShiftId: next.id, pendingHandoverId: null, epoch: nextEpoch, updatedAt: new Date() } })
       if (changed.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ تحویل ثبت نشد.', 'CUSTODY_STALE')

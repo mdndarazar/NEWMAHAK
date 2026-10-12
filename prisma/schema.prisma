@@ -2114,6 +2114,8 @@ model CustodyShiftMeta {
   custodianUserId    Int
   openAuth           String
   openCountId        Int?
+  /// شناسهٔ immutable قالب canonical در shift.config؛ داده‌های ShiftPlan قدیمی planId خود را نگه می‌دارند.
+  templateId         String?
   planId             Int?
   planTitle          String?
   scheduledEndAt     DateTime?
@@ -2127,6 +2129,7 @@ model CustodyShiftMeta {
   openEpoch          Int
 
   @@index([custodianUserId])
+  @@index([templateId])
   @@index([endKind, operationalDay])
 }
 

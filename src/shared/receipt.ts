@@ -1041,6 +1041,16 @@ export interface ShiftTemplate {
   startTime: string
   /** ساعت پایان به قالب HH:mm. اگر ≤ شروع باشد، شیفت شبانه (گذر از نیمه‌شب) است. */
   endTime: string
+  /** این قالب در تشخیص/برنامه‌ریزی جدید فعال است؟ سابقه‌های قبلی دست‌نخورده‌اند. */
+  isActive: boolean
+  /** بیت‌های روزهای هفته (۱..۱۲۷)، برای برنامهٔ حضانت. */
+  daysMask: number
+  /** کارکنان برنامه‌ریزی‌شده؛ برنامه هرگز به‌تنهایی مسئولیت مالی ایجاد نمی‌کند. */
+  staffIds: number[]
+  /** فاصلهٔ یادآوریِ پایان برنامه، در دقیقه. */
+  reminderRepeatMin: number
+  /** تحویل میان‌روز این قالب فقط با انتخاب صریح مدیر مجاز می‌شود. */
+  allowMidDayHandover: boolean
 }
 
 /**
@@ -1060,7 +1070,13 @@ export interface ShiftConfig {
   names: string[]
   /** «تعیین شیفت بر اساس ساعت» — پیش‌فرض خاموش */
   byTime: boolean
-  /** شیفت‌های تعریف‌شده‌ی دستی (نام + ساعت شروع/پایان) */
+  /** منبع واحد mode عملیاتی حضانت؛ داده‌های ShiftPlan قدیمی تا بازبینی مهاجرت نمی‌شوند. */
+  custodyMode: 'SINGLE_SHIFT' | 'MULTI_SHIFT'
+  /** یادآوری پایان برنامه‌های canonical روشن است؟ */
+  reminderEnabled: boolean
+  /** مهلت هشدار بعد از پایان برنامه، دقیقه. */
+  overrunGraceMinutes: number
+  /** شیفت‌های تعریف‌شده‌ی دستی (نام + ساعت شروع/پایان + برنامه) */
   templates: ShiftTemplate[]
   /** بند ۷ — فرمت نمایش ساعت در فرم تنظیمات شیفت (فقط نمایشی) */
   clockFormat: ShiftClockFormat
@@ -1073,9 +1089,9 @@ export interface ShiftConfig {
 }
 
 export const DEFAULT_SHIFT_TEMPLATES: ShiftTemplate[] = [
-  { id: 'template-default-1', name: 'شیفت اول', startTime: '08:00', endTime: '14:00' },
-  { id: 'template-default-2', name: 'شیفت دوم', startTime: '14:00', endTime: '20:00' },
-  { id: 'template-default-3', name: 'شیفت سوم', startTime: '20:00', endTime: '00:00' }
+  { id: 'template-default-1', name: 'شیفت اول', startTime: '08:00', endTime: '14:00', isActive: true, daysMask: 127, staffIds: [], reminderRepeatMin: 15, allowMidDayHandover: false },
+  { id: 'template-default-2', name: 'شیفت دوم', startTime: '14:00', endTime: '20:00', isActive: true, daysMask: 127, staffIds: [], reminderRepeatMin: 15, allowMidDayHandover: false },
+  { id: 'template-default-3', name: 'شیفت سوم', startTime: '20:00', endTime: '00:00', isActive: true, daysMask: 127, staffIds: [], reminderRepeatMin: 15, allowMidDayHandover: false }
 ]
 
 /** A user-created template gets an opaque identity once, in the UI. Parsing
@@ -1092,7 +1108,11 @@ export function createShiftTemplateId(): string {
 export const DEFAULT_SHIFT_CONFIG: ShiftConfig = {
   names: DEFAULT_SHIFT_TEMPLATES.map((t) => t.name),
   byTime: false,
-  templates: DEFAULT_SHIFT_TEMPLATES.map((t) => ({ ...t })),
+  // محصول تازه همان حالت تک‌شیفتِ بی‌اجبار را نگه می‌دارد؛ چندشیفت تصمیم صریح مدیر است.
+  custodyMode: 'SINGLE_SHIFT',
+  reminderEnabled: true,
+  overrunGraceMinutes: 60,
+  templates: DEFAULT_SHIFT_TEMPLATES.map((t) => ({ ...t, staffIds: [...t.staffIds] })),
   // پیش‌فرض = همان چیزی که تا امروز بود: ۱۲ساعته با AM/PM
   clockFormat: '12',
   // نشست ۳۱۰ — پیش‌فرض صفر یعنی اضافه‌کاری خاموش است (حالت جدید opt-in)
@@ -1506,11 +1526,19 @@ export const parseShiftConfig = (raw: unknown): ShiftConfig => {
         const name = String(t?.name ?? names[i] ?? '').trim() || 'شیفت ' + (i + 1)
         const startTime = normalizeTime(t?.startTime, fallback.startTime)
         const endTime = normalizeTime(t?.endTime, fallback.endTime)
+        const staffIds = [...new Set(Array.isArray(t?.staffIds) ? t.staffIds.map((id: unknown) => Math.round(Number(id))).filter((id: number) => Number.isSafeInteger(id) && id > 0) : [])]
         return {
           id: idFor(t?.id, i, name, startTime, endTime),
           name,
           startTime,
-          endTime
+          endTime,
+          isActive: t?.isActive !== false,
+          // نبودنِ فیلد legacy = همه‌روز؛ صفرِ صریح باید برای اعتبارسنجی سرور
+          // باقی بماند تا مدیر نتواند شیفتِ بی‌روز ذخیره کند.
+          daysMask: t?.daysMask == null ? 127 : Math.min(127, Math.max(0, Math.round(Number(t.daysMask)) || 0)),
+          staffIds,
+          reminderRepeatMin: Math.min(60, Math.max(5, Math.round(Number(t?.reminderRepeatMin)) || 15)),
+          allowMidDayHandover: t?.allowMidDayHandover === true
         }
       })
       .slice(0, 24)
@@ -1528,13 +1556,21 @@ export const parseShiftConfig = (raw: unknown): ShiftConfig => {
         id: idFor(undefined, i, name, startTime, endTime, names.length ? undefined : fallback.id),
         name,
         startTime,
-        endTime
+        endTime,
+        isActive: true,
+        daysMask: 127,
+        staffIds: [],
+        reminderRepeatMin: 15,
+        allowMidDayHandover: false
       }
     })
   }
 
   return {
     byTime: Boolean(obj.byTime),
+    custodyMode: obj.custodyMode === 'MULTI_SHIFT' ? 'MULTI_SHIFT' : 'SINGLE_SHIFT',
+    reminderEnabled: obj.reminderEnabled !== false,
+    overrunGraceMinutes: Math.min(1440, Math.max(0, Math.round(Number(obj.overrunGraceMinutes)) || 60)),
     templates,
     names: templates.map((t) => t.name),
     // بند ۷: هر مقدار ناشناخته ⇒ '12' (رفتار قبلی)، پس تنظیم قدیمی هم امن است
