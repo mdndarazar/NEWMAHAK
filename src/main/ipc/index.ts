@@ -552,7 +552,13 @@ export function registerIpcHandlers(): void {
   handle(IPC.saleGet, (p) => salesService.get(p.id))
   // ممیزی S141 (AUDIT-S141-02، AUDIT-D72) — actor برگشت/تعویض/ابطال فقط از نشست باز؛ userId ارسالی renderer
   // نادیده گرفته می‌شود و بی‌نشست باز رد می‌شود (بند ۳ و ۴-۳۰).
-  handle(IPC.saleReturn, async (p) => salesService.createReturn(await withSessionActor(p ?? {}, 'ثبت برگشت از فروش')))
+  // ManagerGate در renderer یک کنترل بصری است؛ این gate sender-bound همان قفل
+  // پنل را در مرز واقعی IPC هم اعمال می‌کند تا invoke مستقیم نتواند موجودی و پول
+  // را با ساخت برگشت تغییر دهد.
+  handle(IPC.saleReturn, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.salesReturn, 'ثبت برگشت از فروش')
+    return salesService.createReturn(await withSessionActor(p ?? {}, 'ثبت برگشت از فروش'))
+  })
   handle(IPC.saleByReturnCode, (p) => salesService.findByReturnCode(p?.code ?? ''))
   handle(IPC.saleReturnList, (p) => salesService.returnList(p ?? {}))
   handle(IPC.saleReturnGet, (p) => salesService.returnGet(p.id))
@@ -599,7 +605,10 @@ export function registerIpcHandlers(): void {
     return salesService.chequeList(p ?? {})
   })
   // ---- تعویض کالا و بارکد اعتبار خرید بعدی (بخش ۶) ----
-  handle(IPC.saleExchangeCreate, async (p) => salesService.createExchange(await withSessionActor(p ?? {}, 'ثبت تعویض کالا')))
+  handle(IPC.saleExchangeCreate, async (p) => {
+    await assertPanelUnlocked(PANEL_KEYS.salesReturn, 'ثبت تعویض کالا')
+    return salesService.createExchange(await withSessionActor(p ?? {}, 'ثبت تعویض کالا'))
+  })
   handle(IPC.saleExchangeList, async (p) => {
     await assertSalesReportsRead('دیدن فهرست تعویض‌های کالا در گزارشات')
     return salesService.exchangeList(p ?? {})
