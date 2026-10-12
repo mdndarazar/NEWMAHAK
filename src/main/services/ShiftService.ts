@@ -1166,6 +1166,56 @@ export const shiftService = {
     return closed
   },
 
+  /** A constrained system-originated close. It never impersonates an absent
+   * worker and is reserved for documented custody policies (timeout, policy
+   * transition, emergency staff deactivation). */
+  async closeSystemCustodyInTx(
+    tx: Prisma.TransactionClient,
+    input: { shiftId: number; effectiveAt: Date; closeKind: string; note: string }
+  ) {
+    const shift = await tx.shift.findUnique({ where: { id: input.shiftId } })
+    if (!shift) throw new BusinessError('نشست موردنظر برای بازیابی پیدا نشد.', 'CUSTODY_INVARIANT_BROKEN')
+    if (shift.closedAt) return shift
+    const mergedNote = [shift.note, input.note].filter((part): part is string => !!part?.trim()).join('\n') || null
+    const changed = await tx.shift.updateMany({
+      where: { id: shift.id, closedAt: null },
+      data: { closedAt: input.effectiveAt, note: mergedNote }
+    })
+    if (changed.count !== 1) throw new BusinessError('نشست هم‌زمان تغییر کرد؛ دوباره تلاش کنید.', 'CUSTODY_STALE')
+    const closed = await tx.shift.findUnique({ where: { id: shift.id } })
+    if (!closed) throw new BusinessError('نشست پس از بستن پیدا نشد.', 'CUSTODY_INVARIANT_BROKEN')
+    await auditOrThrow(tx, {
+      action: AuditAction.SHIFT_CLOSE,
+      entity: 'Shift',
+      entityId: closed.id,
+      userId: null,
+      after: JSON.stringify({
+        session: sessionLabelOf(closed.name, closed.sessionSeq),
+        name: closed.name,
+        number: closed.number,
+        dayJalali: closed.dayJalali,
+        closeKind: input.closeKind,
+        effectiveAt: input.effectiveAt.toISOString()
+      }),
+      note: `${input.note}: ${sessionLabelOf(closed.name, closed.sessionSeq)}`
+    })
+    return closed
+  },
+
+  /** Automatic overtime uses the same narrowly-scoped system close with an
+   * immutable policy label. */
+  async closeExpiredCustodyInTx(
+    tx: Prisma.TransactionClient,
+    input: { shiftId: number; effectiveAt: Date; note?: string | null }
+  ) {
+    return this.closeSystemCustodyInTx(tx, {
+      shiftId: input.shiftId,
+      effectiveAt: input.effectiveAt,
+      closeKind: 'AUTO_OVERTIME_TIMEOUT',
+      note: input.note ?? 'بستن خودکارِ بدون شمارش فیزیکی پس از سقف اضافه‌کاری'
+    })
+  },
+
   /**
    * بستن نشست (پایان شیفت). اگر shiftId داده نشود، *نشست باز* بسته می‌شود.
    * بستن شیفت هیچ چیزی از انبار کم نمی‌کند؛ کسر نهایی انبار فقط با «تجمیع و

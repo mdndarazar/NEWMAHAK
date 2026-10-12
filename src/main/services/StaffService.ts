@@ -44,12 +44,15 @@ const shape = (u: {
   role: string
   isActive: boolean
   passwordHash?: string
+  jobTitle?: string | null
 }) => ({
   id: u.id,
   username: u.username,
   name: u.displayName || u.username,
   role: u.role,
   roleLabel: STAFF_ROLE_LABELS[u.role] ?? u.role,
+  /** عنوان سفارشی فقط برای نمایش است؛ `role` همچنان منبع مجوزهاست. */
+  jobTitle: String(u.jobTitle ?? '').trim() || null,
   isActive: u.isActive,
   /** فقط وضعیت؛ هش یا رمز شخصی هرگز از IPC بیرون نمی‌رود. */
   hasCorrectionApprovalPassword: u.role === 'MANAGER' && hasManagerCorrectionApprovalSecret(u.passwordHash)
@@ -58,6 +61,37 @@ const shape = (u: {
 const SELECT = { id: true, username: true, displayName: true, role: true, isActive: true, passwordHash: true } as const
 
 /** نام ⇒ یک `username` یکتا و بی‌فاصله (فقط یک شناسه‌ی داخلی است). */
+/** Titles are a small manager-maintained catalogue, separate from User.role.
+ * They are stored as ordinary Settings JSON so existing databases need no
+ * migration. A title never grants a permission or custody eligibility. */
+const MAX_CUSTOM_STAFF_TITLES = 40
+const MAX_CUSTOM_STAFF_TITLE_LENGTH = 80
+
+function parseCustomStaffTitles(raw: unknown): string[] {
+  let source: unknown = raw
+  if (typeof source === 'string') {
+    try { source = JSON.parse(source) } catch { source = [] }
+  }
+  if (!Array.isArray(source)) return []
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const value of source) {
+    const title = String(value ?? '').replace(/\s+/g, ' ').trim()
+    if (!title || title.length > MAX_CUSTOM_STAFF_TITLE_LENGTH) continue
+    const key = title.toLocaleLowerCase('fa-IR')
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(title)
+    if (result.length >= MAX_CUSTOM_STAFF_TITLES) break
+  }
+  return result
+}
+
+async function customStaffTitles(): Promise<string[]> {
+  const row = await prisma.setting.findUnique({ where: { key: SETTING_KEYS.staffCustomTitles } })
+  return parseCustomStaffTitles(row?.value ?? null)
+}
+
 async function uniqueUsername(name: string): Promise<string> {
   const base =
     name
@@ -253,18 +287,24 @@ async function assertNationalIdAvailable(nationalId: string | null, selfUserId: 
  * while they own the drawer or are the independently authenticated recipient
  * of a pending handover. The manager must first close/cancel/complete that
  * custody action; otherwise an audit trail would have a live person disappear. */
+/** Manager-authorized deactivation never leaves a dead/terminated employee as
+ * a live custodian. Custody creates a recoverable system boundary when needed;
+ * the credential itself is revoked in the same transaction. */
 async function assertOperationalDeactivationAllowed(client: any, userId: number): Promise<void> {
-  const state = await client.custodyState.findUnique({ where: { key: 'MAIN' } })
-  if (!state) return
-  if (state.activeShiftId) {
-    const meta = await client.custodyShiftMeta.findUnique({ where: { shiftId: state.activeShiftId } })
-    if (meta?.custodianUserId === userId)
-      throw new BusinessError('تا وقتی این کارمند مسئول فعال صندوق است، غیرفعال‌سازی یا پایان همکاری ممکن نیست. ابتدا صندوق را تحویل یا نهایی ببندید.', 'ACTIVE_CUSTODIAN')
-  }
-  if (state.state === 'HANDOVER_PENDING' && state.pendingHandoverId) {
-    const handover = await client.custodyHandover.findUnique({ where: { id: state.pendingHandoverId } })
-    if (handover?.selectedRecipientUserId === userId)
-      throw new BusinessError('این کارمند تحویل‌گیرندهٔ یک تحویل در انتظار است. ابتدا تحویل را لغو یا تعیین تکلیف کنید.', 'PENDING_HANDOVER_RECIPIENT')
+  const { custodyService } = await import('./CustodyService')
+  const before = await client.custodyCredential.findFirst({ where: { userId, purpose: 'CUSTODY_PIN' } })
+  await custodyService.releaseStaffForDeactivationInTx(client, { userId })
+  const changed = await client.custodyCredential.updateMany({
+    where: { userId, purpose: 'CUSTODY_PIN' },
+    data: { status: 'DISABLED', mustChange: true, version: { increment: 1 } }
+  })
+  if (changed.count && before) {
+    await auditOrThrow(client, {
+      action: 'SETTINGS_UPDATE', entity: 'CustodyCredential', entityId: userId, userId: null,
+      before: JSON.stringify({ purpose: 'CUSTODY_PIN', status: before.status, mustChange: before.mustChange }),
+      after: JSON.stringify({ purpose: 'CUSTODY_PIN', status: 'DISABLED', mustChange: true }),
+      note: 'رمز حضانت کارمند هم‌زمان با غیرفعال‌سازی باطل شد؛ فعال‌سازی دوباره به صدور رمز موقت تازه نیاز دارد.'
+    })
   }
 }
 
@@ -285,7 +325,52 @@ export const staffService = {
       select: SELECT,
       orderBy: [{ isActive: 'desc' }, { id: 'asc' }]
     })
-    return { rows: rows.map(shape), activeUserId: await readActiveId(), roles: STAFF_ROLES }
+    const [profiles, titles] = await Promise.all([
+      rows.length
+        ? prisma.staffProfile.findMany({ where: { userId: { in: rows.map((row) => row.id) } }, select: { userId: true, jobTitle: true } })
+        : Promise.resolve([]),
+      customStaffTitles()
+    ])
+    const titleByUserId = new Map(profiles.map((profile: any) => [profile.userId, profile.jobTitle]))
+    return {
+      rows: rows.map((row) => shape({ ...row, jobTitle: titleByUserId.get(row.id) ?? null })),
+      activeUserId: await readActiveId(),
+      roles: STAFF_ROLES,
+      /** فقط عنوان‌های نمایشی؛ نقشی در اجازه‌ها ندارند. */
+      customTitles: titles
+    }
+  },
+
+  /** Only the global manager session can change the nominal title catalogue.
+   * Existing employee profiles are intentionally not rewritten when a title is
+   * removed from the catalogue; their historical/display value stays intact. */
+  async saveCustomTitles(input: { titles?: unknown } = {}) {
+    assertManagerSession('ویرایش عنوان‌های شغلی سفارشی')
+    const raw = input?.titles
+    if (!Array.isArray(raw)) throw new BusinessError('فهرست عنوان‌های شغلی نامعتبر است.')
+    const supplied = raw.map((value) => String(value ?? '').replace(/\s+/g, ' ').trim())
+    if (supplied.some((title) => title.length > MAX_CUSTOM_STAFF_TITLE_LENGTH))
+      throw new BusinessError(`هر عنوان شغلی حداکثر ${MAX_CUSTOM_STAFF_TITLE_LENGTH} نویسه است.`)
+    if (supplied.filter(Boolean).length > MAX_CUSTOM_STAFF_TITLES)
+      throw new BusinessError(`حداکثر ${MAX_CUSTOM_STAFF_TITLES} عنوان شغلی می‌توانید نگه دارید.`)
+    const before = await customStaffTitles()
+    const titles = parseCustomStaffTitles(supplied)
+    if (JSON.stringify(before) !== JSON.stringify(titles)) {
+      await prisma.$transaction(async (tx: any) => {
+        await tx.setting.upsert({
+          where: { key: SETTING_KEYS.staffCustomTitles },
+          update: { value: JSON.stringify(titles) },
+          create: { key: SETTING_KEYS.staffCustomTitles, value: JSON.stringify(titles) }
+        })
+        await auditOrThrow(tx, {
+          action: 'SETTINGS_UPDATE', entity: 'Setting', entityId: 0, userId: null,
+          before: JSON.stringify({ customStaffTitles: before }),
+          after: JSON.stringify({ customStaffTitles: titles }),
+          note: 'فهرست عنوان‌های شغلی سفارشی تغییر کرد؛ عنوان‌ها مجوز سیستمی ایجاد نمی‌کنند.'
+        })
+      })
+    }
+    return { titles }
   },
 
   /** ثبت کارمند تازه یا ویرایش نام/نقش/فعال‌بودن یکی از قبلی‌ها. */
@@ -538,7 +623,17 @@ export const staffService = {
         ])
       : [null, null]
     if (id > 0 && !beforeUser) throw new BusinessError('این کارمند پیدا نشد.')
-    const personnel = preparePersonnel(mergePersonnelInput(beforeProfileForMerge, input))
+    /** The active checkbox is an operational instruction, not a decorative
+     * flag. Re-enabling an employee who was previously marked TERMINATED must
+     * restore their current employment state as well; otherwise the old status
+     * would silently force isActive back to false on every save. */
+    const mergedPersonnel = mergePersonnelInput(beforeProfileForMerge, input)
+    const explicitlyTerminating = String(input?.employmentStatus ?? '').trim().toUpperCase() === 'TERMINATED'
+    if (input?.isActive === true && !explicitlyTerminating && String(mergedPersonnel.employmentStatus ?? '').trim().toUpperCase() === 'TERMINATED') {
+      mergedPersonnel.employmentStatus = 'ACTIVE'
+      mergedPersonnel.employmentEndJalali = ''
+    }
+    const personnel = preparePersonnel(mergedPersonnel)
     await assertNationalIdAvailable(personnel.nationalId, id > 0 ? id : null)
     const username = id > 0 ? null : await uniqueUsername(name)
     /** TERMINATED is never merely a decorative profile label: the same atomic

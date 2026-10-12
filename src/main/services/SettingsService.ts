@@ -168,11 +168,18 @@ async function assertCanonicalShiftSchedule(config: ShiftConfig): Promise<void> 
   if (config.custodyMode === 'MULTI_SHIFT' && !active.some((template) => template.staffIds.length > 0))
     throw new BusinessError('برای حالت چندشیفت، دست‌کم یک شیفت فعال با کارمند برنامه‌ریزی‌شده لازم است.')
 
-  const requestedStaffIds = [...new Set(active.flatMap((template) => template.staffIds))]
+  /** In single-shift mode the dedicated person is the only operational
+   * assignment. Template staff is deliberately preserved for a later switch
+   * back to multi-shift, but must not make a single-shift save fail. */
+  const requestedStaffIds = config.custodyMode === 'SINGLE_SHIFT'
+    ? (config.singleShiftStaffId == null ? [] : [config.singleShiftStaffId])
+    : [...new Set(active.flatMap((template) => template.staffIds))]
   if (requestedStaffIds.length) {
     const users = await prisma.user.findMany({ where: { id: { in: requestedStaffIds } }, select: { id: true, isActive: true, role: true } })
     if (users.length !== requestedStaffIds.length || users.some((user) => !user.isActive || (user.role !== 'MANAGER' && user.role !== 'CASHIER')))
-      throw new BusinessError('کارمند برنامه‌ریزی‌شده باید مدیر یا صندوقدارِ فعال باشد.')
+      throw new BusinessError(config.custodyMode === 'SINGLE_SHIFT'
+        ? 'کارمند تک‌شیفت باید مدیر یا صندوقدارِ فعال باشد.'
+        : 'کارمند برنامه‌ریزی‌شده باید مدیر یا صندوقدارِ فعال باشد.')
   }
 
   const toMinute = (time: string) => {
@@ -784,6 +791,12 @@ export const settingsService = {
       }
     }
     const receiptForAfter = nextReceipt ?? storedReceipt
+    const custodyModeChanged = !!normalizedShift && before.shift.custodyMode !== normalizedShift.custodyMode
+    /** Dynamic import avoids a Settings ↔ Cashbox ↔ Custody initialization cycle.
+     * The Settings route has already passed its manager/session gates before
+     * this point, and the transition itself joins the write transaction below. */
+    const custodyForModeTransition = custodyModeChanged ? await import('./CustodyService') : null
+
     const after: SettingsBundle = {
       receipt: {
         ...receiptForAfter,
@@ -805,6 +818,12 @@ export const settingsService = {
      * اعتبارسنجی یا گیتِ ممکن‌الخطایی داخل یا بعد از نخستین write نیست.
      */
     await prisma.$transaction(async (tx) => {
+      if (custodyModeChanged && normalizedShift)
+        await custodyForModeTransition!.custodyService.transitionCustodyModeInTx(tx, {
+          from: before.shift.custodyMode,
+          to: normalizedShift.custodyMode,
+          actorUserId: input.userId ?? null
+        })
       if (nextReceipt) await writeKey(SETTING_KEYS.receiptTemplate, nextReceipt, tx)
       if (nextSale) await writeKey(SETTING_KEYS.saleDefaults, nextSale, tx)
       if (normalizedShift) await writeKey(SETTING_KEYS.shiftConfig, normalizedShift, tx)
@@ -837,6 +856,9 @@ export const settingsService = {
               : ' · فیش وصول نسیه خاموش شد')
       })
     }, TX_OPTIONS)
+    // Complete the read-only ledger snapshot only after the joint Settings /
+    // custody transition has committed. It is retriable after a crash.
+    if (custodyModeChanged) await custodyForModeTransition!.custodyService.ensurePendingAutoTimeoutSnapshots()
     // اثر حافظه‌ای TTL فقط پس از commit موفق مجاز است.
     if (nextSecurity) applyPanelSessionTtlMinutes(nextSecurity.idleLockMinutes)
     return after
