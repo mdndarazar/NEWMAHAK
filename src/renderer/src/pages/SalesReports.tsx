@@ -50,7 +50,8 @@ import {
   destinationCells,
   DESTINATION_HEADERS
 } from '../lib/destinationCells'
-import { usePanelOpen } from '../hooks/usePanelLocks'
+import { usePanelLock, usePanelOpen } from '../hooks/usePanelLocks'
+import { useManagerSession } from '../hooks/useManagerSession'
 import { PANEL_KEYS } from '@shared/panels'
 import {
   ColGroup,
@@ -183,6 +184,13 @@ type Tab =
    * `CreditManagement.tsx` مصرف می‌کند — و قفلش `PANEL_KEYS.creditManagement` است.
    */
   | 'creditManagement'
+
+/** عملیات حساس تعویض که نباید پیش از بازشدن قفل، فرم‌شان دیده شود. */
+type ExchangeCorrectionAction = 'VOID' | 'RECONCILE'
+type PendingExchangeCorrectionAction = {
+  action: ExchangeCorrectionAction
+  row: ExchangeReportResult['rows'][number]
+}
 
 /**
  * کلید داده‌ی قابل چاپ/خروجی. فرم فیلتر می‌تواند بعد از آخرین اجرای موفق
@@ -639,6 +647,18 @@ function summaryParts(t: SaleReportTotals): SummaryPart[] {
 
 export default function SalesReports() {
   const nav = useNavigate()
+  /**
+   * باز بودن گزارشات فروش، مجوز تغییر سند برگشت/تعویض نیست. این قفل عملیاتی
+   * مستقل، همان سیاست صفحه‌ی برگشت را برای دکمه‌های «ابطال/اصلاح» گزارش اعمال
+   * می‌کند و تا خواندن policy نیز fail-closed است.
+   */
+  const correctionOpen = usePanelOpen(PANEL_KEYS.salesReturnCorrection)
+  const { loaded: correctionLockLoaded } = usePanelLock(PANEL_KEYS.salesReturnCorrection)
+  const { unlockPanel } = useManagerSession()
+  const [exCorrectionUnlockRequest, setExCorrectionUnlockRequest] = useState<PendingExchangeCorrectionAction | null>(null)
+  const [exCorrectionUnlockPassword, setExCorrectionUnlockPassword] = useState('')
+  const [exCorrectionUnlockBusy, setExCorrectionUnlockBusy] = useState(false)
+  const [exCorrectionUnlockError, setExCorrectionUnlockError] = useState<string | null>(null)
   const { settings } = useSettings()
   const [tab, setTab] = useState<Tab>('summary')
   // ---------------- جلسه ۱۵: داده‌ی چهار تب تازه ----------------
@@ -1869,6 +1889,89 @@ export default function SalesReports() {
   const [exCorrectionNote, setExCorrectionNote] = useState('')
   const [exCorrectionErr, setExCorrectionErr] = useState<string | null>(null)
   const [exCorrectionBusy, setExCorrectionBusy] = useState(false)
+
+  const loadExchangeCorrectionManagers = () => {
+    void call<{ rows?: { id: number; name: string; role: string; isActive: boolean; hasCorrectionApprovalPassword?: boolean }[] }>(
+      CH.staffDirectory,
+      { includeInactive: false }
+    )
+      .then((res) => setExVoidManagers((res?.rows ?? []).filter((u) => u.role === 'MANAGER' && u.isActive)))
+      .catch(() => setExVoidManagers([]))
+  }
+
+  /** فقط پس از گیت، فرم ابطال یا اصلاح جبرانی واقعاً باز می‌شود. */
+  const launchExchangeCorrectionAction = ({ action, row }: PendingExchangeCorrectionAction) => {
+    if (action === 'VOID') {
+      setExVoidReason('')
+      setExVoidAuthPassword('')
+      setExVoidApproverUserId(null)
+      setExVoidApproverPassword('')
+      setExVoidErr(null)
+      setExVoidTarget(row)
+      loadExchangeCorrectionManagers()
+      return
+    }
+    setExCorrectionReason('')
+    setExCorrectionAuthPassword('')
+    setExCorrectionApproverUserId(null)
+    setExCorrectionApproverPassword('')
+    setExCorrectionCashRecovered('')
+    setExCorrectionCardRecovered('')
+    setExCorrectionCashPaidOut('')
+    setExCorrectionCardPaidOut('')
+    setExCorrectionCardReference('')
+    setExCorrectionPayoutReference('')
+    setExCorrectionCreditOutcome(row.storeCreditReference ? 'REMAINS_ACTIVE' : 'NONE')
+    setExCorrectionNote('')
+    setExCorrectionErr(null)
+    setExCorrectionTarget(row)
+    loadExchangeCorrectionManagers()
+  }
+
+  /**
+   * درخواست کاربر: با قفل روشن، پنجرهٔ اصلاح/ابطال حتی برای یک لحظه هم باز
+   * نمی‌شود. ابتدا هشدار فارسی و همان احراز هویت استاندارد پنل نشان داده می‌شود.
+   */
+  const requestExchangeCorrectionAction = (action: ExchangeCorrectionAction, row: ExchangeReportResult['rows'][number]) => {
+    if (!correctionLockLoaded) {
+      setMsg(null)
+      setErr('وضعیت قفل اصلاح و ابطال هنوز در حال بررسی است. چند لحظه صبر کنید؛ تا آن زمان هیچ فرم اصلاح یا ابطال باز نمی‌شود.')
+      return
+    }
+    const request = { action, row }
+    if (correctionOpen) {
+      launchExchangeCorrectionAction(request)
+      return
+    }
+    setExCorrectionUnlockError(null)
+    setExCorrectionUnlockPassword('')
+    setExCorrectionUnlockRequest(request)
+  }
+
+  /** رمز مدیر، رمز دوم اختصاصی یا رمز سوم شیفت فقط همین اختیار را باز می‌کند. */
+  const unlockExchangeCorrectionAction = async () => {
+    const request = exCorrectionUnlockRequest
+    const password = exCorrectionUnlockPassword.trim()
+    if (!request) return
+    if (!password) {
+      setExCorrectionUnlockError('برای باز کردن قفل این عملیات، رمز مدیر یا رمز دوم/سوم همین بخش را وارد کنید.')
+      return
+    }
+    setExCorrectionUnlockBusy(true)
+    setExCorrectionUnlockError(null)
+    try {
+      await unlockPanel(PANEL_KEYS.salesReturnCorrection, password)
+      setExCorrectionUnlockRequest(null)
+      setExCorrectionUnlockPassword('')
+      launchExchangeCorrectionAction(request)
+    } catch (e: any) {
+      setExCorrectionUnlockError(String(e?.message ?? 'رمز پذیرفته نشد.'))
+      setExCorrectionUnlockPassword('')
+    } finally {
+      setExCorrectionUnlockBusy(false)
+    }
+  }
+
   const doExchangeVoid = async () => {
     const target = exVoidTarget
     if (!target) return
@@ -2473,47 +2576,61 @@ export default function SalesReports() {
             data={exchanges}
             cols={exchangeCols}
             onPrint={printExchangeDoc}
-            onVoid={(r) => {
-              setExVoidReason('')
-              setExVoidAuthPassword('')
-              setExVoidApproverUserId(null)
-              setExVoidApproverPassword('')
-              setExVoidErr(null)
-              setExVoidTarget(r)
-              void call<{ rows?: { id: number; name: string; role: string; isActive: boolean; hasCorrectionApprovalPassword?: boolean }[] }>(
-                CH.staffDirectory,
-                { includeInactive: false }
-              )
-                .then((res) => setExVoidManagers((res?.rows ?? []).filter((u) => u.role === 'MANAGER' && u.isActive)))
-                .catch(() => setExVoidManagers([]))
-            }}
-            onCorrection={(r) => {
-              setExCorrectionReason('')
-              setExCorrectionAuthPassword('')
-              setExCorrectionApproverUserId(null)
-              setExCorrectionApproverPassword('')
-              setExCorrectionCashRecovered('')
-              setExCorrectionCardRecovered('')
-              setExCorrectionCashPaidOut('')
-              setExCorrectionCardPaidOut('')
-              setExCorrectionCardReference('')
-              setExCorrectionPayoutReference('')
-              setExCorrectionCreditOutcome(r.storeCreditReference ? 'REMAINS_ACTIVE' : 'NONE')
-              setExCorrectionNote('')
-              setExCorrectionErr(null)
-              setExCorrectionTarget(r)
-              void call<{ rows?: { id: number; name: string; role: string; isActive: boolean; hasCorrectionApprovalPassword?: boolean }[] }>(
-                CH.staffDirectory,
-                { includeInactive: false }
-              )
-                .then((res) => setExVoidManagers((res?.rows ?? []).filter((u) => u.role === 'MANAGER' && u.isActive)))
-                .catch(() => setExVoidManagers([]))
-            }}
+            onVoid={(r) => requestExchangeCorrectionAction('VOID', r)}
+            onCorrection={(r) => requestExchangeCorrectionAction('RECONCILE', r)}
             pending={pending}
           />
         )}
       </div>
       )}
+
+      {/*
+        قفل عملیاتی تعویض در گزارش: این دیالوگ عمداً پیش از دو فرم حساس است.
+        تا credential معتبر ثبت نشود، نه مودال ابطال و نه مودال اصلاح جبرانی باز
+        نمی‌شود؛ پس «قفل» فقط خطای دیرهنگام سمت سرور نیست.
+      */}
+      <ConfirmDialog
+        open={!!exCorrectionUnlockRequest}
+        title="قفل عملیات اصلاح و ابطال"
+        confirmLabel="تأیید و باز کردن قفل"
+        busy={exCorrectionUnlockBusy}
+        message={
+          <div className="space-y-3">
+            <p className="font-bold text-amber-900">
+              این صفحه/عملیات قفل است؛ شما نمی‌توانید فرم ابطال یا اصلاح جبرانی تعویض را باز کنید.
+            </p>
+            <p className="kbd leading-6">
+              برای ادامه، رمز مدیر، رمز دوم اختصاصی «اصلاح و ابطال برگشت / تعویض»، یا رمز سومِ تعریف‌شده برای شیفت جاری را وارد کنید.
+              این رمز فقط همین اختیار را باز می‌کند و کنترل‌های مالی سمت سرور همچنان برقرارند.
+            </p>
+            <label className="block">
+              <span className="font-bold">رمز مجوز عملیات</span>
+              <input
+                type="password"
+                dir="ltr"
+                className="inp w-full mt-1"
+                value={exCorrectionUnlockPassword}
+                onChange={(e) => {
+                  setExCorrectionUnlockPassword(e.target.value)
+                  setExCorrectionUnlockError(null)
+                }}
+                autoComplete="off"
+                autoFocus
+                placeholder="رمز مدیر یا رمز دوم/سوم این عملیات"
+              />
+            </label>
+            {exCorrectionUnlockError && <p className="text-red-600 whitespace-pre-line">{exCorrectionUnlockError}</p>}
+            <p className="kbd leading-6">پس از باز شدن قفل، فقط فرمِ عملیاتی که انتخاب کرده‌اید باز می‌شود.</p>
+          </div>
+        }
+        onConfirm={() => void unlockExchangeCorrectionAction()}
+        onCancel={() => {
+          if (exCorrectionUnlockBusy) return
+          setExCorrectionUnlockRequest(null)
+          setExCorrectionUnlockPassword('')
+          setExCorrectionUnlockError(null)
+        }}
+      />
 
       {/* نشست ۶۵ — تاییدیه‌ی ابطال کل گراف تعویض (دلیل اجباری) */}
       <ConfirmDialog
