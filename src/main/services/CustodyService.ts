@@ -10,6 +10,7 @@ import { recordCashMovement } from './CashMovementService'
 import { cashboxService } from './CashboxService'
 import { CashMovementType } from '@shared/enums'
 import { assertManagerSession } from './panelSession'
+import { assertManagerPassword } from './AuthService'
 
 /**
  * Custody v2 deliberately lives beside, rather than inside, the legacy shift
@@ -85,11 +86,45 @@ function sameHash(a: string, b: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right)
 }
 
-function rolloverAt(now: Date, config: CustodyConfig): Date {
+/** Fallback only for unscheduled/legacy sessions. Scheduled canonical work
+ * must expire from its own scheduled end, never from a day cutover that can
+ * prematurely terminate an overnight allowance. */
+function cutoverRolloverAt(now: Date, config: CustodyConfig): Date {
   const out = new Date(now)
   out.setHours(0, config.dayCutoverMinute, 0, 0)
   if (out <= now) out.setDate(out.getDate() + 1)
   return out
+}
+
+type CustodyPlanSnapshot = {
+  legacyPlanId: number | null
+  templateId: string | null
+  title: string | null
+  scheduledEndAt: Date | null
+  reminderRepeatMin: number
+  allowMidDayHandover: boolean
+}
+
+/** `overtimeMaxMinutes` is the configured scheduled overtime allowance. It is
+ * deliberately distinct from `overrunGraceMinutes`, which merely controls a
+ * reminder. Only canonical scheduled sessions get this expiry; legacy plans
+ * and unscheduled sessions retain their cutover fallback. */
+function rolloverAt(now: Date, config: CustodyConfig, scheduling: ShiftConfig, plan: CustodyPlanSnapshot | null): Date {
+  const scheduledEnd = plan?.templateId && plan.scheduledEndAt ? new Date(plan.scheduledEndAt) : null
+  if (scheduledEnd && Number.isFinite(scheduledEnd.getTime()))
+    return new Date(scheduledEnd.getTime() + Math.max(0, Number(scheduling.overtimeMaxMinutes) || 0) * 60_000)
+  return cutoverRolloverAt(now, config)
+}
+
+/** Existing open canonical segments did not snapshot their scheduled expiry in
+ * earlier versions. Read their durable scheduled-end metadata instead of
+ * imposing the legacy cutover; newly opened segments persist the same result
+ * in `rolloverAt`. */
+function expiryAt(meta: { templateId?: string | null; scheduledEndAt?: Date | null; rolloverAt: Date }, scheduling: ShiftConfig): Date {
+  const scheduledEnd = meta.templateId && meta.scheduledEndAt ? new Date(meta.scheduledEndAt) : null
+  if (scheduledEnd && Number.isFinite(scheduledEnd.getTime()))
+    return new Date(scheduledEnd.getTime() + Math.max(0, Number(scheduling.overtimeMaxMinutes) || 0) * 60_000)
+  return new Date(meta.rolloverAt)
 }
 
 async function configOf(client: Client = prisma): Promise<CustodyConfig> {
@@ -180,6 +215,7 @@ async function writeEvent(client: Client, input: {
   type: string
   shiftId?: number | null
   handoverId?: number | null
+  resolutionId?: number | null
   actorUserId?: number | null
   actorKind: string
   authMethod?: string | null
@@ -192,6 +228,7 @@ async function writeEvent(client: Client, input: {
       type: input.type,
       shiftId: input.shiftId ?? null,
       handoverId: input.handoverId ?? null,
+      resolutionId: input.resolutionId ?? null,
       actorUserId: input.actorUserId ?? null,
       actorKind: input.actorKind,
       authMethod: input.authMethod ?? null,
@@ -263,8 +300,29 @@ export const custodyService = {
     return (await configOf(prisma)).enabled
   },
 
+  /**
+   * One fail-closed answer for every legacy ShiftSession surface.  Looking only
+   * at the feature flag was unsafe: an interrupted/older custody segment could
+   * still be live while a stale settings row said "disabled", and the old
+   * name-only session form then became a second way to assign drawer custody.
+   *
+   * `CustodyState` and open resolutions are durable evidence, not a renderer
+   * preference.  This helper intentionally does not create state rows, so a
+   * plain legacy installation remains legacy until custody is really enabled.
+   */
+  async isGoverned(): Promise<boolean> {
+    const cfg = await configOf(prisma)
+    if (cfg.enabled) return true
+    const [state, unresolved] = await Promise.all([
+      prisma.custodyState.findUnique({ where: { key: MAIN } }),
+      prisma.custodyResolution.findFirst({ where: { status: 'OPEN' }, select: { id: true } })
+    ])
+    return state?.state !== 'NO_SESSION' || !!unresolved
+  },
+
   async guardLegacyPath() {
-    if (await this.enabled()) throw new BusinessError('در حالت حضانت صندوق، از مسیر رسمی حضانت استفاده کنید.', 'CUSTODY_LEGACY_PATH')
+    if (await this.isGoverned())
+      throw new BusinessError('در حالت حضانت صندوق، ثبت یا تعویض نشست قدیمی مجاز نیست؛ فقط از مسیر رسمی حضانت با رمز شخصی استفاده کنید.', 'CUSTODY_LEGACY_PATH')
   },
 
   async status() {
@@ -290,6 +348,9 @@ export const custodyService = {
     const reminderBucket = reminderDue ? Math.floor((now - reminderStart!.getTime()) / (repeatMinutes * 60_000)) : null
     return {
       enabled: cfg.enabled,
+      /** Consumers that decide whether to show an old name-only ShiftSession
+       * must use this durable, fail-closed value—not just the feature flag. */
+      governed: cfg.enabled || state.state !== 'NO_SESSION' || unresolved.length > 0,
       config: cfg,
       state: state.state,
       epoch: state.epoch,
@@ -299,7 +360,7 @@ export const custodyService = {
       schedule: meta?.planId || meta?.templateId ? { planId: meta?.planId ?? null, templateId: meta?.templateId ?? null, title: meta?.planTitle, scheduledEndAt: meta?.scheduledEndAt, allowMidDayHandover: template?.allowMidDayHandover ?? false } : null,
       reminder: { due: reminderDue, bucket: reminderBucket, repeatMinutes, scheduledEndAt: scheduledEndAt?.toISOString() ?? null },
       pendingHandover: state.pendingHandoverId
-        ? await prisma.custodyHandover.findUnique({ where: { id: state.pendingHandoverId }, select: { id: true, fromUserId: true, selectedRecipientUserId: true, startedAt: true } })
+        ? await prisma.custodyHandover.findUnique({ where: { id: state.pendingHandoverId }, select: { id: true, fromUserId: true, selectedRecipientUserId: true, startedAt: true, status: true, resolutionKind: true, countedAtStart: true, resolutionReason: true } })
         : null,
       unresolved: unresolved.map((row: any) => ({ id: row.id, shiftId: row.shiftId, openedAt: row.openedAt, nightExpectedCash: row.nightExpectedCash })),
       unresolvedCount: unresolved.length
@@ -490,6 +551,13 @@ export const custodyService = {
     }
     const state = await ensureState(prisma)
     if (current.enabled !== next.enabled && state.state !== 'NO_SESSION') throw new BusinessError('تا وقتی صندوق باز یا در حال تحویل است، روشن/خاموش‌کردن حضانت مجاز نیست.')
+    // A no-session state can still carry an unresolved previous drawer. Turning
+    // the feature off here would hide its only PIN/count recovery path while
+    // `isGoverned()` correctly blocks the old name-only path.
+    if (current.enabled && !next.enabled) {
+      const unresolved = await prisma.custodyResolution.findFirst({ where: { status: 'OPEN' }, select: { id: true } })
+      if (unresolved) throw new BusinessError('تا وقتی پروندهٔ بازیابی صندوق قبلی باز است، خاموش‌کردن حضانت مجاز نیست.', 'CUSTODY_RECOVERY_OPEN')
+    }
     await prisma.setting.upsert({ where: { key: SETTING_KEYS.custodyConfig }, update: { value: JSON.stringify(next) }, create: { key: SETTING_KEYS.custodyConfig, value: JSON.stringify(next) } })
     return next
   },
@@ -525,7 +593,7 @@ export const custodyService = {
         count = await tx.custodyCount.create({ data: { shiftId: shift.id, kind: 'OPENING', countedCash: BigInt(countedCash), countedByUserId: actor.userId, authMethod: 'CUSTODY_PIN', epochAtCount: nextEpoch, idempotencyKey: `open:${shift.id}`, operationalDay: toJalaliDate(new Date()) } })
         if (countedCash > 0) await recordCashMovement(tx, { amount: countedCash, type: CashMovementType.OPENING_FLOAT, shiftId: shift.id, userId: actor.userId, refType: 'CustodyOpen', refId: count.id, description: 'موجودی اول صندوق حضانت' })
       }
-      await tx.custodyShiftMeta.create({ data: { shiftId: shift.id, custodianUserId: actor.userId, openAuth: 'CUSTODY_PIN', openCountId: count?.id ?? null, templateId: plan?.templateId ?? null, planId: plan?.legacyPlanId ?? null, planTitle: plan?.title ?? null, scheduledEndAt: plan?.scheduledEndAt ?? null, rolloverAt: rolloverAt(new Date(), cfg), dayCutoverSnapshot: cfg.dayCutoverMinute, operationalDay: toJalaliDate(new Date()), countStatus: countedCash == null ? 'COUNT_PENDING' : 'COUNTED', openEpoch: nextEpoch } })
+      await tx.custodyShiftMeta.create({ data: { shiftId: shift.id, custodianUserId: actor.userId, openAuth: 'CUSTODY_PIN', openCountId: count?.id ?? null, templateId: plan?.templateId ?? null, planId: plan?.legacyPlanId ?? null, planTitle: plan?.title ?? null, scheduledEndAt: plan?.scheduledEndAt ?? null, rolloverAt: rolloverAt(new Date(), cfg, scheduling, plan), dayCutoverSnapshot: cfg.dayCutoverMinute, operationalDay: toJalaliDate(new Date()), countStatus: countedCash == null ? 'COUNT_PENDING' : 'COUNTED', openEpoch: nextEpoch } })
       const changed = await tx.custodyState.updateMany({ where: { key: MAIN, state: 'NO_SESSION', epoch: beforeEpoch }, data: { state: 'ACTIVE', activeShiftId: shift.id, pendingHandoverId: null, epoch: nextEpoch, updatedAt: new Date() } })
       if (changed.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ دوباره تلاش کنید.', 'CUSTODY_STALE')
       await writeEvent(tx, { type: 'OPEN', shiftId: shift.id, actorUserId: actor.userId, actorKind: 'CUSTODIAN', authMethod: 'CUSTODY_PIN', epochBefore: beforeEpoch, epochAfter: nextEpoch, payload: { counted: countedCash != null } })
@@ -534,31 +602,43 @@ export const custodyService = {
   },
 
   /** Lazy rollover is invoked by custody status/financial entry, never by a
-   * timer that could silently move money. It closes only the operational Shift,
-   * not the financial period; final reconciliation remains manager-only. */
+   * timer that could silently move money. It closes only the operational Shift;
+   * a separate PIN-authenticated morning witness or manager later records the
+   * physical count and financial snapshot. */
   async ensureRolledOver(now = new Date()) {
     const state = await ensureState(prisma)
     if ((state.state !== 'ACTIVE' && state.state !== 'HANDOVER_PENDING') || !state.activeShiftId) return null
-    const meta = await prisma.custodyShiftMeta.findUnique({ where: { shiftId: state.activeShiftId } })
-    if (!meta || new Date(meta.rolloverAt) > now) return null
+    const [meta, scheduling] = await Promise.all([
+      prisma.custodyShiftMeta.findUnique({ where: { shiftId: state.activeShiftId } }),
+      shiftSchedulingOf(prisma)
+    ])
+    if (!meta || expiryAt(meta, scheduling) > now) return null
     const result = await prisma.$transaction(async (tx: Client) => {
       const live = await ensureState(tx)
-      const liveMeta = live.activeShiftId ? await tx.custodyShiftMeta.findUnique({ where: { shiftId: live.activeShiftId } }) : null
-      if (!liveMeta || (live.state !== 'ACTIVE' && live.state !== 'HANDOVER_PENDING') || live.activeShiftId !== state.activeShiftId || live.epoch !== state.epoch || new Date(liveMeta.rolloverAt) > now) return null
+      const [liveMeta, liveScheduling] = await Promise.all([
+        live.activeShiftId ? tx.custodyShiftMeta.findUnique({ where: { shiftId: live.activeShiftId } }) : null,
+        shiftSchedulingOf(tx)
+      ])
+      if (!liveMeta || (live.state !== 'ACTIVE' && live.state !== 'HANDOVER_PENDING') || live.activeShiftId !== state.activeShiftId || live.epoch !== state.epoch || expiryAt(liveMeta, liveScheduling) > now) return null
       const shift = await tx.shift.findUnique({ where: { id: live.activeShiftId } })
       if (!shift || shift.closedAt) return null
+      // The lazy detector may run the following morning. Financial attribution
+      // must still stop at the planned scheduled end + configured overtime (or
+      // the persisted legacy cutover fallback), rather than at detection time.
+      const effectiveEndAt = expiryAt(liveMeta, liveScheduling)
       const nextEpoch = Number(live.epoch) + 1
       let handoverId: number | null = null
       if (live.state === 'HANDOVER_PENDING' && live.pendingHandoverId) {
         handoverId = live.pendingHandoverId
         await tx.custodyHandover.update({ where: { id: handoverId }, data: { status: 'EXPIRED_UNRESOLVED', resolutionKind: 'EXPIRED_AT_ROLLOVER', finalCustodianUserId: null, finishedAt: now, version: { increment: 1 } } })
       }
-      const closed = await shiftService.closeInTx(tx, { shiftId: shift.id, userId: shift.userId ?? null, note: 'پایان روز عملیاتی؛ نیازمند تعیین تکلیف مدیر' })
-      await tx.custodyShiftMeta.update({ where: { shiftId: shift.id }, data: { endKind: handoverId ? 'EXPIRED_UNRESOLVED' : 'UNRESOLVED', endedAt: closed.closedAt } })
+      await shiftService.closeInTx(tx, { shiftId: shift.id, userId: shift.userId ?? null, note: 'پایان برنامه/روز عملیاتی؛ نیازمند شمارش شاهد صبح' })
+      await tx.shift.update({ where: { id: shift.id }, data: { closedAt: effectiveEndAt } })
+      await tx.custodyShiftMeta.update({ where: { shiftId: shift.id }, data: { endKind: handoverId ? 'EXPIRED_UNRESOLVED' : 'UNRESOLVED', endedAt: effectiveEndAt } })
       const resolution = await tx.custodyResolution.create({ data: { shiftId: shift.id, status: 'OPEN', evidence: 'NONE', differenceAttribution: 'PENDING_DECISION' } })
       const changed = await tx.custodyState.updateMany({ where: { key: MAIN, state: live.state, activeShiftId: shift.id, epoch: live.epoch }, data: { state: 'NO_SESSION', activeShiftId: null, pendingHandoverId: null, epoch: nextEpoch, updatedAt: now } })
       if (changed.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ rollover ثبت نشد.', 'CUSTODY_STALE')
-      await writeEvent(tx, { type: 'ROLLOVER_UNRESOLVED', shiftId: shift.id, handoverId, actorKind: 'SYSTEM', epochBefore: live.epoch, epochAfter: nextEpoch, payload: { resolutionId: resolution.id } })
+      await writeEvent(tx, { type: 'ROLLOVER_UNRESOLVED', shiftId: shift.id, handoverId, resolutionId: resolution.id, actorKind: 'SYSTEM', epochBefore: live.epoch, epochAfter: nextEpoch, payload: { resolutionId: resolution.id, effectiveAt: effectiveEndAt.toISOString(), expiryKind: liveMeta.templateId ? 'SCHEDULED_END_PLUS_OVERTIME' : 'CUTOVER_FALLBACK' } })
       return { resolutionId: resolution.id, shiftId: shift.id }
     })
     if (result) {
@@ -568,8 +648,8 @@ export const custodyService = {
         const expected = await cashboxService.expected({ shiftId: result.shiftId })
         await prisma.custodyResolution.updateMany({ where: { id: result.resolutionId, status: 'OPEN' }, data: { nightExpectedCash: BigInt(Number(expected.expectedCash)) } })
       } catch {
-        // Manager resolution still has the canonical Cashbox calculation; do not
-        // turn a reporting read failure into a new sales block.
+        // Morning-witness/manager recovery still has the canonical Cashbox
+        // calculation; do not turn a reporting read failure into a new sales block.
       }
     }
     return result
@@ -595,11 +675,91 @@ export const custodyService = {
       note: reason,
       userId: manager.userId,
       custodyEffectiveTo: new Date(shift.closedAt),
+      // `shift` is already closed by rollover and belongs to an absent prior
+      // custodian. This is server-only; IPC cannot supply this bypass marker.
+      internalCustodyRecovery: true,
       afterCloseInTx: async (tx: Client, session: any) => {
         const changed = await tx.custodyResolution.updateMany({ where: { id: resolutionId, status: 'OPEN', shiftId: shift.id }, data: { status: 'RESOLVED', cashSessionId: session.id, decisionByUserId: manager.userId, decisionReason: reason, differenceAttribution: attribution, attributedToUserId, resolvedAt: new Date() } })
         if (changed.count !== 1) throw new BusinessError('پرونده شب هم‌زمان تغییر کرد؛ عملیات ثبت نشد.', 'CUSTODY_STALE')
         await tx.custodyShiftMeta.updateMany({ where: { shiftId: shift.id, endKind: { in: ['UNRESOLVED', 'EXPIRED_UNRESOLVED'] } }, data: { endKind: 'FINAL_CLOSE', cashSessionId: session.id } })
         await writeEvent(tx, { type: 'UNRESOLVED_RESOLVED', shiftId: shift.id, resolutionId, actorUserId: manager.userId, actorKind: 'MANAGER', authMethod: 'MANAGER_CUSTODY_PIN', payload: { cashSessionId: session.id, attribution } })
+      }
+    } as any)
+  },
+
+  /**
+   * Morning recovery for an unattended/expired custody segment. The prior
+   * custodian is deliberately not asked to authenticate, and neither is a
+   * manager: an active cashier or manager proves their own identity with their
+   * PIN and witnesses the physical count. This closes only the old financial
+   * segment; opening a new drawer remains a separate PIN/count operation.
+   */
+  async recoverUnattended(input: { resolutionId: unknown; userId: unknown; password: unknown; countedCash: unknown; note?: unknown }) {
+    const resolutionId = asSafeId(input.resolutionId, 'شناسه پرونده شب')
+    const witness = await this.verifyPin(input.userId, input.password)
+    if (witness.role !== 'MANAGER' && witness.role !== 'CASHIER')
+      throw new BusinessError('این نقش مجاز به ثبت شمارش شاهد صبح نیست.', 'NO_PERMISSION')
+    const countedCash = asCash(input.countedCash, 'شمارش شاهد صبح')
+    const note = String(input.note ?? '').trim() || undefined
+    const resolution = await prisma.custodyResolution.findUnique({ where: { id: resolutionId } })
+    if (!resolution || resolution.status !== 'OPEN') throw new BusinessError('این پرونده شب قبلاً تعیین تکلیف شده یا پیدا نشد.', 'RECOVERY_NOT_OPEN')
+    const shift = await prisma.shift.findUnique({ where: { id: resolution.shiftId } })
+    if (!shift?.closedAt) throw new BusinessError('پرونده فقط پس از بسته‌شدن نشست منقضی قابل بازیابی است.', 'CUSTODY_INVARIANT_BROKEN')
+
+    return cashboxService.close({
+      shiftId: shift.id,
+      explicitShift: true,
+      closeShift: false,
+      countedCash,
+      note,
+      userId: witness.userId,
+      custodyEffectiveTo: new Date(shift.closedAt),
+      // The old segment is already closed by rollover and its owner may be
+      // absent. This marker is stripped from every IPC payload.
+      internalCustodyRecovery: true,
+      afterCloseInTx: async (tx: Client, session: any) => {
+        const live = await tx.custodyResolution.findUnique({ where: { id: resolutionId } })
+        if (!live || live.status !== 'OPEN' || live.shiftId !== shift.id)
+          throw new BusinessError('پرونده شب هم‌زمان تغییر کرد؛ شمارش شاهد ثبت نشد.', 'CUSTODY_STALE')
+        const count = await tx.custodyCount.create({
+          data: {
+            shiftId: shift.id,
+            kind: 'MORNING_WITNESS',
+            countedCash: BigInt(countedCash),
+            expectedCash: session.expectedCash,
+            differenceCash: session.cashDifference,
+            countedByUserId: witness.userId,
+            authMethod: 'CUSTODY_PIN',
+            note: note ?? null,
+            epochAtCount: Number((await ensureState(tx)).epoch),
+            idempotencyKey: `morning-witness:${resolutionId}:${session.id}`,
+            operationalDay: toJalaliDate(new Date())
+          }
+        })
+        const changed = await tx.custodyResolution.updateMany({
+          where: { id: resolutionId, status: 'OPEN', shiftId: shift.id },
+          data: {
+            status: 'RESOLVED',
+            nightExpectedCash: live.nightExpectedCash ?? session.expectedCash,
+            morningWitnessCountId: count.id,
+            provisionalDifference: session.cashDifference,
+            evidence: 'MORNING_WITNESS',
+            differenceAttribution: 'UNASSIGNED',
+            cashSessionId: session.id,
+            resolvedAt: new Date()
+          }
+        })
+        if (changed.count !== 1) throw new BusinessError('پرونده شب هم‌زمان تغییر کرد؛ شمارش شاهد ثبت نشد.', 'CUSTODY_STALE')
+        await tx.custodyShiftMeta.updateMany({ where: { shiftId: shift.id, endKind: { in: ['UNRESOLVED', 'EXPIRED_UNRESOLVED'] } }, data: { endKind: 'RECOVERED_MORNING_WITNESS', cashSessionId: session.id } })
+        await writeEvent(tx, {
+          type: 'UNATTENDED_RECOVERED',
+          shiftId: shift.id,
+          resolutionId,
+          actorUserId: witness.userId,
+          actorKind: 'MORNING_WITNESS',
+          authMethod: 'CUSTODY_PIN',
+          payload: { cashSessionId: session.id, countId: count.id, expectedCash: session.expectedCash, countedCash, differenceCash: session.cashDifference }
+        })
       }
     } as any)
   },
@@ -640,7 +800,7 @@ export const custodyService = {
       const beforeEpoch = Number(state.epoch)
       const nextEpoch = beforeEpoch + 1
       const shift = await shiftService.createSession(tx, { staffId: owner.id, staffConfirmed: true, actorId: owner.id, mode: 'MANUAL', note: 'نشست راه‌اندازی بدون رمز شخصی' })
-      await tx.custodyShiftMeta.create({ data: { shiftId: shift.id, custodianUserId: owner.id, openAuth: 'DEFAULT_OWNER', rolloverAt: rolloverAt(new Date(), cfg), dayCutoverSnapshot: cfg.dayCutoverMinute, operationalDay: toJalaliDate(new Date()), countStatus: 'COUNT_PENDING', openEpoch: nextEpoch } })
+      await tx.custodyShiftMeta.create({ data: { shiftId: shift.id, custodianUserId: owner.id, openAuth: 'DEFAULT_OWNER', rolloverAt: cutoverRolloverAt(new Date(), cfg), dayCutoverSnapshot: cfg.dayCutoverMinute, operationalDay: toJalaliDate(new Date()), countStatus: 'COUNT_PENDING', openEpoch: nextEpoch } })
       const changed = await tx.custodyState.updateMany({ where: { key: MAIN, state: 'NO_SESSION', epoch: beforeEpoch }, data: { state: 'ACTIVE', activeShiftId: shift.id, pendingHandoverId: null, epoch: nextEpoch, updatedAt: new Date() } })
       if (changed.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ دوباره تلاش کنید.', 'CUSTODY_STALE')
       await writeEvent(tx, { type: 'OPEN_DEFAULT_OWNER', shiftId: shift.id, actorUserId: owner.id, actorKind: 'BOOTSTRAP_OWNER', epochBefore: beforeEpoch, epochAfter: nextEpoch, payload: { countStatus: 'COUNT_PENDING' } })
@@ -800,13 +960,14 @@ export const custodyService = {
 
   /**
    * A pending handover deliberately keeps the outgoing drawer session alive:
-   * sales continue under that person while the receiver is away.  Acceptance
-   * briefly fences writers, takes a fresh receiver count, and accepts only an
-   * exact zero difference against the post-watermark ledger.  This is the
-   * opt-in custody feature (custody.config.enabled); legacy installs never
-   * enter this state machine.
+   * sales continue under that person while the receiver is away. Acceptance
+   * briefly fences writers and takes a fresh receiver count. A non-zero
+   * difference is permitted only with a durable reason: it remains attached
+   * to the outgoing Shift while the receiver starts the next segment at their
+   * actual physical count. This is the opt-in custody feature
+   * (custody.config.enabled); legacy installs never enter this state machine.
    */
-  async handoverAccept(input: { handoverId: unknown; password: unknown; countedCash: unknown }) {
+  async handoverAccept(input: { handoverId: unknown; password: unknown; countedCash: unknown; differenceReason?: unknown }) {
     const handoverId = asSafeId(input.handoverId, 'شناسه تحویل')
     const pending = await prisma.custodyHandover.findUnique({ where: { id: handoverId } })
     if (!pending || pending.status !== 'PENDING') throw new BusinessError('این تحویل دیگر در انتظار پذیرش نیست.', 'HANDOVER_NOT_PENDING')
@@ -814,6 +975,7 @@ export const custodyService = {
     if (!ready.ready) throw new BusinessError('شمارش تحویل هنوز کامل نشده است؛ ابتدا تحویل‌دهنده آن را لغو یا کامل کند.', 'RECOUNT_REQUIRED')
     const receiver = await this.verifyPin(pending.selectedRecipientUserId, input.password)
     const countedCash = asCash(input.countedCash, 'شمارش مستقل تحویل‌گیرنده')
+    const differenceReason = String(input.differenceReason ?? '').trim()
 
     /** Freeze only long enough to make the expected amount reproducible. Every
      * fenced sale started before this conditional transition is committed first;
@@ -876,9 +1038,12 @@ export const custodyService = {
       throw error
     }
     const differenceCash = countedCash - expectedCash
-    if (differenceCash !== 0) {
-      await resumePending({ expectedCash, countedCash, differenceCash, reason: 'ZERO_DIFFERENCE_REQUIRED' }, true)
-      throw new BusinessError('شمارش مستقل تحویل‌گیرنده دقیقاً با نقد انتظاری برابر نیست؛ فروش همچنان به مسئول فعلی منتسب است. پس از رفع اختلاف، دوباره شمارش و پذیرش کنید.', 'RECOUNT_REQUIRED')
+    if (differenceCash !== 0 && differenceReason.length < 10) {
+      // Keep the outgoing custodian active while the receiver supplies a
+      // specific explanation. The rejected independent count is evidence, not
+      // an overwrite of either segment's expected ledger value.
+      await resumePending({ expectedCash, countedCash, differenceCash, reason: 'DIFFERENCE_REASON_REQUIRED' }, true)
+      throw new BusinessError('شمارش مستقل با نقد انتظاری اختلاف دارد. برای پذیرش تحویل با مبلغ واقعیِ شمارش‌شده، دلیل روشنِ حداقل ۱۰ حرف وارد کنید؛ در غیر این صورت فروش همچنان به مسئول قبلی منتسب می‌ماند.', 'HANDOVER_DIFFERENCE_REASON_REQUIRED')
     }
 
     try {
@@ -890,10 +1055,26 @@ export const custodyService = {
         if (!live || live.status !== 'PENDING' || live.fromShiftId !== state.activeShiftId)
           throw new BusinessError('اطلاعات تحویل ناسازگار است.', 'CUSTODY_INVARIANT_BROKEN')
         const nextEpoch = Number(state.epoch) + 1
+        // This evidence belongs to the outgoing responsibility segment. The
+        // receiver authenticated the physical count, but a difference is not
+        // carried into their liability or silently erased from the ledger.
         const recount = await tx.custodyCount.create({
-          data: { shiftId: live.fromShiftId, kind: 'HANDOVER_RECOUNT', countedCash: BigInt(countedCash), expectedCash: BigInt(expectedCash), differenceCash: BigInt(0), countedByUserId: receiver.userId, authMethod: 'CUSTODY_PIN', handoverId, epochAtCount: nextEpoch, idempotencyKey: `recount:${handoverId}:${frozen.epoch}`, operationalDay: toJalaliDate(new Date()) }
+          data: {
+            shiftId: live.fromShiftId,
+            kind: differenceCash === 0 ? 'HANDOVER_RECOUNT' : 'HANDOVER_RECOUNT_DIFFERENCE',
+            countedCash: BigInt(countedCash),
+            expectedCash: BigInt(expectedCash),
+            differenceCash: BigInt(differenceCash),
+            countedByUserId: receiver.userId,
+            authMethod: 'CUSTODY_PIN',
+            note: differenceCash === 0 ? null : differenceReason,
+            handoverId,
+            epochAtCount: nextEpoch,
+            idempotencyKey: `recount:${handoverId}:${frozen.epoch}`,
+            operationalDay: toJalaliDate(new Date())
+          }
         })
-        const closed = await shiftService.closeInTx(tx, { shiftId: live.fromShiftId, userId: live.fromUserId, note: 'تحویل احرازشده صندوق' })
+        const closed = await shiftService.closeInTx(tx, { shiftId: live.fromShiftId, userId: live.fromUserId, note: differenceCash === 0 ? 'تحویل احرازشده صندوق' : 'تحویل احرازشده صندوق با مغایرت شمارش' })
         const [cfg, scheduling, sourceMeta] = await Promise.all([
           configOf(tx),
           shiftSchedulingOf(tx),
@@ -919,13 +1100,13 @@ export const custodyService = {
          * the outgoing provisional count: sales remained possible while this
          * handover was pending and must be carried into the next segment. */
         if (countedCash > 0) await recordCashMovement(tx, { amount: countedCash, type: CashMovementType.OPENING_FLOAT, shiftId: next.id, userId: receiver.userId, refType: 'CustodyHandover', refId: handoverId, description: 'موجودی اول ناشی از تحویل صندوقِ شمارش‌شده' })
-        await tx.custodyShiftMeta.update({ where: { shiftId: live.fromShiftId }, data: { endKind: 'HANDED_OVER', endedAt: closed.closedAt } })
-        await tx.custodyShiftMeta.create({ data: { shiftId: next.id, custodianUserId: receiver.userId, openAuth: 'HANDOVER_RECEIVER_PIN', templateId: plan?.templateId ?? null, planId: plan?.legacyPlanId ?? null, planTitle: plan?.title ?? null, scheduledEndAt: plan?.scheduledEndAt ?? null, rolloverAt: rolloverAt(new Date(), cfg), dayCutoverSnapshot: cfg.dayCutoverMinute, operationalDay: toJalaliDate(new Date()), countStatus: 'COUNTED', openEpoch: nextEpoch } })
-        await tx.custodyHandover.update({ where: { id: handoverId }, data: { status: 'COMPLETED', finalCustodianUserId: receiver.userId, acceptedByUserId: receiver.userId, resolutionKind: 'RECEIVER_ACCEPTED', expectedAtStart: BigInt(expectedCash), differenceCash: BigInt(0), ledgerWatermark: JSON.stringify({ ...ready, ready: true, accepted: true, expectedCash, countedCash, differenceCash: 0, recountCountId: recount.id, at: new Date().toISOString() }), toShiftId: next.id, finishedAt: new Date(), version: { increment: 1 } } })
+        await tx.custodyShiftMeta.update({ where: { shiftId: live.fromShiftId }, data: { endKind: differenceCash === 0 ? 'HANDED_OVER' : 'HANDED_OVER_WITH_DIFFERENCE', endedAt: closed.closedAt } })
+        await tx.custodyShiftMeta.create({ data: { shiftId: next.id, custodianUserId: receiver.userId, openAuth: 'HANDOVER_RECEIVER_PIN', templateId: plan?.templateId ?? null, planId: plan?.legacyPlanId ?? null, planTitle: plan?.title ?? null, scheduledEndAt: plan?.scheduledEndAt ?? null, rolloverAt: rolloverAt(new Date(), cfg, scheduling, plan), dayCutoverSnapshot: cfg.dayCutoverMinute, operationalDay: toJalaliDate(new Date()), countStatus: 'COUNTED', openEpoch: nextEpoch } })
+        await tx.custodyHandover.update({ where: { id: handoverId }, data: { status: 'COMPLETED', finalCustodianUserId: receiver.userId, acceptedByUserId: receiver.userId, resolutionKind: differenceCash === 0 ? 'RECEIVER_ACCEPTED' : 'RECEIVER_ACCEPTED_WITH_DIFFERENCE', resolutionReason: differenceCash === 0 ? null : differenceReason, expectedAtStart: BigInt(expectedCash), differenceCash: BigInt(differenceCash), ledgerWatermark: JSON.stringify({ ...ready, ready: true, accepted: true, expectedCash, countedCash, differenceCash, differenceReason: differenceCash === 0 ? null : differenceReason, differenceAttributedToUserId: differenceCash === 0 ? null : live.fromUserId, recountCountId: recount.id, at: new Date().toISOString() }), toShiftId: next.id, finishedAt: new Date(), version: { increment: 1 } } })
         const changed = await tx.custodyState.updateMany({ where: { key: MAIN, state: 'HANDOVER_RECOUNT', pendingHandoverId: handoverId, epoch: state.epoch }, data: { state: 'ACTIVE', activeShiftId: next.id, pendingHandoverId: null, epoch: nextEpoch, updatedAt: new Date() } })
         if (changed.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ تحویل ثبت نشد.', 'CUSTODY_STALE')
-        await writeEvent(tx, { type: 'HANDOVER_ACCEPT', shiftId: next.id, handoverId, actorUserId: receiver.userId, actorKind: 'RECEIVER', authMethod: 'CUSTODY_PIN', epochBefore: state.epoch, epochAfter: nextEpoch, payload: { fromShiftId: live.fromShiftId, toShiftId: next.id, recountCountId: recount.id, expectedCash, countedCash } })
-        return { handoverId, shiftId: next.id, epoch: nextEpoch, expectedCash, countedCash, differenceCash: 0 }
+        await writeEvent(tx, { type: differenceCash === 0 ? 'HANDOVER_ACCEPT' : 'HANDOVER_ACCEPT_WITH_DIFFERENCE', shiftId: differenceCash === 0 ? next.id : live.fromShiftId, handoverId, actorUserId: receiver.userId, actorKind: 'RECEIVER', authMethod: 'CUSTODY_PIN', epochBefore: state.epoch, epochAfter: nextEpoch, payload: { fromShiftId: live.fromShiftId, toShiftId: next.id, recountCountId: recount.id, expectedCash, countedCash, differenceCash, differenceReason: differenceCash === 0 ? null : differenceReason, differenceAttributedToUserId: differenceCash === 0 ? null : live.fromUserId } })
+        return { handoverId, shiftId: next.id, epoch: nextEpoch, expectedCash, countedCash, differenceCash }
       })
     } catch (error) {
       /** A transaction error rolls its writes back. Restore the outgoing
@@ -951,6 +1132,296 @@ export const custodyService = {
       await writeEvent(tx, { type: 'HANDOVER_CANCEL', shiftId: pending.fromShiftId, handoverId, actorUserId: giver.userId, actorKind: 'CUSTODIAN', authMethod: 'CUSTODY_PIN', epochBefore: state.epoch, epochAfter: nextEpoch, payload: {} })
       return { handoverId, state: 'ACTIVE', epoch: nextEpoch }
     })
+  },
+
+  /**
+   * Emergency cover transfers the physical drawer to a present, PIN-authenticated
+   * worker when the prior custodian cannot complete a normal handover. It is a
+   * separate auditable path: a mandatory reason and physical count are attached
+   * to the prior segment, while the cover worker owns the newly created one.
+   */
+  async emergencyCover(input: { userId: unknown; password: unknown; countedCash: unknown; reason: unknown }) {
+    const cover = await this.verifyPin(input.userId, input.password)
+    if (cover.role !== 'MANAGER' && cover.role !== 'CASHIER')
+      throw new BusinessError('این نقش مجاز به پوشش اضطراری صندوق نیست.', 'NO_PERMISSION')
+    const countedCash = asCash(input.countedCash, 'شمارش فیزیکی پوشش اضطراری')
+    const reason = String(input.reason ?? '').trim()
+    if (reason.length < 10)
+      throw new BusinessError('برای پوشش اضطراری صندوق، دلیل روشنِ حداقل ۱۰ حرف وارد کنید.', 'EMERGENCY_REASON_REQUIRED')
+
+    const emergency = await prisma.$transaction(async (tx: Client) => {
+      const state = await ensureState(tx)
+      if (state.state === 'HANDOVER_RECOUNT' && state.pendingHandoverId) {
+        const pending = await tx.custodyHandover.findUnique({ where: { id: state.pendingHandoverId } })
+        if (!pending || pending.status !== 'EMERGENCY_RECOUNT' || pending.resolutionKind !== 'EMERGENCY_COVER')
+          throw new BusinessError('یک شمارش نهایی دیگر در جریان است؛ چند لحظه بعد دوباره تلاش کنید.', 'CUSTODY_FROZEN')
+        if (pending.selectedRecipientUserId !== cover.userId)
+          throw new BusinessError('پوشش اضطراری در حال ثبت فقط با PIN همان کارمند انتخاب‌شده قابل ادامه است.', 'EMERGENCY_COVER_IN_PROGRESS')
+        if (Number(pending.countedAtStart) !== countedCash || String(pending.resolutionReason ?? '') !== reason)
+          throw new BusinessError('پوشش اضطراریِ ناتمام با شمارش یا دلیل دیگری قابل ادامه نیست؛ همان مبلغ و دلیلِ ثبت‌شده را وارد کنید.', 'EMERGENCY_RETRY_MISMATCH')
+        return { handoverId: pending.id, fromShiftId: pending.fromShiftId, epoch: Number(state.epoch), outCountId: pending.outCountId, resumed: true }
+      }
+      if (state.state !== 'ACTIVE' || !state.activeShiftId)
+        throw new BusinessError('پوشش اضطراری فقط وقتی ممکن است که صندوق مسئول فعال داشته باشد.', 'NO_ACTIVE_CUSTODY')
+      const [fromShift, fromMeta] = await Promise.all([
+        tx.shift.findUnique({ where: { id: state.activeShiftId } }),
+        tx.custodyShiftMeta.findUnique({ where: { shiftId: state.activeShiftId } })
+      ])
+      if (!fromShift || fromShift.closedAt || !fromShift.userId || !fromMeta || fromMeta.custodianUserId !== fromShift.userId)
+        throw new BusinessError('وضعیت مسئول فعلی صندوق ناسازگار است.', 'CUSTODY_INVARIANT_BROKEN')
+      if (fromShift.userId === cover.userId)
+        throw new BusinessError('پوشش اضطراری باید به کارمند فعالِ دیگری سپرده شود؛ مسئول فعلی خودش باید مسیر عادی صندوق را تکمیل کند.', 'EMERGENCY_SAME_CUSTODIAN')
+      const freezeEpoch = Number(state.epoch) + 1
+      const declared = await tx.custodyCount.create({
+        data: {
+          shiftId: fromShift.id,
+          kind: 'EMERGENCY_COVER_COUNT',
+          countedCash: BigInt(countedCash),
+          countedByUserId: cover.userId,
+          authMethod: 'CUSTODY_PIN',
+          note: reason,
+          epochAtCount: freezeEpoch,
+          idempotencyKey: `emergency:${fromShift.id}:${state.epoch}:${cover.userId}`,
+          operationalDay: toJalaliDate(new Date())
+        }
+      })
+      const handover = await tx.custodyHandover.create({
+        data: {
+          fromShiftId: fromShift.id,
+          fromUserId: fromShift.userId,
+          selectedRecipientUserId: cover.userId,
+          status: 'EMERGENCY_RECOUNT',
+          outCountId: declared.id,
+          expectedAtStart: BigInt(0),
+          countedAtStart: BigInt(countedCash),
+          differenceCash: BigInt(0),
+          ledgerWatermark: JSON.stringify({ ready: false, emergency: true, countedCash, reason, at: new Date().toISOString() }),
+          fenceEpochAtStart: freezeEpoch,
+          idempotencyKey: `emergency:${fromShift.id}:${state.epoch}:${cover.userId}`,
+          stateKey: MAIN,
+          operationalDay: toJalaliDate(new Date()),
+          resolutionKind: 'EMERGENCY_COVER',
+          resolutionReason: reason
+        }
+      })
+      const changed = await tx.custodyState.updateMany({
+        where: { key: MAIN, state: 'ACTIVE', activeShiftId: fromShift.id, epoch: state.epoch },
+        data: { state: 'HANDOVER_RECOUNT', activeShiftId: fromShift.id, pendingHandoverId: handover.id, epoch: freezeEpoch, updatedAt: new Date() }
+      })
+      if (changed.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ پوشش اضطراری ثبت نشد.', 'CUSTODY_STALE')
+      await writeEvent(tx, { type: 'EMERGENCY_COVER_FREEZE', shiftId: fromShift.id, handoverId: handover.id, actorUserId: cover.userId, actorKind: 'EMERGENCY_COVER', authMethod: 'CUSTODY_PIN', epochBefore: state.epoch, epochAfter: freezeEpoch, payload: { countedCash, reason, priorCustodianUserId: fromShift.userId } })
+      return { handoverId: handover.id, fromShiftId: fromShift.id, epoch: freezeEpoch, outCountId: declared.id, resumed: false }
+    })
+
+    const restoreAfterFailure = async (failure: string) => {
+      await prisma.$transaction(async (tx: Client) => {
+        const state = await ensureState(tx)
+        if (state.state !== 'HANDOVER_RECOUNT' || state.pendingHandoverId !== emergency.handoverId || state.epoch !== emergency.epoch) return
+        const pending = await tx.custodyHandover.findUnique({ where: { id: emergency.handoverId } })
+        if (!pending || pending.status !== 'EMERGENCY_RECOUNT') return
+        const nextEpoch = Number(state.epoch) + 1
+        await tx.custodyHandover.update({ where: { id: emergency.handoverId }, data: { status: 'EMERGENCY_ABORTED', resolutionKind: 'EMERGENCY_COVER_ABORTED', finishedAt: new Date(), version: { increment: 1 } } })
+        const changed = await tx.custodyState.updateMany({ where: { key: MAIN, state: 'HANDOVER_RECOUNT', pendingHandoverId: emergency.handoverId, epoch: state.epoch }, data: { state: 'ACTIVE', activeShiftId: emergency.fromShiftId, pendingHandoverId: null, epoch: nextEpoch, updatedAt: new Date() } })
+        if (changed.count === 1) await writeEvent(tx, { type: 'EMERGENCY_COVER_ABORTED', shiftId: emergency.fromShiftId, handoverId: emergency.handoverId, actorUserId: cover.userId, actorKind: 'EMERGENCY_COVER', authMethod: 'CUSTODY_PIN', epochBefore: state.epoch, epochAfter: nextEpoch, payload: { failure } })
+      })
+    }
+
+    let expectedCash: number
+    try {
+      expectedCash = Number((await cashboxService.expected({ shiftId: emergency.fromShiftId, countedCash })).expectedCash)
+    } catch (error) {
+      await restoreAfterFailure('EXPECTED_CALCULATION_FAILED')
+      throw error
+    }
+    const differenceCash = countedCash - expectedCash
+
+    try {
+      return await prisma.$transaction(async (tx: Client) => {
+        const state = await ensureState(tx)
+        if (state.state !== 'HANDOVER_RECOUNT' || state.pendingHandoverId !== emergency.handoverId || state.epoch !== emergency.epoch || state.activeShiftId !== emergency.fromShiftId)
+          throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ پوشش اضطراری ثبت نشد.', 'CUSTODY_STALE')
+        const [live, fromMeta, cfg, scheduling] = await Promise.all([
+          tx.custodyHandover.findUnique({ where: { id: emergency.handoverId } }),
+          tx.custodyShiftMeta.findUnique({ where: { shiftId: emergency.fromShiftId } }),
+          configOf(tx),
+          shiftSchedulingOf(tx)
+        ])
+        if (!live || live.status !== 'EMERGENCY_RECOUNT' || live.selectedRecipientUserId !== cover.userId || live.fromShiftId !== emergency.fromShiftId || !fromMeta)
+          throw new BusinessError('اطلاعات پوشش اضطراری ناسازگار است.', 'CUSTODY_INVARIANT_BROKEN')
+        const nextEpoch = Number(state.epoch) + 1
+        await tx.custodyCount.update({ where: { id: emergency.outCountId }, data: { expectedCash: BigInt(expectedCash), differenceCash: BigInt(differenceCash) } })
+        const closed = await shiftService.closeInTx(tx, { shiftId: emergency.fromShiftId, userId: live.fromUserId, note: `پوشش اضطراری صندوق: ${reason}` })
+        const sourceTemplate = fromMeta.templateId ? scheduling.templates.find((row) => row.id === fromMeta.templateId) ?? null : null
+        const plan = fromMeta.templateId
+          ? { legacyPlanId: null, templateId: fromMeta.templateId, title: fromMeta.planTitle ?? sourceTemplate?.name ?? 'شیفت برنامه‌ریزی‌شده', scheduledEndAt: fromMeta.scheduledEndAt, reminderRepeatMin: sourceTemplate?.reminderRepeatMin ?? 15, allowMidDayHandover: sourceTemplate?.allowMidDayHandover ?? false }
+          : null
+        const next = await shiftService.createSession(tx, { staffId: cover.userId, staffConfirmed: true, actorId: cover.userId, mode: 'EMERGENCY_COVER', openIdempotencyKey: `emergency-cover:${emergency.handoverId}`, openIdempotencyFingerprint: `custody-emergency:${emergency.handoverId}`, note: `پوشش اضطراری صندوق: ${reason}` })
+        if (countedCash > 0) await recordCashMovement(tx, { amount: countedCash, type: CashMovementType.OPENING_FLOAT, shiftId: next.id, userId: cover.userId, refType: 'CustodyEmergencyCover', refId: emergency.handoverId, description: 'موجودی اول ناشی از پوشش اضطراری صندوق' })
+        await tx.custodyShiftMeta.update({ where: { shiftId: emergency.fromShiftId }, data: { endKind: 'EMERGENCY_COVERED', endedAt: closed.closedAt } })
+        await tx.custodyShiftMeta.create({ data: { shiftId: next.id, custodianUserId: cover.userId, openAuth: 'EMERGENCY_COVER_PIN', templateId: plan?.templateId ?? null, planId: null, planTitle: plan?.title ?? null, scheduledEndAt: plan?.scheduledEndAt ?? null, rolloverAt: rolloverAt(new Date(), cfg, scheduling, plan), dayCutoverSnapshot: cfg.dayCutoverMinute, operationalDay: toJalaliDate(new Date()), countStatus: 'COUNTED', openEpoch: nextEpoch } })
+        await tx.custodyHandover.update({ where: { id: emergency.handoverId }, data: { status: 'COMPLETED', finalCustodianUserId: cover.userId, acceptedByUserId: cover.userId, resolutionKind: 'EMERGENCY_COVER_COMPLETED', resolutionReason: reason, expectedAtStart: BigInt(expectedCash), differenceCash: BigInt(differenceCash), ledgerWatermark: JSON.stringify({ emergency: true, ready: true, accepted: true, expectedCash, countedCash, differenceCash, reason, differenceAttributedToUserId: live.fromUserId, countId: emergency.outCountId, at: new Date().toISOString() }), toShiftId: next.id, finishedAt: new Date(), version: { increment: 1 } } })
+        const changed = await tx.custodyState.updateMany({ where: { key: MAIN, state: 'HANDOVER_RECOUNT', activeShiftId: emergency.fromShiftId, pendingHandoverId: emergency.handoverId, epoch: state.epoch }, data: { state: 'ACTIVE', activeShiftId: next.id, pendingHandoverId: null, epoch: nextEpoch, updatedAt: new Date() } })
+        if (changed.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ پوشش اضطراری ثبت نشد.', 'CUSTODY_STALE')
+        await writeEvent(tx, { type: 'EMERGENCY_COVER_COMPLETED', shiftId: emergency.fromShiftId, handoverId: emergency.handoverId, actorUserId: cover.userId, actorKind: 'EMERGENCY_COVER', authMethod: 'CUSTODY_PIN', epochBefore: state.epoch, epochAfter: nextEpoch, payload: { fromShiftId: emergency.fromShiftId, toShiftId: next.id, priorCustodianUserId: live.fromUserId, expectedCash, countedCash, differenceCash, reason, countId: emergency.outCountId } })
+        return { handoverId: emergency.handoverId, shiftId: next.id, expectedCash, countedCash, differenceCash, resumed: emergency.resumed }
+      })
+    } catch (error) {
+      try { await restoreAfterFailure('COMPLETION_FAILED') } catch { /* preserve the original failure */ }
+      throw error
+    }
+  },
+
+  /**
+   * Master Override is deliberately not an alias for emergency cover. The
+   * selected, active manager is recorded as the new custodian, while the
+   * established shared manager-password gate authorizes this exceptional
+   * operation. A usable personal custody PIN is required as an eligibility
+   * safeguard for the manager's later normal handover/close, but it is never
+   * supplied as the override authorization itself.
+   */
+  async masterOverride(input: { managerUserId: unknown; managerPassword: unknown; countedCash: unknown; reason: unknown }) {
+    const managerUserId = asSafeId(input.managerUserId, 'شناسه مدیر')
+    const [manager, credential] = await Promise.all([
+      prisma.user.findUnique({ where: { id: managerUserId } }),
+      credentialOf(prisma, managerUserId)
+    ])
+    if (!manager || !manager.isActive || manager.role !== 'MANAGER')
+      throw new BusinessError('مدیر انتخاب‌شده فعال نیست یا دسترسی مدیر ندارد.', 'MASTER_OVERRIDE_MANAGER_INVALID')
+    if (!credential || credential.status !== 'ACTIVE' || credential.mustChange)
+      throw new BusinessError('مدیر انتخاب‌شده باید پیش از Master Override یک PIN شخصی فعال و غیرموقتِ حضانت داشته باشد.', 'MASTER_OVERRIDE_MANAGER_PIN_REQUIRED')
+    /** This is intentionally the shared manager-password primitive, with its
+     * existing lockout behavior—not a personal correction-PIN approval. */
+    await assertManagerPassword(String(input.managerPassword ?? ''), 'Master Override صندوق')
+
+    const countedCash = asCash(input.countedCash, 'شمارش فیزیکی Master Override')
+    const reason = String(input.reason ?? '').trim()
+    if (reason.length < 10)
+      throw new BusinessError('برای Master Override صندوق، دلیل روشنِ حداقل ۱۰ حرف وارد کنید.', 'MASTER_OVERRIDE_REASON_REQUIRED')
+
+    const override = await prisma.$transaction(async (tx: Client) => {
+      const state = await ensureState(tx)
+      if (state.state === 'HANDOVER_RECOUNT' && state.pendingHandoverId) {
+        const pending = await tx.custodyHandover.findUnique({ where: { id: state.pendingHandoverId } })
+        if (!pending || pending.status !== 'MASTER_OVERRIDE_RECOUNT' || pending.resolutionKind !== 'MASTER_OVERRIDE')
+          throw new BusinessError('یک شمارش نهایی دیگر در جریان است؛ چند لحظه بعد دوباره تلاش کنید.', 'CUSTODY_FROZEN')
+        if (pending.selectedRecipientUserId !== manager.id)
+          throw new BusinessError('Master Override ناتمام فقط با همان مدیر انتخاب‌شده قابل ادامه است.', 'MASTER_OVERRIDE_IN_PROGRESS')
+        if (Number(pending.countedAtStart) !== countedCash || String(pending.resolutionReason ?? '') !== reason)
+          throw new BusinessError('Master Override ناتمام با شمارش یا دلیل دیگری قابل ادامه نیست؛ همان مبلغ و دلیل ثبت‌شده را وارد کنید.', 'MASTER_OVERRIDE_RETRY_MISMATCH')
+        return { handoverId: pending.id, fromShiftId: pending.fromShiftId, epoch: Number(state.epoch), outCountId: pending.outCountId, resumed: true }
+      }
+      if (state.state !== 'ACTIVE' || !state.activeShiftId)
+        throw new BusinessError('Master Override فقط وقتی ممکن است که صندوق مسئول فعال داشته باشد.', 'NO_ACTIVE_CUSTODY')
+      const [fromShift, fromMeta] = await Promise.all([
+        tx.shift.findUnique({ where: { id: state.activeShiftId } }),
+        tx.custodyShiftMeta.findUnique({ where: { shiftId: state.activeShiftId } })
+      ])
+      if (!fromShift || fromShift.closedAt || !fromShift.userId || !fromMeta || fromMeta.custodianUserId !== fromShift.userId)
+        throw new BusinessError('وضعیت مسئول فعلی صندوق ناسازگار است.', 'CUSTODY_INVARIANT_BROKEN')
+      if (fromShift.userId === manager.id)
+        throw new BusinessError('مدیر انتخاب‌شده همین حالا مسئول صندوق است؛ از مسیر عادی صندوق استفاده کنید.', 'MASTER_OVERRIDE_SAME_CUSTODIAN')
+      const freezeEpoch = Number(state.epoch) + 1
+      const declared = await tx.custodyCount.create({
+        data: {
+          shiftId: fromShift.id,
+          kind: 'MASTER_OVERRIDE_COUNT',
+          countedCash: BigInt(countedCash),
+          countedByUserId: manager.id,
+          authMethod: 'MANAGER_SHARED_PASSWORD',
+          note: reason,
+          epochAtCount: freezeEpoch,
+          idempotencyKey: `master-override:${fromShift.id}:${state.epoch}:${manager.id}`,
+          operationalDay: toJalaliDate(new Date())
+        }
+      })
+      const handover = await tx.custodyHandover.create({
+        data: {
+          fromShiftId: fromShift.id,
+          fromUserId: fromShift.userId,
+          selectedRecipientUserId: manager.id,
+          /** Same selected manager both approves the exceptional path and owns
+           * the incoming responsibility; retain that identity on the durable
+           * handover record as well as the append-only event. */
+          managerApproverUserId: manager.id,
+          status: 'MASTER_OVERRIDE_RECOUNT',
+          outCountId: declared.id,
+          expectedAtStart: BigInt(0),
+          countedAtStart: BigInt(countedCash),
+          differenceCash: BigInt(0),
+          ledgerWatermark: JSON.stringify({ ready: false, masterOverride: true, countedCash, reason, at: new Date().toISOString() }),
+          fenceEpochAtStart: freezeEpoch,
+          idempotencyKey: `master-override:${fromShift.id}:${state.epoch}:${manager.id}`,
+          stateKey: MAIN,
+          operationalDay: toJalaliDate(new Date()),
+          resolutionKind: 'MASTER_OVERRIDE',
+          resolutionReason: reason
+        }
+      })
+      const changed = await tx.custodyState.updateMany({
+        where: { key: MAIN, state: 'ACTIVE', activeShiftId: fromShift.id, epoch: state.epoch },
+        data: { state: 'HANDOVER_RECOUNT', activeShiftId: fromShift.id, pendingHandoverId: handover.id, epoch: freezeEpoch, updatedAt: new Date() }
+      })
+      if (changed.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ Master Override ثبت نشد.', 'CUSTODY_STALE')
+      await writeEvent(tx, { type: 'MASTER_OVERRIDE_FREEZE', shiftId: fromShift.id, handoverId: handover.id, actorUserId: manager.id, actorKind: 'MASTER_OVERRIDE_MANAGER', authMethod: 'MANAGER_SHARED_PASSWORD', epochBefore: state.epoch, epochAfter: freezeEpoch, payload: { countedCash, reason, priorCustodianUserId: fromShift.userId } })
+      return { handoverId: handover.id, fromShiftId: fromShift.id, epoch: freezeEpoch, outCountId: declared.id, resumed: false }
+    })
+
+    const restoreAfterFailure = async (failure: string) => {
+      await prisma.$transaction(async (tx: Client) => {
+        const state = await ensureState(tx)
+        if (state.state !== 'HANDOVER_RECOUNT' || state.pendingHandoverId !== override.handoverId || state.epoch !== override.epoch) return
+        const pending = await tx.custodyHandover.findUnique({ where: { id: override.handoverId } })
+        if (!pending || pending.status !== 'MASTER_OVERRIDE_RECOUNT') return
+        const nextEpoch = Number(state.epoch) + 1
+        await tx.custodyHandover.update({ where: { id: override.handoverId }, data: { status: 'MASTER_OVERRIDE_ABORTED', resolutionKind: 'MASTER_OVERRIDE_ABORTED', finishedAt: new Date(), version: { increment: 1 } } })
+        const changed = await tx.custodyState.updateMany({ where: { key: MAIN, state: 'HANDOVER_RECOUNT', pendingHandoverId: override.handoverId, epoch: state.epoch }, data: { state: 'ACTIVE', activeShiftId: override.fromShiftId, pendingHandoverId: null, epoch: nextEpoch, updatedAt: new Date() } })
+        if (changed.count === 1) await writeEvent(tx, { type: 'MASTER_OVERRIDE_ABORTED', shiftId: override.fromShiftId, handoverId: override.handoverId, actorUserId: manager.id, actorKind: 'MASTER_OVERRIDE_MANAGER', authMethod: 'MANAGER_SHARED_PASSWORD', epochBefore: state.epoch, epochAfter: nextEpoch, payload: { failure } })
+      })
+    }
+
+    let expectedCash: number
+    try {
+      expectedCash = Number((await cashboxService.expected({ shiftId: override.fromShiftId, countedCash })).expectedCash)
+    } catch (error) {
+      await restoreAfterFailure('EXPECTED_CALCULATION_FAILED')
+      throw error
+    }
+    const differenceCash = countedCash - expectedCash
+
+    try {
+      return await prisma.$transaction(async (tx: Client) => {
+        const state = await ensureState(tx)
+        if (state.state !== 'HANDOVER_RECOUNT' || state.pendingHandoverId !== override.handoverId || state.epoch !== override.epoch || state.activeShiftId !== override.fromShiftId)
+          throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ Master Override ثبت نشد.', 'CUSTODY_STALE')
+        const [live, fromMeta, cfg, scheduling] = await Promise.all([
+          tx.custodyHandover.findUnique({ where: { id: override.handoverId } }),
+          tx.custodyShiftMeta.findUnique({ where: { shiftId: override.fromShiftId } }),
+          configOf(tx),
+          shiftSchedulingOf(tx)
+        ])
+        if (!live || live.status !== 'MASTER_OVERRIDE_RECOUNT' || live.selectedRecipientUserId !== manager.id || live.fromShiftId !== override.fromShiftId || !fromMeta)
+          throw new BusinessError('اطلاعات Master Override ناسازگار است.', 'CUSTODY_INVARIANT_BROKEN')
+        const nextEpoch = Number(state.epoch) + 1
+        await tx.custodyCount.update({ where: { id: override.outCountId }, data: { expectedCash: BigInt(expectedCash), differenceCash: BigInt(differenceCash) } })
+        const closed = await shiftService.closeInTx(tx, { shiftId: override.fromShiftId, userId: live.fromUserId, note: `Master Override صندوق: ${reason}` })
+        const sourceTemplate = fromMeta.templateId ? scheduling.templates.find((row) => row.id === fromMeta.templateId) ?? null : null
+        const plan = fromMeta.templateId
+          ? { legacyPlanId: null, templateId: fromMeta.templateId, title: fromMeta.planTitle ?? sourceTemplate?.name ?? 'شیفت برنامه‌ریزی‌شده', scheduledEndAt: fromMeta.scheduledEndAt, reminderRepeatMin: sourceTemplate?.reminderRepeatMin ?? 15, allowMidDayHandover: sourceTemplate?.allowMidDayHandover ?? false }
+          : null
+        const next = await shiftService.createSession(tx, { staffId: manager.id, staffConfirmed: true, actorId: manager.id, mode: 'MASTER_OVERRIDE', openIdempotencyKey: `master-override:${override.handoverId}`, openIdempotencyFingerprint: `custody-master-override:${override.handoverId}`, note: `Master Override صندوق: ${reason}` })
+        if (countedCash > 0) await recordCashMovement(tx, { amount: countedCash, type: CashMovementType.OPENING_FLOAT, shiftId: next.id, userId: manager.id, refType: 'CustodyMasterOverride', refId: override.handoverId, description: 'موجودی اول ناشی از Master Override صندوق' })
+        await tx.custodyShiftMeta.update({ where: { shiftId: override.fromShiftId }, data: { endKind: 'MASTER_OVERRIDDEN', endedAt: closed.closedAt } })
+        await tx.custodyShiftMeta.create({ data: { shiftId: next.id, custodianUserId: manager.id, openAuth: 'MASTER_OVERRIDE_MANAGER_PASSWORD', templateId: plan?.templateId ?? null, planId: null, planTitle: plan?.title ?? null, scheduledEndAt: plan?.scheduledEndAt ?? null, rolloverAt: rolloverAt(new Date(), cfg, scheduling, plan), dayCutoverSnapshot: cfg.dayCutoverMinute, operationalDay: toJalaliDate(new Date()), countStatus: 'COUNTED', openEpoch: nextEpoch } })
+        await tx.custodyHandover.update({ where: { id: override.handoverId }, data: { status: 'COMPLETED', finalCustodianUserId: manager.id, acceptedByUserId: manager.id, resolutionKind: 'MASTER_OVERRIDE_COMPLETED', resolutionReason: reason, expectedAtStart: BigInt(expectedCash), differenceCash: BigInt(differenceCash), ledgerWatermark: JSON.stringify({ masterOverride: true, ready: true, accepted: true, expectedCash, countedCash, differenceCash, reason, differenceAttributedToUserId: live.fromUserId, countId: override.outCountId, at: new Date().toISOString() }), toShiftId: next.id, finishedAt: new Date(), version: { increment: 1 } } })
+        const changed = await tx.custodyState.updateMany({ where: { key: MAIN, state: 'HANDOVER_RECOUNT', activeShiftId: override.fromShiftId, pendingHandoverId: override.handoverId, epoch: state.epoch }, data: { state: 'ACTIVE', activeShiftId: next.id, pendingHandoverId: null, epoch: nextEpoch, updatedAt: new Date() } })
+        if (changed.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ Master Override ثبت نشد.', 'CUSTODY_STALE')
+        await writeEvent(tx, { type: 'MASTER_OVERRIDE_COMPLETED', shiftId: override.fromShiftId, handoverId: override.handoverId, actorUserId: manager.id, actorKind: 'MASTER_OVERRIDE_MANAGER', authMethod: 'MANAGER_SHARED_PASSWORD', epochBefore: state.epoch, epochAfter: nextEpoch, payload: { fromShiftId: override.fromShiftId, toShiftId: next.id, priorCustodianUserId: live.fromUserId, expectedCash, countedCash, differenceCash, reason, countId: override.outCountId } })
+        return { handoverId: override.handoverId, shiftId: next.id, expectedCash, countedCash, differenceCash, resumed: override.resumed }
+      })
+    } catch (error) {
+      try { await restoreAfterFailure('COMPLETION_FAILED') } catch { /* preserve original failure */ }
+      throw error
+    }
   },
 
   async actorForFinancialOperation(): Promise<CustodyFence | null> {

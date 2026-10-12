@@ -14,7 +14,7 @@ const checks = [
   ['گردش دستی نقد نیز از همان actor gate می‌گذرد', ipc.includes("cashMovementService.add(await withSessionActor(p ?? {}, 'ثبت گردش نقدی'))")],
   ['IPC بستن قدیمی هنگام حضانت fail-closed است', ipc.includes("await custodyService.guardLegacyPath()") && ipc.includes("handle(IPC.cashClose, async (p) => {")],
   ['pending فروش را نگه می‌دارد و actor خروجی را fence می‌کند', custody.includes("state.state !== 'ACTIVE' && state.state !== 'HANDOVER_PENDING'") && custody.includes("state: { in: ['ACTIVE', 'HANDOVER_PENDING'] }")],
-  ['Cash Close دکمهٔ legacy را هنگام حضانت غیرفعال می‌کند', cashClose.includes('disabled={custodyEnabled || busy || (needsNote && !note.trim())}')]
+  ['Cash Close تا پاسخ صریح main، مسیر legacy را fail-closed نگه می‌دارد', cashClose.includes('custodyGoverned === false') && cashClose.includes('disabled={custodyGoverned !== false || busy || (needsNote && !note.trim())}')]
 ]
 let failed = 0
 for (const [label, pass] of checks) { console.log(`${pass ? '✓' : '✗'} ${label}`); if (!pass) failed++ }

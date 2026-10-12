@@ -316,10 +316,16 @@ export const IPC = {
   custodyHandoverStart: 'custody:handover:start',
   custodyHandoverAccept: 'custody:handover:accept',
   custodyHandoverCancel: 'custody:handover:cancel',
+  /** پوشش اضطراری با PIN و شمارش فیزیکی کارمند جایگزین. */
+  custodyEmergencyCover: 'custody:emergency:cover',
+  /** انتقال استثنایی مسئولیت فقط با مدیر منتخب، رمز مشترک مدیر و شمارش فیزیکی. */
+  custodyMasterOverride: 'custody:master:override',
   custodyFinalClose: 'custody:close:final',
   custodyDispositionConfirm: 'custody:disposition:confirm',
   custodyDispositionReverse: 'custody:disposition:reverse',
   custodyUnresolvedResolve: 'custody:unresolved:resolve',
+  /** شمارش شاهد صبح برای بازیابی شیفت رهاشده؛ PIN مسئول قبلی/مدیر نمی‌خواهد. */
+  custodyUnattendedRecover: 'custody:unattended:recover',
   /** وضعیت نشست برای UI: بدون خطا، بدون ساختن نشست AUTO (برخلاف shift:current) */
   shiftStatus: 'shift:status',
   /** نشست ۳۱۰ · فاز ۲ — اعلام اضافه‌کاری نشستِ بازِ دیروز (گیت‌های سروری، فقط یک‌بار) */

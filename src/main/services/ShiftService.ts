@@ -416,6 +416,10 @@ export const shiftService = {
    * ---------------------------------------------------------------------
    */
   async sessionForm(): Promise<ShiftSessionForm> {
+    // The old modal only knows a selected name, never a custody PIN/count.
+    // Do not even disclose an operational picker once custody governs the
+    // drawer; direct IPC callers receive the same fail-closed rule as the UI.
+    await custodyService.guardLegacyPath()
     const suggestion = await this.suggest(prisma)
     const open = await this.openShift(prisma)
     const anyOpen = await this.anyOpenShift(prisma)
@@ -503,6 +507,8 @@ export const shiftService = {
    *                نشده می‌ماند تا UI صریحاً بپرسد (بند ۳).
    *   • 'MANUAL'   کاربر خودش فرم را پر کرده است.
    *   • 'HANDOVER' تعویض کارمند وسط کار (نشست قبلی بسته می‌شود).
+   *   • 'EMERGENCY_COVER' پوشش اضطراری با PIN و شمارش کارمند جایگزین.
+   *   • 'MASTER_OVERRIDE' انتقال استثنایی مسئولیت به مدیر منتخب با رمز مشترک مدیر و شمارش فیزیکی.
    * -------------------------------------------------------------------------
    */
   async createSession(
@@ -514,7 +520,7 @@ export const shiftService = {
       staffConfirmed?: boolean
       day?: string
       note?: string | null
-      mode?: 'AUTO' | 'MANUAL' | 'HANDOVER' | 'HANDOVER_FORCED'
+      mode?: 'AUTO' | 'MANUAL' | 'HANDOVER' | 'HANDOVER_FORCED' | 'EMERGENCY_COVER' | 'MASTER_OVERRIDE'
       actorId?: number | null
       at?: Date
       openIdempotencyKey?: string | null
@@ -622,7 +628,11 @@ export const shiftService = {
           ? ' · تعویض کارمند وسط کار'
           : mode === 'HANDOVER_FORCED'
             ? ' · تعویض اجباری با تأیید مدیر'
-            : mode === 'AUTO'
+            : mode === 'EMERGENCY_COVER'
+              ? ' · پوشش اضطراری با PIN و شمارش کارمند جایگزین'
+              : mode === 'MASTER_OVERRIDE'
+                ? ' · Master Override با مدیر منتخب، رمز مشترک مدیر و شمارش فیزیکی'
+                : mode === 'AUTO'
               ? ' · خودکار با اولین فعالیت'
               : '')
     })
@@ -661,7 +671,7 @@ export const shiftService = {
   async shiftForNow(client: Client = prisma, opts: { userId?: number | null; at?: Date; custodyFence?: CustodyFence | null } = {}) {
     try {
       if (opts.custodyFence) return custodyService.assertFenceInTx(client, opts.custodyFence)
-      if (await custodyService.enabled()) {
+      if (await custodyService.isGoverned()) {
         const state = await custodyService.status()
         if (state.state !== 'ACTIVE' || !state.activeShiftId) return null
         return client.shift.findUnique({ where: { id: state.activeShiftId } })
@@ -678,6 +688,12 @@ export const shiftService = {
   async currentId(client: Client = prisma, userId?: number | null, custodyFence?: CustodyFence | null): Promise<number | null> {
     try {
       if (custodyFence) return (await custodyService.assertFenceInTx(client, custodyFence)).id
+      // Financial writers may call this compatibility helper. Once custody is
+      // governing, creating a legacy AUTO Shift here would bypass PIN custody.
+      if (await custodyService.isGoverned()) {
+        const state = await custodyService.status()
+        return state.state === 'ACTIVE' && state.activeShiftId ? state.activeShiftId : null
+      }
       const s = await this.ensureCurrent(client, { userId })
       return s?.id ?? null
     } catch (e) {
@@ -1285,7 +1301,9 @@ export const shiftService = {
 
   /** نشست جاری به‌همراه جمع‌ها؛ اگر باز نبود، خودکار باز می‌شود. */
   async current(userId?: number | null): Promise<ShiftInfo | null> {
-    if (await custodyService.enabled()) {
+    // Never let `shift:current` manufacture an AUTO legacy session while a
+    // durable custody state/resolution still governs this drawer.
+    if (await custodyService.isGoverned()) {
       const state = await custodyService.status()
       return state.activeShiftId ? this.info(state.activeShiftId) : null
     }

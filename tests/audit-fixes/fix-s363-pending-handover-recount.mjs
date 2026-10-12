@@ -2,7 +2,7 @@
  * Handover v2 safety contract:
  * - pending handover keeps the outgoing authenticated custodian as the writer;
  * - an intervening cash writer is included in the receiver's fresh watermark;
- * - only an exact (zero-difference) independent recount transfers custody.
+ * - a non-zero recount without an auditable reason cannot transfer custody.
  *
  * node --import ./test/harness/register.mjs tests/audit-fixes/fix-s363-pending-handover-recount.mjs
  */
@@ -52,7 +52,7 @@ eq('pending همان نشست خروجی را نگه می‌دارد', fence?.ex
 await cashMovementService.add({ type: CashMovementType.DEPOSIT, amount: 100, description: 'فروش/گردش هنگام انتظار تحویل', userId: giver, custodyFence: fence })
 eq('گردش مالی در انتظار تحویل روی نشست خروجی ثبت شد', seed.one('SELECT shiftId FROM "CashMovement" ORDER BY id DESC LIMIT 1')?.shiftId, opened.shiftId)
 
-await rejects('پذیرش با شمارش قدیمی رد می‌شود', 'RECOUNT_REQUIRED', () => custodyService.handoverAccept({ handoverId: handover.id, password: 'Recv3634!', countedCash: 0 }))
+await rejects('پذیرش با شمارش دارای مغایرت و بدون دلیل رد می‌شود', 'HANDOVER_DIFFERENCE_REASON_REQUIRED', () => custodyService.handoverAccept({ handoverId: handover.id, password: 'Recv3634!', countedCash: 0 }))
 eq('رد شمارش، فروش را قفل نمی‌کند و pending می‌ماند', (await custodyService.status()).state, 'HANDOVER_PENDING')
 eq('شمارش ردشده در سابقه append-only ثبت شد', seed.one('SELECT kind FROM "CustodyCount" WHERE handoverId=? ORDER BY id DESC LIMIT 1', handover.id)?.kind, 'HANDOVER_RECOUNT_REJECTED')
 const accepted = await custodyService.handoverAccept({ handoverId: handover.id, password: 'Recv3634!', countedCash: 100 })

@@ -656,6 +656,10 @@ export const cashboxService = {
       /** Internal server-only custody hook; never comes from renderer IPC. */
       afterCloseInTx?: (tx: Prisma.TransactionClient, session: any, closedShiftRow: any | null) => Promise<void>
       custodyEffectiveTo?: Date
+      /** An unattended, already-closed custody segment is reconciled by the
+       * PIN-authenticated morning witness, not by its absent former owner.
+       * IPC strips this internal-only marker before reaching this service. */
+      internalCustodyRecovery?: boolean
     }
   ) {
     /** Legacy IPC receives this marker only when custody is enabled. */
@@ -686,7 +690,7 @@ export const cashboxService = {
     // CashSession یا بستن اختیاری Shift، باید روشن باشد که این نشست مال همان actor
     // است. این guard برای حالت `closeShift: false` هم لازم است، چون آن حالت فقط
     // snapshot صندوق می‌سازد و به `closeInTx` نمی‌رسد.
-    if (shift) shiftService.assertClosingActor(shift, input.userId, 'بستن صندوق')
+    if (shift && !input.internalCustodyRecovery) shiftService.assertClosingActor(shift, input.userId, 'بستن صندوق')
 
     // بازه: اگر شیفت مشخص است، بازه‌ی خود شیفت؛ وگرنه بازه‌ی انتخابی کاربر.
     // ممیزی A114-02 — بی‌نشست، '' یا نامعتبر یا معکوس ⇒ خطای فارسی (نه کل تاریخچه با jalaliStartOfDay(''))

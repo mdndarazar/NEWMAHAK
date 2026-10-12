@@ -537,10 +537,14 @@ export default function ShiftSessionModal({
  */
 export function ShiftSessionChip() {
   const { shift, reload } = useCurrentShift(30_000)
-  const [custodyEnabled, setCustodyEnabled] = useState(false)
+  /** `null` deliberately means unknown. The legacy name-only modal must stay
+   * hidden until main has explicitly said the drawer is not custody-governed. */
+  const [custodyGoverned, setCustodyGoverned] = useState<boolean | null>(null)
   useEffect(() => {
     let live = true
-    void call<{ enabled: boolean }>(CH.custodyStatus, {}).then((row) => { if (live) setCustodyEnabled(!!row.enabled) }).catch(() => undefined)
+    void call<{ enabled: boolean; governed?: boolean }>(CH.custodyStatus, {})
+      .then((row) => { if (live) setCustodyGoverned(row.governed === true || row.enabled === true) })
+      .catch(() => { if (live) setCustodyGoverned(null) })
     return () => { live = false }
   }, [])
   /**
@@ -586,7 +590,8 @@ export function ShiftSessionChip() {
   }, [pending, gate?.state])
 
   // Legacy session controls must not offer a second way to change custody.
-  if (custodyEnabled) return null
+  // A failed status read is not permission to reopen the unsafe old flow.
+  if (custodyGoverned !== false) return null
 
   return (
     <>

@@ -133,7 +133,9 @@ export default function CashClose() {
   /** Manager-only, read-only custody evidence. This never controls sale/close
    * actions; if the main manager session ends, the timeline fails closed. */
   const [custodyTimeline, setCustodyTimeline] = useState<CustodyTimeline | null>(null)
-  const [custodyEnabled, setCustodyEnabled] = useState(false)
+  /** `null` is intentionally fail-closed while main confirms whether this
+   * drawer is governed by custody. The legacy session picker has no PIN. */
+  const [custodyGoverned, setCustodyGoverned] = useState<boolean | null>(null)
   const [payFilter, setPayFilter] = useState<PayFilter>('ALL')
   const [onlyCurrentShift, setOnlyCurrentShift] = useState(true)
   const [counted, setCounted] = useState<string>('')
@@ -251,9 +253,16 @@ export default function CashClose() {
   useEffect(() => { void loadCustodyTimeline() }, [loadCustodyTimeline])
   useEffect(() => {
     let live = true
-    void call<{ enabled: boolean }>(CH.custodyStatus, {}).then((status) => { if (live) setCustodyEnabled(status.enabled === true) }).catch(() => { if (live) setCustodyEnabled(false) })
+    void call<{ enabled: boolean; governed?: boolean }>(CH.custodyStatus, {})
+      .then((status) => { if (live) setCustodyGoverned(status.governed === true || status.enabled === true) })
+      // Unknown is deliberately not interpreted as legacy permission. A
+      // failed IPC call must never resurrect the old name-only handover form.
+      .catch(() => { if (live) setCustodyGoverned(null) })
     return () => { live = false }
   }, [])
+  useEffect(() => {
+    if (custodyGoverned !== false) setSession({ open: false, mode: 'open' })
+  }, [custodyGoverned])
 
   /**
    * پیش‌نمایش شفافِ `expectedCash` *قبل* از زدن دکمه‌ی نهایی. فقط می‌خواند و
@@ -709,22 +718,24 @@ export default function CashClose() {
           <span className="kbd">شیفتی باز نیست</span>
         )}
         <div className="ms-auto flex gap-1 flex-wrap">
-          <button
-            className={`btn ${shift?.staffPending ? 'btn-danger' : ''}`}
-            onClick={() => setSession({ open: true, mode: shift?.staffPending ? 'staff' : 'open' })}
-            disabled={busy}
-            title="نام شیفت پیشنهادی + انتخاب اجباری کارمند همین نشست"
-          >
-            {shift?.staffPending ? 'تعیین کارمند این نشست ⚠' : 'ثبت نشست جدید'}
-          </button>
-          <button
-            className="btn"
-            onClick={() => setSession({ open: true, mode: 'handover' })}
-            disabled={busy}
-            title="کارمند وسط کار عوض شد: نشست فعلی با کارمند خودش بسته می‌ماند و نشست تازه ساخته می‌شود"
-          >
-            تعویض کارمند
-          </button>
+          {custodyGoverned === false ? <>
+            <button
+              className={`btn ${shift?.staffPending ? 'btn-danger' : ''}`}
+              onClick={() => setSession({ open: true, mode: shift?.staffPending ? 'staff' : 'open' })}
+              disabled={busy}
+              title="نام شیفت پیشنهادی + انتخاب اجباری کارمند همین نشست"
+            >
+              {shift?.staffPending ? 'تعیین کارمند این نشست ⚠' : 'ثبت نشست جدید'}
+            </button>
+            <button
+              className="btn"
+              onClick={() => setSession({ open: true, mode: 'handover' })}
+              disabled={busy}
+              title="کارمند وسط کار عوض شد: نشست فعلی با کارمند خودش بسته می‌ماند و نشست تازه ساخته می‌شود"
+            >
+              تعویض کارمند
+            </button>
+          </> : <span className="kbd self-center">{custodyGoverned ? 'تحویل و بستن فقط از کنترل «صندوق» با PIN انجام می‌شود.' : 'در حال بررسی وضعیت حضانت…'}</span>}
           <button className="btn" onClick={() => nav('/sales-reports')}>
             گزارشات فروش <span className="keycap">F9</span>
           </button>
@@ -746,7 +757,7 @@ export default function CashClose() {
         </label>
       </ReportFilterBar>
 
-      {custodyEnabled && <div className="rounded border border-sky-300 bg-sky-50 p-3 text-sm leading-6" dir="rtl"><b>حضانت صندوق فعال است.</b> این صفحه تاریخچه و تطبیق را فقط‌خواندنی نشان می‌دهد؛ بستن یا تحویلِ نشست فعال باید از کنترل «صندوق» در نوار بالای برنامه و با رمز شخصی مسئول انجام شود.</div>}
+      {custodyGoverned === true && <div className="rounded border border-sky-300 bg-sky-50 p-3 text-sm leading-6" dir="rtl"><b>حضانت صندوق فعال است.</b> این صفحه تاریخچه و تطبیق را فقط‌خواندنی نشان می‌دهد؛ بستن یا تحویلِ نشست فعال باید از کنترل «صندوق» در نوار بالای برنامه و با رمز شخصی مسئول انجام شود.</div>}
 
       {isManager && custodyTimeline && (
         <section className="rounded border border-indigo-200 bg-indigo-50/50 p-3 space-y-3" dir="rtl">
@@ -1245,8 +1256,8 @@ export default function CashClose() {
         <button
           className="btn btn-primary"
           onClick={() => setConfirmClose(true)}
-          disabled={custodyEnabled || busy || (needsNote && !note.trim())}
-          title={custodyEnabled ? 'در حالت حضانت، بستن نهایی فقط با رمز مسئول در کنترل «صندوق» نوار بالا انجام می‌شود.' : needsNote && !note.trim() ? 'اول دلیل مغایرت را در یادداشت بنویسید' : undefined}
+          disabled={custodyGoverned !== false || busy || (needsNote && !note.trim())}
+          title={custodyGoverned !== false ? custodyGoverned ? 'در حالت حضانت، بستن نهایی فقط با رمز مسئول در کنترل «صندوق» نوار بالا انجام می‌شود.' : 'تا مشخص شدن وضعیت حضانت، بستن قدیمی صندوق برای ایمنی غیرفعال است.' : needsNote && !note.trim() ? 'اول دلیل مغایرت را در یادداشت بنویسید' : undefined}
         >
           بستن صندوق
         </button>
@@ -1381,13 +1392,14 @@ export default function CashClose() {
         </table>
       </div>
 
-      {/* جلسه ۱۹ — فرم نشست (باز کردن نشست / تعویض کارمند / تأیید کارمند) */}
-      <ShiftSessionModal
+      {/* The legacy form cannot be mounted while custody governs (or while its
+          status is unknown): it has a name picker but no PIN/count evidence. */}
+      {custodyGoverned === false ? <ShiftSessionModal
         open={session.open}
         mode={session.mode}
         onClose={() => setSession({ open: false, mode: 'open' })}
         onDone={(s) => void onSessionDone(s)}
-      />
+      /> : null}
 
       {/* مورد ۵ — پنجره‌ی جزئیات همان شیفت (فقط‌خواندنی) */}
       <ShiftDetailModal

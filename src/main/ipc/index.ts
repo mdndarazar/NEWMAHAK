@@ -202,6 +202,9 @@ async function withSessionActor<T extends Record<string, any> | null | undefined
   delete safePayload.epoch
   delete safePayload.afterCloseInTx
   delete safePayload.custodyEffectiveTo
+  // This marker exists only for CustodyService's internal unattended-recovery
+  // call. Renderer payloads can never bypass Shift ownership with it.
+  delete safePayload.internalCustodyRecovery
   const fence = await custodyService.actorForFinancialOperation()
   if (fence) return { ...safePayload, userId: fence.expectedActorUserId, shiftId: fence.expectedShiftId, custodyFence: fence }
   const actorId = await shiftService.currentStaffId()
@@ -1020,10 +1023,13 @@ export function registerIpcHandlers(): void {
   handle(IPC.custodyHandoverStart, (p) => custodyService.handoverStart(p ?? {}))
   handle(IPC.custodyHandoverAccept, (p) => custodyService.handoverAccept(p ?? {}))
   handle(IPC.custodyHandoverCancel, (p) => custodyService.handoverCancel(p ?? {}))
+  handle(IPC.custodyEmergencyCover, (p) => custodyService.emergencyCover(p ?? {}))
+  handle(IPC.custodyMasterOverride, (p) => custodyService.masterOverride(p ?? {}))
   handle(IPC.custodyFinalClose, (p) => custodyService.finalClose(p ?? {}))
   handle(IPC.custodyDispositionConfirm, (p) => custodyService.confirmDisposition(p ?? {}))
   handle(IPC.custodyDispositionReverse, (p) => custodyService.reverseDisposition(p ?? {}))
   handle(IPC.custodyUnresolvedResolve, (p) => custodyService.resolveUnresolved(p ?? {}))
+  handle(IPC.custodyUnattendedRecover, (p) => custodyService.recoverUnattended(p ?? {}))
 
   // ---- شیفت (جلسه ۱۹: هر رکورد = یک «نشست») ----
   // خواندن/ساخت AUTO session نباید payload renderer را به actor حسابرسی تبدیل
