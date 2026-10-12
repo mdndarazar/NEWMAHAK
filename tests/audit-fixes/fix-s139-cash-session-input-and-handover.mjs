@@ -43,7 +43,14 @@ const rejectsWith = async (label, fn, needle) => {
 eq('باز کردن نشست شناسه اعشاری را گرد نمی‌کند', !/Math\.round\(Number\(input\.staffId/.test(shiftSource), true)
 eq('بستن صندوق validator عدد صحیح غیرمنفی دارد', /assertNonNegativeSafeInteger/.test(cashboxSource), true)
 eq('گردش نقدی مبلغ منفی را با abs مثبت نمی‌کند', !/Math\.abs\(Math\.round\(Number\(input\.amount\)/.test(movementSource), true)
-eq('بستن صندوق actor را از نشست می‌گیرد', /handle\(IPC\.cashClose, async \(p\) => cashboxService\.close\(await withSessionActor/.test(ipcSource), true)
+// هندلر بستن صندوق از نشست ۱۸۲ چندخطی شده تا مسیر قدیمیِ custody را نیز
+// ببندد؛ actor همچنان فقط با withSessionActor ساخته می‌شود.
+const cashCloseBlock = ipcSource.slice(
+  ipcSource.indexOf('handle(IPC.cashClose'),
+  ipcSource.indexOf('handle(IPC.cashSessions')
+)
+eq('بستن صندوق actor را از نشست می‌گیرد', /cashboxService\.close\(await withSessionActor\(p \?\? \{\}, 'بستن صندوق'\)\)/.test(cashCloseBlock), true)
+eq('بستن صندوق مسیر قدیمی custody را دور نمی‌زند', /custodyService\.guardLegacyPath\(\)/.test(cashCloseBlock), true)
 /**
  * به‌روزرسانی نشست ۱۸۲ — مقصود همان است، فقط شکل هندلر عوض شده.
  *
