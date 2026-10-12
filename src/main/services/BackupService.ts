@@ -1,7 +1,7 @@
 import { app, dialog, BrowserWindow } from 'electron'
 import { copyFile, mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, join, resolve as resolvePath, sep } from 'node:path'
 import { prisma, databaseFile } from '../db/client'
 import { audit } from './AuditService'
 import { BusinessError } from '../errors'
@@ -172,6 +172,68 @@ function focusedWindow(): BrowserWindow | null {
 }
 
 const DB_FILTER = { name: 'فایل بکاپ دیتابیس', extensions: ['db', 'sqlite', 'sqlite3', 'bak'] }
+
+/**
+ * شناسه‌ی backup فقط نام فایلی است که خودمان در فهرست ساخته‌ایم، نه مسیر.
+ * هرچند IPC با preload عرضه می‌شود، renderer را نباید مرز امنیتی دانست: `../`
+ * در شناسه‌ی مستقیم قبلاً می‌توانست resolve/forget را از backups بیرون ببرد.
+ */
+function safeBackupId(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || value !== value.trim())
+    throw new BusinessError('شناسه‌ی فایل بکاپ نامعتبر است.')
+  if (!/^[A-Za-z0-9._-]{1,240}$/.test(value) || value.includes('..') || basename(value) !== value)
+    throw new BusinessError('شناسه‌ی فایل بکاپ نامعتبر است.')
+  return value
+}
+
+/** یک نام فایلی را با کنترل canonical path زیر یک پوشه قرار می‌دهد. */
+function backupChild(dir: string, id: string): string {
+  const root = resolvePath(dir)
+  const child = resolvePath(root, id)
+  if (!child.startsWith(`${root}${sep}`)) throw new BusinessError('شناسه‌ی فایل بکاپ نامعتبر است.')
+  return child
+}
+
+function isAutoBackupId(id: string): boolean {
+  // تنها فایل‌هایی که خود زمان‌بند با این نام ساخته است می‌توانند بدون ledger
+  // وارد restore/forget شوند. importedها برای restore حتماً ledger row می‌خواهند.
+  return /^shop-[A-Za-z0-9._-]+\.db$/i.test(id)
+}
+
+function isImportedBackupId(id: string): boolean {
+  // forget باید بتواند یک فایل imported باقی‌مانده از ledger قدیمی/خراب را هم
+  // پاک کند، اما فقط زیر پوشه‌ی خصوصی imported و هرگز با یک path دلخواه.
+  return /^imported-[A-Za-z0-9._-]+$/i.test(id)
+}
+
+async function autoBackupDirs(): Promise<string[]> {
+  const dirs = [backupsDir()]
+  const custom = String((await readBackupConfig()).autoDir ?? '').trim()
+  if (custom && resolvePath(custom) !== resolvePath(backupsDir())) dirs.push(custom)
+  return dirs
+}
+
+async function resolveListedBackup(idInput: unknown): Promise<string> {
+  const id = safeBackupId(idInput)
+  const ledger = await readLedger()
+
+  // imported files never accept a renderer-controlled path: the ID must match
+  // exactly a row written after importPick copied it into our private folder.
+  if (ledger.some((row) => row.id === id)) {
+    const imported = backupChild(importedDir(), id)
+    if (existsSync(imported)) return imported
+    throw new BusinessError('این فایل بکاپ روی دیسک پیدا نشد؛ ممکن است پاک یا جابه‌جا شده باشد.')
+  }
+
+  if (!isAutoBackupId(id))
+    throw new BusinessError('این شناسه در فهرست بکاپ‌های قابل‌اعتماد وجود ندارد.')
+
+  for (const dir of await autoBackupDirs()) {
+    const candidate = backupChild(dir, id)
+    if (existsSync(candidate)) return candidate
+  }
+  throw new BusinessError('این فایل بکاپ روی دیسک پیدا نشد؛ ممکن است پاک یا جابه‌جا شده باشد.')
+}
 
 function toEntry(row: LedgerRow, path: string, source: 'auto' | 'imported'): BackupEntry {
   const at = new Date(row.at)
@@ -419,9 +481,7 @@ export const backupService = {
   /** مسیر فایل یک شناسه‌ی بکاپ (واردشده یا خودکار). */
   async resolve(id: string): Promise<string> {
     if (!id) throw new BusinessError('فایل بکاپ انتخاب نشده است.')
-    const candidates = [join(importedDir(), id), join(backupsDir(), id)]
-    for (const c of candidates) if (existsSync(c)) return c
-    throw new BusinessError('این فایل بکاپ روی دیسک پیدا نشد؛ ممکن است پاک یا جابه‌جا شده باشد.')
+    return resolveListedBackup(id)
   },
 
   async markApplied(id: string, mode: 'replace' | 'merge'): Promise<void> {
@@ -435,8 +495,7 @@ export const backupService = {
 
   /** حذف یک بکاپ از فهرست (فایل داخلی هم پاک می‌شود). */
   async forget(input: { id: string; userId?: number | null; managerPassword?: string | null }) {
-    const id = input?.id
-    if (!id) throw new BusinessError('فایل بکاپ انتخاب نشده است.')
+    const id = safeBackupId(input?.id)
     /**
      * نشست ۲۰۶ — بدون این گیت، فروشنده بکاپ قبل از دستکاری را از IPC پاک
      * می‌کرد و ردّ دزدی از بین می‌رفت. تأیید قبل از unlink.
@@ -449,9 +508,20 @@ export const backupService = {
     const ledger = await readLedger()
     const row = ledger.find((r) => r.id === id)
     const rest = ledger.filter((r) => r.id !== id)
-    if (rest.length !== ledger.length) await writeLedger(rest)
-    await unlink(join(importedDir(), id)).catch(() => {})
-    await unlink(join(backupsDir(), id)).catch(() => {})
+
+    if (row || isImportedBackupId(id)) {
+      // حتی imported باقی‌مانده از ledger قدیمی/خراب فقط از پوشه‌ی خصوصی خودش
+      // حذف می‌شود؛ restore برعکس، همچنان وجود ledger را اجباری می‌کند.
+      await unlink(backupChild(importedDir(), id)).catch(() => {})
+      if (row) await writeLedger(rest)
+    } else if (isAutoBackupId(id)) {
+      // نام auto معتبر است، اما حتی برای آن هم فقط در پوشه‌های پیکربندی‌شده پاک
+      // می‌کنیم؛ هرگز یک path رسیده از renderer را به unlink نمی‌دهیم.
+      for (const dir of await autoBackupDirs()) await unlink(backupChild(dir, id)).catch(() => {})
+    } else {
+      throw new BusinessError('این شناسه در فهرست بکاپ‌های قابل‌اعتماد وجود ندارد.')
+    }
+
     await audit(prisma, {
       action: AuditAction.BACKUP_FORGET,
       entity: 'Backup',
