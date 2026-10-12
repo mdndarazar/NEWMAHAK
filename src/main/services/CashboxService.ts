@@ -682,6 +682,12 @@ export const cashboxService = {
         ? await prisma.shift.findUnique({ where: { id: input.shiftId } })
         : await shiftService.openShift(prisma))
 
+    // `shiftId` از renderer می‌آید؛ actor از نشست باز main. پیش از هر محاسبه، ایجاد
+    // CashSession یا بستن اختیاری Shift، باید روشن باشد که این نشست مال همان actor
+    // است. این guard برای حالت `closeShift: false` هم لازم است، چون آن حالت فقط
+    // snapshot صندوق می‌سازد و به `closeInTx` نمی‌رسد.
+    if (shift) shiftService.assertClosingActor(shift, input.userId, 'بستن صندوق')
+
     // بازه: اگر شیفت مشخص است، بازه‌ی خود شیفت؛ وگرنه بازه‌ی انتخابی کاربر.
     // ممیزی A114-02 — بی‌نشست، '' یا نامعتبر یا معکوس ⇒ خطای فارسی (نه کل تاریخچه با jalaliStartOfDay(''))
     if (!shift) input = destructiveRangeInput(input, 'بستن صندوق')

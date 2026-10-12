@@ -1094,6 +1094,29 @@ export const shiftService = {
   },
 
   /**
+   * مرز مالکیت برای بستن نشست/صندوق.
+   *
+   * `userId` در مسیر IPC فقط از نشست باز main می‌آید، اما `shiftId` هنوز ورودی
+   * رندرر است. بدون این تطبیق، کارمندِ نشست A می‌توانست شناسه‌ی نشست باز B را
+   * بفرستد و بستنِ B (یا snapshot صندوق آن) را به نام خود ثبت کند. مسیرهای
+   * سیستمی حضانت هم actor همان ردیف Shift را صریح پاس می‌دهند، پس این قاعده یک
+   * منبع واحد برای هر دو مسیر است.
+   */
+  assertClosingActor(
+    shift: { id: number; userId: number | null },
+    actorId: number | null | undefined,
+    operation: string
+  ): number {
+    if (actorId == null || shift.userId == null || actorId !== shift.userId)
+      throw new BusinessError(
+        `برای ${operation} فقط کارمندِ ثبت‌شده برای همان نشست مجاز است. ` +
+          'نشست انتخاب‌شده متعلق به کاربر جاری نیست؛ از نشست خودتان یا روند رسمی تحویل صندوق استفاده کنید.',
+        'SHIFT_OWNERSHIP_REQUIRED'
+      )
+    return actorId
+  },
+
+  /**
    * بستن نشست داخل تراکنشِ فراخوان (بدون commit جدا).
    * نشست ۱۸۹ · ۱-۵ — بستن صندوق همین را داخل تراکنش CashSession صدا می‌زند تا
    * «صندوق بسته / شیفت باز» ساخته نشود. `close()` همین بدنه را در تراکنش خودش می‌پیچد.
@@ -1114,8 +1137,11 @@ export const shiftService = {
         )} بسته شده است.`
       )
 
+    const actorId = this.assertClosingActor(shift, input.userId, 'بستن نشست')
     const changed = await tx.shift.updateMany({
-      where: { id: shift.id, closedAt: null },
+      // تطبیق actor دوباره داخل CAS می‌آید تا تغییر هم‌زمان کارمند، حتی بین read
+      // و update، نتواند مرز مالکیت را دور بزند.
+      where: { id: shift.id, closedAt: null, userId: actorId },
       data: { closedAt: new Date(), note: input.note ?? shift.note ?? null }
     })
     if (changed.count !== 1)
