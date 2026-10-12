@@ -4,7 +4,8 @@ import { call, CH } from '../lib/api'
 import { money } from '@shared/jalali'
 import { useManagerSession } from '../hooks/useManagerSession'
 
-type Staff = { id: number; name: string; role: string; isActive: boolean; hasCustodyPin: boolean; mustChangePin: boolean; jobTitle?: string | null; phoneMasked?: string | null }
+/** Daily custody selection intentionally contains no employment/contact/profile data. */
+type Staff = { id: number; name: string; role: string; isActive: boolean; hasCustodyPin: boolean; mustChangePin: boolean }
 type Plan = { id: number; title: string; startMinute: number; durationMinutes: number; daysMask: number; isActive: boolean; sortOrder: number; reminderRepeatMin: number; staffIds: number[] }
 type Config = { enabled: boolean; mode: 'SINGLE_SHIFT' | 'MULTI_SHIFT'; reminderEnabled: boolean; overrunGraceMinutes: number; dayCutoverMinute: number }
 type Report = { summary: { handovers: number; unresolvedOpen: number; dispositionPending: number; totalCountDifference: number }; counts: any[]; handovers: any[]; resolutions: any[]; dispositions: any[] }

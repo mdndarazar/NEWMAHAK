@@ -35,7 +35,11 @@ function asSafeId(value: unknown, label = 'شناسه'): number {
 }
 
 function asCash(value: unknown, label = 'مبلغ'): number {
-  const n = Number(value)
+  /** `Number('')` and `Number(null)` are zero, but an omitted count must never
+   * silently become a cash count. Zero is accepted only when it was explicit. */
+  if (value == null || (typeof value === 'string' && !value.trim()) || (typeof value !== 'number' && typeof value !== 'string'))
+    throw new BusinessError(`${label} را صریحاً به‌صورت یک عدد صحیحِ صفر یا مثبت وارد کنید.`)
+  const n = typeof value === 'string' ? Number(value.trim()) : value
   if (!Number.isSafeInteger(n) || n < 0) throw new BusinessError(`${label} باید یک عدد صحیحِ صفر یا مثبت باشد.`)
   return n
 }
@@ -305,19 +309,21 @@ export const custodyService = {
   },
 
 
+  /**
+   * This list also feeds the daily top-bar workflow, so it must not become a
+   * back door to employment/contact data. Identity, role and credential state
+   * are all that opening/handing-over a drawer needs; the manager-only Staff
+   * profile remains the sole source for phone/job/banking/identity data.
+   */
   async staffList() {
-    const [users, profiles, credentials] = await Promise.all([
+    const [users, credentials] = await Promise.all([
       prisma.user.findMany({ orderBy: [{ isActive: 'desc' }, { id: 'asc' }] }),
-      prisma.staffProfile.findMany(),
       prisma.custodyCredential.findMany({ where: { purpose: PURPOSE }, select: { userId: true, mustChange: true, status: true } })
     ])
-    const p = new Map(profiles.map((r: any) => [r.userId, r]))
     const c = new Map(credentials.map((r: any) => [r.userId, r]))
     return users.map((user: any) => {
-      const profile = p.get(user.id)
       const credential = c.get(user.id)
-      const phone = String(profile?.phone ?? '')
-      return { id: user.id, name: user.displayName, role: user.role, isActive: user.isActive, kind: profile?.kind ?? 'STAFF', jobTitle: profile?.jobTitle ?? null, phoneMasked: phone ? `${phone.slice(0, 4)}•••${phone.slice(-3)}` : null, hasCustodyPin: !!credential && credential.status === 'ACTIVE', mustChangePin: !!credential?.mustChange }
+      return { id: user.id, name: user.displayName, role: user.role, isActive: user.isActive, hasCustodyPin: !!credential && credential.status === 'ACTIVE', mustChangePin: !!credential?.mustChange }
     })
   },
 
