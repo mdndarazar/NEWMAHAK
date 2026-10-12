@@ -1026,7 +1026,9 @@ export function registerIpcHandlers(): void {
   handle(IPC.custodyUnresolvedResolve, (p) => custodyService.resolveUnresolved(p ?? {}))
 
   // ---- شیفت (جلسه ۱۹: هر رکورد = یک «نشست») ----
-  handle(IPC.shiftCurrent, (p) => shiftService.current(p?.userId ?? null))
+  // خواندن/ساخت AUTO session نباید payload renderer را به actor حسابرسی تبدیل
+  // کند؛ userId فقط برای actorIdِ audit استفاده می‌شد و قابل جعل بود.
+  handle(IPC.shiftCurrent, () => shiftService.current(null))
   /** وضعیت نشست برای UI: بدون خطا و بدون ساخت AUTO — مخصوص چیپ/بنر هشدار */
   handle(IPC.shiftStatus, () => shiftService.status())
   /**
