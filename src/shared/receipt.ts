@@ -1031,6 +1031,11 @@ export const DEFAULT_BACKUP_CONFIG: BackupConfig = {
  * ---------------------------------------------------------------------------
  */
 export interface ShiftTemplate {
+  /**
+   * شناسهٔ پایدار قالب؛ نام و ساعت قابل ویرایش‌اند، اما این شناسه برای اتصال
+   * برنامه‌ریزی و snapshotهای تاریخیِ بعدی هرگز از روی جایگاه آرایه ساخته نمی‌شود.
+   */
+  id: string
   name: string
   /** ساعت شروع به قالب HH:mm (فقط ساعت روز، بدون تاریخ) */
   startTime: string
@@ -1068,10 +1073,21 @@ export interface ShiftConfig {
 }
 
 export const DEFAULT_SHIFT_TEMPLATES: ShiftTemplate[] = [
-  { name: 'شیفت اول', startTime: '08:00', endTime: '14:00' },
-  { name: 'شیفت دوم', startTime: '14:00', endTime: '20:00' },
-  { name: 'شیفت سوم', startTime: '20:00', endTime: '00:00' }
+  { id: 'template-default-1', name: 'شیفت اول', startTime: '08:00', endTime: '14:00' },
+  { id: 'template-default-2', name: 'شیفت دوم', startTime: '14:00', endTime: '20:00' },
+  { id: 'template-default-3', name: 'شیفت سوم', startTime: '20:00', endTime: '00:00' }
 ]
+
+/** A user-created template gets an opaque identity once, in the UI. Parsing
+ * never calls this generator, so merely reading an old configuration cannot
+ * change its identity. */
+export function createShiftTemplateId(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.()
+  if (randomUuid) return `template-${randomUuid}`
+  // Electron/modern browsers have randomUUID; this conservative fallback only
+  // protects old test/runtime environments from producing a positional id.
+  return `template-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+}
 
 export const DEFAULT_SHIFT_CONFIG: ShiftConfig = {
   names: DEFAULT_SHIFT_TEMPLATES.map((t) => t.name),
@@ -1116,6 +1132,28 @@ export function normalizeTime(raw: unknown, fallback = '00:00'): string {
 export function minutesOfTime(t: string): number {
   const [h, m] = normalizeTime(t).split(':').map(Number)
   return h * 60 + m
+}
+
+/** IDs are opaque, bounded and portable through JSON/SQLite. */
+function shiftTemplateIdOrNull(value: unknown): string | null {
+  const id = String(value ?? '').trim()
+  return /^[A-Za-z0-9][A-Za-z0-9:_-]{0,95}$/.test(id) ? id : null
+}
+
+/**
+ * Existing installations stored name/time only. Give each legacy row a stable
+ * synthetic id based on its original normalized shape, rather than array order
+ * alone or a random value regenerated at every read. The first normal Settings
+ * save writes this id back into `shift.config`.
+ */
+function legacyShiftTemplateId(index: number, name: string, startTime: string, endTime: string, salt = 0): string {
+  const source = `${index}\u001f${name}\u001f${startTime}\u001f${endTime}\u001f${salt}`
+  let hash = 2166136261
+  for (let i = 0; i < source.length; i++) {
+    hash ^= source.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return `legacy-template-${(hash >>> 0).toString(36)}`
 }
 
 /** ادغام ایمن JSON ذخیره‌شده با پیش‌فرض‌ها (نبودن یا خرابی مقدار = پیش‌فرض). */
@@ -1443,27 +1481,54 @@ export const parseShiftConfig = (raw: unknown): ShiftConfig => {
   const names: string[] = Array.isArray(obj.names) ? obj.names.map((n: unknown) => String(n ?? '').trim()) : []
 
   let templates: ShiftTemplate[] = []
+  const usedTemplateIds = new Set<string>()
+  const idFor = (candidate: unknown, index: number, name: string, startTime: string, endTime: string, defaultId?: string) => {
+    const supplied = shiftTemplateIdOrNull(candidate)
+    if (supplied && !usedTemplateIds.has(supplied)) {
+      usedTemplateIds.add(supplied)
+      return supplied
+    }
+    const preferred = defaultId && !usedTemplateIds.has(defaultId) ? defaultId : null
+    if (preferred) {
+      usedTemplateIds.add(preferred)
+      return preferred
+    }
+    let salt = 0
+    let legacy = legacyShiftTemplateId(index, name, startTime, endTime, salt)
+    while (usedTemplateIds.has(legacy)) legacy = legacyShiftTemplateId(index, name, startTime, endTime, ++salt)
+    usedTemplateIds.add(legacy)
+    return legacy
+  }
   if (Array.isArray(obj.templates)) {
     templates = obj.templates
       .map((t: any, i: number) => {
         const fallback = DEFAULT_SHIFT_TEMPLATES[i] ?? DEFAULT_SHIFT_TEMPLATES[DEFAULT_SHIFT_TEMPLATES.length - 1]
+        const name = String(t?.name ?? names[i] ?? '').trim() || 'شیفت ' + (i + 1)
+        const startTime = normalizeTime(t?.startTime, fallback.startTime)
+        const endTime = normalizeTime(t?.endTime, fallback.endTime)
         return {
-          name: String(t?.name ?? names[i] ?? '').trim() || 'شیفت ' + (i + 1),
-          startTime: normalizeTime(t?.startTime, fallback.startTime),
-          endTime: normalizeTime(t?.endTime, fallback.endTime)
+          id: idFor(t?.id, i, name, startTime, endTime),
+          name,
+          startTime,
+          endTime
         }
       })
       .slice(0, 24)
   }
   if (!templates.length) {
-    // مهاجرت از داده‌ی قدیمی: فقط نام‌ها بود
+    // مهاجرت از داده‌ی قدیمی: فقط نام‌ها بود. نبودنِ کاملِ داده همان پیش‌فرضِ
+    // شناسه‌دار را می‌گیرد؛ نام‌های قدیمی synthetic id پایدار می‌گیرند.
     const base = names.length ? names : DEFAULT_SHIFT_CONFIG.names
     templates = base.map((n, i) => {
-      const fallback = DEFAULT_SHIFT_TEMPLATES[i] ?? { startTime: '00:00', endTime: '00:00' }
+      const fallback = DEFAULT_SHIFT_TEMPLATES[i] ?? { id: undefined, startTime: '00:00', endTime: '00:00' }
+      const name = n || 'شیفت ' + (i + 1)
+      const startTime = fallback.startTime
+      const endTime = fallback.endTime
       return {
-        name: n || 'شیفت ' + (i + 1),
-        startTime: fallback.startTime,
-        endTime: fallback.endTime
+        id: idFor(undefined, i, name, startTime, endTime, names.length ? undefined : fallback.id),
+        name,
+        startTime,
+        endTime
       }
     })
   }

@@ -53,6 +53,7 @@ import {
   mergeFreshPrinter,
   DEFAULT_SECURITY_CONFIG,
   DEFAULT_SHIFT_CONFIG,
+  createShiftTemplateId,
   normalizeTime,
   formatClockForDisplay,
   parseLabelTemplate,
@@ -824,6 +825,9 @@ export default function Settings() {
       const templates = [
         ...p.templates,
         {
+          // نام/ساعت قابل‌ویرایش‌اند؛ شناسه از لحظهٔ ساخت ثابت می‌ماند تا برنامه و
+          // تاریخچهٔ آینده هرگز به شماره/جایگاه آرایه وابسته نباشند.
+          id: createShiftTemplateId(),
           name: `شیفت ${p.templates.length + 1}`,
           startTime: start,
           endTime: `${String(endHour).padStart(2, '0')}:${start.slice(3)}`
