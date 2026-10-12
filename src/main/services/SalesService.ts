@@ -2352,7 +2352,7 @@ async function preverifySaleCharges(
   input: CreateSaleInput,
   ctx: {
     orderType: string
-    existing?: { taxTotal: number; serviceCharge: number } | null
+    existing?: { taxTotal: number; serviceCharge: number; historicalBasisUnchanged?: boolean } | null
     alreadyVerified?: boolean
   }
 ): Promise<SaleChargeCheck> {
@@ -2368,8 +2368,11 @@ async function preverifySaleCharges(
   const near = (a: number, b: number, t: number) => Math.abs(a - b) <= t
 
   // ---------- ویرایش بدون تغییر عوارض ⇒ سند تاریخی دست‌نخورده ----------
+  // فقط «همان» سبد/تخفیف/کانالِ سند می‌تواند نرخ تاریخی را نگه دارد. مقایسه‌ی
+  // صرف جمع عوارض یک میان‌بر ناامن بود: با تعویض کالا به دسته‌ی مشمول مالیات
+  // و فرستادن صفر قبلی، بازمحاسبه کاملاً دور زده می‌شد.
   if (
-    ctx.existing &&
+    ctx.existing?.historicalBasisUnchanged === true &&
     tax === Math.round(Number(ctx.existing.taxTotal ?? 0)) &&
     service === Math.round(Number(ctx.existing.serviceCharge ?? 0))
   )
@@ -4385,8 +4388,9 @@ export const salesService = {
         // نشست ۱۵۶ (S151-c2) — عوارض/حق سرویس ذخیره‌شده برای «ویرایش بدون تغییر عوارض»
         taxTotal: true,
         serviceCharge: true,
+        discountTotal: true,
         // نشست ۱۶۵ (S165-D2) — qty: مرجع فاکتور اصلی فقط برای همان تعداد
-        items: { select: { variantId: true, unitPrice: true, qty: true } }
+        items: { select: { variantId: true, unitPrice: true, qty: true, discount: true, tax: true } }
       }
     })
     /**
@@ -4397,15 +4401,45 @@ export const salesService = {
     if (!pre) throw new BusinessError('این فاکتور پیدا نشد؛ ممکن است حذف شده باشد. لیست فاکتورها را تازه کنید.')
     if (pre.status === SaleStatus.CANCELED || pre.status === SaleStatus.DRAFT || pre.voidedAt != null)
       throw new BusinessError('فاکتور لغوشده یا پیش‌نویس قابل ویرایش نیست؛ هیچ کالا یا پرداختی تغییر نکرد.')
+    const orderTypeForUpdate = input.orderType ?? pre.orderType
     const pricing = await preverifySalePolicy(input, {
-      orderType: input.orderType ?? pre.orderType,
+      orderType: orderTypeForUpdate,
       // نشست ۱۸۱: `unitPrice` حالا BigInt است؛ سیاست‌سنج با number کار می‌کند.
       originalItems: pre.items.map((i) => ({ ...i, unitPrice: toNumberRial(i.unitPrice) }))
     })
-    /** نشست ۱۵۶ (S151-c2، Y8) — عوارض/حق سرویس؛ همان مقدار ذخیره‌شده ⇒ بدون بازمحاسبه با نرخ روز */
+    /**
+     * نرخ تاریخی فقط برای ویرایش واقعاً بی‌تغییر حفظ می‌شود. signature شامل
+     * tax هم هست تا جابه‌جایی عوارض میان ردیف‌ها با جمع یکسان، مسیر را باز نکند.
+     */
+    const signature = (line: { variantId: number; qty: unknown; unitPrice: unknown; discount?: unknown; tax?: unknown }) =>
+      [line.variantId, Math.round(Number(line.qty)), Math.round(Number(line.unitPrice)), Math.round(Number(line.discount ?? 0)), Math.round(Number(line.tax ?? 0))].join(':')
+    const priorLineDiscount = pre.items.reduce((sum, item) => sum + toNumberRial(item.discount), 0)
+    const priorInvoiceDiscount = Math.max(0, toNumberRial(pre.discountTotal) - priorLineDiscount)
+    const historicalBasisUnchanged =
+      orderTypeForUpdate === pre.orderType &&
+      Math.round(Number(input.invoiceDiscount ?? 0)) === priorInvoiceDiscount &&
+      (input.lines ?? []).length === pre.items.length &&
+      [...(input.lines ?? [])].map(signature).sort().join('|') ===
+        pre.items
+          .map((item) =>
+            signature({
+              variantId: item.variantId,
+              qty: item.qty,
+              unitPrice: toNumberRial(item.unitPrice),
+              discount: toNumberRial(item.discount),
+              tax: toNumberRial(item.tax)
+            })
+          )
+          .sort()
+          .join('|')
+    /** نشست ۱۵۶ (S151-c2، Y8) — فقط سبد واقعاً یکسان نرخ تاریخی را نگه می‌دارد. */
     const chargeCheck = await preverifySaleCharges(input, {
-      orderType: input.orderType ?? pre.orderType,
-      existing: { taxTotal: Number((pre as any).taxTotal ?? 0), serviceCharge: Number((pre as any).serviceCharge ?? 0) },
+      orderType: orderTypeForUpdate,
+      existing: {
+        taxTotal: toNumberRial(pre.taxTotal),
+        serviceCharge: toNumberRial(pre.serviceCharge),
+        historicalBasisUnchanged
+      },
       alreadyVerified: pricing.managerApproved
     })
     const chargeApproved = pricing.managerApproved || chargeCheck.managerApproved
