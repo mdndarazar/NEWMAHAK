@@ -421,7 +421,7 @@ export const staffReportService = {
           exchangeTotal: true,
           exchangeDiff: true,
           exchangeSettlement: true,
-          storeCreditCode: true,
+          storeCreditId: true,
           invoice: { select: { receiptNo: true } },
           /**
            * نشست ۱۸۰ (S180-D5، ایراد واقعی): `userId` در این یکی از سه
@@ -445,7 +445,7 @@ export const staffReportService = {
       }),
       prisma.storeCreditRedemption.findMany({
         where: redemptionWhere,
-        select: { id: true, code: true, amount: true, invoiceId: true, receiptNo: true, atJalali: true, atTime: true },
+        select: { id: true, amount: true, invoiceId: true, receiptNo: true, atJalali: true, atTime: true },
         orderBy: { id: 'desc' },
         skip,
         take
@@ -495,7 +495,8 @@ export const staffReportService = {
         exchangeTotal: r.exchangeTotal,
         exchangeDiff: r.exchangeDiff,
         exchangeSettlement: r.exchangeSettlement,
-        storeCreditCode: r.storeCreditCode,
+        /** گزارش عملکرد هرگز کد قابل‌مصرف ندارد. */
+        storeCreditReference: r.storeCreditId ? `اعتبار #${r.storeCreditId}` : null,
         shiftName: returnMaps.shiftOf(r.shiftId)?.name ?? null
       })),
       cardTransfers: transfers.map((t) => ({
@@ -508,7 +509,11 @@ export const staffReportService = {
         dateJalali: t.createdAtJalali,
         time: t.createdAtTime
       })),
-      creditRedemptions,
+      creditRedemptions: creditRedemptions.map((c) => ({
+        ...c,
+        /** شناسهٔ ردیف مصرف برای ردیابی است، نه بارکد اعتبار. */
+        storeCreditReference: `مصرف اعتبار #${c.id}`
+      })),
       pages,
       warnings
     }

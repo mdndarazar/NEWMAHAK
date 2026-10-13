@@ -128,8 +128,59 @@ export const SETTING_KEYS = {
    * کلید خوانده می‌شود ولی نام چاپگر، لوگو، نام/تلفن فروشگاه و بقیه‌ی هویت چاپ
    * همان `receipt.template` است (§۱۳ — سیستم تنظیمات چاپ جدا ساخته نشد).
    */
-  creditSettings: 'credit.settings'
+  creditSettings: 'credit.settings',
+  /** ماژول اختیاری حضانت صندوق/نشست کارکنان؛ پیش‌فرض خاموش تا رفتار قدیمی دست‌نخورده بماند. */
+  custodyConfig: 'custody.config'
 } as const
+
+export type CustodyMode = 'SINGLE_SHIFT' | 'MULTI_SHIFT'
+export interface CustodyConfig {
+  enabled: boolean
+  mode: CustodyMode
+  onboardingDismissedAt: string | null
+  onboardingDismissedBy: number | null
+  reminderEnabled: boolean
+  dayCutoverMinute: number
+  overrunGraceMinutes: number
+  continueMaxMinutes: number
+}
+
+export const DEFAULT_CUSTODY_CONFIG: CustodyConfig = {
+  enabled: false,
+  mode: 'SINGLE_SHIFT',
+  onboardingDismissedAt: null,
+  onboardingDismissedBy: null,
+  reminderEnabled: true,
+  dayCutoverMinute: 300,
+  overrunGraceMinutes: 60,
+  continueMaxMinutes: 240
+}
+
+export function parseCustodyConfig(raw: unknown): CustodyConfig {
+  let value: unknown = raw
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      value = null
+    }
+  }
+  const o = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+  const whole = (input: unknown, fallback: number, min: number, max: number) => {
+    const n = Math.round(Number(input))
+    return Number.isSafeInteger(n) && n >= min && n <= max ? n : fallback
+  }
+  return {
+    enabled: o.enabled === true,
+    mode: o.mode === 'MULTI_SHIFT' ? 'MULTI_SHIFT' : 'SINGLE_SHIFT',
+    onboardingDismissedAt: typeof o.onboardingDismissedAt === 'string' ? o.onboardingDismissedAt : null,
+    onboardingDismissedBy: whole(o.onboardingDismissedBy, 0, 1, Number.MAX_SAFE_INTEGER) || null,
+    reminderEnabled: o.reminderEnabled !== false,
+    dayCutoverMinute: whole(o.dayCutoverMinute, DEFAULT_CUSTODY_CONFIG.dayCutoverMinute, 0, 1439),
+    overrunGraceMinutes: whole(o.overrunGraceMinutes, DEFAULT_CUSTODY_CONFIG.overrunGraceMinutes, 0, 720),
+    continueMaxMinutes: whole(o.continueMaxMinutes, DEFAULT_CUSTODY_CONFIG.continueMaxMinutes, 0, 720)
+  }
+}
 
 /**
  * ---------------------------------------------------------------------------
@@ -319,6 +370,8 @@ export interface ReceiptTemplate {
   printMethod: 'CHROMIUM' | 'RAW'
   /** DPI چاپگر برای مسیر RAW (۲۰۳ یا ۳۰۰) */
   rawDpi: number
+  /** معکوس‌کردن قطبیت بیت‌های تصویر در مسیر RAW (برای دستگاه‌هایی که سفید/مشکی را برعکس می‌گیرند) */
+  rawInvert: boolean
   /** برش بعد از هر کار در مسیر RAW (ESC/POS) */
   cutMode: 'FULL' | 'PARTIAL' | 'NONE'
   /** در حالت «بپرس»، دیالوگ خود ویندوز به‌جای پنجره‌ی انتخاب برنامه */
@@ -415,6 +468,7 @@ export const DEFAULT_RECEIPT_TEMPLATE: ReceiptTemplate = {
   heightSafetyMm: 3,
   printMethod: 'CHROMIUM',
   rawDpi: 203,
+  rawInvert: false,
   cutMode: 'FULL',
   useSystemDialog: false,
   wholesaleSeparate: false,
@@ -503,6 +557,13 @@ export interface SaleDefaults {
    * روشن بودن این تیک مسیر پول را عوض نمی‌کند؛ چاپ بعد از commit است.
    */
   debtPaymentReceiptPrint: boolean
+  /**
+   * فعال‌بودن پرداخت ترکیبی «اعتبار خرید + نقد/کارت» در POS.
+   * پیش‌فرض روشن است تا فروشگاه‌های موجود دقیقاً همان رفتار قبلی را نگه دارند.
+   * خاموش = اعتبار همچنان کامل مصرف می‌شود، ولی درخواست مبلغِ دلخواهِ مصرف
+   * پذیرفته نمی‌شود؛ main نیز این مرز را مستقل از UI اعمال می‌کند.
+   */
+  splitStoreCreditPayment: boolean
 }
 
 export const DEFAULT_SALE_DEFAULTS: SaleDefaults = {
@@ -520,7 +581,9 @@ export const DEFAULT_SALE_DEFAULTS: SaleDefaults = {
   // مورد ۳: پیش‌فرض = همان رفتار فعلی (فاکتور چاپ می‌شود)
   printEnabled: true,
   autoCentralWithdraw: false,
-  debtPaymentReceiptPrint: false
+  debtPaymentReceiptPrint: false,
+  // پرداخت ترکیبی پیشاپیش وجود داشته است؛ پیش‌فرض روشن مانع تغییر رفتار فروشگاه‌های قبلی است.
+  splitStoreCreditPayment: true
 }
 
 /**
@@ -681,6 +744,8 @@ export interface LabelTemplate extends LabelDesign {
   speed: number
   /** جهت چاپ (RAW) */
   direction: number
+  /** معکوس‌کردن قطبیت بیت‌های تصویر در مسیر RAW (برای دستگاه‌هایی که سفید/مشکی را برعکس می‌گیرند) */
+  rawInvert: boolean
   /** پنجره‌ی چاپ ویندوز باز شود؟ (مثل فاکتور) */
   useSystemDialog: boolean
   /** لوگوی فروشگاه به‌صورت dataURL (آپلود از پنل تنظیمات) — مشترک همه‌ی قالب‌ها */
@@ -734,6 +799,7 @@ export const DEFAULT_LABEL_TEMPLATE: LabelTemplate = {
   density: 8,
   speed: 4,
   direction: 0,
+  rawInvert: false,
   useSystemDialog: false,
   logoDataUrl: '',
   activeTemplate: 'CLASSIC',
@@ -965,11 +1031,26 @@ export const DEFAULT_BACKUP_CONFIG: BackupConfig = {
  * ---------------------------------------------------------------------------
  */
 export interface ShiftTemplate {
+  /**
+   * شناسهٔ پایدار قالب؛ نام و ساعت قابل ویرایش‌اند، اما این شناسه برای اتصال
+   * برنامه‌ریزی و snapshotهای تاریخیِ بعدی هرگز از روی جایگاه آرایه ساخته نمی‌شود.
+   */
+  id: string
   name: string
   /** ساعت شروع به قالب HH:mm (فقط ساعت روز، بدون تاریخ) */
   startTime: string
   /** ساعت پایان به قالب HH:mm. اگر ≤ شروع باشد، شیفت شبانه (گذر از نیمه‌شب) است. */
   endTime: string
+  /** این قالب در تشخیص/برنامه‌ریزی جدید فعال است؟ سابقه‌های قبلی دست‌نخورده‌اند. */
+  isActive: boolean
+  /** بیت‌های روزهای هفته (۱..۱۲۷)، برای برنامهٔ حضانت. */
+  daysMask: number
+  /** کارکنان برنامه‌ریزی‌شده؛ برنامه هرگز به‌تنهایی مسئولیت مالی ایجاد نمی‌کند. */
+  staffIds: number[]
+  /** فاصلهٔ یادآوریِ پایان برنامه، در دقیقه. */
+  reminderRepeatMin: number
+  /** تحویل میان‌روز این قالب فقط با انتخاب صریح مدیر مجاز می‌شود. */
+  allowMidDayHandover: boolean
 }
 
 /**
@@ -989,25 +1070,64 @@ export interface ShiftConfig {
   names: string[]
   /** «تعیین شیفت بر اساس ساعت» — پیش‌فرض خاموش */
   byTime: boolean
-  /** شیفت‌های تعریف‌شده‌ی دستی (نام + ساعت شروع/پایان) */
+  /** منبع mode عملیاتی حضانت پس از تصمیم صریح مدیر. تا وقتی false است، نصبِ
+   * قدیمی با custody.config پیشین خودش رفتار می‌کند و هیچ تبدیل خاموشی رخ نمی‌دهد. */
+  custodyMode: 'SINGLE_SHIFT' | 'MULTI_SHIFT'
+  custodyModeConfigured: boolean
+  /** در تک‌شیفت دقیقاً یک مسئول اصلی روزانه مشخص می‌شود؛ در چندشیفت نادیده
+   * گرفته می‌شود و کارکنان هر template مستقل‌اند. */
+  singleShiftCustodianUserId: number | null
+  /** یادآوری پایان برنامه‌های canonical روشن است؟ */
+  reminderEnabled: boolean
+  /** مهلت هشدار بعد از پایان برنامه، دقیقه. */
+  overrunGraceMinutes: number
+  /** شیفت‌های تعریف‌شده‌ی دستی (نام + ساعت شروع/پایان + برنامه) */
   templates: ShiftTemplate[]
   /** بند ۷ — فرمت نمایش ساعت در فرم تنظیمات شیفت (فقط نمایشی) */
   clockFormat: ShiftClockFormat
+  /**
+   * نشست ۳۱۰ — سقف اضافه‌کاری شیفت شب به دقیقه؛ ۰ = خاموش (پیش‌فرض).
+   * کارمند همان نشستِ بازِ دیروز می‌تواند تا «پایان بازه + این سقف» اعلام کند؛
+   * حداکثر مقدار مجاز ۲۴۰ دقیقه (سقف پیشنهادی ۱۲۰). تغییرش رمز مدیر می‌خواهد.
+   */
+  overtimeMaxMinutes: number
 }
 
 export const DEFAULT_SHIFT_TEMPLATES: ShiftTemplate[] = [
-  { name: 'شیفت اول', startTime: '08:00', endTime: '14:00' },
-  { name: 'شیفت دوم', startTime: '14:00', endTime: '20:00' },
-  { name: 'شیفت سوم', startTime: '20:00', endTime: '00:00' }
+  { id: 'template-default-1', name: 'شیفت اول', startTime: '08:00', endTime: '14:00', isActive: true, daysMask: 127, staffIds: [], reminderRepeatMin: 15, allowMidDayHandover: false },
+  { id: 'template-default-2', name: 'شیفت دوم', startTime: '14:00', endTime: '20:00', isActive: true, daysMask: 127, staffIds: [], reminderRepeatMin: 15, allowMidDayHandover: false },
+  { id: 'template-default-3', name: 'شیفت سوم', startTime: '20:00', endTime: '00:00', isActive: true, daysMask: 127, staffIds: [], reminderRepeatMin: 15, allowMidDayHandover: false }
 ]
+
+/** A user-created template gets an opaque identity once, in the UI. Parsing
+ * never calls this generator, so merely reading an old configuration cannot
+ * change its identity. */
+export function createShiftTemplateId(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.()
+  if (randomUuid) return `template-${randomUuid}`
+  // Electron/modern browsers have randomUUID; this conservative fallback only
+  // protects old test/runtime environments from producing a positional id.
+  return `template-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+}
 
 export const DEFAULT_SHIFT_CONFIG: ShiftConfig = {
   names: DEFAULT_SHIFT_TEMPLATES.map((t) => t.name),
   byTime: false,
-  templates: DEFAULT_SHIFT_TEMPLATES.map((t) => ({ ...t })),
+  // نصب/دادهٔ قدیمی تا بازبینی صریح مدیر، از custody.config پیشین می‌خواند.
+  custodyMode: 'SINGLE_SHIFT',
+  custodyModeConfigured: false,
+  singleShiftCustodianUserId: null,
+  reminderEnabled: true,
+  overrunGraceMinutes: 60,
+  templates: DEFAULT_SHIFT_TEMPLATES.map((t) => ({ ...t, staffIds: [...t.staffIds] })),
   // پیش‌فرض = همان چیزی که تا امروز بود: ۱۲ساعته با AM/PM
-  clockFormat: '12'
+  clockFormat: '12',
+  // نشست ۳۱۰ — پیش‌فرض صفر یعنی اضافه‌کاری خاموش است (حالت جدید opt-in)
+  overtimeMaxMinutes: 0
 }
+
+/** نشست ۳۱۰ — سقف مطلق اضافه‌کاری که تنظیمات می‌تواند بگیرد (دقیقه). */
+export const SHIFT_OVERTIME_ABSOLUTE_MAX = 240
 
 /** '۸:۵' / '8:5' / '0800' → 'HH:mm' (ورودی خراب = مقدار پیش‌فرض داده‌شده). */
 export function normalizeTime(raw: unknown, fallback = '00:00'): string {
@@ -1039,6 +1159,28 @@ export function normalizeTime(raw: unknown, fallback = '00:00'): string {
 export function minutesOfTime(t: string): number {
   const [h, m] = normalizeTime(t).split(':').map(Number)
   return h * 60 + m
+}
+
+/** IDs are opaque, bounded and portable through JSON/SQLite. */
+function shiftTemplateIdOrNull(value: unknown): string | null {
+  const id = String(value ?? '').trim()
+  return /^[A-Za-z0-9][A-Za-z0-9:_-]{0,95}$/.test(id) ? id : null
+}
+
+/**
+ * Existing installations stored name/time only. Give each legacy row a stable
+ * synthetic id based on its original normalized shape, rather than array order
+ * alone or a random value regenerated at every read. The first normal Settings
+ * save writes this id back into `shift.config`.
+ */
+function legacyShiftTemplateId(index: number, name: string, startTime: string, endTime: string, salt = 0): string {
+  const source = `${index}\u001f${name}\u001f${startTime}\u001f${endTime}\u001f${salt}`
+  let hash = 2166136261
+  for (let i = 0; i < source.length; i++) {
+    hash ^= source.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return `legacy-template-${(hash >>> 0).toString(36)}`
 }
 
 /** ادغام ایمن JSON ذخیره‌شده با پیش‌فرض‌ها (نبودن یا خرابی مقدار = پیش‌فرض). */
@@ -1223,6 +1365,7 @@ export const parseReceiptTemplate = (raw: unknown): ReceiptTemplate => {
     // فقط دو مقدار مجاز؛ هر چیز دیگر ⇒ رفتار امروز (موتور Chromium)
     printMethod: merged.printMethod === 'RAW' ? 'RAW' : 'CHROMIUM',
     rawDpi: Number(merged.rawDpi) === 300 ? 300 : 203,
+    rawInvert: merged.rawInvert === true,
     cutMode: merged.cutMode === 'PARTIAL' || merged.cutMode === 'NONE' ? merged.cutMode : 'FULL',
     useSystemDialog: merged.useSystemDialog === true,
     askEachTime: merged.askEachTime === true,
@@ -1250,7 +1393,11 @@ export const parseReceiptTemplate = (raw: unknown): ReceiptTemplate => {
     )
   }
 }
-export const parseSaleDefaults = (raw: unknown): SaleDefaults => merge(DEFAULT_SALE_DEFAULTS, raw)
+export const parseSaleDefaults = (raw: unknown): SaleDefaults => {
+  const parsed = merge(DEFAULT_SALE_DEFAULTS, raw)
+  // تنها false صریح این feature flag را می‌بندد؛ داده‌ی قدیمی/خراب رفتار پیشین (روشن) را دارد.
+  return { ...parsed, splitStoreCreditPayment: parsed.splitStoreCreditPayment !== false }
+}
 /**
  * خواندن ایمن تنظیمات چاپ لیبل.
  *
@@ -1326,6 +1473,7 @@ export const parseLabelTemplate = (raw: unknown): LabelTemplate => {
     density: numIn(flat.density, LABEL_ROLL_LIMITS.minDensity, LABEL_ROLL_LIMITS.maxDensity, DEFAULT_LABEL_TEMPLATE.density),
     speed: numIn(flat.speed, LABEL_ROLL_LIMITS.minSpeed, LABEL_ROLL_LIMITS.maxSpeed, DEFAULT_LABEL_TEMPLATE.speed),
     direction: Number(flat.direction) === 1 ? 1 : 0,
+    rawInvert: Boolean(flat.rawInvert),
     useSystemDialog: Boolean(flat.useSystemDialog),
     logoDataUrl: String(flat.logoDataUrl ?? ''),
     activeTemplate,
@@ -1360,37 +1508,92 @@ export const parseShiftConfig = (raw: unknown): ShiftConfig => {
   const names: string[] = Array.isArray(obj.names) ? obj.names.map((n: unknown) => String(n ?? '').trim()) : []
 
   let templates: ShiftTemplate[] = []
+  const usedTemplateIds = new Set<string>()
+  const idFor = (candidate: unknown, index: number, name: string, startTime: string, endTime: string, defaultId?: string) => {
+    const supplied = shiftTemplateIdOrNull(candidate)
+    if (supplied && !usedTemplateIds.has(supplied)) {
+      usedTemplateIds.add(supplied)
+      return supplied
+    }
+    const preferred = defaultId && !usedTemplateIds.has(defaultId) ? defaultId : null
+    if (preferred) {
+      usedTemplateIds.add(preferred)
+      return preferred
+    }
+    let salt = 0
+    let legacy = legacyShiftTemplateId(index, name, startTime, endTime, salt)
+    while (usedTemplateIds.has(legacy)) legacy = legacyShiftTemplateId(index, name, startTime, endTime, ++salt)
+    usedTemplateIds.add(legacy)
+    return legacy
+  }
   if (Array.isArray(obj.templates)) {
     templates = obj.templates
       .map((t: any, i: number) => {
         const fallback = DEFAULT_SHIFT_TEMPLATES[i] ?? DEFAULT_SHIFT_TEMPLATES[DEFAULT_SHIFT_TEMPLATES.length - 1]
+        const name = String(t?.name ?? names[i] ?? '').trim() || 'شیفت ' + (i + 1)
+        const startTime = normalizeTime(t?.startTime, fallback.startTime)
+        const endTime = normalizeTime(t?.endTime, fallback.endTime)
+        const staffIds = [...new Set(Array.isArray(t?.staffIds) ? t.staffIds.map((id: unknown) => Math.round(Number(id))).filter((id: number) => Number.isSafeInteger(id) && id > 0) : [])]
         return {
-          name: String(t?.name ?? names[i] ?? '').trim() || 'شیفت ' + (i + 1),
-          startTime: normalizeTime(t?.startTime, fallback.startTime),
-          endTime: normalizeTime(t?.endTime, fallback.endTime)
+          id: idFor(t?.id, i, name, startTime, endTime),
+          name,
+          startTime,
+          endTime,
+          isActive: t?.isActive !== false,
+          // نبودنِ فیلد legacy = همه‌روز؛ صفرِ صریح باید برای اعتبارسنجی سرور
+          // باقی بماند تا مدیر نتواند شیفتِ بی‌روز ذخیره کند.
+          daysMask: t?.daysMask == null ? 127 : Math.min(127, Math.max(0, Math.round(Number(t.daysMask)) || 0)),
+          staffIds,
+          reminderRepeatMin: Math.min(60, Math.max(5, Math.round(Number(t?.reminderRepeatMin)) || 15)),
+          allowMidDayHandover: t?.allowMidDayHandover === true
         }
       })
       .slice(0, 24)
   }
   if (!templates.length) {
-    // مهاجرت از داده‌ی قدیمی: فقط نام‌ها بود
+    // مهاجرت از داده‌ی قدیمی: فقط نام‌ها بود. نبودنِ کاملِ داده همان پیش‌فرضِ
+    // شناسه‌دار را می‌گیرد؛ نام‌های قدیمی synthetic id پایدار می‌گیرند.
     const base = names.length ? names : DEFAULT_SHIFT_CONFIG.names
     templates = base.map((n, i) => {
-      const fallback = DEFAULT_SHIFT_TEMPLATES[i] ?? { startTime: '00:00', endTime: '00:00' }
+      const fallback = DEFAULT_SHIFT_TEMPLATES[i] ?? { id: undefined, startTime: '00:00', endTime: '00:00' }
+      const name = n || 'شیفت ' + (i + 1)
+      const startTime = fallback.startTime
+      const endTime = fallback.endTime
       return {
-        name: n || 'شیفت ' + (i + 1),
-        startTime: fallback.startTime,
-        endTime: fallback.endTime
+        id: idFor(undefined, i, name, startTime, endTime, names.length ? undefined : fallback.id),
+        name,
+        startTime,
+        endTime,
+        isActive: true,
+        daysMask: 127,
+        staffIds: [],
+        reminderRepeatMin: 15,
+        allowMidDayHandover: false
       }
     })
   }
 
+  const singleShiftCustodianUserId = Math.round(Number(obj.singleShiftCustodianUserId))
   return {
     byTime: Boolean(obj.byTime),
+    custodyMode: obj.custodyMode === 'MULTI_SHIFT' ? 'MULTI_SHIFT' : 'SINGLE_SHIFT',
+    // Absence is intentional legacy compatibility—not an implied conversion.
+    custodyModeConfigured: obj.custodyModeConfigured === true,
+    singleShiftCustodianUserId:
+      Number.isSafeInteger(singleShiftCustodianUserId) && singleShiftCustodianUserId > 0
+        ? singleShiftCustodianUserId
+        : null,
+    reminderEnabled: obj.reminderEnabled !== false,
+    overrunGraceMinutes: Math.min(1440, Math.max(0, Math.round(Number(obj.overrunGraceMinutes)) || 60)),
     templates,
     names: templates.map((t) => t.name),
     // بند ۷: هر مقدار ناشناخته ⇒ '12' (رفتار قبلی)، پس تنظیم قدیمی هم امن است
-    clockFormat: String(obj.clockFormat ?? '') === '24' ? '24' : '12'
+    clockFormat: String(obj.clockFormat ?? '') === '24' ? '24' : '12',
+    // نشست ۳۱۰: نامشخص/خراب ⇒ ۰ (خاموش) — همیشه عدد صحیح در محدوده‌ی ۰..۲۴۰
+    overtimeMaxMinutes: Math.min(
+      240,
+      Math.max(0, Math.trunc(Number(obj.overtimeMaxMinutes)) || 0)
+    )
   }
 }
 

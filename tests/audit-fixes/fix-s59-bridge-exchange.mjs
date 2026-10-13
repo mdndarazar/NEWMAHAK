@@ -27,6 +27,7 @@ const { salesService, saleWhere } = salesMod
 const { salesLedger } = await import('../../src/main/services/SalesLedger.ts')
 const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
 const { RefundMethod } = await import('@shared/enums')
+const { DEFAULT_MANAGER_PASSWORD } = await import('@shared/receipt')
 const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
 
 const db = harnessClient()
@@ -115,12 +116,13 @@ const back = (id) => {
   sql.prepare('UPDATE "SaleInvoice" SET issuedAt=?, issuedAtJalali=? WHERE id=?').run(t, toJalaliDate(new Date(t)), id)
   sql.prepare('UPDATE "Payment" SET paidAt=?, paidAtJalali=? WHERE invoiceId=?').run(t, toJalaliDate(new Date(t)), id)
 }
-const exch = async (paid, price, mode, method = cash) => {
+const exch = async (paid, price, mode, method = cash, extra = {}) => {
   const inv = await twoItemSale(paid)
   const v = variant(price)
   const r = await salesService.createExchange({
     invoiceId: inv.id, lines: [{ saleItemId: itemsOf(inv.id)[0].id, qty: 1 }],
-    replacements: [{ variantId: v, qty: 1 }], refundMode: mode, methodId: method, userId, shiftId
+    replacements: [{ variantId: v, qty: 1 }], refundMode: mode, methodId: method, userId, shiftId,
+    ...extra
   })
   return { inv, r }
 }
@@ -197,9 +199,17 @@ console.log('\n— ۸) تعویض ۶۰۰ ⇒ ۲۰۰ با بازپرداخت نق
   const exRows = led.rows.filter((r) => r.invoiceId === doc.id)
   eq('دفتر رویداد: اثر نقدی سند تعویض دقیقاً −۴۰۰ (نه −۸۰۰)', exRows.reduce((s, r) => s + r.cashEffect, 0), -400)
 }
-console.log('\n— ۹) تعویض با بازپرداخت کارتی ۴۰۰')
+console.log('\n— ۹) تعویض با بازپرداخت کارتی ۴۰۰ با override مدیر')
 {
-  const { d, after } = await step('تعویض کارتی', async () => { await exch(1000, 200, 'CARD', card) })
+  const { d, after } = await step('تعویض کارتیِ تأییدشده', async () => {
+    await exch(1000, 200, 'CARD', card, {
+      cardPosOverride: {
+        managerPassword: DEFAULT_MANAGER_PASSWORD,
+        reason: 'تست ثبت استثنایی بازپرداخت پوز در تعویض',
+        acknowledgedNoReverse: true
+      }
+    })
+  })
   eq('ردیف «بازپرداخت کارتی مابه‌التفاوت تعویض» = ۴۰۰ (−)', d.exchangeCardRefunds, -400)
   closed(after)
 }

@@ -2,6 +2,12 @@ import { useState, type ReactNode } from 'react'
 import Modal from './Modal'
 import { faDigits, money } from '@shared/jalali'
 import { bridgeDrillPager } from '@shared/reportExtraOutput'
+import {
+  defaultSalesAccountingBlocksOpen,
+  readSalesAccountingBlocksOpen,
+  writeSalesAccountingBlocksOpen,
+  type SalesAccountingBlockKey
+} from '../lib/uiPrefs'
 import type { SaleAccountingStatements, SaleBridgeRow, SaleBridgeSource } from '@shared/types'
 
 /**
@@ -95,17 +101,41 @@ function Row({
   )
 }
 
-function Block({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
+/**
+ * آکاردئون نمایشیِ بلوک‌های صورت حساب: باز/بسته شدن هیچ query، مبلغ، چاپ یا
+ * خروجی را تغییر نمی‌دهد. preference نسخه‌دار localStorage است؛ نصب تازه بسته
+ * شروع می‌شود و انتخاب کاربر بعد از جابه‌جایی صفحه باقی می‌ماند.
+ */
+function Block({
+  blockKey,
+  open,
+  onToggle,
+  title,
+  subtitle,
+  children
+}: {
+  blockKey: SalesAccountingBlockKey
+  open: boolean
+  onToggle: (key: SalesAccountingBlockKey) => void
+  title: string
+  subtitle?: string
+  children: ReactNode
+}) {
   return (
-    <div className="bg-white rounded shadow">
-      <div className="px-3 py-2 border-b font-bold">
-        {title}
+    <section className="bg-white rounded shadow">
+      <button
+        type="button"
+        className="w-full px-3 py-2 border-b font-bold text-right flex items-center gap-2 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-600"
+        onClick={() => onToggle(blockKey)}
+        aria-expanded={open}
+      >
+        <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-slate-300 bg-white text-sm" aria-hidden="true">{open ? '−' : '+'}</span>
+        <span>{title}</span>
         {subtitle && <span className="kbd font-normal ms-2">{subtitle}</span>}
-      </div>
-      <table className="tbl">
-        <tbody>{children}</tbody>
-      </table>
-    </div>
+        <span className="sr-only">{open ? 'بستن بخش' : 'باز کردن بخش'}</span>
+      </button>
+      {open && <table className="tbl"><tbody>{children}</tbody></table>}
+    </section>
   )
 }
 
@@ -119,6 +149,19 @@ export default function AccountingBlocks({
   onBridgePage
 }: Props) {
   const [drillKey, setDrillKey] = useState<string | null>(null)
+  const [blocksOpen, setBlocksOpen] = useState(readSalesAccountingBlocksOpen)
+  const toggleBlock = (key: SalesAccountingBlockKey) => {
+    setBlocksOpen((current) => {
+      const next = { ...current, [key]: !current[key] }
+      writeSalesAccountingBlocksOpen(next)
+      return next
+    })
+  }
+  const closeAllBlocks = () => {
+    const next = defaultSalesAccountingBlocksOpen()
+    writeSalesAccountingBlocksOpen(next)
+    setBlocksOpen(next)
+  }
 
   if (!statements)
     return (
@@ -157,6 +200,9 @@ export default function AccountingBlocks({
         <span className="kbd">
           ردیف‌های صفر هم عمداً نمایش داده می‌شوند؛ «نبودن ردیف» با «صفر بودن» یکی نیست
         </span>
+        <button type="button" className="btn py-1" onClick={closeAllBlocks}>
+          بستن همهٔ بخش‌ها
+        </button>
       </div>
 
       {!!warnings.length && (
@@ -183,7 +229,7 @@ export default function AccountingBlocks({
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
         {/* ------------------------- بلوک ۱: فاکتور ------------------------- */}
-        <Block title="۱) فاکتور — صورت تعهدی (بر مبنای تاریخ صدور فاکتور)" subtitle={`${faDigits(s.invoice.invoiceCount)} فاکتور`}>
+        <Block blockKey="invoice" open={blocksOpen.invoice} onToggle={toggleBlock} title="۱) فاکتور — صورت تعهدی (بر مبنای تاریخ صدور فاکتور)" subtitle={`${faDigits(s.invoice.invoiceCount)} فاکتور`}>
           <Row label="فروش ناخالص (مبلغ کالا، پیش از تخفیف)" value={s.invoice.grossSales} sign={1} onClick={jump('summary')} />
           <Row label="تخفیف" value={s.invoice.discounts} sign={-1} onClick={jump('items')} />
           <Row label="عوارض و مالیات" value={s.invoice.taxes} sign={1} />
@@ -207,7 +253,7 @@ export default function AccountingBlocks({
         </Block>
 
         {/* -------------------------- بلوک ۲: نسیه -------------------------- */}
-        <Block title="۲) نسیه" subtitle="هر عدد با تاریخ خودش، نه تاریخ فاکتور مادر">
+        <Block blockKey="credit" open={blocksOpen.credit} onToggle={toggleBlock} title="۲) نسیه" subtitle="هر عدد با تاریخ خودش، نه تاریخ فاکتور مادر">
           <Row label="نسیه‌ی ایجادشده توسط فاکتورهای همین بازه" value={s.credit.created} sign={0} onClick={jump('credit')} />
           <Row label="وصول نسیه‌ی همین بازه، در همین بازه" value={s.credit.settledCurrent} sign={0} onClick={jump('credit')} />
           <Row
@@ -237,7 +283,7 @@ export default function AccountingBlocks({
         </Block>
 
         {/* --------------------- بلوک ۳: برگشت و تعویض --------------------- */}
-        <Block title="۳) برگشت و تعویض" subtitle={`${faDigits(s.returns.returnCount)} برگشت · ${faDigits(s.returns.exchangeCount)} تعویض`}>
+        <Block blockKey="returns" open={blocksOpen.returns} onToggle={toggleBlock} title="۳) برگشت و تعویض" subtitle={`${faDigits(s.returns.returnCount)} برگشت · ${faDigits(s.returns.exchangeCount)} تعویض`}>
           <Row label="برگشت ساده" value={s.returns.simpleReturns} sign={0} onClick={jump('returns')} />
           <Row label="بازپرداخت نقدی برگشت (از کشو بیرون رفت)" value={s.returns.cashRefunds} sign={-1} tone="bad" onClick={jump('returns')} />
           <Row label="بازپرداخت کارتی برگشت" value={s.returns.cardRefunds} sign={-1} onClick={jump('returns')} />
@@ -272,7 +318,7 @@ export default function AccountingBlocks({
         </Block>
 
         {/* ---------------------------- بلوک ۴: چک ---------------------------- */}
-        <Block title="۴) چک — همیشه، حتی صفر" subtitle="چک پاس‌نشده هیچ‌وقت پول نیست">
+        <Block blockKey="cheques" open={blocksOpen.cheques} onToggle={toggleBlock} title="۴) چک — همیشه، حتی صفر" subtitle="چک پاس‌نشده هیچ‌وقت پول نیست">
           <Row label="چک ثبت‌شده در این بازه (اثر نقدی صفر)" value={s.cheques.registered} sign={0} onClick={jump('cheques')} />
           <Row
             label="چک پاس‌شده در این بازه (بر اساس تاریخ پاس‌شدن)"
@@ -313,7 +359,7 @@ export default function AccountingBlocks({
         </Block>
 
         {/* ----------------------- بلوک ۵: اعتبار خرید ----------------------- */}
-        <Block title="۵) اعتبار خرید — همیشه، حتی صفر" subtitle={`${faDigits(s.storeCredits.issuedCount)} صدور · ${faDigits(s.storeCredits.usageCount)} مصرف`}>
+        <Block blockKey="storeCredits" open={blocksOpen.storeCredits} onToggle={toggleBlock} title="۵) اعتبار خرید — همیشه، حتی صفر" subtitle={`${faDigits(s.storeCredits.issuedCount)} صدور · ${faDigits(s.storeCredits.usageCount)} مصرف`}>
           <Row
             label="اعتبار صادرشده در این بازه (بدهی ما، اثر نقدی صفر)"
             value={s.storeCredits.issued}
@@ -328,12 +374,13 @@ export default function AccountingBlocks({
             onClick={jump('storeCredits')}
           />
           <Row label="اعتبار فعال در پایان بازه (مانده‌ی بدهی ما)" value={s.storeCredits.active} sign={0} tone="warn" bold onClick={jump('storeCredits')} />
-          <Row label="اعتبار منقضی‌شده" value={s.storeCredits.expired} sign={0} tone="muted" onClick={jump('storeCredits')} />
+          <Row label="ماندهٔ منقضی‌شده در بازهٔ انتخابی" value={s.storeCredits.expiredInRange ?? s.storeCredits.expired} sign={0} tone="muted" onClick={jump('storeCredits')} />
+          <Row label="ماندهٔ منقضی تا پایان بازه (snapshot وضعیت)" value={s.storeCredits.expired} sign={0} tone="muted" onClick={jump('storeCredits')} />
           <Row label="اعتبار لغوشده" value={s.storeCredits.canceled} sign={0} tone="muted" onClick={jump('storeCredits')} />
         </Block>
 
         {/* ------------------------ بلوک ۶: وجه واقعی ------------------------ */}
-        <Block title="۶) وجه واقعی (بر مبنای تاریخ دریافت واقعی)" subtitle="چک پاس‌نشده و اعتبار خرید هرگز اینجا نیستند">
+        <Block blockKey="cash" open={blocksOpen.cash} onToggle={toggleBlock} title="۶) وجه واقعی (بر مبنای تاریخ دریافت واقعی)" subtitle="چک پاس‌نشده و اعتبار خرید هرگز اینجا نیستند">
           <Row label="نقد دریافتی" value={s.cash.cashReceived} sign={1} onClick={jump('ledger')} />
           <Row label="کارت دریافتی" value={s.cash.cardReceived} sign={1} onClick={jump('ledger')} />
           <Row label="سایر روش‌های دریافتی" value={s.cash.otherReceived} sign={1} onClick={jump('ledger')} />
@@ -353,15 +400,22 @@ export default function AccountingBlocks({
       </div>
 
       {/* -------------------------- بلوک ۷: پل تطبیق -------------------------- */}
-      <div className={`bg-white rounded shadow border-2 ${s.bridge.balanced ? 'border-emerald-500' : 'border-rose-500'}`}>
-        <div className="px-3 py-2 border-b font-bold flex flex-wrap items-center gap-2">
-          ۷) پل تطبیق — «وجه واقعی» تا «خالص فروش تعهدی»، ریال‌به‌ریال
+      <section className={`bg-white rounded shadow border-2 ${s.bridge.balanced ? 'border-emerald-500' : 'border-rose-500'}`}>
+        <button
+          type="button"
+          className="w-full px-3 py-2 border-b font-bold text-right flex flex-wrap items-center gap-2 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-600"
+          onClick={() => toggleBlock('bridge')}
+          aria-expanded={blocksOpen.bridge}
+        >
+          <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-slate-300 bg-white text-sm" aria-hidden="true">{blocksOpen.bridge ? '−' : '+'}</span>
+          <span>۷) پل تطبیق — «وجه واقعی» تا «خالص فروش تعهدی»، ریال‌به‌ریال</span>
           <span className={`px-2 py-0.5 rounded font-bold ${s.bridge.balanced ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
             {s.bridge.balanced ? 'پل کامل بسته شد' : `${money(Math.abs(s.bridge.unexplained))} ریال بدون توضیح`}
           </span>
           <span className="kbd font-normal">روی هر عدد کلیک کنید تا اسناد سازنده‌اش باز شود</span>
-        </div>
-        <table className="tbl">
+          <span className="sr-only">{blocksOpen.bridge ? 'بستن بخش' : 'باز کردن بخش'}</span>
+        </button>
+        {blocksOpen.bridge && <table className="tbl">
           <thead>
             <tr>
               <th>ردیف</th>
@@ -421,8 +475,8 @@ export default function AccountingBlocks({
               </td>
             </tr>
           </tfoot>
-        </table>
-      </div>
+        </table>}
+      </section>
 
       {/* ---------------------- drill-down اسناد یک ردیف ---------------------- */}
       <Modal

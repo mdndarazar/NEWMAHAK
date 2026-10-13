@@ -25,6 +25,7 @@ const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mj
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
 const { salesService } = await import('../../src/main/services/SalesService.ts')
 const { RefundMethod } = await import('@shared/enums')
+const { DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/receipt')
 const { toJalaliDate } = await import('@shared/jalali')
 
 const db = harnessClient()
@@ -119,7 +120,13 @@ console.log('\n۴) ابطال پرداخت اضافه‌دار ⇒ برچسب ه
 await safe('ابطال پرداخت ۷۰۰', async () => {
   const fn = salesService.voidPayment ?? salesService.deletePayment ?? salesService.paymentDelete
   if (!fn) throw new Error('تابع ابطال پرداخت پیدا نشد')
-  return fn.call(salesService, { id: pA?.payment?.id, userId, reason: 'تست ابطال' })
+  return fn.call(salesService, {
+    id: pA?.payment?.id,
+    userId,
+    reason: 'تست ابطال',
+    managerPassword: PW,
+    overrideReason: 'ابطال کنترل‌شده برای آزمون برچسب اضافه‌دریافت'
+  })
 })
 t = await accOf(today)
 eq('پل امروز بسته', t?.bridge?.unexplained, 0)

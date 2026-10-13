@@ -649,7 +649,22 @@ export const cashboxService = {
    * صندوقشان را ببندند ولی کسر انبار روز، یک‌جا و در پایان روز قطعی شود.
    * ==================================================================
    */
-  async close(input: CashCloseInput & { from?: string; to?: string }) {
+  async close(
+    input: CashCloseInput & {
+      from?: string
+      to?: string
+      /** Internal server-only custody hook; never comes from renderer IPC. */
+      afterCloseInTx?: (tx: Prisma.TransactionClient, session: any, closedShiftRow: any | null) => Promise<void>
+      custodyEffectiveTo?: Date
+      /** An unattended, already-closed custody segment is reconciled by the
+       * PIN-authenticated morning witness, not by its absent former owner.
+       * IPC strips this internal-only marker before reaching this service. */
+      internalCustodyRecovery?: boolean
+    }
+  ) {
+    /** Legacy IPC receives this marker only when custody is enabled. */
+    if ((input as any).custodyFence)
+      throw new BusinessError('در حالت حضانت صندوق، بستن نهایی فقط از مسیر رسمی حضانت انجام می‌شود.', 'CUSTODY_LEGACY_PATH')
     validateCashCloseInput(input)
     /**
      * ==================== مورد ۴: شیفتِ درست هنگام بستن صندوق ====================
@@ -670,6 +685,12 @@ export const cashboxService = {
       (input.shiftId
         ? await prisma.shift.findUnique({ where: { id: input.shiftId } })
         : await shiftService.openShift(prisma))
+
+    // `shiftId` از renderer می‌آید؛ actor از نشست باز main. پیش از هر محاسبه، ایجاد
+    // CashSession یا بستن اختیاری Shift، باید روشن باشد که این نشست مال همان actor
+    // است. این guard برای حالت `closeShift: false` هم لازم است، چون آن حالت فقط
+    // snapshot صندوق می‌سازد و به `closeInTx` نمی‌رسد.
+    if (shift && !input.internalCustodyRecovery) shiftService.assertClosingActor(shift, input.userId, 'بستن صندوق')
 
     // بازه: اگر شیفت مشخص است، بازه‌ی خود شیفت؛ وگرنه بازه‌ی انتخابی کاربر.
     // ممیزی A114-02 — بی‌نشست، '' یا نامعتبر یا معکوس ⇒ خطای فارسی (نه کل تاریخچه با jalaliStartOfDay(''))
@@ -927,7 +948,7 @@ export const cashboxService = {
       data: {
         shiftId: shift?.id ?? null,
         fromDate: shift?.openedAt ?? range.from,
-        toDate: new Date(),
+        toDate: input.custodyEffectiveTo ?? new Date(),
         dayJalali: shift?.dayJalali || range.fromJalali,
         cashTotal: s.cashTotal,
         cardTotal: s.cardTotal,
@@ -1025,6 +1046,7 @@ export const cashboxService = {
           })
         }
       }
+      if (input.afterCloseInTx) await input.afterCloseInTx(tx, session, closedShiftRow)
       return { session, closedShiftRow }
     }, TX_OPTIONS)
 

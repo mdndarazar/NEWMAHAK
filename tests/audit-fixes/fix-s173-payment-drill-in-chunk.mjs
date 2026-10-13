@@ -53,7 +53,10 @@ for (const m of ['findMany', 'count', 'aggregate']) {
   const orig = prisma.payment[m].bind(prisma.payment)
   prisma.payment[m] = (args) => {
     walk(args?.where)
-    if (forceFail && m === 'findMany' && args?.include) throw new Error('SQLITE_BUSY: database is locked')
+    // فقط واکشیِ جزئیات صفحهٔ drill را خراب کن. گزارش اصلی نیز چند query با
+    // include دارد و تزریق خطا در آن‌ها قرارداد S173-D2 را نمی‌سنجد.
+    if (forceFail && m === 'findMany' && args?.include && Array.isArray(args?.where?.id?.in))
+      throw new Error('SQLITE_BUSY: database is locked')
     return orig(args)
   }
 }

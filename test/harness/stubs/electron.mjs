@@ -7,6 +7,7 @@ const DIR = process.env.HARNESS_DIR || mkdtempSync(join(tmpdir(), 'mahak-harness
 
 export const app = {
   getPath: () => DIR,
+  getAppPath: () => process.cwd(),
   getVersion: () => '0.1.0-harness',
   getName: () => 'MahakPOS',
   isPackaged: false,

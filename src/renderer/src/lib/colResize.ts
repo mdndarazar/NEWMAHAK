@@ -75,6 +75,30 @@ function keyOf(table: HTMLTableElement): string | null {
 const isHookManaged = (table: HTMLTableElement): boolean => !!table.querySelector('thead .col-grip')
 
 // ---------------------------------------------------------------------------
+// API برای دکمه‌ی «↺ برگشت به پیش‌فرض» (tableLayoutFab.ts)
+// ---------------------------------------------------------------------------
+
+/** خروجی عمومیِ همان تشخیص داخلی — برای اینکه منطق فاب دوباره‌نویسی نشود. */
+export const isHookManagedTable = isHookManaged
+
+/**
+ * آیا برای این جدول چیدمان ستونیِ دستی فعال است؟ — یا ذخیره‌شده (ماندگار بعد
+ * از راه‌اندازی دوباره) یا همین حالا روی صفحه نشسته است (`data-colw`).
+ */
+export function tableColsCustomized(table: HTMLTableElement): boolean {
+  if (table.hasAttribute('data-colw')) return true
+  const key = keyOf(table)
+  return !!key && loadWidths(key, headerCells(table).length) != null
+}
+
+/** حذف کامل چیدمان ستونی این جدول — از مخزن و از روی صفحه (برگشت به خودکار). */
+export function resetTableCols(table: HTMLTableElement): void {
+  const key = keyOf(table)
+  if (key) saveWidths(key, null)
+  applyWidths(table, null)
+}
+
+// ---------------------------------------------------------------------------
 // خواندن و نوشتن چیدمان
 // ---------------------------------------------------------------------------
 
@@ -120,15 +144,32 @@ function applyWidths(table: HTMLTableElement, widths: number[] | null): void {
     if (!widths) {
       table.classList.remove('tbl-fixed')
       table.removeAttribute('data-colw')
+      table.style.removeProperty('width')
       for (const c of cells) c.style.removeProperty('width')
       return
     }
     table.classList.add('tbl-fixed')
     table.setAttribute('data-colw', '1')
+    /**
+     * ⚠️ ریشه‌ی باگ «یهو بزرگ/کوچک می‌شود و از کنترل خارج می‌شود»: کلاس `tbl`
+     * جدول را `w-full` (عرض ۱۰۰٪) نگه می‌دارد. با `table-layout: fixed`، وقتی
+     * جمع عرض ستون‌ها با عرض جدول برابر نباشد مرورگر **همه‌ی ستون‌ها را به‌نسبت
+     * بازتوزیع می‌کند** تا جدول ۱۰۰٪ پر شود — یعنی ستونی که می‌کشیدی آن عدد
+     * پیکسلی را نمی‌گرفت و بقیه‌ی ستون‌ها همزمان جابه‌جا می‌شدند. قفل کردن عرض
+     * کل جدول روی جمع پیکسلیِ ستون‌ها باعث می‌شود هر ستون دقیقاً همان عددی شود
+     * که کاربر کشیده و کشیدن ۱:۱ با ماوس بماند (اگر جمع از صفحه بزرگ‌تر شود،
+     * همین جدول با اسکرول افقی داخل wrapper خودش دیده می‌شود — رفتار اکسل).
+     */
+    let sum = 0
     cells.forEach((c, i) => {
       const w = widths[i]
-      if (w != null) c.style.width = `${Math.max(MIN_W, Math.round(w))}px`
+      if (w != null) {
+        const px = Math.max(MIN_W, Math.round(w))
+        c.style.width = `${px}px`
+        sum += px
+      }
     })
+    if (sum > 0) table.style.width = `${sum}px`
   } finally {
     applying = false
   }
@@ -189,8 +230,10 @@ function scan(): void {
     if (!widths) return
     // اگر عرض‌ها از قبل درست نشسته‌اند، به DOM دست نمی‌زنیم
     const cells = headerCells(table)
+    const sum = widths.reduce((a, w) => a + Math.max(MIN_W, Math.round(w)), 0)
     const ok =
       table.classList.contains('tbl-fixed') &&
+      table.style.width === `${sum}px` &&
       cells.every((c, i) => c.style.width === `${Math.max(MIN_W, Math.round(widths[i]))}px`)
     if (!ok) applyWidths(table, widths)
   })

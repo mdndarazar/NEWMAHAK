@@ -465,7 +465,9 @@ export const fraudService = {
       sources: bigRatio.map((c) => ({
         kind: 'STORE_CREDIT',
         id: c.id,
-        label: `اعتبار «${c.code}» · فاکتور مبدأ ${smap.get(c.sourceInvoiceId ?? 0)?.receiptNo ?? '—'}`,
+        // کد اعتبار یک credential قابل‌مصرف است؛ گزارش ضدتقلب فقط شناسه‌ی داخلی
+        // غیرقابل‌مصرف را می‌خواهد. reveal کد مسیر manager-only مستقل دارد.
+        label: `اعتبار #${c.id} · فاکتور مبدأ ${smap.get(c.sourceInvoiceId ?? 0)?.receiptNo ?? '—'}`,
         ...creditSourceRefs(c),
         amount: n(c.amount),
         dateJalali: c.issuedAtJalali || null
@@ -483,7 +485,8 @@ export const fraudService = {
       sources: anonCredits.map((c) => ({
         kind: 'STORE_CREDIT',
         id: c.id,
-        label: `اعتبار «${c.code}»`,
+        // این هم همان credential است؛ شناسه‌ی ردیف برای پیگیری کافی و غیرقابل‌مصرف است.
+        label: `اعتبار #${c.id}`,
         ...creditSourceRefs(c),
         amount: n(c.amount),
         dateJalali: c.issuedAtJalali || null

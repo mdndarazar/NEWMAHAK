@@ -1,0 +1,98 @@
+name: Build Windows installer
+
+on:
+  push:
+    branches:
+      - arena/074a2e5d-newmahak
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: Publish the freshly validated installer as a public GitHub release
+        required: false
+        default: false
+        type: boolean
+      release_tag:
+        description: Immutable release tag to create when publishing
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package-windows:
+    name: Package MahakPOS for Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify source syntax
+        run: npm run check:syntax
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          npm run dist:win -- --publish never *>&1 | Tee-Object -FilePath build-output.log
+          if ($LASTEXITCODE -ne 0) {
+            $lastLines = (Get-Content build-output.log -Tail 20) -join " | "
+            Write-Output "::error title=Installer build failed::$lastLines"
+            exit $LASTEXITCODE
+          }
+
+      - name: Create installable and source ZIPs
+        if: success()
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path dist -Filter '*.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'Windows installer was not produced.' }
+          Compress-Archive -Path $installer.FullName -DestinationPath "dist/MahakPOS-$env:GITHUB_SHA-win-x64-installer.zip" -Force
+          git archive --format=zip --prefix=MahakPOS/ $env:GITHUB_SHA --output "dist/MahakPOS-$env:GITHUB_SHA-source.zip"
+          $releaseFiles = Get-ChildItem -Path dist -File | Where-Object { $_.Name -match '\.exe$|-installer\.zip$|-source\.zip$' }
+          $lines = $releaseFiles | ForEach-Object { "$( (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower() )  $($_.Name)" }
+          Set-Content -Path 'dist/SHA256SUMS.txt' -Value $lines -NoNewline
+
+      - name: Publish public GitHub release
+        # Ordinary development pushes only build and upload an artifact. A public
+        # release needs an explicit dispatch; the narrowly-scoped push marker is
+        # retained as the fallback for integration tokens that cannot dispatch.
+        if: "${{ success() && ((github.event_name == 'workflow_dispatch' && inputs.create_release && inputs.release_tag != '') || (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'release: publish Windows installer'))) }}"
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || 'v0.1.0-financial-controls-20261012-final' }}
+        run: |
+          gh release create "$env:RELEASE_TAG" dist/*.exe dist/*-installer.zip dist/*-source.zip dist/SHA256SUMS.txt --target "$env:GITHUB_SHA" --title "MahakPOS $env:RELEASE_TAG" --notes "Windows x64 installer and CMD-ready source package built and validated by GitHub Actions from commit $env:GITHUB_SHA."
+
+      - name: Upload Windows installer
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MahakPOS-Windows-installer
+          path: |
+            dist/*.exe
+            dist/*-installer.zip
+            dist/*-source.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MahakPOS-Windows-build-log
+          path: build-output.log
+          if-no-files-found: warn
+          retention-days: 30

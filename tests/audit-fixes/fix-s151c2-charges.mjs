@@ -24,6 +24,10 @@ process.env.HARNESS_DB = join(DIR, 'shop.db')
 const electron = await import('electron')
 const handlers = new Map()
 electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
+// آزمون IPC عوارض باید از همان مرز پنجرهٔ معتبر عبور کند تا اعتبارسنجی مبلغ
+// سمت main (نه sender خالی هارنس) سنجیده شود.
+electron.BrowserWindow.fromWebContents = () => ({ isDestroyed: () => false })
+const sender = { id: 15103, isDestroyed: () => false, once: () => {} }
 
 const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
@@ -37,7 +41,7 @@ const { SETTING_KEYS, DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/rec
 const charges = await import('@shared/charges')
 const { jalaliToday } = await import('@shared/jalali')
 registerIpcHandlers()
-const ipc = (ch, payload) => handlers.get(ch)(null, payload)
+const ipc = (ch, payload) => handlers.get(ch)({ sender }, payload)
 
 let ok = 0
 let bad = 0
@@ -108,7 +112,15 @@ await rejects('کم‌ثبتی با رمز مدیر هم در پنل خرده ب
 eq('هیچ فاکتوری ثبت نشد', invoices(), n0)
 const okInv = await safe('عوارض ۱۰۰٬۰۰۰ + حق سرویس ۲۰٬۰۰۰ ⇒ پذیرفته', () => salesService.create(sale()))
 eq('taxTotal ذخیره‌شده', Number(seed.one('SELECT taxTotal FROM "SaleInvoice" WHERE id = ?', Number(okInv?.id))?.taxTotal), 100_000)
-await safe('جین «عمداً صفر» با عوارض ۰ ⇒ پذیرفته', () => salesService.create(sale({ lines: [line({ variantId: vJean, code: 'J156', tax: 0 })] })))
+const zeroTaxInv = await safe('جین «عمداً صفر» با عوارض ۰ ⇒ پذیرفته', () => salesService.create(sale({ lines: [line({ variantId: vJean, code: 'J156', tax: 0 })] })))
+await safe('ویرایش واقعاً بی‌تغییرِ جین صفر، نرخ تاریخی را نگه می‌دارد', () =>
+  salesService.update({ ...sale({ lines: [line({ variantId: vJean, code: 'J156', tax: 0 })] }), id: Number(zeroTaxInv?.id), keepPayments: true, payments: undefined })
+)
+await rejects('تغییر جین صفر به پیراهن ۱۰٪ با عوارض صفر ⇒ رد (میان‌بر تاریخی دور زده نمی‌شود)', () =>
+  salesService.update({ ...sale({ lines: [line({ tax: 0 })] }), id: Number(zeroTaxInv?.id), keepPayments: true, payments: undefined }),
+  'عوارض'
+)
+eq('عوارض سند جین پس از تلاش تغییر کالا همان صفر ماند', Number(seed.one('SELECT taxTotal FROM "SaleInvoice" WHERE id = ?', Number(zeroTaxInv?.id))?.taxTotal), 0)
 await safe('گرد ۱ ریالی (۹۹٬۹۹۹) در تحمل گرد ⇒ پذیرفته', () => salesService.create(sale({ lines: [line({ tax: 99_999 })] })))
 await safe('تخفیف فاکتور ۱۰۰٬۰۰۰ ⇒ مبنای خالص ۹۰۰٬۰۰۰ ⇒ عوارض ۹۰٬۰۰۰ پذیرفته', () => salesService.create(sale({ lines: [line({ tax: 90_000 })], invoiceDiscount: 100_000 })))
 await rejects('همان فاکتور با عوارض ۸۰٬۰۰۰ ⇒ رد', () => salesService.create(sale({ lines: [line({ tax: 80_000 })], invoiceDiscount: 100_000 })), 'عوارض')

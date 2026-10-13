@@ -92,7 +92,13 @@ console.log('\n۱) بدون دلیل / بدون رمز / رمز غلط')
 eq('تعداد برگشتی اول ۱ است', qtyOf(), 1)
 await rejects(
   'بدون دلیل رد می‌شود',
-  () => salesService.returnUpdate({ id: retId, lines: [{ saleItemId: items[0].id, qty: 1 }, { saleItemId: items[1].id, qty: 1 }], userId }),
+  () => salesService.returnUpdate({
+    id: retId,
+    lines: [{ saleItemId: items[0].id, qty: 1 }, { saleItemId: items[1].id, qty: 1 }],
+    userId,
+    /** قفل پیش‌فرض اصلاح را می‌گذراند تا خودِ قاعده‌ی دلیلِ اثر مالی سنجیده شود. */
+    panelPassword: PW
+  }),
   'دلیل'
 )
 eq('بدون دلیل اقلام عوض نشد', qtyOf(), 1)

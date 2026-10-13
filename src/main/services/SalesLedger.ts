@@ -286,7 +286,7 @@ export const salesLedger = {
         id: true, kind: true, total: true, returnedAt: true, returnedAtJalali: true, returnedAtTime: true,
         refundMethod: true, refundAmount: true, refundReference: true, note: true,
         exchangeTotal: true, exchangeDiff: true, exchangeSettlement: true, exchangeInvoiceId: true, debtReduction: true,
-        exchangeReceiptNo: true, storeCreditCode: true, userId: true, shiftId: true,
+        exchangeReceiptNo: true, storeCreditId: true, userId: true, shiftId: true,
         invoiceId: true,
         invoice: { select: { receiptNo: true, customer: { select: { name: true } } } },
         items: { select: { qty: true, restockedQty: true } }
@@ -420,7 +420,7 @@ export const salesLedger = {
           stockEffect: -replacementQty,
           invoiceId: r.exchangeInvoiceId ?? r.invoiceId,
           note:
-            (r.storeCreditCode ? `اعتبار صادرشده: ${r.storeCreditCode}. ` : '') + (r.note ?? '')
+            (r.storeCreditId ? `اعتبار صادرشده: اعتبار #${r.storeCreditId}. ` : '') + (r.note ?? '')
         })
         continue
       }
@@ -691,7 +691,9 @@ export const salesLedger = {
         dateJalali: r.atJalali || toJalaliDate(r.at),
         time: r.atTime || toClock(r.at),
         receiptNo: r.receiptNo ?? null,
-        documentLabel: `اعتبار ${r.code} · نوبت ${faDigits(r.seq)}`,
+        // `code` یک credential قابل‌مصرف است، نه شناسه‌ی نمایشی گزارش؛ reveal آن
+        // فقط مسیر manager-only خودِ اعتبار را دارد. دفتر مالی فقط شماره مصرف را نشان می‌دهد.
+        documentLabel: `مصرف اعتبار خرید · نوبت ${faDigits(r.seq)}`,
         customerName: c.customerName ?? 'مشتری عمومی',
         userName: r.userId != null ? scUserName.get(r.userId) ?? '—' : '—',
         shiftName: r.shiftId != null ? scShiftName.get(r.shiftId) ?? '—' : '—',

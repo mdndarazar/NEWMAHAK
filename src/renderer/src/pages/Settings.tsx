@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — کارت‌های چاپگر و بخش پیشرفته‌ی تب چاپ
@@ -10,6 +10,8 @@ import { useManagerSession } from '../hooks/useManagerSession'
 import Modal from '../components/Modal'
 import JalaliDateInput from '../components/JalaliDateInput'
 import PasswordField from '../components/PasswordField'
+import { CustodyChip } from '../components/CustodyChip'
+import { CustodyAdminChip } from '../components/CustodyAdminChip'
 import { exportTable } from '../lib/exportCsv'
 /** کار الف — سه ستون مقصد پول در جدول «حذف گزارشات/واریانت» (همان تابع مشترک) */
 import { destinationCells, DESTINATION_HEADERS_SHORT } from '../lib/destinationCells'
@@ -51,6 +53,7 @@ import {
   mergeFreshPrinter,
   DEFAULT_SECURITY_CONFIG,
   DEFAULT_SHIFT_CONFIG,
+  createShiftTemplateId,
   normalizeTime,
   formatClockForDisplay,
   parseLabelTemplate,
@@ -153,6 +156,8 @@ type Tab =
    * دست‌نخورده سر جایش است.
    */
   | 'staff'
+  /** پیکربندی ساختاری حضانت؛ عملیات روزانه فقط در Header می‌ماند. */
+  | 'custody'
   /** جلسه ۱۹ · بند ۹ — «تاریخ و ساعت رسمی» (افست دستی + بررسی ساعت سیستم) */
   | 'time'
 
@@ -170,6 +175,8 @@ type Tab =
  * ===========================================================================
  */
 const PREVIEW_TABS: readonly Tab[] = ['receipt', 'print', 'sale']
+/** همان ترتیب Date#getDay و ShiftPlan قدیمی؛ فقط برچسب نمایش در Shift Settings. */
+const SHIFT_WEEKDAY_NAMES = ['ی', 'د', 'س', 'چ', 'پ', 'ج', 'ش']
 
 /** این تب پیش‌نمایش زنده‌ی رسید را نشان می‌دهد؟ */
 function showsPreview(tab: Tab): boolean {
@@ -192,9 +199,71 @@ type TextKey = {
   [K in keyof ReceiptTemplate]: ReceiptTemplate[K] extends string ? K : never
 }[keyof ReceiptTemplate]
 
+type StaffDraft = {
+  id: number | null
+  name: string
+  role: string
+  isActive: boolean
+  jobTitle: string
+  phone: string
+  nationalId: string
+  employmentStartJalali: string
+  employmentEndJalali: string
+  employmentStatus: 'ACTIVE' | 'LEAVE' | 'SUSPENDED' | 'TERMINATED'
+  /** Required only if this edit archives the currently active custodian. */
+  custodyArchiveReason: string
+  bankName: string
+  bankAccountNo: string
+  bankIban: string
+  bankAccountHolder: string
+}
+
+const blankStaffDraft = (): StaffDraft => ({
+  id: null,
+  name: '',
+  role: 'CASHIER',
+  isActive: true,
+  jobTitle: '',
+  phone: '',
+  nationalId: '',
+  employmentStartJalali: '',
+  employmentEndJalali: '',
+  employmentStatus: 'ACTIVE',
+  custodyArchiveReason: '',
+  bankName: '',
+  bankAccountNo: '',
+  bankIban: '',
+  bankAccountHolder: ''
+})
+
+/** Only the presence count reaches this marker; sensitive values stay inside the
+ * manager-only form and are never copied to the directory. */
+const STAFF_PROFILE_COMPLETION_FIELDS: readonly (keyof StaffDraft)[] = [
+  'jobTitle',
+  'phone',
+  'nationalId',
+  'employmentStartJalali',
+  'bankName',
+  'bankAccountNo',
+  'bankIban',
+  'bankAccountHolder'
+]
+
+function staffProfileCompletion(draft: StaffDraft) {
+  const completed = STAFF_PROFILE_COMPLETION_FIELDS.filter((key) => String(draft[key] ?? '').trim().length > 0).length
+  return { completed, total: STAFF_PROFILE_COMPLETION_FIELDS.length, isComplete: completed === STAFF_PROFILE_COMPLETION_FIELDS.length }
+}
+
+type LegacyShiftPlanReview = {
+  state: 'EMPTY' | 'REVIEW_REQUIRED'
+  total: number
+  plans: Array<{ id: number; title: string; startMinute: number; durationMinutes: number; daysMask: number; isActive: boolean; staffIds: number[]; migrationState: 'REVIEW_REQUIRED'; migrationNote: string }>
+}
+
 export default function Settings() {
   const nav = useNavigate()
-  const { logout } = useManagerSession()
+  /** رمز دوم Settings فقط بخش‌های غیرحساس را می‌بیند؛ پرونده کارکنان و حضانت مدیر اصلی می‌خواهند. */
+  const { logout, isManager } = useManagerSession()
   const [tab, setTab] = useState<Tab>('receipt')
   // ---- رمز مدیریتی ----
   const [curPw, setCurPw] = useState('')
@@ -204,6 +273,13 @@ export default function Settings() {
   const [receipt, setReceipt] = useState<ReceiptTemplate>(DEFAULT_RECEIPT_TEMPLATE)
   const [sale, setSale] = useState<SaleDefaults>(DEFAULT_SALE_DEFAULTS)
   const [shift, setShift] = useState<ShiftConfig>(DEFAULT_SHIFT_CONFIG)
+  /** تغییر روش حضانت مستقل از ذخیره‌ی عمومی است تا Main بتواند مسئولیت باز را
+   * قبل از commit اتمی fence کند؛ رمز/علت هرگز ذخیره نمی‌شود. */
+  const [custodySchedulingReason, setCustodySchedulingReason] = useState('')
+  const [custodySchedulingBusy, setCustodySchedulingBusy] = useState(false)
+  /** legacy ShiftPlanها تا بازبینی صریح مدیر به تنظیمات canonical تبدیل نمی‌شوند. */
+  const [legacyShiftPlanReview, setLegacyShiftPlanReview] = useState<LegacyShiftPlanReview | null>(null)
+  const [legacyShiftPlanBusy, setLegacyShiftPlanBusy] = useState(false)
   /**
    * جلسه ۱۹ · بند ۹ — «تاریخ و ساعت رسمی».
    * `timeCheck` خروجی دکمه‌ی «بررسی ساعت سیستم» است (بدون نیاز به اینترنت).
@@ -240,9 +316,11 @@ export default function Settings() {
   // نشست ۱۵۷ (Y13) — رمز مدیر برای دو کانال فوری: افست ساعت رسمی و سوییچ «شیفت بر اساس ساعت»
   const [timePw, setTimePw] = useState('')
   const [byTimePw, setByTimePw] = useState('')
+  /** نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت؛ ذخیره‌ی فوری با همان فیلد رمز مدیر */
+  const [overtimeCap, setOvertimeCap] = useState('0')
   const [custDelPw, setCustDelPw] = useState('')
-  /** نشست ۱۶۵ (S165-D4) — رمز پنل تنظیمات برای ثبت/ویرایش کارمند (سمت main هم سنجیده می‌شود) */
-  const [staffPw, setStaffPw] = useState('')
+  /** رمز شخصی مدیر برای تأیید اصلاح/ابطال دیرهنگام؛ هرگز از سرور خوانده نمی‌شود. */
+  const [staffCorrectionApprovalPw, setStaffCorrectionApprovalPw] = useState('')
   const [printers, setPrinters] = useState<string[]>([])
   /**
    * نشست ۲۲۲ · فاز ۳ — فهرست «کامل» چاپگرها (پیش‌فرض ویندوز + نوع حدسی) برای
@@ -302,6 +380,13 @@ export default function Settings() {
   const [lockBusy, setLockBusy] = useState('')
   const [busy, setBusy] = useState(false)
   const [dirty, setDirty] = useState(false)
+  /**
+   * نام چاپگرِ رسید/لیبل در لحظه‌ی بارگذاری (یا آخرین ذخیره‌ی موفق) صفحه. save() با مقایسه‌ی نام فعلیِ
+   * فرم با این مقدار می‌فهمد کاربر *خودش* چاپگر را روی همین صفحه عوض کرده یا نه (ضد‌کهنگیِ mergeFreshPrinter
+   * فقط برای حالت «دست‌نخورده» می‌ماند).
+   */
+  const receiptPrinterAtLoad = useRef('')
+  const labelPrinterAtLoad = useRef('')
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   // ---- بکاپ و بازگردانی ----
@@ -385,17 +470,39 @@ export default function Settings() {
 
   // ---------------- جلسه ۱۸ · بند ۲ — کارمندان ----------------
   const [staffRows, setStaffRows] = useState<
-    { id: number; username: string; name: string; role: string; roleLabel: string; isActive: boolean }[]
+    {
+      id: number
+      username: string
+      name: string
+      role: string
+      roleLabel: string
+      isActive: boolean
+      hasCorrectionApprovalPassword?: boolean
+    }[]
   >([])
 
-  const [staffDraft, setStaffDraft] = useState<{ id: number | null; name: string; role: string; isActive: boolean }>({
-    id: null,
-    name: '',
-    role: 'CASHIER',
-    isActive: true
-  })
+  const [staffDraft, setStaffDraft] = useState<StaffDraft>(blankStaffDraft)
   const [staffBusy, setStaffBusy] = useState(false)
+  /** فرم کارمند بالای فهرست است؛ پس «ویرایش» باید کاربر را واقعاً به فرم ببرد،
+   * نه این‌که state تغییر کند و پایین جدول بی‌صدا بماند. */
+  const staffFormRef = useRef<HTMLDivElement | null>(null)
+  const staffNameInputRef = useRef<HTMLInputElement | null>(null)
+  const [staffError, setStaffError] = useState<string | null>(null)
+  const staffProfileProgress = useMemo(() => staffProfileCompletion(staffDraft), [staffDraft])
   const [delMessage, setDelMessage] = useState('')
+
+  const revealStaffForm = () => {
+    window.requestAnimationFrame(() => {
+      staffFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
+  /** خطای فرم نباید فقط در اعلان کلیِ بالای صفحه بماند؛ کاربر معمولاً پس از پر
+   * کردن اطلاعات در انتهای فرم است و باید همان‌جا علت را ببیند. */
+  const showStaffError = (message: string) => {
+    setStaffError(message)
+    setErr(message)
+    revealStaffForm()
+  }
 
   const flash = (m: string) => {
     setMsg(m)
@@ -417,10 +524,16 @@ export default function Settings() {
         /** جلسه ۱۹ · بند ۹ — افست دستی ساعت رسمی */
         time: OfficialTimeConfig
       }>(CH.settingsBundle)
-      setReceipt({ ...DEFAULT_RECEIPT_TEMPLATE, ...b.receipt })
+      const loadedReceipt = { ...DEFAULT_RECEIPT_TEMPLATE, ...b.receipt }
+      const loadedLabel = parseLabelTemplate(b.label)
+      receiptPrinterAtLoad.current = loadedReceipt.printerName
+      labelPrinterAtLoad.current = loadedLabel.printerName
+      setReceipt(loadedReceipt)
       setSale({ ...DEFAULT_SALE_DEFAULTS, ...b.sale })
-      setShift(parseShiftConfig(b.shift))
-      setLabel(parseLabelTemplate(b.label))
+      const loadedShift = parseShiftConfig(b.shift)
+      setShift(loadedShift)
+      setOvertimeCap(String(loadedShift.overtimeMaxMinutes ?? 0))
+      setLabel(loadedLabel)
       setSecurity(parseSecurityConfig(b.security))
       // مقدار خراب یا نبودِ کلید ⇒ پیش‌فرض FREE (رفتار نسخه‌های قبل)، بدون کرش
       setDiscount(parseDiscountPolicy(b.discount))
@@ -730,9 +843,17 @@ export default function Settings() {
       const templates = [
         ...p.templates,
         {
+          // نام/ساعت قابل‌ویرایش‌اند؛ شناسه از لحظهٔ ساخت ثابت می‌ماند تا برنامه و
+          // تاریخچهٔ آینده هرگز به شماره/جایگاه آرایه وابسته نباشند.
+          id: createShiftTemplateId(),
           name: `شیفت ${p.templates.length + 1}`,
           startTime: start,
-          endTime: `${String(endHour).padStart(2, '0')}:${start.slice(3)}`
+          endTime: `${String(endHour).padStart(2, '0')}:${start.slice(3)}`,
+          isActive: true,
+          daysMask: 127,
+          staffIds: [],
+          reminderRepeatMin: 15,
+          allowMidDayHandover: false
         }
       ]
       return { ...p, templates, names: templates.map((t) => t.name) }
@@ -755,6 +876,47 @@ export default function Settings() {
    * نباید باعث سردرگمی شود. تعریف/ویرایش خود شیفت‌ها مثل قبل با دکمه‌ی ذخیره‌ی
    * عمومی است.
    */
+  const loadLegacyShiftPlanReview = async () => {
+    if (!isManager) return
+    setLegacyShiftPlanBusy(true)
+    setErr(null)
+    try {
+      setLegacyShiftPlanReview(await call<LegacyShiftPlanReview>(CH.custodyPlanLegacyReview, {}))
+    } catch (e: any) {
+      setErr(e?.message ?? 'برنامه‌های قدیمی برای بازبینی خوانده نشدند.')
+    } finally {
+      setLegacyShiftPlanBusy(false)
+    }
+  }
+
+  /** Only this action changes the operational custody policy.  It is separate
+   * from the broad Save button so an open drawer can be frozen/preserved by
+   * Main before both historic/new mode records commit. */
+  const saveCustodySchedulingWorkflow = async () => {
+    if (!isManager) return setErr('تغییر روش حضانت فقط با نشست فعال مدیر ممکن است.')
+    if (shift.custodyMode === 'SINGLE_SHIFT' && !shift.singleShiftCustodianUserId)
+      return setErr('برای تک‌شیفت، مسئول اصلی روزانه را انتخاب کنید.')
+    setCustodySchedulingBusy(true)
+    try {
+      const saved = await call<ShiftConfig>(CH.settingsCustodySchedulingWorkflow, {
+        shift: { ...shift, custodyModeConfigured: true },
+        reason: custodySchedulingReason
+      })
+      setShift(parseShiftConfig(saved))
+      setCustodySchedulingReason('')
+      setDirty(false)
+      flash(
+        saved.custodyMode === 'SINGLE_SHIFT'
+          ? 'گردش‌کار تک‌شیفت با مسئول اصلی روزانه ذخیره شد. مسئولیت صندوق فقط با PIN و شمارش فیزیکی او آغاز می‌شود.'
+          : 'گردش‌کار چندشیفت با کارکنان مستقل هر شیفت ذخیره شد. مسئولیت صندوق فقط با PIN و شمارش فیزیکی آغاز می‌شود.'
+      )
+    } catch (e: any) {
+      setErr(e?.message ?? 'ذخیره‌ی روش حضانت انجام نشد.')
+    } finally {
+      setCustodySchedulingBusy(false)
+    }
+  }
+
   const setByTime = async (byTime: boolean) => {
     const previous = shift.byTime
     setShift((p) => ({ ...p, byTime })) // نمایش فوری
@@ -768,6 +930,31 @@ export default function Settings() {
     } catch (e: any) {
       setShift((p) => ({ ...p, byTime: previous })) // برگشت به حالت قبل
       setErr(`ذخیره‌ی سوییچ شیفت انجام نشد: ${e.message}`)
+    } finally {
+      setByTimePw('')
+    }
+  }
+
+  /**
+   * نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری هم *فوری* ذخیره می‌شود (مثل خودِ سوییچ):
+   * رمز مدیر همان فیلد byTimePw است و خودِ سرویس باز هم رمز را و محدوده‌ی
+   * ۰..۲۴۰ را سروری بازبینی می‌کند.
+   */
+  const saveOvertimeMax = async () => {
+    const mins = Math.trunc(Number(toLatinDigits(overtimeCap).replace(/[^0-9-]/g, '')))
+    if (!Number.isFinite(mins) || mins < 0 || mins > 240) {
+      return setErr('سقف اضافه‌کاری باید عددی صحیح بین ۰ تا ۲۴۰ دقیقه باشد (۰ یعنی خاموش).')
+    }
+    try {
+      const next = await call<ShiftConfig>(CH.settingsShiftOvertimeMax, { minutes: mins, managerPassword: byTimePw })
+      setShift(next)
+      flash(
+        mins > 0
+          ? `ذخیره شد · اضافه‌کاری شیفت شب تا ${faDigits(mins)} دقیقه بعد از پایان بازه فعال است.`
+          : 'ذخیره شد · اضافه‌کاری خاموش است؛ نشستِ بازِ دیروز بیرون از بازه همیشه باید بسته شود.'
+      )
+    } catch (e: any) {
+      setErr(`ذخیره‌ی سقف اضافه‌کاری انجام نشد: ${e.message}`)
     } finally {
       setByTimePw('')
     }
@@ -1006,14 +1193,22 @@ export default function Settings() {
        * در پنجره‌ی انتخاب چاپگر «ذخیره به‌عنوان پیش‌فرض» زده، این ذخیره‌ی کهنه
        * آن انتخاب را برنگرداند (همان نقش mergeFreshPosToggles برای چاپگر).
        */
-      const receiptToSave = mergeFreshPrinter(receipt, { ...DEFAULT_RECEIPT_TEMPLATE, ...fresh.receipt })
-      const labelToSave = mergeFreshPrinter(label, { ...DEFAULT_LABEL_TEMPLATE, ...fresh.label })
+      const receiptToSave =
+        receipt.printerName !== receiptPrinterAtLoad.current
+          ? receipt // کاربر خودش روی همین صفحه چاپگر را عوض کرده ⇒ انتخاب صفحه ذخیره شود
+          : mergeFreshPrinter(receipt, { ...DEFAULT_RECEIPT_TEMPLATE, ...fresh.receipt })
+      const labelToSave =
+        label.printerName !== labelPrinterAtLoad.current
+          ? label
+          : mergeFreshPrinter(label, { ...DEFAULT_LABEL_TEMPLATE, ...fresh.label })
       /**
        * ⚠️ این خط عمداً یک‌خطی و با همین کلیدها/ترتیب می‌ماند: تست
        * `fix-s168-settings-stale-pos-toggles` این payload را به‌صورت متن دقیق
        * بررسی می‌کند (قرارداد «صفحه‌ی کهنه نباید مقدار POS را برگرداند»).
        */
       await call(CH.settingsSaveBundle, { receipt: receiptToSave, sale: saleToSave, shift, label: labelToSave, security, time, managerPassword: bundlePw })
+      receiptPrinterAtLoad.current = receiptToSave.printerName
+      labelPrinterAtLoad.current = labelToSave.printerName
       setReceipt(receiptToSave)
       setLabel(labelToSave)
       setSale(saleToSave)
@@ -1121,10 +1316,19 @@ export default function Settings() {
     }
   }
 
-  /** خروج مدیر: وضعیت به «کارمند» برمی‌گردد و پنل‌های موجودی قفل می‌شوند. */
-  const exitManager = () => {
-    logout()
-    nav('/')
+  /**
+   * Main-first: تا وقتی Main خروج را تأیید نکرده، صفحه ظاهراً «کارمند» نمی‌شود.
+   * در خطا، hook پنل‌های حساس را fail-closed نگه می‌دارد و پیام همین صفحه دیده
+   * می‌شود؛ حضانت و فروش جاری در هیچ‌حالتی دست‌کاری نمی‌شوند.
+   */
+  const exitManager = async () => {
+    setErr(null)
+    try {
+      await logout()
+      nav('/')
+    } catch (error: any) {
+      setErr(error?.message || 'خروج مدیر قابل تأیید نیست؛ دوباره تلاش کنید.')
+    }
   }
 
   /** پیش‌نمایش بازه: چه فاکتورهایی حذف می‌شوند و در حالت «بله» چه چیزی برمی‌گردد. */
@@ -1300,7 +1504,9 @@ export default function Settings() {
   const backupNow = async () => {
     setBackupBusy(true)
     try {
-      const res = await call<{ path: string | null; size: number }>(CH.backupNow)
+      const res = await call<{ path: string | null; size: number }>(CH.backupNow, {
+        managerPassword: backupGatePw.trim() || undefined
+      })
       await Promise.all([loadBackups(), loadBackupConfig()])
       flash(res.path ? `بکاپ گرفته شد (${fileSize(res.size)}):\n${res.path}` : 'بکاپ گرفته نشد.')
     } catch (e: any) {
@@ -1326,7 +1532,9 @@ export default function Settings() {
   const createBackup = async () => {
     setBackupBusy(true)
     try {
-      const res = await call<{ canceled: boolean; path: string | null; size: number }>(CH.backupCreate)
+      const res = await call<{ canceled: boolean; path: string | null; size: number }>(CH.backupCreate, {
+        managerPassword: backupGatePw.trim() || undefined
+      })
       if (res.canceled) flash('تهیه‌ی بکاپ لغو شد؛ هیچ فایلی ساخته نشد.')
       else flash(`بکاپ ساخته شد (${fileSize(res.size)}):\n${res.path}`)
       await loadBackups()
@@ -1565,7 +1773,15 @@ export default function Settings() {
   const loadStaff = useCallback(async () => {
     try {
       const res = await call<{
-        rows: { id: number; username: string; name: string; role: string; roleLabel: string; isActive: boolean }[]
+        rows: {
+          id: number
+          username: string
+          name: string
+          role: string
+          roleLabel: string
+          isActive: boolean
+          hasCorrectionApprovalPassword?: boolean
+        }[]
         activeUserId: number | null
       }>(CH.staffDirectory, {})
       setStaffRows(res?.rows ?? [])
@@ -1575,24 +1791,80 @@ export default function Settings() {
   }, [])
 
   const saveStaff = async () => {
-    if (!staffDraft.name.trim()) return setErr('نام کارمند را وارد کنید.')
+    if (!staffDraft.name.trim()) return showStaffError('نام کارمند را وارد کنید.')
+    // نام و نقش، رکورد پایه‌اند. داده‌های شغلی/هویتی/بانکی اختیاری‌اند، اما هر
+    // مقداری که وارد شود در Main دوباره و مستقل از UI اعتبارسنجی می‌شود.
+    if (staffDraft.employmentStatus === 'TERMINATED' && !staffDraft.employmentEndJalali.trim())
+      return showStaffError('برای وضعیت «پایان همکاری»، تاریخ پایان همکاری لازم است.')
     setStaffBusy(true)
+    setStaffError(null)
     try {
-      await call(CH.staffSave, {
+      /** یک IPC تراکنشی: User پایه و پروندهٔ محرمانه یا هر دو ثبت می‌شوند یا هیچ‌کدام. */
+      const saved = await call<{ reactivated?: boolean; requiresTemporaryCustodyPin?: boolean }>(CH.staffPersonnelSaveComplete, {
         id: staffDraft.id,
         name: staffDraft.name.trim(),
         role: staffDraft.role,
         isActive: staffDraft.isActive,
-        panelPassword: staffPw
+        correctionApprovalPassword: staffCorrectionApprovalPw || undefined,
+        jobTitle: staffDraft.jobTitle,
+        phone: staffDraft.phone,
+        nationalId: staffDraft.nationalId,
+        employmentStartJalali: staffDraft.employmentStartJalali,
+        employmentEndJalali: staffDraft.employmentEndJalali,
+        employmentStatus: staffDraft.employmentStatus,
+        custodyArchiveReason: staffDraft.custodyArchiveReason.trim() || undefined,
+        bankName: staffDraft.bankName,
+        bankAccountNo: staffDraft.bankAccountNo,
+        bankIban: staffDraft.bankIban,
+        bankAccountHolder: staffDraft.bankAccountHolder
       })
-      setStaffDraft({ id: null, name: '', role: 'CASHIER', isActive: true })
+      setStaffDraft(blankStaffDraft())
       await loadStaff()
-      flash(staffDraft.id ? 'کارمند ویرایش شد.' : 'کارمند تازه ثبت شد.')
+      flash(saved.requiresTemporaryCustodyPin
+        ? 'کارمند دوباره فعال شد، اما PIN قبلی عمداً باطل مانده است؛ از «حضانت صندوق» برای او رمز موقت تازه صادر کنید.'
+        : staffDraft.id ? 'اطلاعات کارمند ذخیره شد.' : 'کارمند ثبت شد؛ تکمیل پروندهٔ محرمانه را می‌توانید بعداً انجام دهید.')
     } catch (e: any) {
-      setErr(e.message)
+      showStaffError(e?.message ?? 'ثبت پروندهٔ کارمند انجام نشد.')
     } finally {
       setStaffBusy(false)
-      setStaffPw('')
+      setStaffCorrectionApprovalPw('')
+    }
+  }
+
+  const editStaff = async (row: { id: number; name: string; role: string; isActive: boolean }) => {
+    setStaffBusy(true)
+    setStaffError(null)
+    setErr(null)
+    try {
+      const result = await call<{ profile: Partial<StaffDraft> }>(CH.staffPersonnelGet, { userId: row.id })
+      const p = result.profile
+      setStaffDraft({
+        id: row.id,
+        name: row.name,
+        role: row.role,
+        isActive: row.isActive,
+        jobTitle: p.jobTitle ?? '',
+        phone: p.phone ?? '',
+        nationalId: p.nationalId ?? '',
+        employmentStartJalali: p.employmentStartJalali ?? '',
+        employmentEndJalali: p.employmentEndJalali ?? '',
+        employmentStatus: p.employmentStatus ?? 'ACTIVE',
+        custodyArchiveReason: '',
+        bankName: p.bankName ?? '',
+        bankAccountNo: p.bankAccountNo ?? '',
+        bankIban: p.bankIban ?? '',
+        bankAccountHolder: p.bankAccountHolder ?? ''
+      })
+      /** فرم بالای جدول است. بدون این حرکت، کلیک «ویرایش» برای کاربری که پایین
+       * فهرست است هیچ اثر ظاهری ندارد و به‌اشتباه خرابی دکمه برداشت می‌شود. */
+      window.requestAnimationFrame(() => {
+        staffFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        staffNameInputRef.current?.focus()
+      })
+    } catch (e: any) {
+      showStaffError(e?.message ?? 'بازکردن پروندهٔ کارمند انجام نشد.')
+    } finally {
+      setStaffBusy(false)
     }
   }
 
@@ -1603,6 +1875,19 @@ export default function Settings() {
    */
 
   useEffect(() => {
+    /** نشست مدیر منقضی/خارج شد: دادهٔ خامی که فقط برای فرم محرمانه خوانده شده
+     * نباید در state زنده بماند تا در remount یا ورود بعدی نشان داده شود. */
+    if (!isManager) {
+      setStaffDraft(blankStaffDraft())
+      setStaffRows([])
+      setStaffCorrectionApprovalPw('')
+      setStaffError(null)
+      setLegacyShiftPlanReview(null)
+    }
+    if (!isManager && (tab === 'staff' || tab === 'custody')) {
+      setTab('receipt')
+      return
+    }
     if (tab === 'backup') {
       void loadBackups()
       void loadBackupConfig()
@@ -1613,12 +1898,13 @@ export default function Settings() {
       const t = window.setInterval(() => setTimeNow(new Date()), 1000)
       return () => window.clearInterval(t)
     }
-    if (tab === 'staff') void loadStaff()
+    if (tab === 'staff' || (tab === 'shift' && isManager)) void loadStaff()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab])
+  }, [tab, isManager])
 
   const resetReceipt = () => {
-    setReceipt(DEFAULT_RECEIPT_TEMPLATE)
+    // نام چاپگر جزو «قالب» نیست؛ ریست قالب نباید آن را خالی کند (همان رفتار قبلِ ذخیره: چاپگر دست‌نخورده)
+    setReceipt((p) => ({ ...DEFAULT_RECEIPT_TEMPLATE, printerName: p.printerName }))
     setDirty(true)
     flash('قالب رسید به حالت پیش‌فرض برگشت (برای اعمال، ذخیره کنید).')
   }
@@ -1779,13 +2065,24 @@ export default function Settings() {
           >
             سیاست حسابداری
           </button>
-          <button
-            className={`btn ${tab === 'staff' ? 'btn-primary' : ''}`}
-            onClick={() => setTab('staff')}
-            title="ثبت، ویرایش و غیرفعال‌سازی کارمندان فروشگاه — مبنای تب عملکرد کارمندان"
-          >
-            کارمندان
-          </button>
+          {isManager ? (
+            <>
+              <button
+                className={`btn ${tab === 'staff' ? 'btn-primary' : ''}`}
+                onClick={() => setTab('staff')}
+                title="ثبت، ویرایش و غیرفعال‌سازی کارمندان فروشگاه — مبنای تب عملکرد کارمندان"
+              >
+                کارمندان
+              </button>
+              <button
+                className={`btn ${tab === 'custody' ? 'btn-primary' : ''}`}
+                onClick={() => setTab('custody')}
+                title="پیکربندی کارکنانِ حضانت، برنامه‌ها و تنظیمات ساختاری صندوق"
+              >
+                حضانت صندوق
+              </button>
+            </>
+          ) : null}
           {/* ---------------- جلسه ۱۹ · بند ۹ ---------------- */}
           <button
             className={`btn ${tab === 'time' ? 'btn-primary' : ''}`}
@@ -2444,6 +2741,21 @@ export default function Settings() {
                     </div>
                   </span>
                 </label>
+                <label className="flex items-start gap-2 cursor-pointer mt-2">
+                  <input
+                    type="checkbox"
+                    className="mt-1 w-4 h-4"
+                    checked={sale.splitStoreCreditPayment !== false}
+                    onChange={(e) => setS({ splitStoreCreditPayment: e.target.checked })}
+                  />
+                  <span>
+                    <div className="font-bold">پرداخت ترکیبی اعتبار خرید در پنل فروش فعال باشد</div>
+                    <div className="kbd leading-6">
+                      روشن: فروشنده می‌تواند مشخص کند چه مقدار از اعتبار خرید مصرف و باقی فاکتور نقدی یا کارتی دریافت شود.
+                      خاموش: اعتبار معتبر فقط تا سقف مجاز کامل مصرف می‌شود. این محدودیت در سرور هم اعمال می‌شود.
+                    </div>
+                  </span>
+                </label>
               </section>
 
               <section className="space-y-2">
@@ -2510,7 +2822,8 @@ export default function Settings() {
                   دور» را می‌زند و مهلت برگشت همان فاکتور از این عدد حساب می‌شود، نه از مهلت عادی. با چک‌باکس «نمایش
                   مهلت برگشت روی فاکتور» در تب «قالب فاکتور چاپی» هم می‌توانید کل بلوک برگشت (کد، بارکد و مهلت) را از
                   رسید بردارید — برای فروشگاهی که مرجوعی قبول نمی‌کند. کد همچنان داخل سیستم ساخته می‌شود، پس اگر بعداً
-                  نظرتان عوض شد فاکتورهای همان بازه هم قابل برگشت‌اند.
+                  نظرتان عوض شد فاکتورهای همان بازه هم قابل برگشت‌اند. <b>این مهلت فقط مهلت کد/فرایند برگشت فاکتور است؛
+                  مدت اعتبار خرید را از «مدیریت اعتبار خرید → قواعد پیش‌فرض» تنظیم کنید.</b>
                 </div>
                 {/* ---------- مورد ۷: همان تنظیمات، برای فاکتور فروش عمده ---------- */}
                 <div className="border-2 border-emerald-300 rounded p-2 space-y-2 bg-emerald-50/40">
@@ -3324,6 +3637,110 @@ export default function Settings() {
             <section className="space-y-3">
               <h2 className="font-bold border-b pb-1">شیفت‌های روز</h2>
 
+              {/* انتقالِ بدون حدس: ShiftPlan قدیمی هرگز با خواندن تنظیمات تبدیل یا حذف نمی‌شود. */}
+              <div className="rounded border-2 border-amber-300 bg-amber-50 p-3 space-y-2">
+                <div className="font-bold text-amber-950">بازبینی برنامه‌های قدیمی حضانت</div>
+                <p className="text-sm leading-6 text-amber-950">
+                  برنامه‌های قدیمیِ حضانت هنوز مستقل‌اند. تا زمانی که مدیر هر مورد را با قالب شیفت جدید بررسی و تصمیم
+                  نگرفته، هیچ برنامه، کارمند زمان‌بندی‌شده یا یادآوری به‌صورت خودکار تبدیل یا حذف نمی‌شود.
+                </p>
+                {isManager ? (
+                  <button className="btn" disabled={legacyShiftPlanBusy} onClick={() => void loadLegacyShiftPlanReview()}>
+                    {legacyShiftPlanBusy ? 'در حال خواندن…' : 'بررسی فقط‌خواندنی برنامه‌های قدیمی'}
+                  </button>
+                ) : (
+                  <p className="kbd">بازبینی انتقال فقط با نشست سراسری مدیر ممکن است.</p>
+                )}
+                {legacyShiftPlanReview?.state === 'EMPTY' && <p className="text-sm text-emerald-800">برنامهٔ قدیمی برای انتقال پیدا نشد.</p>}
+                {legacyShiftPlanReview?.state === 'REVIEW_REQUIRED' && (
+                  <div className="overflow-auto rounded border border-amber-200 bg-white">
+                    <table className="tbl text-sm">
+                      <thead><tr><th>برنامهٔ قدیمی</th><th>شروع</th><th>مدت</th><th>کارکنان</th><th>وضعیت</th></tr></thead>
+                      <tbody>{legacyShiftPlanReview.plans.map((plan) => (
+                        <tr key={plan.id}>
+                          <td>{plan.title}</td>
+                          <td dir="ltr">{String(Math.floor(plan.startMinute / 60)).padStart(2, '0')}:{String(plan.startMinute % 60).padStart(2, '0')}</td>
+                          <td>{faDigits(plan.durationMinutes)} دقیقه</td>
+                          <td>{faDigits(plan.staffIds.length)} نفر</td>
+                          <td title={plan.migrationNote}>نیازمند تصمیم مدیر</td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded border-2 border-indigo-300 bg-indigo-50 p-3 space-y-3">
+                <div className="font-bold text-indigo-950">گردش‌کار مسئولیت و برنامه‌ریزی حضانت</div>
+                <p className="kbd leading-6">
+                  این دو روش عمداً جدا هستند؛ تیک مشترک یا انتخاب نام، مسئولیت مالی ایجاد نمی‌کند. در هر دو روش فقط PIN شخصی و شمارش فیزیکی هنگام بازکردن صندوق مسئولیت می‌سازد.
+                </p>
+                <div className="grid md:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    className={`rounded border-2 p-3 text-right ${shift.custodyMode === 'SINGLE_SHIFT' ? 'border-brand bg-white' : 'border-slate-300 bg-slate-50'}`}
+                    disabled={!isManager || custodySchedulingBusy}
+                    onClick={() => { setShift((current) => ({ ...current, custodyMode: 'SINGLE_SHIFT' })); setDirty(true) }}
+                  >
+                    <b>تک‌شیفت: یک مسئول اصلی روزانه</b>
+                    <span className="block kbd mt-1 leading-6">یک کارمند فعال برای کل روز انتخاب می‌شود. قالب‌های چندشیفت پایین هیچ کارمند جایگزینی برای او نمی‌سازند.</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`rounded border-2 p-3 text-right ${shift.custodyMode === 'MULTI_SHIFT' ? 'border-brand bg-white' : 'border-slate-300 bg-slate-50'}`}
+                    disabled={!isManager || custodySchedulingBusy}
+                    onClick={() => { setShift((current) => ({ ...current, custodyMode: 'MULTI_SHIFT', singleShiftCustodianUserId: null })); setDirty(true) }}
+                  >
+                    <b>چندشیفت: کارکنان مستقل هر شیفت</b>
+                    <span className="block kbd mt-1 leading-6">کارکنانِ هر قالب زمانی پایین جداگانه تعیین می‌شوند؛ فقط فرد ثبت‌شده در بازهٔ فعال می‌تواند صندوق را تحویل بگیرد.</span>
+                  </button>
+                </div>
+
+                {shift.custodyMode === 'SINGLE_SHIFT' ? (
+                  <div className="rounded border border-indigo-200 bg-white p-3 space-y-2">
+                    <div className="font-bold">تک‌شیفت · مسئول اصلی روزانه</div>
+                    <label className="flex flex-col gap-1 max-w-md">
+                      <span className="text-sm">کارمند فعالِ مسئول</span>
+                      <select
+                        className="inp"
+                        value={String(shift.singleShiftCustodianUserId ?? '')}
+                        disabled={!isManager || custodySchedulingBusy}
+                        onChange={(e) => { const id = Number(e.target.value) || null; setShift((current) => ({ ...current, singleShiftCustodianUserId: id })); setDirty(true) }}
+                      >
+                        <option value="">انتخاب مسئول اصلی روزانه…</option>
+                        {staffRows.filter((staff) => staff.isActive && (staff.role === 'MANAGER' || staff.role === 'CASHIER')).map((staff) => <option key={staff.id} value={staff.id}>{staff.name} · {staff.roleLabel}</option>)}
+                      </select>
+                    </label>
+                    <p className="kbd leading-6">این انتخاب فقط واجدبودن برای تحویل‌گیری را مشخص می‌کند. حتی همین فرد نیز بدون PIN شخصی و ثبت شمارش واقعی نمی‌تواند مسئول صندوق شود.</p>
+                  </div>
+                ) : (
+                  <div className="rounded border border-indigo-200 bg-white p-3">
+                    <b>چندشیفت · برنامهٔ مستقل هر شیفت</b>
+                    <p className="kbd leading-6 mt-1">کارکنان هر بازه در بخش «برنامهٔ چندشیفت» پایین تعیین می‌شوند. ذخیره فقط وقتی ممکن است که دست‌کم یک قالب فعال، کارمند فعال داشته باشد.</p>
+                  </div>
+                )}
+
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={shift.reminderEnabled} onChange={(e) => { setShift((current) => ({ ...current, reminderEnabled: e.target.checked })); setDirty(true) }} />
+                  یادآوری پایان برنامه روشن باشد
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <span>مهلت هشدار بعد از پایان (دقیقه)</span>
+                  <input className="inp w-24" inputMode="numeric" value={String(shift.overrunGraceMinutes)} onChange={(e) => { const minutes = Math.max(0, Math.min(1440, Math.round(Number(toLatinDigits(e.target.value).replace(/\D/g, '')) || 0))); setShift((current) => ({ ...current, overrunGraceMinutes: minutes })); setDirty(true) }} />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-sm">علت تغییر روش یا مسئول اصلی (هنگام بازبودن مسئولیت، حداقل ۱۰ کاراکتر و اجباری است)</span>
+                  <input className="inp" value={custodySchedulingReason} onChange={(e) => setCustodySchedulingReason(e.target.value)} disabled={!isManager || custodySchedulingBusy} placeholder="مثلاً تغییر رسمی برنامهٔ کاری امروز" />
+                </label>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button className="btn btn-primary" onClick={() => void saveCustodySchedulingWorkflow()} disabled={!isManager || custodySchedulingBusy}>
+                    {custodySchedulingBusy ? 'در حال حفظ امن مسئولیت…' : 'ثبت گردش‌کار حضانت'}
+                  </button>
+                  <span className="kbd">این دکمه هر دو تنظیم قدیمی/جدید را با هم ذخیره می‌کند؛ اگر صندوق باز باشد، مسئولیت همان شخص در یک تراکنش freeze و سپس با epoch تازه حفظ می‌شود.</span>
+                </div>
+                <p className="kbd leading-6">برنامهٔ legacy حضانت از اینجا نوشته، تبدیل یا حذف نمی‌شود و تا تصمیم انتقال مدیر دست‌نخورده می‌ماند.</p>
+              </div>
+
               {/* ---------- سوییچ حالت ---------- */}
               <div
                 className={`rounded p-2 border-2 space-y-1 ${
@@ -3362,6 +3779,33 @@ export default function Settings() {
                       خوانده می‌شود و ساعت‌ها بی‌اثرند.
                     </>
                   )}
+                </div>
+              </div>
+
+              {/* ---------- نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت شب ---------- */}
+              <div className="rounded p-2 border bg-slate-50 space-y-1">
+                <div className="font-bold">سقف اضافه‌کاری شیفت شب</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="flex items-center gap-2">
+                    <span className="kbd">سقف (دقیقه، ۰ تا ۲۴۰؛ ۰ = خاموش):</span>
+                    <input
+                      className="inp w-24"
+                      type="text"
+                      inputMode="numeric"
+                      value={overtimeCap}
+                      onChange={(e) => setOvertimeCap(e.target.value)}
+                    />
+                  </label>
+                  <button className="btn" disabled={!byTimePw.trim()} onClick={() => void saveOvertimeMax()}>
+                    ذخیره‌ی فوری (با رمز مدیر بالا)
+                  </button>
+                </div>
+                <div className="kbd leading-6">
+                  خاموش (پیش‌فرض ۰): نشستِ بازِ دیروز که از بازه‌اش گذشته باشد، همیشه باید با دلیل و رمز مدیر بسته
+                  شود. روشن: کارمند همان نشست از مودال «نشست صندوق» می‌تواند <b>فقط یک‌بار</b> و تا «پایان بازه +
+                  این سقف» اضافه‌کاری اعلام کند — با دلیلِ اجباری که برای همیشه در حسابرسی می‌ماند (رمز مدیر لازم
+                  نیست، چون فاکتورها به کارمند همان نشست نسبت داده می‌شوند). این گزینه فقط وقتی اثر دارد که «تعیین
+                  شیفت بر اساس ساعت» روشن باشد.
                 </div>
               </div>
 
@@ -3408,7 +3852,7 @@ export default function Settings() {
                   </thead>
                   <tbody>
                     {shift.templates.map((t, i) => (
-                      <tr key={i}>
+                      <tr key={t.id}>
                         <td className="font-bold">{faDigits(i + 1)}</td>
                         <td>
                           <input
@@ -3484,6 +3928,45 @@ export default function Settings() {
                   </tbody>
                 </table>
               </div>
+
+              {shift.custodyMode === 'MULTI_SHIFT' ? (
+              <div className="space-y-2">
+                <div className="font-bold">برنامهٔ چندشیفت: کارکنان و مجوز تحویل میان‌روز هر شیفت</div>
+                <p className="kbd leading-6">این بخش منبع canonical برنامه‌های جدید است. کارمند برنامه‌ریزی‌شده فقط «واجد انتخاب» می‌شود؛ تا PIN خودش را وارد و صندوق را باز نکند، هیچ مسئولیت مالی ندارد.</p>
+                {shift.templates.map((template, index) => (
+                  <details key={`schedule-${template.id}`} className="rounded border bg-slate-50 p-3" open={shift.templates.length === 1}>
+                    <summary className="cursor-pointer font-bold">{template.name || `شیفت ${faDigits(index + 1)}`} · {faDigits(index + 1)}</summary>
+                    <div className="mt-3 grid gap-3">
+                      <div className="flex flex-wrap gap-4 text-sm">
+                        <label className="flex items-center gap-2"><input type="checkbox" checked={template.isActive} onChange={(e) => setShiftRow(index, { isActive: e.target.checked })} /> قالب فعال</label>
+                        <label className="flex items-center gap-2"><input type="checkbox" checked={template.allowMidDayHandover} onChange={(e) => setShiftRow(index, { allowMidDayHandover: e.target.checked })} /> تحویل میان‌روز با تأیید مستقل گیرنده مجاز است</label>
+                        <label className="flex items-center gap-2">یادآوری هر <input className="inp w-16 py-0.5" inputMode="numeric" value={String(template.reminderRepeatMin)} onChange={(e) => setShiftRow(index, { reminderRepeatMin: Math.max(5, Math.min(60, Math.round(Number(toLatinDigits(e.target.value).replace(/\D/g, '')) || 5))) })} /> دقیقه</label>
+                      </div>
+                      <div className="text-sm">
+                        <div className="mb-1 font-bold">روزهای برنامه</div>
+                        <div className="flex flex-wrap gap-1">{SHIFT_WEEKDAY_NAMES.map((day, dayIndex) => {
+                          const selected = (template.daysMask & (1 << dayIndex)) !== 0
+                          return <button key={`${template.id}-day-${dayIndex}`} type="button" className={`w-9 h-8 rounded ${selected ? 'bg-brand text-white' : 'bg-slate-200'}`} onClick={() => setShiftRow(index, { daysMask: selected ? template.daysMask & ~(1 << dayIndex) : template.daysMask | (1 << dayIndex) })}>{day}</button>
+                        })}</div>
+                      </div>
+                      <div className="text-sm">
+                        <div className="mb-1 font-bold">کارکنان برنامه‌ریزی‌شده</div>
+                        {isManager ? (
+                          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-1">{staffRows.filter((staff) => staff.isActive && (staff.role === 'MANAGER' || staff.role === 'CASHIER')).map((staff) => (
+                            <label key={`${template.id}-staff-${staff.id}`} className="flex items-center gap-2"><input type="checkbox" checked={template.staffIds.includes(staff.id)} onChange={() => setShiftRow(index, { staffIds: template.staffIds.includes(staff.id) ? template.staffIds.filter((id) => id !== staff.id) : [...template.staffIds, staff.id] })} />{staff.name}</label>
+                          ))}</div>
+                        ) : <span className="kbd">مشاهده و ویرایش برنامهٔ کارکنان فقط برای مدیر ممکن است.</span>}
+                      </div>
+                    </div>
+                  </details>
+                ))}
+              </div>
+              ) : (
+                <div className="rounded border border-indigo-200 bg-indigo-50 p-3 space-y-1">
+                  <b>تک‌شیفت: برنامهٔ کارکنانِ هر قالب غیرفعال است</b>
+                  <p className="kbd leading-6">در این روش فقط مسئول اصلی روزانهٔ بالا برای تحویل‌گیری صندوق واجد است. نام و ساعت قالب‌ها همچنان برای نمایش و گزارش نشست‌های عادی نگه داشته می‌شوند، اما انتخاب کارمند در آن‌ها نمی‌تواند مسئولیت حضانت بسازد.</p>
+                </div>
+              )}
 
               <div className="flex gap-2 flex-wrap items-center">
                 <button className="btn btn-primary" onClick={addShift}>
@@ -3938,13 +4421,13 @@ export default function Settings() {
           )}
 
           {/* ==================== جلسه ۱۸ · بند ۲ — کارمندان ==================== */}
-          {tab === 'staff' && (
+          {isManager && tab === 'staff' && (
             <>
               <h2 className="font-bold text-lg">کارمندان فروشگاه</h2>
               <div className="rounded border-2 border-sky-300 bg-sky-50 p-3 leading-7">
-                این بخش <b>سیستم ورود کاربر نیست</b> و هیچ قفل تازه‌ای نمی‌سازد؛ قفل‌های برنامه همان رمز مدیر و رمزهای دوم
-                پنل‌ها هستند و دست‌نخورده‌اند. اینجا فقط کارمندان فروشگاه ثبت، ویرایش یا غیرفعال می‌شوند — همان فهرستی که
-                تب <b>عملکرد کارمندان</b> رویش کار می‌کند.
+                این بخش <b>سیستم ورود کاربر نیست</b>. ثبت کارمند و پروندهٔ او فقط با نشست اصلی مدیر انجام می‌شود؛ رمز دوم
+                پنل تنظیمات به این بخش دسترسی نمی‌دهد. اطلاعات هویتی و بانکی از فهرست عمومی کارکنان و تب
+                <b>عملکرد کارمندان</b> جدا هستند.
               </div>
 
               {/* ---------- جلسه ۱۹ · بند ۳ — «کارمند فعال» حذف شد ---------- */}
@@ -3964,12 +4447,15 @@ export default function Settings() {
               </div>
 
               {/* ---------- فرم ثبت/ویرایش ---------- */}
-              <div className="rounded border p-3 space-y-2">
+              <div ref={staffFormRef} className="rounded border p-3 space-y-2 scroll-mt-24">
                 <div className="font-bold">{staffDraft.id ? `ویرایش کارمند شماره ${faDigits(staffDraft.id)}` : 'ثبت کارمند تازه'}</div>
+                <p className="kbd leading-6">برای ثبت اولیه فقط «نام کارمند» و «نقش» لازم است. پروندهٔ شغلی، هویتی و بانکی را می‌توانید اکنون یا بعداً تکمیل کنید؛ دکمهٔ کلی «ذخیرهٔ تنظیمات» بالای صفحه برای پروندهٔ کارمندان نیست.</p>
+                {staffError && <div role="alert" className="rounded border border-red-300 bg-red-50 px-3 py-2 text-red-800">{staffError}</div>}
                 <div className="flex flex-wrap items-end gap-2">
                   <label>
                     <div className="mb-1">نام کارمند</div>
                     <input
+                      ref={staffNameInputRef}
                       className="inp w-56"
                       value={staffDraft.name}
                       onChange={(e) => setStaffDraft({ ...staffDraft, name: e.target.value })}
@@ -3980,7 +4466,11 @@ export default function Settings() {
                     <select
                       className="inp min-w-[200px]"
                       value={staffDraft.role}
-                      onChange={(e) => setStaffDraft({ ...staffDraft, role: e.target.value })}
+                      onChange={(e) => {
+                        const role = e.target.value
+                        setStaffDraft({ ...staffDraft, role })
+                        if (role !== 'MANAGER') setStaffCorrectionApprovalPw('')
+                      }}
                     >
                       {STAFF_ROLES.map((r) => (
                         <option key={r} value={r}>
@@ -3994,30 +4484,62 @@ export default function Settings() {
                       type="checkbox"
                       className="w-4 h-4"
                       checked={staffDraft.isActive}
-                      onChange={(e) => setStaffDraft({ ...staffDraft, isActive: e.target.checked })}
+                      onChange={(e) => setStaffDraft({ ...staffDraft, isActive: e.target.checked, ...(e.target.checked ? { employmentStatus: 'ACTIVE', employmentEndJalali: '' } : {}) })}
                     />
                     فعال
                   </label>
-                  <label title="ثبت یا ویرایش کارمند (نام/نقش/فعال‌بودن) رمز مدیر یا رمز دوم پنل تنظیمات می‌خواهد">
-                    <div className="mb-1 font-bold">رمز مدیر / رمز تنظیمات</div>
-                    <PasswordField value={staffPw} onChange={(e) => setStaffPw(e.target.value)} />
-                  </label>
-                  <button className="btn btn-primary" onClick={() => void saveStaff()} disabled={staffBusy || !staffPw.trim()}>
-                    {staffBusy ? 'در حال ذخیره…' : staffDraft.id ? 'ذخیره‌ی ویرایش' : 'ثبت کارمند'}
+                  {staffDraft.role === 'MANAGER' && (
+                    <label title="فقط هنگام اصلاح/ابطال دیرهنگام یا دوره‌بسته استفاده می‌شود؛ خالی گذاشتن آن رمز قبلی مدیر را تغییر نمی‌دهد.">
+                      <div className="mb-1 font-bold">رمز شخصی تأیید اصلاح دیرهنگام</div>
+                      <PasswordField
+                        value={staffCorrectionApprovalPw}
+                        onChange={(e) => setStaffCorrectionApprovalPw(e.target.value)}
+                        placeholder={staffDraft.id ? 'خالی = بدون تغییر' : 'حداقل ۴ نویسه'}
+                      />
+                    </label>
+                  )}
+                </div>
+                <fieldset className="rounded border border-rose-200 bg-rose-50/50 p-3 space-y-3">
+                  <legend className="px-1 font-bold text-rose-950">پروندهٔ پرسنلی محرمانه — فقط مدیر</legend>
+                  <p className="text-sm leading-6 text-slate-700">این اطلاعات در فهرست کارکنان، گزارش‌ها، خروجی‌ها و لاگ‌های عادی نشان داده نمی‌شوند. فقط نشست اصلی مدیر در همین پنجره اجازهٔ مشاهده یا تغییر دارد.</p>
+                  <div className={`rounded border px-3 py-2 text-sm ${staffProfileProgress.isComplete ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : 'border-amber-300 bg-amber-50 text-amber-950'}`}>
+                    <b>{staffProfileProgress.isComplete ? 'پرونده کامل است' : 'پرونده در حال تکمیل است'}</b>
+                    {' · '}
+                    {faDigits(staffProfileProgress.completed)} از {faDigits(staffProfileProgress.total)} بخش تکمیل شده. خالی‌بودن این بخش‌ها ثبت یا ویرایش پایهٔ کارمند را متوقف نمی‌کند؛ برای احراز صلاحیت صندوق و مسئولیت شیفت، شرایط جداگانه اعمال می‌شود.
+                  </div>
+                  <div className="grid md:grid-cols-3 gap-3">
+                    <label><div className="mb-1">عنوان شغلی</div><input className="inp w-full" value={staffDraft.jobTitle} onChange={(e) => setStaffDraft({ ...staffDraft, jobTitle: e.target.value })} /></label>
+                    <label><div className="mb-1">شماره تماس</div><input className="inp w-full" inputMode="tel" value={staffDraft.phone} onChange={(e) => setStaffDraft({ ...staffDraft, phone: e.target.value })} /></label>
+                    <label><div className="mb-1">کد ملی</div><input className="inp w-full" inputMode="numeric" value={staffDraft.nationalId} onChange={(e) => setStaffDraft({ ...staffDraft, nationalId: e.target.value })} /></label>
+                    <label><div className="mb-1">شروع همکاری (۱۴۰۳/۰۱/۳۱)</div><input className="inp w-full" value={staffDraft.employmentStartJalali} onChange={(e) => setStaffDraft({ ...staffDraft, employmentStartJalali: e.target.value })} /></label>
+                    <label><div className="mb-1">پایان همکاری</div><input className="inp w-full" value={staffDraft.employmentEndJalali} onChange={(e) => setStaffDraft({ ...staffDraft, employmentEndJalali: e.target.value })} /></label>
+                    <label><div className="mb-1">وضعیت استخدام</div><select className="inp w-full" value={staffDraft.employmentStatus} onChange={(e) => setStaffDraft({ ...staffDraft, employmentStatus: e.target.value as StaffDraft['employmentStatus'] })}><option value="ACTIVE">فعال</option><option value="LEAVE">مرخصی / غیبت</option><option value="SUSPENDED">تعلیق</option><option value="TERMINATED">پایان همکاری</option></select></label>
+                  </div>
+                  {(staffDraft.id && (!staffDraft.isActive || staffDraft.employmentStatus === 'TERMINATED')) ? <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm space-y-2"><b>آرشیو / پایان همکاری</b><p className="leading-6">اگر این شخص همین حالا مسئول صندوق باشد، ذخیره ابتدا فروش را کوتاه‌مدت freeze می‌کند، نشست او را با مبلغ مورد انتظار محفوظ می‌بندد و یک پروندهٔ شمارش بازیابی می‌سازد؛ سپس آرشیو انجام می‌شود. PIN قبلی او نیز باطل می‌شود.</p><label className="block"><span className="mb-1 block">دلیل آرشیو مسئول فعال صندوق (در صورت مسئول‌بودن، حداقل ۱۰ حرف)</span><textarea className="inp w-full" value={staffDraft.custodyArchiveReason} onChange={(e) => setStaffDraft({ ...staffDraft, custodyArchiveReason: e.target.value })} /></label></div> : null}
+                  <div className="grid md:grid-cols-2 gap-3 border-t border-rose-200 pt-3">
+                    <label><div className="mb-1">نام بانک</div><input className="inp w-full" value={staffDraft.bankName} onChange={(e) => setStaffDraft({ ...staffDraft, bankName: e.target.value })} /></label>
+                    <label><div className="mb-1">نام صاحب حساب</div><input className="inp w-full" value={staffDraft.bankAccountHolder} onChange={(e) => setStaffDraft({ ...staffDraft, bankAccountHolder: e.target.value })} /></label>
+                    <label><div className="mb-1">شماره حساب</div><input className="inp w-full" inputMode="numeric" value={staffDraft.bankAccountNo} onChange={(e) => setStaffDraft({ ...staffDraft, bankAccountNo: e.target.value })} /></label>
+                    <label><div className="mb-1">شماره شبا (IR…)</div><input className="inp w-full uppercase" value={staffDraft.bankIban} onChange={(e) => setStaffDraft({ ...staffDraft, bankIban: e.target.value })} /></label>
+                  </div>
+                </fieldset>
+                <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+                  <button className="btn btn-primary" onClick={() => void saveStaff()} disabled={staffBusy}>
+                    {staffBusy ? 'در حال ذخیره…' : staffDraft.id ? 'ذخیرهٔ ویرایش کارمند' : 'ثبت کارمند'}
                   </button>
                   {staffDraft.id && (
                     <button
                       className="btn"
-                      onClick={() => setStaffDraft({ id: null, name: '', role: 'CASHIER', isActive: true })}
+                      onClick={() => setStaffDraft(blankStaffDraft())}
                       disabled={staffBusy}
                     >
-                      انصراف
+                      انصراف از ویرایش
                     </button>
                   )}
+                  <span className="kbd">پس از ذخیره، اطلاعات عمومی و پروندهٔ محرمانه با هم ثبت می‌شوند.</span>
                 </div>
                 <div className="kbd leading-6">
-                  کارمند هیچ‌وقت <b>حذف</b> نمی‌شود، فقط «غیرفعال» می‌شود؛ وگرنه سابقه‌ی فروش و برگشتِ گذشته‌اش بی‌صاحب
-                  می‌شد.
+                  ثبت ساختاری کارمند و این پرونده فقط با <b>نشست اصلی مدیر</b> انجام می‌شود؛ رمز دوم Settings کافی نیست. کارمند هیچ‌وقت <b>حذف</b> نمی‌شود، فقط «غیرفعال» می‌شود؛ وگرنه سابقه‌ی فروش و برگشتِ گذشته‌اش بی‌صاحب می‌ماند.
                 </div>
               </div>
 
@@ -4028,6 +4550,7 @@ export default function Settings() {
                     <th>شماره</th>
                     <th>نام</th>
                     <th>نقش</th>
+                    <th>رمز تأیید اصلاح</th>
                     <th>وضعیت</th>
                     <th>ویرایش</th>
                   </tr>
@@ -4038,11 +4561,14 @@ export default function Settings() {
                       <td className="tabular-nums">{faDigits(r.id)}</td>
                       <td className="font-bold">{r.name}</td>
                       <td>{r.roleLabel}</td>
+                      <td>
+                        {r.role === 'MANAGER' ? (r.hasCorrectionApprovalPassword ? 'تعریف شده' : 'تعریف نشده') : '—'}
+                      </td>
                       <td>{r.isActive ? 'فعال' : 'غیرفعال'}</td>
                       <td>
                         <button
                           className="btn"
-                          onClick={() => setStaffDraft({ id: r.id, name: r.name, role: r.role, isActive: r.isActive })}
+                          onClick={() => void editStaff(r)}
                         >
                           ویرایش
                         </button>
@@ -4051,7 +4577,7 @@ export default function Settings() {
                   ))}
                   {!staffRows.length && (
                     <tr>
-                      <td colSpan={5} className="text-center py-4 text-slate-500">
+                      <td colSpan={6} className="text-center py-4 text-slate-500">
                         هنوز کارمندی ثبت نشده است.
                       </td>
                     </tr>
@@ -4059,6 +4585,37 @@ export default function Settings() {
                 </tbody>
               </table>
             </>
+          )}
+
+          {/* ==================== حضانت صندوق — فقط پیکربندی ساختاری ==================== */}
+          {isManager && tab === 'custody' && (
+            <section className="space-y-4" dir="rtl">
+              <div>
+                <h2 className="font-bold text-lg">تنظیمات حضانت صندوق</h2>
+                <p className="text-sm text-slate-600 mt-1 leading-7">
+                  راه‌اندازی حضانت و صدور رمز موقت از این بخش انجام می‌شود. نام، زمان، روزها، کارکنان برنامه‌ریزی‌شده، یادآوری و اجازهٔ تحویل میان‌روز فقط در تب «شیفت‌ها» تعریف می‌شوند.
+                  نوار بالای برنامه فقط برای عملیات روزانهٔ صندوق، تحویل و بستن نهایی است.
+                </p>
+              </div>
+              <div className="rounded border-2 border-sky-300 bg-sky-50 p-3 leading-7 text-sm">
+                برنامهٔ شیفت فقط انتظار حضور است؛ مسئول مالی صندوق تنها پس از احراز رمز شخصی و بازشدن واقعی صندوق تعیین می‌شود.
+                نبود برنامه یا کارمند برنامه‌ریزی‌شده، فروش را متوقف نمی‌کند.
+              </div>
+              <div className="rounded border p-4 space-y-3 bg-white">
+                <div className="font-bold">راه‌اندازی اولیه</div>
+                <p className="text-sm text-slate-600">
+                  اگر حضانت هنوز فعال نشده، مدیر ابتدا رمز شخصی حضانت خود را تعریف و سپس ماژول را فعال می‌کند. این کار فروش یا نشست‌های قدیمی را تغییر نمی‌دهد.
+                </p>
+                <CustodyChip showOperations={false} />
+              </div>
+              <div className="rounded border p-4 space-y-3 bg-white">
+                <div className="font-bold">رمزهای موقت و بازبینی دادهٔ قدیمی</div>
+                <p className="text-sm text-slate-600">
+                  پس از فعال‌سازی، رمز موقت شخصی صادر یا بازنشانی می‌شود و برنامه‌های Legacy فقط قابل بازبینی‌اند؛ هیچ رمز خام قبلی نمایش داده نمی‌شود. برای ساخت یا ویرایش برنامهٔ جدید به تب «شیفت‌ها» بروید.
+                </p>
+                <CustodyAdminChip />
+              </div>
+            </section>
           )}
 
           {/* ==================== جلسه ۱۹ · بند ۹ — تاریخ و ساعت رسمی ==================== */}
@@ -4156,10 +4713,10 @@ export default function Settings() {
               {/* ==================== بکاپ خودکار: مسیر و بازه (مورد ۶) ==================== */}
               <h2 className="font-bold border-b pb-1">بکاپ خودکار (مسیر و بازه‌ی زمانی)</h2>
               <div className="border rounded p-2 space-y-1">
-                <b>رمز مدیر برای حذف بکاپ و تغییر تنظیمات خودکار</b>
+                <b>رمز مدیر برای تهیه، حذف و تنظیم بکاپ</b>
                 <div className="kbd leading-6">
-                  حذف فایل بکاپ و کم‌کردن تعداد نسخه‌ها مدرک را از بین می‌برد. رمز مدیر (یا رمز دوم پنل تنظیمات) لازم
-                  است.
+                  تهیه‌ی نسخهٔ کامل، بکاپ فوری، حذف فایل و کم‌کردن تعداد نسخه‌ها به داده یا ردّ آن دسترسی دارند. رمز مدیر
+                  (یا رمز دوم پنل تنظیمات) لازم است.
                 </div>
                 <PasswordField
                   className="inp max-w-xs"

@@ -1,14 +1,16 @@
 import { prisma } from '../db/client'
+import type { Prisma } from '@prisma/client'
 import { audit } from './AuditService'
 /**
  * نشست ۱۵۴ (S151-b) — گیت‌های رمز سمت سرور. AuthService خودش SettingsService را
  * import نمی‌کند (فقط db/client، AuditService، errors، PanelVault و shared)، پس چرخه‌ای ساخته نمی‌شود.
  */
-import { assertManagerPassword, assertPanelPassword } from './AuthService'
+import { assertManagerPassword, assertPanelPassword, assertPanelPasswordStrict } from './AuthService'
 import { BusinessError } from '../errors'
 // نشست ۲۲۲ · فاز ۵ — دروازه‌ی روشن‌کردن مسیر RAW (بخش ۷.۱ طرح)
 import { assertRawMethodAllowed } from '../print/raw/gate'
 import { applyPanelSessionTtlMinutes } from './panelSession'
+import { TX_OPTIONS } from '../db/tx'
 import { PANEL_KEYS } from '@shared/panels'
 import { AuditAction } from '@shared/enums'
 import { toClock, toJalaliDate } from '@shared/jalali'
@@ -19,6 +21,7 @@ import {
   parseSaleDefaults,
   parseSecurityConfig,
   parseShiftConfig,
+  parseCustodyConfig,
   parseOfficialTimeConfig,
   applyOfficialOffset,
   parseAccountingPolicy,
@@ -29,6 +32,7 @@ import {
   type SaleDefaults,
   type SecurityConfig,
   type ShiftConfig,
+  type CustodyConfig,
   type OfficialTimeConfig
 } from '@shared/receipt'
 import {
@@ -129,9 +133,13 @@ async function readKey(key: string): Promise<string | null> {
   return row?.value ?? null
 }
 
-async function writeKey(key: string, value: unknown): Promise<void> {
+async function writeKey(
+  key: string,
+  value: unknown,
+  client: Prisma.TransactionClient | typeof prisma = prisma
+): Promise<void> {
   const json = JSON.stringify(value)
-  await prisma.setting.upsert({ where: { key }, update: { value: json }, create: { key, value: json } })
+  await client.setting.upsert({ where: { key }, update: { value: json }, create: { key, value: json } })
 }
 
 const normalizeKind = (k: unknown): ChargeKind => (k === 'service' ? 'service' : 'tax')
@@ -149,11 +157,75 @@ function chargePanelKey(kind: ChargeKind, scope: ChargeScope): string {
 /** مقایسه‌ی «تغییر» بر پایه‌ی مقدار نرمال‌شده (نه متن خام) تا ارسال همان مقدار قبلی رمز نخواهد. */
 const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 
+/** Server-side integrity for canonical Shift Settings. Renderer hints are for
+ * usability only; direct IPC calls cannot create overlapping schedules or
+ * assign inactive/non-operational staff. */
+async function assertCanonicalShiftSchedule(config: ShiftConfig): Promise<void> {
+  const active = config.templates.filter((template) => template.isActive)
+  if (active.some((template) => template.daysMask <= 0))
+    throw new BusinessError('برای هر شیفت فعال دست‌کم یک روز برنامه را انتخاب کنید.')
+  const names = active.map((template) => template.name.trim())
+  if (new Set(names).size !== names.length)
+    throw new BusinessError('نام شیفت‌های فعال باید یکتا باشد تا سابقه و گزارش شیفت مبهم نشود.')
+  if (config.custodyModeConfigured && config.custodyMode === 'MULTI_SHIFT' && !active.some((template) => template.staffIds.length > 0))
+    throw new BusinessError('برای حالت چندشیفت، دست‌کم یک شیفت فعال با کارمند برنامه‌ریزی‌شده لازم است.')
+  if (config.custodyModeConfigured && config.custodyMode === 'SINGLE_SHIFT' && !config.singleShiftCustodianUserId)
+    throw new BusinessError('برای تک‌شیفت، مسئول اصلی روزانه را از کارکنان فعال انتخاب کنید.')
+
+  const requestedStaffIds = [
+    ...new Set([
+      ...active.flatMap((template) => template.staffIds),
+      ...(config.singleShiftCustodianUserId ? [config.singleShiftCustodianUserId] : [])
+    ])
+  ]
+  if (requestedStaffIds.length) {
+    const users = await prisma.user.findMany({ where: { id: { in: requestedStaffIds } }, select: { id: true, isActive: true, role: true } })
+    if (users.length !== requestedStaffIds.length || users.some((user) => !user.isActive || (user.role !== 'MANAGER' && user.role !== 'CASHIER')))
+      throw new BusinessError('کارمند برنامه‌ریزی‌شده باید مدیر یا صندوقدارِ فعال باشد.')
+  }
+
+  const toMinute = (time: string) => {
+    const [hour, minute] = time.split(':').map(Number)
+    return hour * 60 + minute
+  }
+  const intervalsOf = (template: ShiftConfig['templates'][number]) => {
+    const startMinute = toMinute(template.startTime)
+    const endMinute = toMinute(template.endTime)
+    const duration = ((endMinute - startMinute + 1440) % 1440) || 1440
+    const out: Array<{ from: number; to: number }> = []
+    // one preceding and one following week expose every overnight boundary.
+    for (let day = -7; day < 14; day++) {
+      const weekday = ((day % 7) + 7) % 7
+      if ((template.daysMask & (1 << weekday)) !== 0) out.push({ from: day * 1440 + startMinute, to: day * 1440 + startMinute + duration })
+    }
+    return out
+  }
+  for (let left = 0; left < active.length; left++) {
+    const a = intervalsOf(active[left])
+    for (let right = left + 1; right < active.length; right++) {
+      const b = intervalsOf(active[right])
+      if (a.some((one) => b.some((two) => one.from < two.to && two.from < one.to)))
+        throw new BusinessError(`بازهٔ شیفت‌های «${active[left].name}» و «${active[right].name}» هم‌پوشانی دارد.`)
+    }
+  }
+}
+
 /**
  * نشست ۱۵۶ (S151-c2، بند ۴-۴۵) — قانون value=0 ذخیره می‌ماند: یعنی «عمداً صفر» و از
  * والد ارث نمی‌برد. «تنظیم‌نشده» = نبودِ قانون. (قبلاً صفرها حذف می‌شدند ⇒ ارث بی‌صدا از والد.)
  * مقدار پیش‌فرض صفر همان «بدون پیش‌فرض» است (هر دو مبلغ صفر می‌دهند).
  */
+/** These three values decide who may begin a custody segment.  They never go
+ * through the broad settings bundle: changing them has a dedicated atomic
+ * workflow that also reconciles the old custody.config mode. */
+function sameCustodySchedulingPolicy(a: ShiftConfig, b: ShiftConfig): boolean {
+  return (
+    a.custodyMode === b.custodyMode &&
+    a.custodyModeConfigured === b.custodyModeConfigured &&
+    a.singleShiftCustodianUserId === b.singleShiftCustodianUserId
+  )
+}
+
 function cleanCharge(config: unknown): CategoryChargeConfig {
   const clean = parseCategoryCharge(config)
   if (clean.fallback && clean.fallback.value <= 0) clean.fallback = null
@@ -180,6 +252,102 @@ export const settingsService = {
 
   async shiftConfig(): Promise<ShiftConfig> {
     return parseShiftConfig(await readKey(SETTING_KEYS.shiftConfig))
+  },
+
+  /**
+   * The only writer for custody scheduling policy.  The earlier product had
+   * two mode fields (`shift.config` and `custody.config`) and a checkbox could
+   * update only one of them while a drawer was open.  This deliberately
+   * reconciles both fields in one database transaction.  An open responsibility
+   * segment is fenced, preserved unchanged, then resumed with a new epoch;
+   * financial writers holding the old epoch fail closed instead of slipping
+   * across the policy boundary.
+   */
+  async saveCustodySchedulingWorkflow(input: { shift?: unknown; reason?: unknown; userId?: number | null }): Promise<ShiftConfig> {
+    const submitted = parseShiftConfig(input?.shift)
+    const next: ShiftConfig = {
+      ...submitted,
+      custodyModeConfigured: true,
+      // A primary daily custodian belongs only to the single-shift workflow.
+      singleShiftCustodianUserId: submitted.custodyMode === 'SINGLE_SHIFT' ? submitted.singleShiftCustodianUserId : null
+    }
+    await assertCanonicalShiftSchedule(next)
+    const reason = String(input?.reason ?? '').trim()
+
+    return prisma.$transaction(async (tx) => {
+      const [shiftRow, custodyRow, existingState] = await Promise.all([
+        tx.setting.findUnique({ where: { key: SETTING_KEYS.shiftConfig } }),
+        tx.setting.findUnique({ where: { key: SETTING_KEYS.custodyConfig } }),
+        tx.custodyState.findUnique({ where: { key: 'MAIN' } })
+      ])
+      const beforeShift = parseShiftConfig(shiftRow?.value ?? null)
+      const beforeCustody = parseCustodyConfig(custodyRow?.value ?? null)
+      // A pre-workflow installation keeps its historic custody-config decision
+      // until this explicit manager workflow has recorded the reconciliation.
+      const beforeMode = beforeShift.custodyModeConfigured ? beforeShift.custodyMode : beforeCustody.mode
+      const policyChanged = !sameCustodySchedulingPolicy(beforeShift, next) || beforeMode !== next.custodyMode
+      const state = existingState ?? { state: 'NO_SESSION', activeShiftId: null, pendingHandoverId: null, epoch: 0 }
+      const hasOpenResponsibility = state.state !== 'NO_SESSION'
+
+      if (hasOpenResponsibility && state.state !== 'ACTIVE')
+        throw new BusinessError('تا پایان تحویل/بازیابی در جریان، تغییر روش تک‌شیفت یا چندشیفت مجاز نیست.', 'CUSTODY_MODE_SWITCH_PENDING')
+      if (hasOpenResponsibility && !state.activeShiftId)
+        throw new BusinessError('مسئولیت باز صندوق ناقص است؛ ابتدا بازیابی صندوق را انجام دهید.', 'CUSTODY_INVARIANT_BROKEN')
+      if (hasOpenResponsibility && policyChanged && reason.length < 10)
+        throw new BusinessError('برای تغییر روش حضانت هنگام مسئولیت باز، علت حداقل ۱۰ کاراکتری وارد کنید.', 'CUSTODY_MODE_SWITCH_REASON')
+
+      const nextCustody: CustodyConfig = parseCustodyConfig({ ...beforeCustody, mode: next.custodyMode })
+      let frozenEpoch: number | null = null
+      if (hasOpenResponsibility && policyChanged) {
+        const activeShift = await tx.shift.findUnique({ where: { id: state.activeShiftId! }, select: { id: true, closedAt: true } })
+        const meta = activeShift ? await tx.custodyShiftMeta.findUnique({ where: { shiftId: activeShift.id }, select: { shiftId: true, custodianUserId: true } }) : null
+        if (!activeShift || activeShift.closedAt || !meta)
+          throw new BusinessError('سند مسئولیت باز صندوق کامل نیست؛ ابتدا بازیابی صندوق را انجام دهید.', 'CUSTODY_INVARIANT_BROKEN')
+        frozenEpoch = Number(state.epoch) + 1
+        const frozen = await tx.custodyState.updateMany({
+          where: { key: 'MAIN', state: 'ACTIVE', activeShiftId: state.activeShiftId, epoch: state.epoch },
+          data: { state: 'MODE_SWITCH_FREEZE', epoch: frozenEpoch, updatedAt: new Date() }
+        })
+        if (frozen.count !== 1) throw new BusinessError('وضعیت صندوق هم‌زمان تغییر کرد؛ دوباره تلاش کنید.', 'CUSTODY_STALE')
+        await tx.custodyEvent.create({
+          data: {
+            type: 'CUSTODY_MODE_SWITCH_FREEZE', shiftId: activeShift.id, actorUserId: input?.userId ?? null,
+            actorKind: 'MANAGER', authMethod: 'MANAGER_SESSION', epochBefore: state.epoch, epochAfter: frozenEpoch,
+            payloadJson: JSON.stringify({ fromMode: beforeMode, toMode: next.custodyMode, reason, preservedCustodianUserId: meta.custodianUserId }),
+            operationalDay: toJalaliDate(new Date())
+          }
+        })
+      }
+
+      await writeKey(SETTING_KEYS.shiftConfig, next, tx)
+      await writeKey(SETTING_KEYS.custodyConfig, nextCustody, tx)
+
+      if (frozenEpoch != null) {
+        const resumedEpoch = frozenEpoch + 1
+        const resumed = await tx.custodyState.updateMany({
+          where: { key: 'MAIN', state: 'MODE_SWITCH_FREEZE', activeShiftId: state.activeShiftId, epoch: frozenEpoch },
+          data: { state: 'ACTIVE', epoch: resumedEpoch, updatedAt: new Date() }
+        })
+        if (resumed.count !== 1) throw new BusinessError('بازگرداندن مسئولیت صندوق ناموفق بود؛ هیچ تنظیمی ذخیره نشد.', 'CUSTODY_STALE')
+        await tx.custodyEvent.create({
+          data: {
+            type: 'CUSTODY_MODE_SWITCH_COMMITTED', shiftId: state.activeShiftId, actorUserId: input?.userId ?? null,
+            actorKind: 'MANAGER', authMethod: 'MANAGER_SESSION', epochBefore: frozenEpoch, epochAfter: resumedEpoch,
+            payloadJson: JSON.stringify({ fromMode: beforeMode, toMode: next.custodyMode, reason, responsibilityPreserved: true }),
+            operationalDay: toJalaliDate(new Date())
+          }
+        })
+      }
+      await tx.auditLog.create({
+        data: {
+          action: 'SETTINGS_UPDATE', entity: 'CustodySchedulingWorkflow', userId: input?.userId ?? null,
+          before: JSON.stringify({ custodyMode: beforeMode, configured: beforeShift.custodyModeConfigured, primaryUserId: beforeShift.singleShiftCustodianUserId }),
+          after: JSON.stringify({ custodyMode: next.custodyMode, configured: true, primaryUserId: next.singleShiftCustodianUserId, custodyConfigMode: nextCustody.mode }),
+          note: frozenEpoch == null ? 'ثبت روش برنامه‌ریزی حضانت صندوق' : `ثبت روش برنامه‌ریزی حضانت با حفظ مسئولیت باز: ${reason}`
+        }
+      })
+      return next
+    }, TX_OPTIONS)
   },
 
   /**
@@ -227,8 +395,9 @@ export const settingsService = {
    * محافظه‌کار در `@shared/credit`، و یک ردیف AuditLog روی هر تغییر — چون این
    * تنظیمات مستقیم روی پول (طول کد، دفعات مصرف، مدت اعتبار) اثر دارند.
    *
-   * نشست ۱۵۴ (S151-b) — قفل UI کافی نبود (هر تماس IPC دورش می‌زد)؛ حالا خودِ
-   * سرویس رمز پنل `creditSettings` را می‌سنجد (قفل خاموش ⇒ OPEN، سیاست قفل ماژول‌ها).
+   * نشست ۱۵۴ (S151-b) — قفل UI کافی نبود (هر تماس IPC دورش می‌زد). CRED-MED-03:
+   * این تنظیمات روی اعتبارِ قابل‌خرج اثر دارد، پس حتی با خاموش‌بودن قفل ظاهریِ
+   * پنل نیز همیشه رمز مدیر یا رمز دوم/سوم creditSettings لازم است.
    */
   async creditSettings(): Promise<CreditSettings> {
     return parseCreditSettings(await readKey(SETTING_KEYS.creditSettings))
@@ -237,7 +406,7 @@ export const settingsService = {
   async saveCreditSettings(
     input: { settings?: unknown; userId?: number | null; panelPassword?: string | null } = {}
   ): Promise<CreditSettings> {
-    await assertPanelPassword(
+    await assertPanelPasswordStrict(
       PANEL_KEYS.creditSettings,
       input?.panelPassword ?? null,
       'ذخیره‌ی تنظیمات اعتبار خرید (طول کد، دفعات مصرف، مدت اعتبار)'
@@ -560,6 +729,35 @@ export const settingsService = {
   },
 
   /**
+   * نشست ۳۱۰ · فاز ۲ — سقف اضافه‌کاری شیفت شب (۰ = خاموش که پیش‌فرض است؛ حداکثر ۲۴۰).
+   * الگوی setShiftByTime: ذخیره‌ی فوری، تغییر فقط با رمز مدیر، ثبت در حسابرسی.
+   * نرمال‌سازی نهایی دوباره از parseShiftConfig می‌گذرد تا مسیر دیگر (saveBundle)
+   * هم نتواند مقدار نامعتبر ذخیره کند.
+   */
+  async setShiftOvertimeMax(input: { minutes: number; userId?: number | null; managerPassword?: string | null }): Promise<ShiftConfig> {
+    const mins = Math.trunc(Number(input?.minutes))
+    if (!Number.isFinite(mins) || mins < 0 || mins > 240)
+      throw new BusinessError('سقف اضافه‌کاری باید عددی صحیح بین ۰ تا ۲۴۰ دقیقه باشد (۰ یعنی خاموش).')
+    const before = await this.shiftConfig()
+    const next = parseShiftConfig({ ...before, overtimeMaxMinutes: mins })
+    if (next.overtimeMaxMinutes !== before.overtimeMaxMinutes)
+      await assertManagerPassword(input?.managerPassword ?? null, 'تغییر «سقف اضافه‌کاری شیفت»')
+    await writeKey(SETTING_KEYS.shiftConfig, next)
+    await audit(prisma, {
+      action: 'SETTINGS_UPDATE',
+      entity: 'Setting',
+      userId: input?.userId ?? null,
+      before: JSON.stringify({ overtimeMaxMinutes: before.overtimeMaxMinutes }),
+      after: JSON.stringify({ overtimeMaxMinutes: next.overtimeMaxMinutes }),
+      note:
+        next.overtimeMaxMinutes > 0
+          ? `سقف اضافه‌کاری شیفت روی ${next.overtimeMaxMinutes} دقیقه تنظیم شد (ذخیره‌ی فوری)`
+          : 'اضافه‌کاری شیفت خاموش شد — نشست دیروز بیرون از بازه همیشه باید بسته شود (ذخیره‌ی فوری)'
+    })
+    return next
+  },
+
+  /**
    * ذخیره‌ی تنظیمات. هر بخش اختیاری است (فقط همان بخش بازنویسی می‌شود) و
    * مقدارها قبل از ذخیره نرمال‌سازی می‌شوند تا فیلد ناقص یا نوع اشتباه ذخیره
    * نشود. تغییر تنظیمات در AuditLog هم ثبت می‌گردد.
@@ -658,78 +856,116 @@ export const settingsService = {
           'تغییر سیاست تخفیف پنل فروش از ذخیره‌ی کلی تنظیمات'
         )
     }
+    // همه‌ی ورودی‌ها را پیش از نخستین write نرمال‌سازی و اعتبارسنجی می‌کنیم.
+    // به‌خصوص گیت RAW باید قبل از هر upsert اجرا شود؛ وگرنه شکست label می‌توانست
+    // receipt / sale / shift را نیمه‌کاره روی دیسک بگذارد.
+    const normalizedShift = input.shift ? parseShiftConfig(input.shift) : null
+    if (normalizedShift) {
+      const currentShift = await this.shiftConfig()
+      // Older saved schedules did not have an explicit workflow marker.  Keep
+      // their legacy save semantics intact; once the manager reviews either
+      // workflow, every later policy mutation must take the atomic route.
+      if ((currentShift.custodyModeConfigured || normalizedShift.custodyModeConfigured) && !sameCustodySchedulingPolicy(currentShift, normalizedShift))
+        throw new BusinessError(
+          'تغییر تک‌شیفت/چندشیفت یا مسئول اصلی روزانه فقط از بخش «روش مسئولیت و برنامه‌ریزی حضانت» انجام می‌شود؛ این مسیر مسئولیت باز را اتمی حفظ می‌کند.',
+          'CUSTODY_SCHEDULING_WORKFLOW_REQUIRED'
+        )
+      await assertCanonicalShiftSchedule(normalizedShift)
+    }
     const before = await this.bundle()
+    // `bundle()` logoی رسید را از لیبل پر می‌کند؛ نسخه‌ی ذخیره‌شده لازم است تا
+    // پاسخِ ذخیره‌ی تنها-لیبل هم ارث‌بری تازه را مانند خواندن بعدی نشان دهد.
+    const storedReceipt = parseReceiptTemplate(await readKey(SETTING_KEYS.receiptTemplate))
+    const nextReceipt = input.receipt ? parseReceiptTemplate(input.receipt) : null
+    const nextSale = input.sale ? parseSaleDefaults(input.sale) : null
+    const nextTime = input.time ? parseOfficialTimeConfig(input.time) : null
+    const nextLabel = input.label ? parseLabelTemplate(input.label) : null
+    const nextSecurity = input.security ? parseSecurityConfig(input.security) : null
+    const nextDiscount = input.discount ? parseDiscountPolicy(input.discount) : null
 
     /**
      * بند ۷ (جلسه ۳۱) — قرینه‌ی ارث‌بری لوگو: اگر `logoDataUrl` همان لوگوی
      * لیبل باشد (چون `receiptTemplate()` پرش کرده بود)، خالی ذخیره می‌شود تا
      * ارث‌بری زنده بماند و عوض کردن لوگوی لیبل روی سند اعتبار هم اثر بگذارد.
-     * لوگوی جدا و صریحِ کاربر دست‌نخورده می‌ماند.
      */
-    if (input.receipt) {
-      const receipt = parseReceiptTemplate(input.receipt)
-      /**
-       * نشست ۲۲۲ · فاز ۵ (بخش ۷.۱ طرح) — تغییر روش چاپ به «دقیق (RAW)» فقط بعد
-       * از یک «چاپ آزمایشی RAW» موفق در همین اجرای برنامه مجاز است.
-       */
-      assertRawMethodAllowed('INVOICE', receipt.printMethod, before.receipt.printMethod)
+    if (nextReceipt) {
+      assertRawMethodAllowed('INVOICE', nextReceipt.printMethod, before.receipt.printMethod)
       // لوگوی لیبلِ *همین ذخیره* مرجع است (اگر هر دو بخش با هم عوض شده باشند)
-      const labelLogo = input.label ? parseLabelTemplate(input.label).logoDataUrl : before.label.logoDataUrl
-      receipt.logoDataUrl = receiptLogoForSave(receipt.logoDataUrl, labelLogo)
-      await writeKey(SETTING_KEYS.receiptTemplate, receipt)
+      nextReceipt.logoDataUrl = receiptLogoForSave(nextReceipt.logoDataUrl, nextLabel?.logoDataUrl ?? before.label.logoDataUrl)
     }
-    if (input.sale) await writeKey(SETTING_KEYS.saleDefaults, parseSaleDefaults(input.sale))
-    if (input.shift) await writeKey(SETTING_KEYS.shiftConfig, parseShiftConfig(input.shift))
-    // بند ۹ — «تاریخ و ساعت رسمی» (افست دستی). صفر = رفتار قبلی.
-    if (input.time) await writeKey(SETTING_KEYS.officialTime, parseOfficialTimeConfig(input.time))
-    // تنظیمات چاپ لیبل: فقط همین کلید، پس تنظیمات چاپ فاکتور دست‌نخورده می‌ماند
-    if (input.label) {
-      const label = parseLabelTemplate(input.label)
-      assertRawMethodAllowed('LABEL', label.printMethod, before.label.printMethod)
-      await writeKey(SETTING_KEYS.labelTemplate, label)
+    // این گیت باید کنار گیت receipt و قبل از transaction باشد: هر دو تغییر RAW
+    // در یک درخواست یا هیچ‌کدام ذخیره می‌شوند.
+    if (nextLabel) assertRawMethodAllowed('LABEL', nextLabel.printMethod, before.label.printMethod)
+
+    const nextCharges: ChargesBundle = {
+      pos: { tax: before.charges.pos.tax, service: before.charges.pos.service },
+      wholesale: { tax: before.charges.wholesale.tax, service: before.charges.wholesale.service }
     }
-    /**
-     * بخش ۲ — تنظیمات قفل موقت. `parseSecurityConfig` عددهای بی‌معنا را خودش
-     * اصلاح می‌کند (تلاش ۱..۲۰ و قفل ۱..۱۴۴۰ دقیقه)، پس مقدار خراب هیچ‌وقت روی
-     * دیتابیس نمی‌نشیند و کارمند را برای همیشه بیرون نمی‌گذارد.
-     */
-    if (input.security) {
-      const security = parseSecurityConfig(input.security)
-      await writeKey(SETTING_KEYS.securityConfig, security)
-      applyPanelSessionTtlMinutes(security.idleLockMinutes)
-    }
-    /**
-     * بند ۳ — سیاست تخفیف. `parseDiscountPolicy` حالت ناشناس و عدد بی‌معنا را
-     * خودش به پیش‌فرض برمی‌گرداند، پس مقدار خراب روی دیتابیس نمی‌نشیند و پنل
-     * فروش هیچ‌وقت با یک سیاست نامعتبر قفل نمی‌شود.
-     */
-    if (input.discount) await writeKey(SETTING_KEYS.discountPolicy, parseDiscountPolicy(input.discount))
     if (input.charges) {
       for (const scope of CHARGE_SCOPES) {
         const bucket = (input.charges as any)[scope]
         if (!bucket) continue
         for (const kind of CHARGE_KINDS) {
-          if (bucket[kind]) await writeKey(chargeSettingKey(kind, scope), cleanCharge(bucket[kind]))
+          if (bucket[kind]) nextCharges[scope][kind] = cleanCharge(bucket[kind])
         }
       }
     }
+    const receiptForAfter = nextReceipt ?? storedReceipt
+    const after: SettingsBundle = {
+      receipt: {
+        ...receiptForAfter,
+        logoDataUrl: receiptLogoInherit(receiptForAfter.logoDataUrl, nextLabel?.logoDataUrl ?? before.label.logoDataUrl)
+      },
 
-    const after = await this.bundle()
-    await audit(prisma, {
-      action: 'SETTINGS_UPDATE',
-      entity: 'Setting',
-      userId: input.userId ?? null,
-      before: JSON.stringify(before),
-      after: JSON.stringify(after),
-      note:
-        'تنظیمات قالب فاکتور / فروش / شیفت / چاپ لیبل / امنیت' +
-        (printChanged === null ? '' : printChanged ? ' · چاپ فاکتور روشن شد' : ' · چاپ فاکتور خاموش شد') +
-        (debtReceiptPrintChanged === null
-          ? ''
-          : debtReceiptPrintChanged
-            ? ' · فیش وصول نسیه روشن شد'
-            : ' · فیش وصول نسیه خاموش شد')
-    })
+      sale: nextSale ?? before.sale,
+      shift: normalizedShift ?? before.shift,
+      label: nextLabel ?? before.label,
+      charges: nextCharges,
+      security: nextSecurity ?? before.security,
+      discount: nextDiscount ?? before.discount,
+      credit: before.credit,
+      time: nextTime ?? before.time
+    }
+
+    /**
+     * SET-001 — تمام upsertهای bundle و AuditLog یک واحد شکست‌ناپذیرند. هیچ
+     * اعتبارسنجی یا گیتِ ممکن‌الخطایی داخل یا بعد از نخستین write نیست.
+     */
+    await prisma.$transaction(async (tx) => {
+      if (nextReceipt) await writeKey(SETTING_KEYS.receiptTemplate, nextReceipt, tx)
+      if (nextSale) await writeKey(SETTING_KEYS.saleDefaults, nextSale, tx)
+      if (normalizedShift) await writeKey(SETTING_KEYS.shiftConfig, normalizedShift, tx)
+      if (nextTime) await writeKey(SETTING_KEYS.officialTime, nextTime, tx)
+      if (nextLabel) await writeKey(SETTING_KEYS.labelTemplate, nextLabel, tx)
+      if (nextSecurity) await writeKey(SETTING_KEYS.securityConfig, nextSecurity, tx)
+      if (nextDiscount) await writeKey(SETTING_KEYS.discountPolicy, nextDiscount, tx)
+      if (input.charges) {
+        for (const scope of CHARGE_SCOPES) {
+          const bucket = (input.charges as any)[scope]
+          if (!bucket) continue
+          for (const kind of CHARGE_KINDS) {
+            if (bucket[kind]) await writeKey(chargeSettingKey(kind, scope), nextCharges[scope][kind], tx)
+          }
+        }
+      }
+      await audit(tx, {
+        action: 'SETTINGS_UPDATE',
+        entity: 'Setting',
+        userId: input.userId ?? null,
+        before: JSON.stringify(before),
+        after: JSON.stringify(after),
+        note:
+          'تنظیمات قالب فاکتور / فروش / شیفت / چاپ لیبل / امنیت' +
+          (printChanged === null ? '' : printChanged ? ' · چاپ فاکتور روشن شد' : ' · چاپ فاکتور خاموش شد') +
+          (debtReceiptPrintChanged === null
+            ? ''
+            : debtReceiptPrintChanged
+              ? ' · فیش وصول نسیه روشن شد'
+              : ' · فیش وصول نسیه خاموش شد')
+      })
+    }, TX_OPTIONS)
+    // اثر حافظه‌ای TTL فقط پس از commit موفق مجاز است.
+    if (nextSecurity) applyPanelSessionTtlMinutes(nextSecurity.idleLockMinutes)
     return after
   }
 }

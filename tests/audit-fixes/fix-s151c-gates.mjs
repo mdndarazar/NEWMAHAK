@@ -26,6 +26,10 @@ process.env.HARNESS_DB = join(DIR, 'shop.db')
 const electron = await import('electron')
 const handlers = new Map()
 electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
+// IPC اکنون فقط درخواستِ پنجرهٔ معتبر را وارد گیت‌های مالی می‌کند. sender
+// ساختگیِ زنده، آزمون را به سیاست‌های واقعی رمز/actor می‌رساند.
+electron.BrowserWindow.fromWebContents = () => ({ isDestroyed: () => false })
+const sender = { id: 15104, isDestroyed: () => false, once: () => {} }
 
 const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
@@ -39,7 +43,7 @@ const { PANEL_KEYS } = await import('@shared/panels')
 const { chargeSettingKey } = await import('@shared/charges')
 const { jalaliToday } = await import('@shared/jalali')
 registerIpcHandlers()
-const ipc = (ch, payload) => handlers.get(ch)(null, payload)
+const ipc = (ch, payload) => handlers.get(ch)({ sender }, payload)
 
 let ok = 0
 let bad = 0
@@ -198,8 +202,9 @@ const delBody = party.slice(party.indexOf('async deleteCustomer'), party.indexOf
 truthy('deleteCustomer داخل $transaction (updateMany + delete + audit)', /\$transaction/.test(delBody) && /tx\.saleInvoice\.updateMany/.test(delBody) && /tx\.customer\.delete/.test(delBody))
 const ipcSrc = read('src/main/ipc/index.ts')
 const lineOf = (n) => ipcSrc.split('\n').find((l) => l.includes(`handle(IPC.${n},`)) ?? ''
-for (const n of ['chargesSave', 'purchaseCreate', 'purchaseUpdate'])
-  truthy(`IPC.${n} ⇒ withOptionalSessionActor`, /withOptionalSessionActor\(p \?\? \{/.test(lineOf(n)))
+truthy('IPC.chargesSave ⇒ withOptionalSessionActor', /withOptionalSessionActor\(p \?\? \{/.test(lineOf('chargesSave')))
+for (const n of ['purchaseCreate', 'purchaseUpdate'])
+  truthy(`IPC.${n} ⇒ actor نشست + fence حضانت`, /withCustodyFenceOrOptionalActor\(p \?\? \{/.test(lineOf(n)))
 const settingsPage = read('src/renderer/src/pages/Settings.tsx')
 truthy('Settings: ذخیره‌ی کلی managerPassword می‌فرستد', /CH\.settingsSaveBundle, \{[^}]*managerPassword/.test(settingsPage))
 truthy('Settings: saveSecurity managerPassword می‌فرستد', /CH\.settingsSaveBundle, \{ security: next, managerPassword/.test(settingsPage))

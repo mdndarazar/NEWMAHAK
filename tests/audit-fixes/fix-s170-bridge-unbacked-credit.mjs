@@ -83,6 +83,8 @@ const closed = (s, label = 'پل تطبیق بسته است (مانده‌ی ب�
 const issuedRow = (s) => (s?.bridge?.rows ?? []).find((r) => r.key === 'storeCreditIssued')
 const drillSum = (s) => (issuedRow(s)?.sources ?? []).reduce((a, r) => a + Number(r.amount ?? 0), 0)
 const creditByCode = (code) => seed.rows('SELECT * FROM "StoreCredit" WHERE code = ?', code)[0]
+/** کد فقط fixture داخلی تست است؛ API صدور عمداً credential برنمی‌گرداند. */
+const fixtureCode = (id) => seed.one('SELECT code FROM "StoreCredit" WHERE id = ?', id)?.code ?? null
 
 // ---------------------------------------------------------------------------
 console.log('\n۰) پایه: گزارش خالی امروز')
@@ -92,7 +94,8 @@ closed(s0, 'پل خالی بسته است')
 // ---------------------------------------------------------------------------
 console.log('\n(الف) فقط یک اعتبار دستی مدیر ۵۰۰٬۰۰۰ امروز (issueManual با رمز مدیر)')
 const m1 = await safe('صدور دستی', () => storeCreditService.issueManual({ amount: 500000, userId, managerPassword: PW }))
-truthy('اعتبار دستی صادر شد', !!m1?.code)
+truthy('اعتبار دستی با DTO امن صادر شد', !!m1?.id && !('code' in m1))
+const m1Code = fixtureCode(m1?.id)
 const sA = await report()
 closed(sA, 'پل بعد از اعتبار دستی بسته است')
 eq('ردیف «اعتبار صادرشده»ی پل برای اعتبار بی‌سند تغییر نکرد', (rowsOf(sA).storeCreditIssued ?? 0) - (rowsOf(s0).storeCreditIssued ?? 0), 0)
@@ -104,8 +107,8 @@ eq('drill-down ردیف شامل اعتبار دستی نیست (همان predic
 
 // ---------------------------------------------------------------------------
 console.log('\n(ب) همان اعتبار دستی روی فاکتور امروز مصرف شود')
-const invB = await safe('فروش ۱٬۰۰۰٬۰۰۰ = ۵۰۰٬۰۰۰ نقد + ۵۰۰٬۰۰۰ اعتبار', () => sale(1000000, 500000, { storeCreditCode: m1?.code }))
-eq('اعتبار کامل مصرف شد', Number(creditByCode(m1?.code)?.usedAmount ?? 0), 500000)
+const invB = await safe('فروش ۱٬۰۰۰٬۰۰۰ = ۵۰۰٬۰۰۰ نقد + ۵۰۰٬۰۰۰ اعتبار', () => sale(1000000, 500000, { storeCreditCode: m1Code }))
+eq('اعتبار کامل مصرف شد', Number(creditByCode(m1Code)?.usedAmount ?? 0), 500000)
 const sB = await report()
 closed(sB, 'پل بعد از مصرف اعتبار دستی بسته است')
 eq('ردیف مصرف اعتبار +۵۰۰٬۰۰۰', (rowsOf(sB).storeCreditUsed ?? 0) - (rowsOf(sA).storeCreditUsed ?? 0), 500000)

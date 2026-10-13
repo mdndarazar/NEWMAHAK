@@ -23,6 +23,7 @@ const { makeSeeder } = await import(join(root, 'test/harness/seed.mjs'))
 const { salesService } = await import(join(root, 'src/main/services/SalesService.ts'))
 const { mergeReturnTargets } = await import(join(root, 'src/shared/returnValue.ts'))
 const { toJalaliDate } = await import(join(root, 'src/shared/jalali.ts'))
+const { DEFAULT_MANAGER_PASSWORD } = await import(join(root, 'src/shared/receipt.ts'))
 const db = harnessClient(); const seed = makeSeeder(db)
 const safe = async (fn) => { try { return await fn() } catch (e) { return { __error: String(e?.message ?? e).slice(0, 400) } } }
 
@@ -56,11 +57,13 @@ console.log('\n— ۲) createReturn: اعشار رد، جزئی درست، کا�
   const r2 = await safe(() => salesService.createReturn({ invoiceId: sale.id, full: false, lines: [{ saleItemId: i1, qty: 1 }], refundMethod: 'CASH', refundAmount: 100.5, userId }))
   eq('refundAmount=100.5 رد با پیام «مبلغ بازپرداخت»', /مبلغ بازپرداخت باید عدد صحیح/.test(r2?.__error ?? ''), true)
   eq('refundAmount اعشاری هیچ اثری نگذاشت', counts(), before)
-  const ok1 = await safe(() => salesService.createReturn({ invoiceId: sale.id, full: false, lines: [{ saleItemId: i1, qty: 1 }], refundMethod: 'NONE', userId }))
+  // با پرداخت کامل و برگشت بدون خروج پول، اضافه‌دریافت واقعی ساخته می‌شود؛
+  // فلو فعلی تأیید آگاهانه می‌خواهد تا ردیف اضافه بی‌صدا ثبت نشود.
+  const ok1 = await safe(() => salesService.createReturn({ invoiceId: sale.id, full: false, lines: [{ saleItemId: i1, qty: 1 }], refundMethod: 'NONE', confirmOverpay: true, userId }))
   eq('برگشت جزئی یک کالا بی‌خطا', ok1?.__error ?? null, null)
   eq('بند ۴-۱۱: برگشت یک کالا از دو کالای ۱٬۰۰۰٬۰۰۰ با ۱۰٪ تخفیف کل = ۹۰۰٬۰۰۰', Number(seed.one('SELECT total FROM "SaleReturn" WHERE invoiceId = ? ORDER BY id DESC', sale.id)?.total), 900_000)
   eq('موجودی کالای ۱ برگشت (۹ ⇒ ۱۰)', stockOf(v1), 10)
-  const full = await safe(() => salesService.createReturn({ invoiceId: sale.id, full: true, refundMethod: 'NONE', userId }))
+  const full = await safe(() => salesService.createReturn({ invoiceId: sale.id, full: true, refundMethod: 'NONE', confirmOverpay: true, userId }))
   eq('برگشت کامل بدون lines پذیرفته شد', full?.__error ?? null, null)
   eq('برگشت کامل باقی‌مانده = ۹۰۰٬۰۰۰', Number(seed.one('SELECT total FROM "SaleReturn" WHERE invoiceId = ? ORDER BY id DESC', sale.id)?.total), 900_000)
   eq('موجودی کالای ۲ برگشت', stockOf(v2), 10)
@@ -70,12 +73,25 @@ console.log('\n— ۳) returnUpdate: اعشار رد، ردیف صفر مجاز'
 {
   const sale = await cashSale([{ variantId: v1, qty: 2, unitPrice: 1_000_000 }, { variantId: v2, qty: 1, unitPrice: 1_000_000 }])
   const [i1, i2] = itemsOf(sale.id)
-  const ret = await salesService.createReturn({ invoiceId: sale.id, full: false, lines: [{ saleItemId: i1, qty: 1 }], refundMethod: 'NONE', userId })
+  const ret = await salesService.createReturn({
+    invoiceId: sale.id,
+    full: false,
+    lines: [{ saleItemId: i1, qty: 1 }],
+    refundMethod: 'NONE',
+    confirmOverpay: true,
+    userId
+  })
   const retId = Number(ret?.id ?? ret?.returnId ?? seed.one('SELECT id FROM "SaleReturn" WHERE invoiceId = ? ORDER BY id DESC', sale.id).id)
   const r = await safe(() => salesService.returnUpdate({ id: retId, lines: [{ saleItemId: i1, qty: 1.5 }], userId }))
   eq('qty=1.5 رد با پیام «تعداد برگشتی»', /تعداد برگشتی باید عدد صحیح/.test(r?.__error ?? ''), true)
   eq('برگشت دست‌نخورده (۱٬۰۰۰٬۰۰۰)', Number(seed.one('SELECT total FROM "SaleReturn" WHERE id = ?', retId).total), 1_000_000)
-  const u = await safe(() => salesService.returnUpdate({ id: retId, lines: [{ saleItemId: i1, qty: 0 }, { saleItemId: i2, qty: 1 }], userId }))
+  const u = await safe(() => salesService.returnUpdate({
+    id: retId,
+    lines: [{ saleItemId: i1, qty: 0 }, { saleItemId: i2, qty: 1 }],
+    userId,
+    panelPassword: DEFAULT_MANAGER_PASSWORD,
+    overrideReason: 'جابجایی امن قلم برگشتی'
+  }))
   eq('ردیف صفر + ردیف دیگر پذیرفته شد', u?.__error ?? null, null)
   eq('جمع برگشت بعد از ویرایش = ۱٬۰۰۰٬۰۰۰ (فقط کالای ۲)', Number(seed.one('SELECT total FROM "SaleReturn" WHERE id = ?', retId).total), 1_000_000)
   eq('قلم ۱ از برگشت خارج شد', seed.count('SaleReturnItem', 'returnId = ? AND saleItemId = ?', retId, i1), 0)

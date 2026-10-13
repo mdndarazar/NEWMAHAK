@@ -27,6 +27,10 @@ process.env.HARNESS_DB = join(DIR, 'shop.db')
 const electron = await import('electron')
 const handlers = new Map()
 electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
+// مسیر IPC فقط درخواستِ پنجرهٔ زنده را می‌پذیرد. sender معتبرِ ساختگی اجازه
+// می‌دهد آزمون جعل actor، رفتار مالکیت نشست را بسنجد نه مرز Electron را.
+electron.BrowserWindow.fromWebContents = () => ({ isDestroyed: () => false })
+const sender = { id: 15101, isDestroyed: () => false, once: () => {} }
 
 const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
@@ -37,7 +41,7 @@ const { IPC } = await import('@shared/ipc')
 const { DEFAULT_MANAGER_PASSWORD: PW } = await import('@shared/receipt')
 const { jalaliToday } = await import('@shared/jalali')
 registerIpcHandlers()
-const ipc = (ch, payload) => handlers.get(ch)(null, payload)
+const ipc = (ch, payload) => handlers.get(ch)({ sender }, payload)
 
 let ok = 0
 let bad = 0
@@ -71,6 +75,10 @@ const idC = mk('S152C0003')
 const idD = mk('S152D0004', { usedAmount: 200_000, usedCount: 1, status: 'PARTIALLY_USED' })
 const idE = mk('S152E0005')
 const M = { managerPassword: PW, userId: forged }
+// کانال یادآوری و چاپ اعتبار اکنون در main به نشست همان پنجره متکی‌اند؛ ورود
+// مدیرِ واقعی، بدون اجازه‌دادن به userId جعلی، زمینه‌ی آزمون actor را فراهم می‌کند.
+const verified = await ipc(IPC.managerVerify, { password: PW })
+eq('نشست مدیر برای پنجرهٔ آزمون باز شد', verified?.ok, true)
 
 console.log('\n۱) کانال‌های مدیریتی اعتبار با userId جعلی ⇒ actor نشست در Audit')
 const cases = [
@@ -136,11 +144,21 @@ eq('userId در Audit SETTINGS_UPDATE (Customer) بدون نشست', uid(lastAud
 console.log('\n۵) ساختاری: هیچ کانال این دسته دیگر withUser(p) یا payload خام ندارد')
 const src = readFileSync(resolve('src/main/ipc/index.ts'), 'utf8')
 const names = ['storeCreditLookup', 'creditPreview', 'creditVoid', 'creditSuspend', 'creditReactivate', 'creditExpiryChange',
-  'creditAmountChange', 'creditUsesChange', 'creditHolderChange', 'creditRestrictionChange', 'creditDelete', 'creditMarkPrinted',
-  'creditReminderQueue', 'printCredit', 'printCreditBatch', 'creditPdf', 'customerCreate', 'customerUpdate', 'customerDelete']
+  'creditAmountChange', 'creditUsesChange', 'creditHolderChange', 'creditRestrictionChange', 'creditDelete',
+  'customerCreate', 'customerUpdate', 'customerDelete']
 for (const n of names) {
   const line = src.split('\n').find((l) => l.includes(`handle(IPC.${n},`)) ?? ''
   truthy(`IPC.${n} ⇒ withOptionalSessionActor`, /withOptionalSessionActor\(p \?\? \{/.test(line) && !/withUser\(/.test(line))
+}
+// این چهار handler چندخطی و عمداً سخت‌گیرترند: یادآوری قفل اعتبار و چاپ/PDF
+// نشست اصلی مدیر می‌خواهند. با این وجود actor عملیات از payload نمی‌آید.
+truthy('IPC.creditReminderQueue ⇒ قفل اعتبار + actor امن + force حذف‌شده',
+  /handle\(IPC\.creditReminderQueue, async \(p\) => \{[\s\S]{0,600}?assertCreditPanel\([\s\S]{0,600}?withOptionalSessionActor\(\{ id: \(p as any\)\?\.id \}\)/.test(src) &&
+  !/queueReminder\([^\n]*force/.test(src)
+)
+for (const n of ['creditMarkPrinted', 'printCredit', 'printCreditBatch', 'creditPdf']) {
+  const pattern = new RegExp(`handle\\(IPC\\.${n}, async \\(p\\) => \\{[\\s\\S]{0,500}?assertManagerSession\\([\\s\\S]{0,500}?withOptionalSessionActor\\(p \\?\\? \\{\\}`)
+  truthy(`IPC.${n} ⇒ نشست مدیر + withOptionalSessionActor`, pattern.test(src))
 }
 
 console.log(`\nنتیجه: ${ok} موفق · ${bad} ناموفق`)

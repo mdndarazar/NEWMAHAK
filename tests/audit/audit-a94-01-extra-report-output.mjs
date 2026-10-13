@@ -31,10 +31,10 @@ const now = Date.now()
 const today = toJalaliDate(new Date())
 const credit = (code, amount, usedAmount, status, expiresAt = null) =>
   seed.insert('StoreCredit', { code, amount, usedAmount, usedCount: usedAmount ? 1 : 0, maxUses: 5, multiUse: true, source: 'MANUAL', status, issuedAt: now - 60_000, issuedAtJalali: today, expiresAt })
-credit('SCA', 300_000, 0, 'ACTIVE')
-credit('SCP', 1_000_000, 400_000, 'PARTIALLY_USED')
-credit('SCC', 1_000_000, 0, 'CANCELED')
-credit('SCE', 500_000, 0, 'ACTIVE', now - 1000) // منقضی
+const SCA = credit('SCA', 300_000, 0, 'ACTIVE')
+const SCP = credit('SCP', 1_000_000, 400_000, 'PARTIALLY_USED')
+const SCC = credit('SCC', 1_000_000, 0, 'CANCELED')
+const SCE = credit('SCE', 500_000, 0, 'ACTIVE', now - 1000) // منقضی
 const list = await storeCreditService.list({ fromJalali: today, toJalali: today, mode: 'issued', take: 500 })
 const rows = Array.isArray(list) ? list : (list?.rows ?? [])
 eq('هارنس: چهار اعتبار در فهرست سرویس', rows.length, 4)
@@ -44,11 +44,14 @@ const oldExcelRemaining = rows.reduce((s, r) => s + Number(r.remainingAmount ?? 
 console.log(`  · منطق قدیم Excel/چاپ: جمع «مانده» = ${oldExcelRemaining}`)
 const outSum = helper ? rows.reduce((s, r) => s + helper.creditOutstandingOf(r), 0) : null
 eq('A94-01: جمع «مانده‌ی قابل مصرف» خروجی = تعهد داشبورد', outSum, dash?.liability)
-const byCode = Object.fromEntries(rows.map((r) => [r.code, r]))
-eq('A94-01: اعتبار لغوشده مانده‌ی قابل مصرف صفر', helper ? helper.creditOutstandingOf(byCode.SCC) : null, 0)
-eq('A94-01: اعتبار منقضی مانده‌ی قابل مصرف صفر', helper ? helper.creditOutstandingOf(byCode.SCE) : null, 0)
+// گزارش، کد مصرف‌پذیر اعتبار را عمداً برنمی‌گرداند؛ برای این آزمون شناسهٔ امن
+// و پایدار ردیف به جای credential استفاده می‌شود.
+eq('A94-01: فهرست گزارش credential اعتبار را افشا نمی‌کند', rows.every((row) => !('code' in row) && !('legacyCode' in row)), true)
+const byId = new Map(rows.map((r) => [r.id, r]))
+eq('A94-01: اعتبار لغوشده مانده‌ی قابل مصرف صفر', helper ? helper.creditOutstandingOf(byId.get(SCC)) : null, 0)
+eq('A94-01: اعتبار منقضی مانده‌ی قابل مصرف صفر', helper ? helper.creditOutstandingOf(byId.get(SCE)) : null, 0)
 const active = helper ? helper.outstandingCreditRows(rows) : []
-eq('A94-01: جدول «مانده‌ی بدهی ما» صفحه شامل مصرف بخشی است', active.map((r) => r.code).sort(), ['SCA', 'SCP'])
+eq('A94-01: جدول «مانده‌ی بدهی ما» صفحه شامل مصرف بخشی است', active.map((r) => r.publicReference).sort(), [`اعتبار #${SCA}`, `اعتبار #${SCP}`].sort())
 
 // ---------- ضدتقلب ----------
 

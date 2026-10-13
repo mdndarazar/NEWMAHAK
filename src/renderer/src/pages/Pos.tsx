@@ -3,23 +3,26 @@ import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
 // نشست ۲۲۲ · فاز ۳ — نقطه‌ی مشترک چاپ (پرسش/بی‌پرس + چاپگر)
 import { printWith } from '../lib/printFlow'
+import { isUnknownPrintMessage } from '../lib/printErrors'
 import { useBarcodeScanner } from '../hooks/useBarcodeScanner'
 import { useHotkeys } from '../hooks/useHotkeys'
 import { broadcastSettingsChanged, useSettings } from '../hooks/useSettings'
 import { usePanelLock, usePanelOpen } from '../hooks/usePanelLocks'
 import { useAutoCentralWithdraw } from '../hooks/useAutoCentralWithdraw'
+import { useManagerSession } from '../hooks/useManagerSession'
 import AutoCentralPasswordBox from '../components/AutoCentralPasswordBox'
 import PasswordField from '../components/PasswordField'
 import { useCharges } from '../hooks/useCharges'
 import VariantSearchBox, { type VariantSearchBoxHandle } from '../components/VariantSearchBox'
 import { ColGroup, ResizableHeaderCells, useResizableColumns } from '../components/ResizableColumns'
-import { money, faDigits } from '@shared/jalali'
+import { money, faDigits, parseGroupedInteger } from '@shared/jalali'
+import { digitsOnly, groupThousands } from '../lib/moneyInput'
 import { withFreshSale, type SaleDefaults } from '@shared/receipt'
 import { describeChargeRule } from '@shared/charges'
 import { describeDiscountPolicy, discountCeilingFor, fixedDiscountFor, scaleLineDiscounts } from '@shared/priceAdjust'
 import ManagerGate from '../components/ManagerGate'
 import { CENTRAL_WITHDRAW_GATE, PANEL_KEYS } from '@shared/panels'
-import type { ActiveDiscountInfo, CartLine, ShiftInfo, StoreCreditRow } from '@shared/types'
+import type { ActiveDiscountInfo, CartLine, ShiftInfo, StoreCreditSafeRow } from '@shared/types'
 import {
   creditCartCoverage,
   isLineExcluded,
@@ -52,6 +55,21 @@ interface Method {
   key: string
   label: string
   kind: string
+}
+
+type CustodyOperatorStaff = {
+  id: number
+  name: string
+  role: string
+  isActive: boolean
+  hasCustodyPin: boolean
+  mustChangePin: boolean
+}
+
+type CustodyOperatorStatus = {
+  enabled: boolean
+  governed?: boolean
+  custodian?: { id: number; name: string | null } | null
 }
 
 /**
@@ -88,14 +106,15 @@ interface LastInvoice {
   returnCode: string | null
   grandTotal: number
   methodLabel: string
-  printed: boolean
+  /** true = چاپ قطعی، false = چاپ نشده، UNKNOWN = نتیجه نامعلوم و نباید کاربر را به چاپ دوباره هل بدهیم. */
+  printed: boolean | 'UNKNOWN'
   /** مهلت برگشت همین فاکتور (عادی یا «مشتری راه دور») */
   returnCodeDays?: number
   /** بخش ۶: «بارکد اعتبار» مصرف‌شده روی همین فاکتور (پول نقد نیست) */
-  storeCredit?: StoreCreditRow | null
+  storeCredit?: StoreCreditSafeRow | null
   storeCreditApplied?: number
-  /** اگر مبلغ اعتبار از فاکتور بیشتر بود، بارکد *جدیدِ* باقی‌مانده */
-  storeCreditRemainder?: StoreCreditRow | null
+  /** اگر مبلغ اعتبار از فاکتور بیشتر بود، شناسهٔ امنِ باقی‌مانده */
+  storeCreditRemainder?: StoreCreditSafeRow | null
   /**
    * بخش ۷ — فروش نسیه: باقی‌ماندهٔ بدهی همین فاکتور در لحظه‌ی ثبت.
    * صفر = تسویه‌ی کامل (رفتار همیشگی پنل فروش).
@@ -164,10 +183,25 @@ interface LastInvoice {
 export default function Pos() {
   const nav = useNavigate()
   const { settings, setSettings } = useSettings()
+  const { isManager } = useManagerSession()
   // عوارض/حق سرویس بر اساس دسته‌بندی کالا — اسکوپ «پنل فروش خرد»
   const charges = useCharges('pos')
   const [lines, setLines] = useState<CartLine[]>([])
   const [methods, setMethods] = useState<Method[]>([])
+  /** CREDIT نسیه است، نه دکمهٔ وصول؛ اعتبارهای سیستمی هم فقط مسیر اختصاصی دارند. */
+  const directPaymentMethods = useMemo(
+    () => methods.filter((method) => !['CREDIT', 'STORE_CREDIT', 'EXCHANGE_CREDIT'].includes(method.kind)),
+    [methods]
+  )
+  /**
+   * پرداخت ترکیبی واقعی نقد + کارت؛ هر سهم به Payment مستقل تبدیل می‌شود.
+   * draftها عمداً رشته‌ی خام‌اند تا نمایش سه‌رقم‌سه‌رقم، ارقام فارسی و paste
+   * امن باشند؛ فقط `parseGroupedInteger` اجازه دارد آن‌ها را مبلغ کند.
+   */
+  const [splitPayment, setSplitPayment] = useState(false)
+  const [splitCash, setSplitCash] = useState('')
+  const [splitCard, setSplitCard] = useState('')
+  const [splitCardMethodId, setSplitCardMethodId] = useState<number | null>(null)
   const [invoiceDiscount, setInvoiceDiscount] = useState(0)
   /** تخفیف فاکتور به‌صورت مبلغ ریالی یا درصدی از جمع کل */
   const [discountMode, setDiscountMode] = useState<'AMOUNT' | 'PERCENT'>('AMOUNT')
@@ -215,7 +249,29 @@ export default function Pos() {
   const [last, setLast] = useState<LastInvoice | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  /**
+   * بنر قابل‌اقدام «نشست لازم است» — با کد SESSION_REQUIRED از main می‌آید و
+   * برخلاف خطاهای عادی سبد (lines) دست‌نخورده می‌ماند؛ بعد از ریکاوری نشست،
+   * کاربر همان فاکتور را دوباره ثبت می‌کند (بدون retry خودکار). ready فقط بعد
+   * از رویداد mahak:shift-changed و درصورتی‌که بنر باز بوده روشن می‌شود.
+   */
+  const [sessionBlock, setSessionBlock] = useState<string | null>(null)
+  const [sessionReady, setSessionReady] = useState(false)
+  const sessionBlockedRef = useRef(false)
   const [busy, setBusy] = useState(false)
+  /** In custody mode a POS operator is separate evidence from the drawer
+   * custodian. PIN is intentionally cleared after every successful sale. */
+  const [custodyPos, setCustodyPos] = useState<CustodyOperatorStatus | null>(null)
+  const [operatorStaff, setOperatorStaff] = useState<CustodyOperatorStaff[]>([])
+  const [saleOperatorMode, setSaleOperatorMode] = useState<'CUSTODIAN' | 'OPERATOR_PIN' | 'MANAGER_SESSION'>('CUSTODIAN')
+  const [saleOperatorUserId, setSaleOperatorUserId] = useState<number | ''>('')
+  const [saleOperatorPassword, setSaleOperatorPassword] = useState('')
+  const custodyGoverned = custodyPos?.enabled === true || custodyPos?.governed === true
+  useEffect(() => {
+    if (!isManager && saleOperatorMode === 'MANAGER_SESSION') setSaleOperatorMode('CUSTODIAN')
+  }, [isManager, saleOperatorMode])
+  const [printing, setPrinting] = useState(false)
+  const printingRef = useRef(false)
   const [modalOpen, setModalOpen] = useState(false)
   /**
    * ---------------- بخش ۶: «بارکد اعتبار خرید بعدی» ----------------
@@ -224,11 +280,17 @@ export default function Pos() {
    * یک‌بارمصرفش کامل سمت main و داخل همان تراکنش فاکتور انجام می‌گیرد.
    */
   const [creditCode, setCreditCode] = useState('')
-  const [creditInfo, setCreditInfo] = useState<StoreCreditRow | null>(null)
+  const [creditInfo, setCreditInfo] = useState<StoreCreditSafeRow | null>(null)
   const [creditErr, setCreditErr] = useState<string | null>(null)
   const [creditBusy, setCreditBusy] = useState(false)
   const [creditPreview, setCreditPreview] = useState<CreditPreviewLike | null>(null)
   const [creditRequested, setCreditRequested] = useState<number | null>(null)
+  /**
+   * feature flag مدیر: خاموش‌بودن فقط «مبلغ دلخواه اعتبار» را می‌بندد؛ مصرف کامل
+   * اعتبارِ معتبر، همان رفتار قدیمی POS، همچنان در دسترس است.
+   */
+  const splitStoreCreditPayment = settings.sale.splitStoreCreditPayment !== false
+  const effectiveCreditRequested = splitStoreCreditPayment ? creditRequested : null
   /**
    * وقتی فوکوس داخل فیلد بارکد اعتبار است، بارکدخوان *سراسری* خاموش می‌شود؛
    * وگرنه کد اعتبار را به‌عنوان بارکد کالا جست‌وجو می‌کرد و «کالا پیدا نشد»
@@ -260,6 +322,19 @@ export default function Pos() {
     call<ShiftInfo | null>(CH.shiftCurrent, {})
       .then(setShift)
       .catch(() => {})
+    void call<CustodyOperatorStatus>(CH.custodyStatus, {})
+      .then(async (status) => {
+        setCustodyPos(status)
+        if (status.enabled || status.governed) {
+          const staff = await call<CustodyOperatorStaff[]>(CH.custodyStaffList, {})
+          setOperatorStaff(staff.filter((row) => row.isActive && row.hasCustodyPin && !row.mustChangePin && (row.role === 'CASHIER' || row.role === 'MANAGER')))
+        }
+      })
+      .catch(() => {
+        // A pre-custody/old database remains on its established POS path.
+        setCustodyPos(null)
+        setOperatorStaff([])
+      })
     searchRef.current?.focus() // فوکوس پیش‌فرض روی فیلد اسکن/جستجو
   }, [])
 
@@ -481,7 +556,7 @@ export default function Pos() {
     if (!code) return
     setCreditBusy(true)
     try {
-      const row = await call<StoreCreditRow>(CH.storeCreditLookup, { code })
+      const row = await call<StoreCreditSafeRow>(CH.storeCreditLookup, { code })
       setCreditInfo(row)
     } catch (e: any) {
       // پیام‌های فارسی تفکیک‌شده از main می‌آیند («قبلاً مصرف شده» / «منقضی» / …)
@@ -623,8 +698,8 @@ export default function Pos() {
   )
 
   const creditPlan = useMemo(
-    () => posCreditPlan({ payable: totals.payable, preview: creditPreview, requestedInput: creditRequested }),
-    [creditPreview, creditRequested, totals.payable]
+    () => posCreditPlan({ payable: totals.payable, preview: creditPreview, requestedInput: effectiveCreditRequested }),
+    [creditPreview, effectiveCreditRequested, totals.payable]
   )
   const creditApplied = creditPlan.applied
 
@@ -646,12 +721,25 @@ export default function Pos() {
   /** نقدی/کارتی که *واقعاً* باید از مشتری گرفته شود: قابل پرداخت منهای اعتبار. */
   const cashDue = useMemo(() => Math.max(0, totals.payable - creditApplied), [totals.payable, creditApplied])
 
+  /**
+   * `null` یعنی متن واردشده (اعشار/منفی/حرف/بزرگ‌تر از عدد امن) مبلغ معتبر نیست.
+   * با این تفکیک، هیچ ورودی نمایشی پیش از ثبت با `Number` یا `Math.round` تغییر
+   * معنا نمی‌دهد؛ به‌ویژه «۱.۲» هرگز به‌اشتباه «۱۲» ریال نمی‌شود.
+   */
+  const splitCashAmount = useMemo(() => parseGroupedInteger(splitCash), [splitCash])
+  const splitCardAmount = useMemo(() => parseGroupedInteger(splitCard), [splitCard])
+  const splitTotal = useMemo(() => {
+    if (splitCashAmount == null || splitCardAmount == null) return null
+    const total = splitCashAmount + splitCardAmount
+    return Number.isSafeInteger(total) ? total : null
+  }, [splitCashAmount, splitCardAmount])
+
   useEffect(() => {
     const payload = creditInfo
       ? posPreviewPayload({
           code: creditCode,
           payable: totals.payable,
-          requested: creditRequested,
+          requested: effectiveCreditRequested,
           customerId,
           lines: creditLines
         })
@@ -667,7 +755,7 @@ export default function Pos() {
     return () => {
       alive = false
     }
-  }, [creditCode, creditInfo, creditRequested, creditLines, totals.payable, customerId])
+  }, [creditCode, creditInfo, effectiveCreditRequested, creditLines, totals.payable, customerId])
 
   /**
    * بخش ۷ — «بدهی باقی‌مانده» زنده: قابل پرداخت منهای اعتبار مصرف‌شده و منهای
@@ -721,16 +809,30 @@ export default function Pos() {
         return setErr(
           'چاپ فاکتور در این پنل خاموش است، پس هیچ فاکتوری چاپ نمی‌شود. برای چاپ، چک‌باکس «چاپ فاکتور» را روشن کنید.'
         )
+      if (printingRef.current) return
+      printingRef.current = true
+      setPrinting(true)
       try {
         /**
          * فاز ۳ — از مسیر مشترک `printWith` (انصراف = لغو قطعی و بی‌صدا).
          */
-        const res = await printWith('INVOICE', (deviceName) => call(CH.printInvoice, { invoiceId, deviceName }))
+        const res = await printWith('INVOICE', (deviceName, opts) =>
+          call(CH.printInvoice, { invoiceId, deviceName, silent: opts?.silent })
+        )
         if (res === 'CANCELLED') return
         setLast((p) => (p && p.id === invoiceId ? { ...p, printed: true } : p))
         notify('رسید فاکتور چاپ شد')
       } catch (e: any) {
-        setErr(`چاپ انجام نشد: ${e.message}`)
+        const unknown = isUnknownPrintMessage(e)
+        if (unknown) setLast((p) => (p && p.id === invoiceId ? { ...p, printed: 'UNKNOWN' } : p))
+        setErr(
+          unknown
+            ? `معلوم نیست رسید چاپ شده باشد: ${e.message} قبل از چاپ دوباره خروجی چاپگر را ببینید.`
+            : `چاپ انجام نشد: ${e.message}`
+        )
+      } finally {
+        printingRef.current = false
+        setPrinting(false)
       }
     },
     [printEnabled]
@@ -818,12 +920,36 @@ export default function Pos() {
     return { plan: answer.plan, password: answer.password }
   }, [lines, autoCentral, stockPickUnlocked, askStockChain])
 
+  /**
+   * رویداد «mahak:shift-changed» از چیپ نشست — اگر بنر SESSION_REQUIRED باز
+   * بود جمع می‌شود و پیام «دوباره ثبت کنید» می‌آید؛ هیچ retry خودکاری نیست.
+   */
+  useEffect(() => {
+    const onChanged = () => {
+      if (!sessionBlockedRef.current) return
+      sessionBlockedRef.current = false
+      setSessionBlock(null)
+      setSessionReady(true)
+    }
+    window.addEventListener('mahak:shift-changed', onChanged)
+    return () => window.removeEventListener('mahak:shift-changed', onChanged)
+  }, [])
+
   const settle = useCallback(
     async (methodKey: string) => {
       if (busy) return
       if (!lines.length) return setErr('فاکتور خالی است')
-      const method = methods.find((m) => m.key === methodKey)
-      if (!method) return setErr('روش پرداخت پیدا نشد')
+      const isSplit = methodKey === '__SPLIT__'
+      const method = isSplit ? null : methods.find((m) => m.key === methodKey)
+      const cashMethod = directPaymentMethods.find((m) => m.kind === 'CASH')
+      const cardMethod = directPaymentMethods.find((m) => m.id === splitCardMethodId) ?? directPaymentMethods.find((m) => m.kind === 'CARD')
+      if (!isSplit && !method) return setErr('روش پرداخت پیدا نشد')
+      if (isSplit && (!cashMethod || !cardMethod)) return setErr('برای پرداخت ترکیبی باید یک روش نقدی و یک روش کارتی فعال باشد.')
+      if (isSplit && creditMode) return setErr('پرداخت ترکیبی نقد + کارت با نسیه/پرداخت جزئی هم‌زمان نیست؛ ابتدا مبلغ کامل را تسویه کنید.')
+      if (custodyGoverned && saleOperatorMode === 'OPERATOR_PIN' && (!saleOperatorUserId || !saleOperatorPassword.trim()))
+        return setErr('برای ثبت فروش توسط اپراتور دیگر، نام اپراتور و رمز شخصی حضانت او را وارد کنید.')
+      if (custodyGoverned && saleOperatorMode === 'MANAGER_SESSION' && !isManager)
+        return setErr('برای ثبت فروش با نشست مدیر، ابتدا با رمز مدیر وارد شوید؛ رمز مشترک هرگز به نام یک مدیر مشخص ثبت نمی‌شود.')
       /**
        * بخش ۶ — اگر کد اعتباری تایپ شده ولی هنوز «بررسی» نشده است، *قبل از* ثبت
        * فاکتور بررسی می‌شود. دلیلش مهم است: مبلغ اعتبار باید از نقدِ دریافتی کم
@@ -839,6 +965,9 @@ export default function Pos() {
       }
       setBusy(true)
       setErr(null)
+      setSessionBlock(null)
+      setSessionReady(false)
+      sessionBlockedRef.current = false
       try {
         /**
          * بخش ۷ — مبلغی که *همین حالا* دریافت می‌شود:
@@ -846,9 +975,13 @@ export default function Pos() {
          *   • حالت نسیه: عددی که فروشنده نوشته (بین صفر و قابل پرداخت). صفر ⇒
          *     هیچ ردیف پرداختی ساخته نمی‌شود و کل فاکتور بدهی می‌ماند.
          */
-        const paidNow = creditMode
-          ? Math.min(Math.max(0, Math.round(creditPaid || 0)), cashDue)
-          : cashDue
+        if (isSplit && (splitCashAmount == null || splitCardAmount == null || splitTotal == null))
+          return setErr('مبلغ نقد یا کارت معتبر نیست؛ فقط عدد صحیحِ غیرمنفی (بدون اعشار، منفی یا حرف) وارد کنید.')
+        if (isSplit && (splitCashAmount <= 0 || splitCardAmount <= 0))
+          return setErr('پرداخت ترکیبی باید یک سهم نقدیِ مثبت و یک سهم کارتیِ مثبت داشته باشد.')
+        const paidNow = isSplit ? splitTotal! : creditMode ? Math.min(Math.max(0, Math.round(creditPaid || 0)), cashDue) : cashDue
+        if (isSplit && splitTotal !== cashDue)
+          return setErr(`جمع نقد و کارت باید دقیقاً ${money(cashDue)} ریال باشد؛ اکنون ${money(splitTotal!)} ریال است.`)
         /**
          * ---- کار الف: مقصد فقط وقتی فرستاده می‌شود که واقعاً انتخاب شده باشد ----
          * و اگر انتخابش با روش پرداختی که همین حالا زده شد سازگار نباشد (مثلاً
@@ -856,12 +989,12 @@ export default function Pos() {
          * نمی‌رویم — همان سیاست پروژه. فهرست مجاز از همان `allowedDestinationsFor`
          * است که سرور هم با آن اعتبارسنجی می‌کند، پس دو قاعده نمی‌شوند.
          */
-        const destination = creditMode && paidNow > 0 ? creditDestination : null
-        if (destination && !allowedDestinationsFor(method.kind).includes(destination as any)) {
+        const destination = !isSplit && creditMode && paidNow > 0 ? creditDestination : null
+        if (destination && !allowedDestinationsFor(method!.kind).includes(destination as any)) {
           setBusy(false)
           return setErr(
-            `مقصد «${paymentDestinationLabel(destination)}» با روش پرداخت «${method.label}» سازگار نیست. ` +
-              `برای این روش فقط ${allowedDestinationsFor(method.kind)
+            `مقصد «${paymentDestinationLabel(destination)}» با روش پرداخت «${method!.label}» سازگار نیست. ` +
+              `برای این روش فقط ${allowedDestinationsFor(method!.kind)
                 .map((d) => `«${paymentDestinationLabel(d)}»`)
                 .join(' یا ')} ممکن است — یا مقصد را عوض کنید، یا روش پرداخت دیگری بزنید.`
           )
@@ -879,6 +1012,13 @@ export default function Pos() {
         }))
         const basePayload = {
           lines: payloadLines,
+          ...(custodyGoverned
+            ? {
+                saleOperatorMode,
+                saleOperatorUserId: saleOperatorMode === 'OPERATOR_PIN' ? saleOperatorUserId : null,
+                saleOperatorPassword: saleOperatorMode === 'OPERATOR_PIN' ? saleOperatorPassword : null
+              }
+            : {}),
           invoiceDiscount: totals.invoiceDisc,
           serviceCharge: totals.service,
           // بند ۲: مالیات سطح فاکتور همیشه صفر است (روی ردیف‌ها نشسته است)
@@ -892,11 +1032,18 @@ export default function Pos() {
           autoCentralWithdraw: autoCentral,
           // بخش ۶: بارکد اعتبار خرید بعدی (اعتبارسنجی و مصرفش سمت main است)
           storeCreditCode: creditCode.trim() || null,
-          storeCreditAmount: creditCode.trim() ? (creditRequested == null ? null : creditApplied) : null,
+          storeCreditAmount: creditCode.trim() ? (effectiveCreditRequested == null ? null : creditApplied) : null,
           storeCreditIdempotencyKey: creditCode.trim() ? newIdempotencyKey('pos-credit') : null,
           // بخش ۷: پرداختی جزئی یا هیچ پرداختی (نسیه‌ی کامل)
-          payments:
-            paidNow > 0 ? [{ methodId: method.id, amount: paidNow, destination: destination ?? undefined }] : []
+          splitPayment: isSplit || undefined,
+          payments: isSplit
+            ? [
+                { methodId: cashMethod!.id, amount: splitCashAmount!, destination: 'CASH' },
+                { methodId: cardMethod!.id, amount: splitCardAmount!, destination: 'CARD' }
+              ].filter((payment) => payment.amount > 0)
+            : paidNow > 0
+              ? [{ methodId: method!.id, amount: paidNow, destination: destination ?? undefined }]
+              : []
         }
 
         /**
@@ -965,22 +1112,32 @@ export default function Pos() {
          * می‌شود و در گزارشات فروش می‌آید.
          */
         let printNote = ''
-        let printed = false
+        let printed: LastInvoice['printed'] = false
         if (!printEnabled) printNote = ' (چاپ فاکتور خاموش است؛ فاکتور ثبت شد و در گزارشات فروش هست)'
         else if (settings.receipt.autoPrint) {
+          printingRef.current = true
+          setPrinting(true)
           try {
             /**
              * فاز ۳ — چاپ خودکار هم از `printWith` می‌گذرد: اگر «هر بار بپرس»
              * روشن باشد پنجره‌ی انتخاب چاپگر می‌آید (خواست مالک) و انصراف یعنی
              * هیچ چاپی انجام نمی‌شود — بدون خطا و بدون خراب‌کردن فاکتور.
              */
-            const res = await printWith('INVOICE', (deviceName) =>
-              call(CH.printInvoice, { invoiceId: inv.id, deviceName })
+            const res = await printWith('INVOICE', (deviceName, opts) =>
+              call(CH.printInvoice, { invoiceId: inv.id, deviceName, silent: opts?.silent })
             )
             if (res === 'DONE') printed = true
             else printNote = ' (چاپ انجام نشد؛ فاکتور ثبت شد و در گزارشات فروش هست)'
-          } catch {
-            printNote = ' (چاپ خودکار انجام نشد؛ با دکمه‌ی «چاپ فاکتور» دوباره تلاش کنید)'
+          } catch (e: any) {
+            const raw = String(e?.message ?? e)
+            const unknown = isUnknownPrintMessage(e)
+            if (unknown) printed = 'UNKNOWN'
+            printNote = unknown
+              ? ' (معلوم نیست فاکتور چاپ شده باشد؛ قبل از چاپ دوباره خروجی چاپگر را نگاه کنید)'
+              : ` (چاپ خودکار انجام نشد: ${raw})`
+          } finally {
+            printingRef.current = false
+            setPrinting(false)
           }
         }
 
@@ -989,7 +1146,9 @@ export default function Pos() {
           receiptNo: inv.receiptNo,
           returnCode: inv.returnCode ?? null,
           grandTotal: inv.grandTotal ?? totals.payable,
-          methodLabel: method.label,
+          // در پرداخت ترکیبی `method` عمداً null است؛ برچسب ثابت مانع خطای
+          // پس از ثبت موفق فاکتور می‌شود (قبلاً UI خطا می‌داد، با اینکه سند ثبت شده بود).
+          methodLabel: isSplit ? 'نقد + کارت' : method!.label,
           printed,
           returnCodeDays: inv.returnCodeDays,
           storeCredit: inv.storeCredit ?? null,
@@ -1013,9 +1172,16 @@ export default function Pos() {
         setCreditErr(null)
         setCreditMode(false)
         setCreditPaid(0)
+        // PIN is one-sale proof, never a reusable renderer session credential.
+        setSaleOperatorPassword('')
         setCreditDestination(null)
+        // مبلغ‌های فاکتور قبلی نباید روی فاکتور بعدی بمانند یا با قابل‌پرداخت جدید مقایسه شوند.
+        setSplitPayment(false)
+        setSplitCash('')
+        setSplitCard('')
+        setSplitCardMethodId(null)
         notify(
-          `فیش شماره ${faDigits(inv.receiptNo)} ثبت شد · ${money(inv.grandTotal ?? totals.payable)} ریال · ${method.label}` +
+          `فیش شماره ${faDigits(inv.receiptNo)} ثبت شد · ${money(inv.grandTotal ?? totals.payable)} ریال · ${isSplit ? 'نقد + کارت' : method!.label}` +
             (inv.returnCode ? ` · کد فاکتور: ${inv.returnCode}` : '') +
             // بخش ۷: فروش نسیه ⇒ باقی‌ماندهٔ بدهی و راه ثبت پرداختی بعدی
             (inv.remaining > 0
@@ -1027,9 +1193,9 @@ export default function Pos() {
               : '') +
             (inv.storeCreditApplied > 0 ? ` · اعتبار مصرف‌شده: ${money(inv.storeCreditApplied)} ریال` : '') +
             (inv.storeCreditRemainder
-              ? ` · باقی‌مانده‌ی اعتبار با بارکد جدید ${inv.storeCreditRemainder.code} (${money(
+              ? ` · باقی‌مانده‌ی ${inv.storeCreditRemainder.publicReference} (${money(
                   inv.storeCreditRemainder.amount
-                )} ریال) به مشتری برگشت`
+                )} ریال) صادر و برای مشتری چاپ شد`
               : '') +
             printNote
         )
@@ -1039,8 +1205,18 @@ export default function Pos() {
           .then(setShift)
           .catch(() => {})
       } catch (e: any) {
-        // پیام‌ها از main فارسی می‌آیند (مثلاً «موجودی کافی نیست…»)
-        setErr(e.message)
+        /**
+         * SESSION_REQUIRED: عمداً setErr نشه — بنر جداگانه‌ی قابل‌اقدام + سبد
+         * دست‌نخورده می‌ماند (setLines([]) فقط بعد از موفقیت) تا کاربر همان
+         * فاکتور را بعد از ریکاوری نشست دوباره ثبت کند.
+         */
+        if (e?.code === 'SESSION_REQUIRED') {
+          sessionBlockedRef.current = true
+          setSessionBlock(e.message)
+        } else {
+          // پیام‌ها از main فارسی می‌آیند (مثلاً «موجودی کافی نیست…»)
+          setErr(e.message)
+        }
       } finally {
         setBusy(false)
       }
@@ -1049,6 +1225,11 @@ export default function Pos() {
       busy,
       lines,
       methods,
+      directPaymentMethods,
+      splitCashAmount,
+      splitCardAmount,
+      splitTotal,
+      splitCardMethodId,
       invoiceDiscount,
       totals,
       lineDiscountOf,
@@ -1094,7 +1275,7 @@ export default function Pos() {
       [settle, clearCart, printInvoice, last]
     ),
     // جلسه ۵۲: تا پنجره‌ی «از کدام انبار کسر شود؟» باز است، F3/F8 دوباره ثبت نزنند
-    !modalOpen && stockChain == null
+    !modalOpen && stockChain == null && !printing
   )
 
   /**
@@ -1301,11 +1482,14 @@ export default function Pos() {
               {creditInfo.customerName ? ` · ${creditInfo.customerName}` : ''} · با ثبت فاکتور مصرف می‌شود
             </span>
           )}
-          {creditInfo && (
+          {creditInfo && splitStoreCreditPayment && (
             <label className="flex items-center gap-1">
               <span className="kbd">مبلغ مصرف اعتبار (خالی = حداکثر ممکن)</span>
               <input className="inp w-36 py-1" type="number" min={0} value={creditRequested ?? ''} onChange={e => setCreditRequested(e.target.value === '' ? null : Math.max(0, +e.target.value || 0))} />
             </label>
+          )}
+          {creditInfo && !splitStoreCreditPayment && (
+            <span className="kbd text-slate-700">پرداخت ترکیبی اعتبار در تنظیمات فروش خاموش است؛ اعتبار تا سقف مجاز کامل مصرف می‌شود.</span>
           )}
           {creditErr && <span className="kbd text-amber-800 font-bold whitespace-pre-line">{creditErr}</span>}
           {/* §۱۸ — تقسیم سبد به «پوشش‌دار / خارج از دامنه» و پیام‌های خودِ پیش‌نمایش */}
@@ -1481,18 +1665,17 @@ export default function Pos() {
               </span>
             )}
             {!!last.storeCreditApplied && (
-              <span className="px-2 py-1 rounded bg-white border font-bold" title="بارکد اعتبار مصرف‌شده روی این فاکتور">
+              <span className="px-2 py-1 rounded bg-white border font-bold" title="مبلغ اعتبار مصرف‌شده روی این فاکتور">
                 اعتبار مصرف‌شده {money(last.storeCreditApplied)} ریال
-                {last.storeCredit ? ` (${last.storeCredit.code})` : ''}
+                {last.storeCredit ? ` · ${last.storeCredit.publicReference}` : ''}
               </span>
             )}
             {last.storeCreditRemainder && (
               <span
                 className="px-2 py-1 rounded bg-amber-50 border-2 border-amber-400 font-bold"
-                dir="ltr"
-                title="باقی‌ماندهٔ اعتبار سوخت نشد: یک بارکد جدید صادر شد که باید به مشتری داده شود"
+                title="باقی‌ماندهٔ اعتبار سوخت نشد و برای مشتری چاپ شد"
               >
-                {last.storeCreditRemainder.code} · {money(last.storeCreditRemainder.amount)}
+                {last.storeCreditRemainder.publicReference} · {money(last.storeCreditRemainder.amount)}
               </span>
             )}
             {/* بخش ۷: فاکتور نسیه ⇒ باقی‌ماندهٔ بدهی، واضح و جدا */}
@@ -1505,8 +1688,8 @@ export default function Pos() {
               </span>
             )}
             {printEnabled ? (
-              <button className="btn btn-primary" onClick={() => void printInvoice(last.id)}>
-                چاپ فاکتور <span className="keycap">F6</span>
+              <button className="btn btn-primary" onClick={() => void printInvoice(last.id)} disabled={printing}>
+                {printing ? 'در حال چاپ…' : 'چاپ فاکتور'} <span className="keycap">F6</span>
               </button>
             ) : (
               <span className="kbd">چاپ فاکتور خاموش است</span>
@@ -1515,8 +1698,14 @@ export default function Pos() {
               برگشت از فروش با همین کد
             </button>
             <span className="kbd">
-              {!printEnabled ? 'چاپ خاموش' : last.printed ? 'رسید چاپ شد' : 'رسید هنوز چاپ نشده است'} · مهلت برگشت این
-              فاکتور{' '}
+              {!printEnabled
+                ? 'چاپ خاموش'
+                : last.printed === 'UNKNOWN'
+                  ? 'معلوم نیست رسید چاپ شده؛ اول خروجی چاپگر را ببینید'
+                  : last.printed
+                    ? 'رسید چاپ شد'
+                    : 'رسید هنوز چاپ نشده است'}{' '}
+              · مهلت برگشت این فاکتور{' '}
               {faDigits(last.returnCodeDays ?? settings.sale.returnCodeDays)} روز است
             </span>
             <button className="btn ms-auto" onClick={() => setLast(null)}>
@@ -1557,6 +1746,25 @@ export default function Pos() {
           </div>
         )}
 
+        {sessionBlock && (
+          <div className="rounded px-3 py-2 border-2 border-red-500 bg-red-50 text-red-900 flex items-center gap-2 justify-between whitespace-pre-line">
+            <span>{sessionBlock}</span>
+            <button
+              className="btn shrink-0 border-2 border-red-700 font-bold"
+              onClick={() => window.dispatchEvent(new Event('mahak:open-shift-modal'))}
+            >
+              حل مسئله‌ی نشست — باز کردن نشست
+            </button>
+          </div>
+        )}
+        {sessionReady && (
+          <div className="rounded px-3 py-2 border bg-emerald-50 border-emerald-400 text-emerald-800 flex items-center gap-2 justify-between">
+            <span>نشست آماده است؛ همان فاکتور را دوباره ثبت کنید.</span>
+            <button className="btn" onClick={() => setSessionReady(false)} title="بستن">
+              ✕
+            </button>
+          </div>
+        )}
         {(msg || err) && (
           <div
             className={`rounded px-3 py-2 border whitespace-pre-line ${
@@ -1569,7 +1777,7 @@ export default function Pos() {
       </section>
 
       <aside className="col-span-3 flex flex-col gap-2">
-        <div className="bg-white rounded shadow p-3 space-y-2">
+        <div className="order-1 bg-white rounded shadow p-3 space-y-2">
           <div className="flex justify-between">
             <span>جمع کل</span>
             <b>{money(totals.goods)}</b>
@@ -1705,55 +1913,60 @@ export default function Pos() {
             </ManagerGate>
           )}
 
-          {/**
-           * ---------- چاپ فاکتور روشن/خاموش (مورد ۳ · قفل بخش ۱) ----------
-           * ⚠️ قفل `posPrintToggle` فقط و فقط همین چک‌باکس را می‌پوشاند، نه کل پنل
-           * فروش: کارمند می‌تواند بفروشد ولی نمی‌تواند چاپ فاکتور را خاموش کند.
-           * حالت inline یک کادر جمع‌وجور در همان ستون کنار نشان می‌دهد.
-           */}
-          <ManagerGate
-            panel={PANEL_KEYS.posPrintToggle}
-            title="چک‌باکس «چاپ فاکتور»"
-            reason="روشن/خاموش کردن چاپ فاکتور با رمز باز می‌شود؛ بقیه‌ی پنل فروش باز است و فروش عادی انجام می‌شود."
-            inline
-          >
-          <label
-            className={`flex items-start gap-2 rounded border-2 px-2 py-1.5 cursor-pointer ${
-              printEnabled ? 'bg-emerald-50 border-emerald-400' : 'bg-slate-100 border-slate-400'
-            }`}
-            title="خاموش = هیچ فاکتوری چاپ نمی‌شود (نه خودکار و نه دستی)، ولی ثبت فاکتور در گزارشات فروش عادی انجام می‌شود"
-          >
-            <input
-              type="checkbox"
-              className="w-4 h-4 mt-0.5"
-              checked={printEnabled}
-              onChange={(e) => void togglePrintEnabled(e.target.checked)}
-            />
-            <span>
-              <b>چاپ فاکتور</b>
-              <span className="block kbd leading-5">
-                {printEnabled
-                  ? settings.receipt.autoPrint
-                    ? 'روشن: هر فاکتور بعد از ثبت خودکار چاپ می‌شود (طبق تنظیمات چاپ).'
-                    : 'روشن: چاپ خودکار در تنظیمات خاموش است، پس فقط با دکمه‌ی «چاپ فاکتور» چاپ می‌شود.'
-                  : 'خاموش: هیچ فاکتوری چاپ نمی‌شود — نه خودکار و نه دستی.'}
-              </span>
-              <span className="block kbd leading-5">
-                ثبت فاکتور و آمدنش در گزارشات فروش در هر دو حالت کاملاً عادی است؛ این تیک فقط روی چاپ اثر دارد.
-              </span>
-            </span>
-          </label>
-          {printNeedPw && (
-            <div className="mt-1 max-w-xs" title="رمز مدیر یا رمز دوم همین گزینه؛ بعد از هر تلاش پاک می‌شود">
-              <PasswordField
-                value={printPw}
-                placeholder="رمز تغییر چاپ فاکتور"
-                onChange={(e) => setPrintPw(e.target.value)}
-              />
+        </div>
+
+        {/**
+         * جزئیات کمکی فروش (انبار، عوارض و سهم اعتبار) بعد از انتخاب روش پرداخت
+         * می‌آیند. این جابه‌جایی فقط order بصری است؛ هیچ state یا محاسبه‌ای را
+         * تغییر نمی‌دهد.
+         */}
+        <div className="order-4 bg-white rounded shadow p-3 space-y-2">
+          {custodyGoverned && (
+            <div className="rounded border-2 border-indigo-200 bg-indigo-50 p-2 space-y-2">
+              <div>
+                <b className="text-indigo-950">ثبت‌کنندهٔ POS</b>
+                <div className="kbd leading-5 text-indigo-900">
+                  مسئولیت مالی این فروش همچنان برای کشوی «{custodyPos?.custodian?.name ?? 'مسئول فعال'}» می‌ماند. این انتخاب فقط شاهدِ مستقلِ اپراتور است.
+                </div>
+              </div>
+              <select
+                className="inp bg-white"
+                value={saleOperatorMode}
+                disabled={busy}
+                onChange={(event) => {
+                  const mode = event.target.value as 'CUSTODIAN' | 'OPERATOR_PIN' | 'MANAGER_SESSION'
+                  setSaleOperatorMode(mode)
+                  setSaleOperatorPassword('')
+                }}
+              >
+                <option value="CUSTODIAN">خود مسئول فعلی کشو</option>
+                <option value="OPERATOR_PIN">اپراتور دیگر با رمز شخصی حضانت</option>
+                {isManager && <option value="MANAGER_SESSION">نشست فعال مدیر (بدون انتساب به نام مدیر)</option>}
+              </select>
+              {saleOperatorMode === 'OPERATOR_PIN' && (
+                <div className="grid grid-cols-1 gap-1">
+                  <select
+                    className="inp bg-white"
+                    value={saleOperatorUserId}
+                    disabled={busy}
+                    onChange={(event) => setSaleOperatorUserId(event.target.value ? Number(event.target.value) : '')}
+                  >
+                    <option value="">اپراتور PINدار را انتخاب کنید…</option>
+                    {operatorStaff.map((staff) => <option key={staff.id} value={staff.id}>{staff.name} ({staff.role === 'MANAGER' ? 'مدیر' : 'صندوقدار'})</option>)}
+                  </select>
+                  <PasswordField
+                    value={saleOperatorPassword}
+                    placeholder="رمز شخصی حضانت اپراتور — فقط برای همین فروش"
+                    onChange={(event) => setSaleOperatorPassword(event.target.value)}
+                  />
+                  <div className="kbd text-indigo-900">رمز پس از ثبت موفق پاک می‌شود و هر فروش دوباره PIN مستقل می‌خواهد.</div>
+                </div>
+              )}
+              {saleOperatorMode === 'MANAGER_SESSION' && (
+                <div className="kbd text-indigo-900">نشست مدیر معتبر است؛ سند فقط با برچسب MANAGER_SESSION ثبت می‌شود و نام یک مدیر فرضی نمی‌گیرد.</div>
+              )}
             </div>
           )}
-          </ManagerGate>
-
           {/**
            * ---------- برداشت خودکار از انبار مرکزی ----------
            * مورد ۴ (نشست نهم): این چک‌باکس هم — دقیقاً مثل «چاپ فاکتور» و «تخفیف» —
@@ -1853,9 +2066,60 @@ export default function Pos() {
           )}
         </div>
 
+          {/**
+           * ---------- چاپ فاکتور روشن/خاموش (مورد ۳ · قفل بخش ۱) ----------
+           * ⚠️ قفل `posPrintToggle` فقط و فقط همین چک‌باکس را می‌پوشاند، نه کل پنل
+           * فروش: کارمند می‌تواند بفروشد ولی نمی‌تواند چاپ فاکتور را خاموش کند.
+           * حالت inline یک کادر جمع‌وجور در همان ستون کنار نشان می‌دهد.
+           */}
+          <div className="order-5">
+          <ManagerGate
+            panel={PANEL_KEYS.posPrintToggle}
+            title="چک‌باکس «چاپ فاکتور»"
+            reason="روشن/خاموش کردن چاپ فاکتور با رمز باز می‌شود؛ بقیه‌ی پنل فروش باز است و فروش عادی انجام می‌شود."
+            inline
+          >
+          <label
+            className={`flex items-start gap-2 rounded border-2 px-2 py-1.5 cursor-pointer ${
+              printEnabled ? 'bg-emerald-50 border-emerald-400' : 'bg-slate-100 border-slate-400'
+            }`}
+            title="خاموش = هیچ فاکتوری چاپ نمی‌شود (نه خودکار و نه دستی)، ولی ثبت فاکتور در گزارشات فروش عادی انجام می‌شود"
+          >
+            <input
+              type="checkbox"
+              className="w-4 h-4 mt-0.5"
+              checked={printEnabled}
+              onChange={(e) => void togglePrintEnabled(e.target.checked)}
+            />
+            <span>
+              <b>چاپ فاکتور</b>
+              <span className="block kbd leading-5">
+                {printEnabled
+                  ? settings.receipt.autoPrint
+                    ? 'روشن: هر فاکتور بعد از ثبت خودکار چاپ می‌شود (طبق تنظیمات چاپ).'
+                    : 'روشن: چاپ خودکار در تنظیمات خاموش است، پس فقط با دکمه‌ی «چاپ فاکتور» چاپ می‌شود.'
+                  : 'خاموش: هیچ فاکتوری چاپ نمی‌شود — نه خودکار و نه دستی.'}
+              </span>
+              <span className="block kbd leading-5">
+                ثبت فاکتور و آمدنش در گزارشات فروش در هر دو حالت کاملاً عادی است؛ این تیک فقط روی چاپ اثر دارد.
+              </span>
+            </span>
+          </label>
+          {printNeedPw && (
+            <div className="mt-1 max-w-xs" title="رمز مدیر یا رمز دوم همین گزینه؛ بعد از هر تلاش پاک می‌شود">
+              <PasswordField
+                value={printPw}
+                placeholder="رمز تغییر چاپ فاکتور"
+                onChange={(e) => setPrintPw(e.target.value)}
+              />
+            </div>
+          )}
+          </ManagerGate>
+          </div>
+
         {/* ---------- بخش ۷: فروش نسیه و پرداخت جزئی ---------- */}
         <div
-          className={`rounded p-2 border-2 space-y-1 ${
+          className={`order-2 rounded p-2 border-2 space-y-1 ${
             creditMode ? 'bg-amber-50 border-amber-400' : 'bg-white border-slate-300'
           }`}
         >
@@ -1938,22 +2202,81 @@ export default function Pos() {
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          {methods.map((m) => (
+        <div className="order-3 space-y-2">
+          <label className="flex items-center gap-2 font-bold cursor-pointer rounded border px-2 py-1.5">
+            <input type="checkbox" className="w-4 h-4" checked={splitPayment} onChange={(e) => setSplitPayment(e.target.checked)} disabled={creditMode} />
+            پرداخت ترکیبی نقد + کارت
+          </label>
+          {splitPayment && (
+            <div className="rounded border-2 border-sky-300 bg-sky-50 p-2 space-y-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <label>
+                  <span className="kbd">نقد (ریال)</span>
+                  <input
+                    className="inp"
+                    dir="ltr"
+                    inputMode="numeric"
+                    value={groupThousands(splitCash)}
+                    placeholder="۰"
+                    title="فقط عدد صحیح ریالی؛ جداکنندهٔ هزارگان و ارقام فارسی پذیرفته می‌شود."
+                    onChange={(e) => {
+                      // متن نامعتبر را هرگز با حذف کاراکترها به مبلغ دیگری تبدیل نکن.
+                      if (parseGroupedInteger(e.target.value) != null) setSplitCash(digitsOnly(e.target.value))
+                    }}
+                  />
+                </label>
+                <label>
+                  <span className="kbd">کارت (ریال)</span>
+                  <input
+                    className="inp"
+                    dir="ltr"
+                    inputMode="numeric"
+                    value={groupThousands(splitCard)}
+                    placeholder="۰"
+                    title="فقط عدد صحیح ریالی؛ جداکنندهٔ هزارگان و ارقام فارسی پذیرفته می‌شود."
+                    onChange={(e) => {
+                      // ۱.۲ نباید بی‌صدا به ۱۲ تبدیل شود؛ ورودی نامعتبر پذیرفته نمی‌شود.
+                      if (parseGroupedInteger(e.target.value) != null) setSplitCard(digitsOnly(e.target.value))
+                    }}
+                  />
+                </label>
+                <label>
+                  <span className="kbd">روش کارت</span>
+                  <select className="inp" value={splitCardMethodId ?? ''} onChange={(e) => setSplitCardMethodId(e.target.value ? Number(e.target.value) : null)}>
+                    {directPaymentMethods.filter((m) => m.kind === 'CARD').map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="kbd">جمع: {money(splitTotal ?? 0)} ریال · قابل پرداخت: {money(cashDue)} ریال</div>
+              <div className="flex gap-2">
+                <button className="btn" onClick={() => setSplitCard(String(Math.max(0, cashDue - (splitCashAmount ?? 0))))}>باقی را کارت کن</button>
+                <button
+                  className="btn btn-primary"
+                  disabled={busy || splitTotal == null || splitTotal !== cashDue || (splitCashAmount ?? 0) <= 0 || (splitCardAmount ?? 0) <= 0}
+                  onClick={() => void settle('__SPLIT__')}
+                >
+                  ثبت نقد + کارت
+                </button>
+              </div>
+            </div>
+          )}
+          {!splitPayment && <div className="grid grid-cols-2 gap-2">
+          {directPaymentMethods.map((m) => (
             <button key={m.id} className="btn btn-primary" disabled={busy} onClick={() => void settle(m.key)}>
               {m.label}
               {creditMode && <span className="block kbd">{creditPaid > 0 ? 'دریافت جزئی' : 'ثبت نسیه'}</span>}
             </button>
           ))}
+          </div>}
         </div>
 
         {last && printEnabled && (
-          <button className="btn" onClick={() => void printInvoice(last.id)}>
-            چاپ فاکتور آخر <span className="keycap">F6</span>
+          <button className="order-6 btn" onClick={() => void printInvoice(last.id)} disabled={printing}>
+            {printing ? 'در حال چاپ…' : 'چاپ فاکتور آخر'} <span className="keycap">F6</span>
           </button>
         )}
 
-        <button className="btn btn-danger mt-auto" onClick={clearCart}>
+        <button className="order-7 btn btn-danger mt-auto" onClick={clearCart}>
           حذف سفارش <span className="keycap">F7</span>
         </button>
       </aside>
@@ -1974,7 +2297,16 @@ export default function Pos() {
         open={stockChain != null}
         preview={stockChain?.preview ?? null}
         primaryKey={STORE_PICK_KEY}
-        busy={busy}
+        /**
+         * ⚠️ `busy` مودال عمداً با `stockChain` وام‌دار شده است: `settle` *قبل* از
+         * باز شدن این پنجره `setBusy(true)` می‌کند تا دکمه‌ی ثبتِ دوباره قفل شود و
+         * تا جواب کاربر در انتظار می‌ماند — پس در کل بازه‌ی باز بودن پنجره
+         * `busy=true` است. اگر همین مقدار خام به مودال داده شود، دکمه‌های «تأیید»
+         * و «لغو» خودِ پنجره هم غیرفعال می‌شوند و کاربر حبس می‌شود. برای قفلِ
+         * تکثیرِ کاربر روی تأیید، خودِ `decide` کافی است (پس از یک کلیک پنجره
+         * بسته می‌شود و وعده فقط یک‌بار تحویل می‌شود).
+         */
+        busy={busy && stockChain == null}
         confirmLabel="تأیید و ثبت فیش"
         passwordRequired={stockPickLockOn}
         passwordHint={

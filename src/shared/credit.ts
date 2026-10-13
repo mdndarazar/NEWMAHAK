@@ -50,6 +50,16 @@ export const CREDIT_SOURCE_LABELS: Record<string, string> = {
   OVERPAY: 'ناشی از اضافه‌دریافت (مبلغ بیشتر از بدهی)'
 }
 
+/**
+ * برچسب «قاعده» با برچسب منشأ یکسان نیست: source ذخیره‌شده‌ی EXCHANGE برای
+ * برگشت با اعتبار هم به‌دلایل سازگاری استفاده می‌شود. این نگاشت فقط در فرم
+ * تنظیمات است و هیچ source یا دادهٔ تاریخی را تغییر نمی‌دهد.
+ */
+export const CREDIT_RULE_LABELS: Record<string, string> = {
+  EXCHANGE: 'برگشت فروش / تعویض کالا / اضافه‌دریافت',
+  MANUAL: 'صدور دستی / مدیریتی'
+}
+
 /** ورودی ناشناس ⇒ یک نوع معتبر. پیش‌فرض عمداً `EXCHANGE` است (سازگاری قدیم). */
 export function normalizeCreditSource(raw: unknown): CreditSource {
   const k = String(raw ?? '').trim().toUpperCase()
@@ -463,13 +473,14 @@ export function effectiveStatus(c: CreditCore, now: Date | number = Date.now()):
 }
 
 /**
- * وضعیت بعدی، بعد از یک مصرف موفق — قلبِ تفکیک «یک‌بارمصرف» از «چندباره» (§۴).
+ * وضعیت بعدی، بعد از یک مصرف موفق — قلبِ سیاستِ مصرف اعتبار (§۴).
  *
- *   • یک‌بارمصرف (`multiUse = false`): با *یک* بار مصرف — حتی جزئی — وضعیت
- *     قطعاً می‌بندد (USED). باقی‌مانده‌اش (اگر باشد) طبق مسیر تاریخی تعویض کالا
- *     به شکل یک اعتبار *جدید* به مشتری برمی‌گردد، نه روی همین رکورد.
+ *   • کوپن تک‌مصرف واقعی (`multiUse = false` و `carryRemainder = false`): با
+ *     نخستین مصرف، حتی جزئی، `USED` می‌شود.
+ *   • اعتبار غیرچندباره با حفظ مانده: بارکد و مانده روی همان رکورد می‌مانند و
+ *     تا صفرشدن مبلغ `PARTIALLY_USED` است؛ این مسیر کد جانشین صادر نمی‌کند.
  *   • چندباره (`multiUse = true`): تا وقتی هم مبلغ مانده و هم دفعه مانده،
- *     وضعیت `PARTIALLY_USED` است؛ با تمام شدن *هرکدام* (مبلغ یا دفعات) می‌بندد.
+ *     `PARTIALLY_USED` است؛ با تمام شدن هرکدام می‌بندد.
  */
 export function statusAfterRedeem(c: CreditCore, applied: number): string {
   const amount = Math.max(0, Math.round(Number(c.amount) || 0))
@@ -681,7 +692,18 @@ export function decideRedeem(c: CreditCore, ctx: RedeemContext): RedeemDecision 
   }
 
   if (remaining <= 0) return fail('باقی‌مانده‌ی این اعتبار صفر است.')
-  if (usesLeft <= 0)
+  /**
+   * `carryRemainder=true` برای اعتبار غیرچندباره یعنی «مانده روی *همین* سند
+   * بماند» (تصمیم نشست ۱۸۴)، نه این‌که بعد از نخستین مصرف جزئی قفل شود.
+   *
+   * پیش از این استثنا، `statusAfterRedeem` درست `PARTIALLY_USED` می‌نوشت اما
+   * همین گارد با `maxUses=1` مصرف دومِ مانده را رد می‌کرد؛ در نتیجه هم بارکد
+   * جدیدی صادر نمی‌شد و هم پول مشتری عملاً گیر می‌کرد. در حالت
+   * `carryRemainder=false` واقعاً کوپنِ تک‌مصرف است و سقف دفعات همچنان سخت
+   * اعمال می‌شود. برای اعتبار چندباره نیز `maxUses` دقیقاً مثل قبل پابرجاست.
+   */
+  const usageLimitApplies = c.multiUse === true || c.carryRemainder === false
+  if (usageLimitApplies && usesLeft <= 0)
     return fail(
       `دفعات مجاز مصرف این اعتبار تمام شده است (${Math.max(1, Math.round(Number(c.maxUses ?? 1)))} بار مجاز بود).`
     )
@@ -864,6 +886,16 @@ export interface CreditSettings {
   paper: CreditPaper
   customWidthMm: number
   customHeightMm: number
+  /**
+   * نشست ۳۱۷ · طرح کلاد (گزینه‌ی برنده) — سه عددِ جدیدِ چاپ سند اعتبار.
+   * پیش‌فرض‌ها دقیقاً CSS تاریخی‌اند (font 11px، padding ‌۵mm ۴mm) تا بدون
+   * هیچ اکشنی، خروجی بایت‌به‌بایت همان امروز بماند (`isLegacy` در
+   * `@shared/creditPrint`). بازه‌ها: فونت ۶..۲۲px (یعنی ضریب حدود ۰٫۵ تا ۲)،
+   * حاشیه ۰..۲۰mm (هنگام رندر نسبت به کاغذ هم clamp دوم می‌خورد).
+   */
+  printFontPx: number
+  printMarginXMm: number
+  printMarginYMm: number
   showRules: boolean
   showHolder: boolean
   showRemaining: boolean
@@ -913,6 +945,10 @@ export const DEFAULT_CREDIT_SETTINGS: CreditSettings = {
   paper: CreditPaper.A6,
   customWidthMm: 100,
   customHeightMm: 150,
+  // نشست ۳۱۷ — پیش‌فرض = CSS تاریخی («پیش‌فرض = امروز» بدون مهاجرت)
+  printFontPx: 11,
+  printMarginXMm: 4,
+  printMarginYMm: 5,
   showRules: true,
   showHolder: true,
   showRemaining: true,
@@ -985,6 +1021,10 @@ export function parseCreditSettings(raw: unknown): CreditSettings {
     paper: (Object.prototype.hasOwnProperty.call(CreditPaper, paperRaw) ? paperRaw : d.paper) as CreditPaper,
     customWidthMm: num(o.customWidthMm, d.customWidthMm, 40, 400),
     customHeightMm: num(o.customHeightMm, d.customHeightMm, 40, 600),
+    // نشست ۳۱۷ — نبودن کلید در JSON قدیمی ⇒ پیش‌فرضِ سازگار (= رندر امروز)
+    printFontPx: num(o.printFontPx, d.printFontPx, 6, 22),
+    printMarginXMm: num(o.printMarginXMm, d.printMarginXMm, 0, 20),
+    printMarginYMm: num(o.printMarginYMm, d.printMarginYMm, 0, 20),
     showRules: bool(o.showRules, d.showRules),
     showHolder: bool(o.showHolder, d.showHolder),
     showRemaining: bool(o.showRemaining, d.showRemaining),
@@ -1018,6 +1058,15 @@ export function describeCreditSettings(s: CreditSettings): string {
     `${s.autoGrowLength ? ' · افزایش خودکار طول' : ''}` +
     ` · پیشوند ${s.prefixManual || '—'}/${s.prefixExchange || '—'} · ${types}` +
     ` · سقف تولید گروهی ${s.bulkMaxCount} · کاغذ ${CREDIT_PAPER_LABELS[s.paper] ?? s.paper}` +
+    /**
+     * نشست ۳۱۷ — فقط اگر کاربر چیزی را از پیش‌فرض چاپ دور کرده باشد در لاگ
+     * می‌آید؛ یادداشت AuditLog مشتریانِ فعلی (همه روی پیش‌فرض) تغییر نمی‌کند.
+     */
+    (s.printFontPx !== DEFAULT_CREDIT_SETTINGS.printFontPx ||
+    s.printMarginXMm !== DEFAULT_CREDIT_SETTINGS.printMarginXMm ||
+    s.printMarginYMm !== DEFAULT_CREDIT_SETTINGS.printMarginYMm
+      ? ` · چاپ سند: فونت ${s.printFontPx}px · حاشیه ${s.printMarginXMm}×${s.printMarginYMm}mm`
+      : '') +
     ` · یادآوری ${s.reminder.enabled ? `روشن (حداقل ${s.reminder.minDaysSinceIssue} روز، فاصله ${s.reminder.minGapDays} روز، سقف ${s.reminder.maxCount})` : 'خاموش'}` +
     ` · گزارش تعهد ${s.reportLiability ? 'روشن' : 'خاموش'}`
   )

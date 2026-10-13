@@ -43,11 +43,17 @@ sql.prepare('UPDATE "ProductVariant" SET stock = 50, salePrice = ? WHERE id = ?'
 console.log('\n۰) قاعده نمایش')
 {
   eq('وسط شیفت ۸–۱۴ = ۱۱:۰۰ به دقیقه', midShiftMinutes('08:00', '14:00'), 11 * 60)
+  // زمان‌ها باید نسبت به «اکنون» باشند؛ تاریخ ثابت با عبور تقویم، آزمایشی را
+  // نادرستاً به پیش از آخرین بستن می‌بُرد.
+  const afterMid = new Date()
+  afterMid.setHours(12, 0, 0, 0)
+  const beforeMid = new Date(afterMid)
+  beforeMid.setHours(8, 0, 0, 0)
   const base = {
     overdueCount: 1,
     shiftId: 10,
     shiftNumber: 1,
-    now: new Date('2026-09-29T08:00:00'),
+    now: beforeMid,
     midMinutes: 11 * 60,
     dismisses: []
   }
@@ -55,9 +61,8 @@ console.log('\n۰) قاعده نمایش')
   eq('همین شیفت بسته شده → پنهان', decideDebtReminderShow({ ...base, dismisses: [{ shiftId: 10, shiftNumber: 1, dayJalali: today, at: Date.now() }] }).show, false)
   const three = [1, 2, 3].map((n) => ({ shiftId: n, shiftNumber: n, dayJalali: today, at: Date.now() - 1000 }))
   eq('بعد از ۳ بستن، قبل از وسط شیفت → پنهان', decideDebtReminderShow({ ...base, shiftId: 20, dismisses: three }).show, false)
-  const afterMid = new Date('2026-09-29T12:00:00')
   eq('بعد از ۳ بستن + وسط شیفت + ۷ روز نگذشته → پنهان', decideDebtReminderShow({ ...base, shiftId: 20, now: afterMid, dismisses: three }).show, false)
-  const old = three.map((d) => ({ ...d, at: Date.now() - 8 * 24 * 3600_000 }))
+  const old = three.map((d) => ({ ...d, at: afterMid.getTime() - 8 * 24 * 3600_000 }))
   eq('بعد از ۳ بستن + وسط شیفت + ۸ روز → نشان بده', decideDebtReminderShow({ ...base, shiftId: 20, now: afterMid, dismisses: old }).show, true)
 }
 

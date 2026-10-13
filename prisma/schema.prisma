@@ -106,6 +106,7 @@ model ProductVariant {
   purchaseItems PurchaseInvoiceItem[]
   returnItems   SaleReturnItem[]
   movements     StockMovement[]
+  wooLinks      WooProductLink[]
 
   @@index([barcode])
   @@index([code])
@@ -139,6 +140,144 @@ model StockMovement {
   @@index([refType, refId])
   // پاک‌سازی/آرشیو بازه‌ای حرکات انبار
   @@index([createdAt])
+}
+
+/// لینک موجودی یک واریانت MAHAK به یک Product/Variation در WooCommerce.
+/// فقط stock_quantity sync می‌شود؛ قیمت/سفارش/مشتری/گزارش فروش سایت وارد MAHAK نمی‌شود.
+model WooProductLink {
+  id                   Int            @id @default(autoincrement())
+  variantId            Int
+  variant              ProductVariant @relation(fields: [variantId], references: [id])
+  wooProductId         Int
+  wooVariationId       Int?
+  /// `p:<productId>` یا `v:<variationId>`؛ کلید پایدار سمت افزونه.
+  holderKey            String
+  sku                  String?
+  remoteName           String?
+  manageStock          Boolean        @default(true)
+  /// ACTIVE | PAUSED | CONFLICT | BROKEN_REMOTE | BROKEN_LOCAL | UNLINKED
+  status               String         @default("ACTIVE")
+  lastWooQty           Int            @default(0)
+  lastMahakQty         Int            @default(0)
+  lastPushedMovementId Int?
+  pauseReason          String?
+  pausedAt             DateTime?
+  pausedBy             Int?
+  pauseNote            String?
+  pauseSeqFloor        BigInt?
+  resumedAt            DateTime?
+  resumedBy            Int?
+  resumeDecision       String?
+  relinkSeqFloor       BigInt?
+  lastRelinkId         String?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  outbox        WooSyncOutbox[]
+  inboundEvents WooInboundEvent[]
+  approvals     WooApproval[]
+
+  @@index([variantId])
+  @@index([holderKey])
+  @@index([status])
+}
+
+/// صف خروجی نوشتن موجودی روی WooCommerce. هر ردیف فقط `stock_quantity` را هدف می‌گیرد.
+model WooSyncOutbox {
+  id             Int            @id @default(autoincrement())
+  linkId         Int
+  link           WooProductLink @relation(fields: [linkId], references: [id])
+  variantId      Int
+  movementId     Int?
+  /// STOCK_PUSH | RECONCILE_PUSH
+  kind           String         @default("STOCK_PUSH")
+  expectedWooQty Int?
+  targetQty      Int
+  /// PENDING | IN_FLIGHT | SENT | FAILED | SUPERSEDED | DEAD | CONFLICT
+  status         String         @default("PENDING")
+  attemptCount   Int            @default(0)
+  idempotencyKey String         @unique
+  lastError      String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  sentAt         DateTime?
+
+  @@index([status, createdAt])
+  @@index([linkId, status])
+}
+
+/// ژورنال ورودی از افزونه. رویداد قیمت/سفارش کامل نیست؛ فقط تغییر عدد موجودی است.
+model WooInboundEvent {
+  id          Int             @id @default(autoincrement())
+  eventUuid   String          @unique
+  seq         BigInt?
+  linkId      Int?
+  link        WooProductLink? @relation(fields: [linkId], references: [id])
+  variantId   Int?
+  holderKey   String
+  orderId     String?
+  orderItemId String?
+  oldQty      Int?
+  newQty      Int
+  delta       Int
+  source      String?
+  requestId   String?
+  /// PENDING | APPLIED | SKIPPED_ECHO | SKIPPED_PAUSED | SKIPPED_UNMAPPED | SUPERSEDED | PARKED | APPLIED_ON_RELINK
+  status      String          @default("PENDING")
+  movementId  Int?
+  relinkId    String?
+  payloadJson String?
+  receivedAt  DateTime        @default(now())
+  processedAt DateTime?
+
+  @@index([status, seq])
+  @@index([linkId, status])
+  @@index([holderKey, seq])
+}
+
+/// صف تأیید مدیر برای تصمیم‌های مبهم همگام‌سازی موجودی Woo.
+/// این جدول فقط درباره عدد موجودی است و هیچ داده فروش/مشتری/قیمت سایت را نگه نمی‌دارد.
+model WooApproval {
+  id             Int             @id @default(autoincrement())
+  /// APPLY_INBOUND | RECONCILE_DISCREPANCY | LOOP_FUSE | CONFLICT_RESOLUTION | UNFREEZE_LINK
+  action         String
+  /// PENDING | APPROVED | REJECTED | EXPIRED
+  status         String          @default("PENDING")
+  linkId         Int?
+  link           WooProductLink? @relation(fields: [linkId], references: [id])
+  variantId      Int?
+  holderKey      String?
+  sourceType     String?
+  sourceId       Int?
+  reason         String
+  title          String
+  message        String
+  payloadJson    String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  resolvedAt     DateTime?
+  resolvedBy     Int?
+  resolution     String?
+  resolutionNote String?
+
+  @@index([status, createdAt])
+  @@index([linkId, status])
+  @@index([sourceType, sourceId, status])
+}
+
+/// لاگ خوانای همگام‌سازی سایت؛ برای ردیابی بدون ورود هیچ مبلغی از سایت.
+model WooSyncLog {
+  id          Int      @id @default(autoincrement())
+  at          DateTime @default(now())
+  level       String   @default("INFO")
+  action      String
+  linkId      Int?
+  variantId   Int?
+  message     String
+  payloadJson String?
+
+  @@index([at])
+  @@index([linkId, at])
 }
 
 // ------------------------- اشخاص (مشتری/تامین‌کننده) -------------------------
@@ -224,6 +363,11 @@ model Shift {
   user                       User?     @relation(fields: [userId], references: [id])
   openedAt                   DateTime  @default(now())
   closedAt                   DateTime?
+  /// نشست ۳۱۰ · اضافه‌کاری شیفت شب — اعلام صریح سروری، فقط یک‌بار و تا سقف تنظیمی.
+  /// داده‌ی قدیمی NULL می‌ماند (بدون backfill)؛ NULL یعنی «اعلام نشده».
+  overtimeDeclaredAt         DateTime?
+  overtimeUntil              DateTime?
+  overtimeReason             String?
   note                       String?
 
   saleInvoices SaleInvoice[]
@@ -421,6 +565,9 @@ model SaleInvoice {
   items    SaleInvoiceItem[]
   payments Payment[]
   returns  SaleReturn[]
+  /// Separate immutable evidence of the POS operator. `userId`/`shiftId` above
+  /// remain the actual drawer-custody financial attribution.
+  custodySaleEvidence CustodySaleEvidence?
 
   @@index([issuedAtJalali])
   @@index([status])
@@ -510,6 +657,11 @@ model Payment {
   paidAtTime   String?
   /// توضیح آزاد همان پرداختی
   note         String?
+  /// کلید opaque یک درخواست ثبت پرداخت؛ retry/دوبارکلیک با همین کلید هرگز
+  /// یک ردیف مالی دوم نمی‌سازد. null فقط برای داده یا مسیر داخلیِ قدیمی است.
+  idempotencyKey         String? @unique
+  /// اثرانگشت اقتصادی همان درخواست؛ reuse کلید برای مبلغ/فاکتور متفاوت رد می‌شود.
+  idempotencyFingerprint String?
 
   /// شماره چک (فقط برای kind = CHEQUE)
   chequeNo        String?
@@ -564,6 +716,9 @@ model Payment {
 
   chequeStatusHistory PaymentChequeStatusHistory[]
 
+  /// شماره پرداخت در هر فاکتور یک‌بار است؛ این تضمین دیتابیس، محاسبه‌ی max+1
+  /// را در برابر دو تراکنش هم‌زمان fail-closed می‌کند.
+  @@unique([invoiceId, seq])
   @@index([invoiceId])
   @@index([methodId])
   @@index([kind])
@@ -677,6 +832,8 @@ model SaleReturn {
   restockReleasedAtJalali String?
 
   items SaleReturnItem[]
+  /// دفتر جبرانیِ مستقل: سند برگشت اصلی دست‌نخورده می‌ماند و اثر اصلاحی جداست.
+  corrections ReturnCorrection[]
 
   @@index([invoiceId])
   @@index([returnedAtJalali])
@@ -713,6 +870,71 @@ model SaleReturnItem {
 }
 
 // ----------------------------- فاکتور خرید -----------------------------
+/// ===========================================================================
+/// دفتر جبرانیِ اصلاح/ابطال برگشت — منبع اصلی هرگز بازنویسی یا حذف نمی‌شود.
+/// اثرهای پول/کارت/اعتبار/انبار در ردیف‌های جدا با زمان و شیفتِ لحظه‌ی اصلاح می‌ماند.
+/// شناسه‌های کاربر/شیفت عمداً scalar هستند تا تغییر یا غیرفعال‌سازی کارکنان سابقه
+/// را نشکند؛ snapshotهای JSON فقط برای توضیح‌اند و هرگز کدِ قابل‌مصرف اعتبار ندارند.
+/// ===========================================================================
+model ReturnCorrection {
+  id                    Int        @id @default(autoincrement())
+  returnId              Int        @unique
+  return                SaleReturn @relation(fields: [returnId], references: [id])
+  kind                  String     @default("VOID_RECONCILIATION")
+  status                String     @default("POSTED")
+  reason                String
+  originalUserId        Int?
+  originalShiftId       Int?
+  correctingUserId      Int
+  correctingShiftId     Int
+  approvingManagerId    Int?
+  originalDayJalali     String
+  operationalDayJalali  String
+  originalSnapshotJson  String     @default("{}")
+  reconciliationJson    String     @default("{}")
+  cashRecovered         BigInt     @default(0)
+  cardRecovered         BigInt     @default(0)
+  /// بازپرداختِ واقعی در شیفت اصلاح، برای برگرداندن پولی که مشتری در تعویض داده بود.
+  cashPaidOut           BigInt     @default(0)
+  cardPaidOut           BigInt     @default(0)
+  unrecoveredAmount     BigInt     @default(0)
+  creditOutcome         String     @default("NONE")
+  creditAffectedAmount  BigInt     @default(0)
+  createdAt             DateTime   @default(now())
+  createdAtJalali       String     @default("")
+  createdAtTime         String     @default("")
+  effects               ReturnCorrectionEffect[]
+
+  @@index([createdAt])
+  @@index([createdAtJalali])
+  @@index([correctingShiftId])
+  @@index([approvingManagerId])
+}
+
+model ReturnCorrectionEffect {
+  id             Int              @id @default(autoincrement())
+  correctionId   Int
+  correction     ReturnCorrection @relation(fields: [correctionId], references: [id])
+  type           String
+  amount         BigInt           @default(0)
+  qty            Int              @default(0)
+  variantId      Int?
+  cashMovementId Int?
+  referenceType  String?
+  referenceId    Int?
+  detailsJson    String            @default("{}")
+  occurredAt     DateTime          @default(now())
+  occurredAtJalali String          @default("")
+  occurredAtTime String            @default("")
+  shiftId        Int?
+  userId         Int?
+
+  @@index([correctionId])
+  @@index([type])
+  @@index([occurredAt])
+  @@index([shiftId])
+}
+
 model PurchaseInvoice {
   id             Int       @id @default(autoincrement())
   invoiceNo      Int       @unique
@@ -1554,7 +1776,7 @@ model CostConsumption {
   saleItemId  Int?
   qty         Int      @default(0)
   unitCost    BigInt   @default(0)
-  /// SALE | RETURN | SHRINK | EDIT_ADJ
+  /// SALE | RETURN | SHRINK | EDIT_ADJ | EXTERNAL_SYNC (مصرف/ورود سایت، بدون فروش/درآمد MAHAK)
   kind        String
   createdAt   DateTime @default(now())
 
@@ -1820,4 +2042,238 @@ model SmsCampaign {
 
   @@index([status, createdAt])
   @@index([createdAt])
+}
+
+// ------------------------ Custody v2 (additive) ------------------------
+// These models deliberately use scalar references rather than relations to keep
+// all existing Prisma models and historical rows backward compatible.
+model StaffProfile {
+  userId                 Int      @id
+  kind                   String   @default("STAFF") // STAFF | BOOTSTRAP_OWNER
+  jobTitle               String?
+  phone                  String?
+  /// هویت/بانک فقط از کانال manager-only پروندهٔ پرسنلی خوانده می‌شوند؛
+  /// staffList، گزارش، export و audit هرگز مقدار خامشان را حمل نمی‌کنند.
+  nationalId             String?
+  employmentStartJalali  String?
+  employmentEndJalali    String?
+  employmentStatus       String   @default("ACTIVE") // ACTIVE | LEAVE | TERMINATED | SUSPENDED
+  bankName               String?
+  bankAccountNo          String?
+  bankIban               String?
+  bankAccountHolder      String?
+  version                Int      @default(1)
+  updatedAt              DateTime @updatedAt
+
+  @@unique([nationalId])
+  @@index([kind])
+  @@index([employmentStatus])
+}
+
+model CustodyCredential {
+  userId       Int
+  purpose      String   @default("CUSTODY_PIN")
+  algo         String   @default("scrypt-v1")
+  salt         String
+  hash         String
+  mustChange   Boolean  @default(false)
+  status       String   @default("ACTIVE") // ACTIVE | DISABLED
+  setAt        DateTime @default(now())
+  setByUserId  Int?
+  setKind      String   @default("SELF") // SELF | MANAGER_TEMP | RECOVERY
+  version      Int      @default(1)
+
+  @@id([userId, purpose])
+  @@index([status])
+}
+
+model ShiftPlan {
+  id                Int      @id @default(autoincrement())
+  title             String
+  startMinute       Int
+  durationMinutes   Int
+  crossesMidnight   Boolean  @default(false)
+  daysMask          Int
+  isActive          Boolean  @default(true)
+  sortOrder         Int      @default(0)
+  reminderRepeatMin Int      @default(15)
+  version           Int      @default(1)
+  updatedAt         DateTime @updatedAt
+
+  @@index([isActive, sortOrder, id])
+}
+
+model ShiftPlanStaff {
+  planId Int
+  userId Int
+
+  @@id([planId, userId])
+  @@index([userId])
+}
+
+/// Immutable proof of who operated POS for a custody-governed sale. This is
+/// intentionally not a replacement for SaleInvoice.userId/shiftId: those two
+/// columns remain the physical-drawer custodian and financial attribution.
+model CustodySaleEvidence {
+  id              Int      @id @default(autoincrement())
+  invoiceId       Int      @unique
+  invoice         SaleInvoice @relation(fields: [invoiceId], references: [id])
+  custodyShiftId  Int
+  custodianUserId Int
+  /// CUSTODIAN_SESSION | OPERATOR_PIN | MANAGER_SESSION
+  operatorKind    String
+  /// Null only for an authenticated shared manager session; it must never
+  /// invent a particular manager's user identity from that shared credential.
+  operatorUserId  Int?
+  authMethod      String
+  at              DateTime @default(now())
+
+  @@index([custodyShiftId, at])
+  @@index([operatorUserId, at])
+}
+
+model CustodyState {
+  key               String   @id
+  state             String   @default("NO_SESSION") // NO_SESSION | ACTIVE | HANDOVER_PENDING
+  activeShiftId     Int?
+  pendingHandoverId Int?
+  epoch             Int      @default(0)
+  updatedAt         DateTime @updatedAt
+}
+
+model CustodyShiftMeta {
+  shiftId            Int      @id
+  custodianUserId    Int
+  openAuth           String
+  openCountId        Int?
+  /// شناسهٔ immutable قالب canonical در shift.config؛ داده‌های ShiftPlan قدیمی planId خود را نگه می‌دارند.
+  templateId         String?
+  planId             Int?
+  planTitle          String?
+  scheduledEndAt     DateTime?
+  /// Immutable policy captured when this responsibility segment began. Later
+  /// Settings edits plan only future work; they never rewrite live/history.
+  scheduleSnapshotJson String?
+  rolloverAt         DateTime
+  dayCutoverSnapshot Int      @default(300)
+  operationalDay     String
+  endKind            String?
+  endedAt            DateTime?
+  cashSessionId      Int?
+  countStatus        String   @default("COUNT_PENDING")
+  openEpoch          Int
+
+  @@index([custodianUserId])
+  @@index([templateId])
+  @@index([endKind, operationalDay])
+}
+
+model CustodyCount {
+  id             Int      @id @default(autoincrement())
+  shiftId        Int
+  kind           String
+  countedCash    BigInt
+  expectedCash   BigInt?
+  differenceCash BigInt?
+  countedByUserId Int
+  authMethod     String
+  note           String?
+  handoverId     Int?
+  epochAtCount   Int
+  idempotencyKey String
+  at             DateTime @default(now())
+  operationalDay String
+
+  @@unique([shiftId, kind, idempotencyKey])
+  @@index([shiftId, at])
+}
+
+model CustodyEvent {
+  id          Int      @id @default(autoincrement())
+  type        String
+  shiftId     Int?
+  handoverId  Int?
+  resolutionId Int?
+  actorUserId Int?
+  actorKind   String
+  authMethod  String?
+  managerUserId Int?
+  epochBefore Int?
+  epochAfter  Int?
+  payloadJson String?
+  at          DateTime @default(now())
+  operationalDay String
+
+  @@index([shiftId, at])
+  @@index([type, at])
+}
+
+model CustodyDisposition {
+  id                   Int      @id @default(autoincrement())
+  cashSessionId        Int
+  shiftId              Int
+  kind                 String
+  amount               BigInt
+  recipientUserId      Int?
+  destinationLabel     String?
+  trackingNo           String?
+  confirmStatus        String   @default("PENDING")
+  claimedByUserId      Int?
+  confirmedByUserId    Int?
+  confirmedAt          DateTime?
+  allocationKey        String
+  at                   DateTime @default(now())
+  countBeforeWithdrawal String @default("COUNT_BEFORE")
+
+  @@unique([cashSessionId, allocationKey])
+  @@index([cashSessionId])
+  @@index([confirmStatus])
+}
+
+model CustodyHandover {
+  id                      Int      @id @default(autoincrement())
+  fromShiftId             Int
+  fromUserId              Int
+  selectedRecipientUserId Int
+  finalCustodianUserId    Int?
+  acceptedByUserId        Int?
+  managerApproverUserId   Int?
+  resolutionKind          String?
+  resolutionReason        String?
+  status                  String   @default("PENDING")
+  outCountId              Int
+  expectedAtStart         BigInt
+  countedAtStart          BigInt
+  differenceCash          BigInt
+  ledgerWatermark         String
+  toShiftId               Int?
+  fenceEpochAtStart       Int
+  idempotencyKey          String   @unique
+  stateKey                String   @default("MAIN")
+  startedAt               DateTime @default(now())
+  finishedAt              DateTime?
+  version                 Int      @default(1)
+  operationalDay          String
+
+  @@index([fromShiftId])
+}
+
+model CustodyResolution {
+  id                    Int      @id @default(autoincrement())
+  shiftId               Int      @unique
+  status                String   @default("OPEN")
+  nightExpectedCash     BigInt?
+  nightEvidenceCountId  Int?
+  morningWitnessCountId Int?
+  provisionalDifference BigInt?
+  evidence              String   @default("NONE")
+  differenceAttribution String   @default("PENDING_DECISION")
+  attributedToUserId    Int?
+  decisionByUserId      Int?
+  decisionReason        String?
+  cashSessionId         Int?
+  openedAt              DateTime @default(now())
+  resolvedAt            DateTime?
+
+  @@index([status, openedAt])
 }

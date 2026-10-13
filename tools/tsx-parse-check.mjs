@@ -197,7 +197,18 @@ function transform(src, file) {
   return { code: out, errs }
 }
 
-const files = process.argv.slice(2)
+function findTsxFiles(dir) {
+  let list = []
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === 'node_modules' || e.name === '.git' || e.name === 'out' || e.name === 'dist') continue
+    const p = path.join(dir, e.name)
+    if (e.isDirectory()) list = list.concat(findTsxFiles(p))
+    else if (e.name.endsWith('.tsx')) list.push(p)
+  }
+  return list
+}
+
+const files = process.argv.length > 2 ? process.argv.slice(2) : findTsxFiles('src')
 let bad = 0
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tsxcheck-'))
 for (const f of files) {

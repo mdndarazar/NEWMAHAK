@@ -92,7 +92,9 @@ await salesService.update({
     name: 'بازم جعلی',
     code: 'FAKE-2'
   }],
-  payments: [{ methodId: cash, amount: 100_000, destination: 'CASH' }]
+  // پرداخت زنده فقط از پنجرهٔ پرداختی‌ها تغییر می‌کند؛ ویرایش قلم باید صریحاً
+  // همان ردیف مالی را نگه دارد تا گیت ضدسرقت payment bypass نشود.
+  keepPayments: true
 })
 const after = sql.prepare('SELECT variantName, variantCode FROM "SaleInvoiceItem" WHERE invoiceId = ?').get(inv.id)
 eq('بعد از ویرایش هم نام واقعی است', after?.variantName, 'شلوار آبی سایز ۴۲')

@@ -14,6 +14,10 @@ process.env.HARNESS_BIGINT = '1'
 const electron = await import('electron')
 const handlers = new Map()
 electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
+// IPC اکنون هر فراخوانی را به پنجرهٔ زنده و مالک نشست گره می‌زند. این sender
+// ساختگی، سناریوی انتها-به-انتهای مالی را با همان قرارداد معتبر اجرا می‌کند.
+electron.BrowserWindow.fromWebContents = () => ({ isDestroyed: () => false })
+const sender = { id: 21501, isDestroyed: () => false, once: () => {} }
 
 const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
@@ -28,7 +32,7 @@ const { toJalaliDate } = await import('@shared/jalali')
 const { remainingOf } = await import('../../src/shared/settlement.ts')
 
 registerIpcHandlers()
-const ipc = (ch, p) => handlers.get(ch)(null, p)
+const ipc = (ch, p) => handlers.get(ch)({ sender }, p)
 
 const db = harnessClient()
 const seed = makeSeeder(db)
@@ -230,7 +234,7 @@ eq('مانده فاکتور اعتبار ۰ یا کم', Number(sql.prepare('SELE
 
 await rejects('صدور دستی بی‌رمز', () => storeCreditService.issueManual({ amount: 1_000_000, userId }), 'رمز')
 const manual = await storeCreditService.issueManual({ amount: 50_000, userId, managerPassword: PW })
-truthy('صدور دستی با رمز', !!manual?.code)
+truthy('صدور دستی با رمز فقط مرجع امن دارد', !!manual?.id && !!manual?.publicReference && !('code' in manual))
 
 console.log('\nF) پرداخت / چک / ابطال')
 const f1 = await salesService.create({ userId, shiftId, lines: [L(vC, 400_000)], payments: [] })

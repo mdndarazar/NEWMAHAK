@@ -30,6 +30,7 @@ const { makeSeeder } = await import('../../test/harness/seed.mjs')
 const { salesService, saleWhere } = await import('../../src/main/services/SalesService.ts')
 const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
 const { settingsService } = await import('../../src/main/services/SettingsService.ts')
+const { setManagerCorrectionApprovalPassword } = await import('../../src/main/services/AuthService.ts')
 const { DEFAULT_MANAGER_PASSWORD } = await import('@shared/receipt')
 const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
 
@@ -82,7 +83,10 @@ const probe = async (label, fn) => {
 }
 
 const PW = DEFAULT_MANAGER_PASSWORD
+/** ابطال دیرهنگام باید به مدیرِ مشخص و credential شخصی او وصل باشد، نه رمز سراسری. */
+const CORRECTION_PW = 'تصحیح-۶۳'
 const userId = seed.user('مدیر تست نشست ۶۳')
+await setManagerCorrectionApprovalPassword({ userId, password: CORRECTION_PW, actorUserId: userId })
 const cat = seed.category('پوشاک')
 const product = seed.product('پیراهن', cat)
 const cash = seed.insert('PaymentMethod', { key: 'CASH', label: 'نقدی', kind: 'CASH', isActive: 1, sortOrder: 1 })
@@ -165,8 +169,8 @@ const cc = creditsOf(c.inv.id)
 eq('یک اعتبار OVERPAY صادر شد', cc.length, 1)
 eq('مبلغ اعتبار = فقط افزایش اضافه‌دریافت (۴۰۰)', Number(cc[0]?.amount ?? 0), 400)
 eq('منبع اعتبار', cc[0]?.source, 'OVERPAY')
-truthy('نتیجه کد و «غیرقابل نقد شدن» را برای چاپ برمی‌گرداند',
-  c2?.overpayCredit?.code === cc[0]?.code && String(c2?.overpayCredit?.notice ?? '').includes('غیرقابل نقد شدن'))
+truthy('نتیجه مرجع امن و «غیرقابل نقد شدن» را برمی‌گرداند',
+  c2?.overpayCredit?.publicReference === `اعتبار #${cc[0]?.id}` && !Object.hasOwn(c2?.overpayCredit ?? {}, 'code') && String(c2?.overpayCredit?.notice ?? '').includes('غیرقابل نقد شدن'))
 closed(await report())
 await throwsWith('overpayAsCredit بدون افزایش اضافه‌دریافت رد می‌شود',
   () => salesService.update({ id: c.inv.id, userId, shiftId, lines: [line(vc, 600)], keepPayments: true, confirmOverpay: true, overpayAsCredit: true }), 'اضافه')
@@ -218,7 +222,15 @@ sql.prepare('UPDATE "SaleReturn" SET returnedAt = ?, returnedAtJalali = ? WHERE 
 const ru = await probe('ویرایش برگشت دوره‌ی بسته', () =>
   salesService.returnUpdate({ id: retId, lines: [{ saleItemId: items[0].id, qty: 1 }], note: 'اصلاح', userId, managerPassword: PW, overrideReason: 'اصلاح تست' }))
 truthy('ویرایش برگشت انجام شد', !ru.err, String(ru.err?.message))
-const rd = await probe('حذف برگشت دوره‌ی بسته', () => salesService.returnDelete({ id: retId, userId, reason: 'ابطال تست دوره‌ی بسته', managerPassword: PW, overrideReason: 'اصلاح تست' }))
+const rd = await probe('حذف برگشت دوره‌ی بسته', () => salesService.returnDelete({
+  id: retId,
+  userId,
+  reason: 'ابطال تست دوره‌ی بسته',
+  managerPassword: PW,
+  overrideReason: 'اصلاح تست',
+  approverUserId: userId,
+  approverPassword: CORRECTION_PW
+}))
 truthy('حذف/ابطال برگشت انجام شد', !rd.err, String(rd.err?.message))
 
 console.log('\n۲-ج) تعویض: سقف اعتبار با رمز مدیر، قبل از تراکنش')
@@ -233,6 +245,8 @@ await throwsWith('اعتبار ۴۰۰ بالای سقف ۱۰۰ بدون رمز �
 const x = await probe('تعویض با اعتبار بالای سقف و رمز درست', () => salesService.createExchange({
   invoiceId: xInv.id, lines: [{ saleItemId: xItems[0].id, qty: 1 }], replacements: [{ variantId: variant(200), qty: 1 }], refundMode: 'STORE_CREDIT', userId, shiftId, managerPassword: PW }))
 truthy('تعویض ثبت شد', !x.err, String(x.err?.message))
+truthy('نتیجه تعویض فقط اعتبار امن دارد',
+  !Object.hasOwn(x.res?.storeCredit ?? {}, 'code') && x.res?.storeCredit?.publicReference === `اعتبار #${x.res?.storeCredit?.id}`)
 eq('Audit «بالاتر از سقف» تعویض', seed.rows(`SELECT id FROM "AuditLog" WHERE action = 'STORE_CREDIT_OVER_LIMIT' AND entity = 'SaleReturn'`).length, 1)
 await settingsService.setAccountingPolicy({ policy: { ...(await settingsService.accountingPolicy()), storeCreditLimit: 0 }, userId, managerPassword: PW }) // نشست ۱۵۴ (S153-D1): گیت رمز سیاست حسابداری در سرویس؛ فقط setup
 

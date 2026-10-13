@@ -1,6 +1,6 @@
 /**
  * نشست ۱۹۱ — ایرادهای بحرانی گزارش ممیزی (بدون ۴-۲۴ / رمز دوم‌سوم / قابلیت سبز):
- *   ۱) بازپرداخت نقدی روی فاکتور نسیه‌ی بدهکار رد می‌شود
+ *   ۱) بازپرداخت نقدی پس از برگشت فقط تا مازاد پول واقعی انجام می‌شود (S194)
  *   ۴) مانده بدهی remainingOf (برگشت را کم می‌کند)
  *   ۶) وصول نشست دیگر زیر فاکتور نشست اول شمرده نمی‌شود
  *   خرید: قیمت منفی حتی با force رد می‌شود
@@ -84,7 +84,7 @@ console.log('\n۴) remainingOf برگشت را از مانده کم می‌کن�
   eq('مانده ۱۰۰ نه ۷۰۰', d.remaining, 100_000)
 }
 
-console.log('\n۱) نقد روی نسیه‌ی بدهکار')
+console.log('\n۱) نقد روی نسیه: فقط از مازاد واقعی پس از برگشت خارج می‌شود')
 {
   const sale = await salesService.create({
     userId: user,
@@ -93,18 +93,18 @@ console.log('\n۱) نقد روی نسیه‌ی بدهکار')
     payments: [{ methodId: cash, amount: 300_000, destination: 'CASH' }]
   })
   const itemId = Number(sql.prepare('SELECT id FROM "SaleInvoiceItem" WHERE invoiceId = ?').get(sale.id)?.id)
-  await throws(
-    'بازپرداخت نقدی با بدهی باقی',
-    () =>
-      salesService.createReturn({
-        invoiceId: sale.id,
-        lines: [{ saleItemId: itemId, qty: 1 }],
-        refundMethod: 'CASH',
-        refundAmount: 200_000,
-        userId: user
-      }),
-    'بدهی'
-  )
+  const returned = await salesService.createReturn({
+    invoiceId: sale.id,
+    lines: [{ saleItemId: itemId, qty: 1 }],
+    refundMethod: 'CASH',
+    refundAmount: 200_000,
+    // پس از برگشت کامل، ۳۰۰ ریال پرداخت واقعی اضافه می‌ماند؛ تأیید آن ردیف
+    // اضافه‌دریافتِ باقی‌مانده را شفاف نگه می‌دارد، نه اینکه بدهی پنهان بسازد.
+    confirmOverpay: true,
+    userId: user
+  })
+  eq('بازپرداخت نقدی در سقف مازاد واقعی ثبت شد', Number(returned.refundAmount), 200_000)
+  eq('پس از بازپرداخت هنوز بدهی پنهان ساخته نشد', Number((await salesService.payments({ invoiceId: sale.id })).remaining), 0)
 }
 
 console.log('\n۶) وصول نشست دیگر زیر فاکتور نشست اول نیست')

@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { call, CH } from '../lib/api'
+import { isPrintCancelledError } from '../lib/printErrors'
 import { exportTable } from '../lib/exportCsv'
 import ReportFilterBar, { todayFilters, toServiceFilter, type ReportFilters } from '../components/ReportFilterBar'
 import ConfirmDialog from '../components/ConfirmDialog'
 import ShiftDetailModal from '../components/ShiftDetailModal'
 import ShiftSessionModal, { type SessionMode } from '../components/ShiftSessionModal'
-import { faDigits, money, isValidJalaliDate } from '@shared/jalali'
+import { faDigits, money, isValidJalaliDate, jalaliStartOfDay, jalaliEndOfDay } from '@shared/jalali'
 import type { SaleReportResult, SaleReportRow, ShiftInfo } from '@shared/types'
 /**
  * کار الف — سه ستون مقصد پول. هیچ عددی در این صفحه جمع نمی‌شود؛ تنها جای تبدیل
@@ -37,6 +38,7 @@ import {
  */
 import { usePendingRestock, pendingToneBox } from '../hooks/usePendingRestock'
 import { PENDING_RESTOCK_EXPLAINER, PENDING_RESTOCK_LABEL } from '@shared/pendingRestock'
+import { useManagerSession } from '../hooks/useManagerSession'
 
 /**
  * ===================== بستن صندوق (پایان شیفت) =====================
@@ -89,6 +91,151 @@ const HEADERS = [
 
 type PayFilter = 'ALL' | 'CASH' | 'CARD' | 'CREDIT'
 
+type CustodyTimeline = {
+  from: string
+  to: string
+  coverage?: {
+    skip: number
+    take: number
+    truncated: Record<string, boolean>
+    truncatedAny: boolean
+    hasMore: Record<string, boolean>
+    hasMoreAny: boolean
+  }
+  segments: Array<{
+    shiftId: number
+    startedAt: string
+    endedAt: string | null
+    custodianName: string | null
+    templateId: string | null
+    scheduleTitleSnapshot: string | null
+    scheduledEndAt: string | null
+    scheduleKind: 'CANONICAL' | 'LEGACY' | 'UNSCHEDULED'
+    endKind: string | null
+  }>
+  handovers: Array<{
+    id: number
+    status: string
+    startedAt: string
+    finishedAt: string | null
+    fromShiftId: number
+    toShiftId: number | null
+    fromUser: string | null
+    selectedRecipient: string | null
+    finalCustodian: string | null
+    expectedAtStart: number | bigint
+    countedAtStart: number | bigint
+    differenceCash: number | bigint
+    resolutionKind: string | null
+  }>
+  saleOperators: Array<{
+    id: number
+    at: string
+    invoiceId: number
+    receiptNo: number | null
+    custodyShiftId: number
+    custodianName: string | null
+    operatorKind: string
+    operatorUserId: number | null
+    operatorName: string | null
+    authMethod: string
+  }>
+  counts: Array<{
+    id: number
+    at: string
+    shiftId: number
+    kind: string
+    countedCash: number | bigint
+    expectedCash: number | bigint | null
+    differenceCash: number | bigint | null
+    countedByName: string | null
+    authMethod: string | null
+    note: string | null
+  }>
+  resolutions: Array<{
+    id: number
+    shiftId: number
+    status: string
+    evidence: string
+    openedAt: string
+    resolvedAt: string | null
+    nightExpectedCash: number | bigint | null
+    provisionalDifference: number | bigint | null
+    differenceAttribution: string
+    attributedToName: string | null
+    decisionByName: string | null
+    decisionReason: string | null
+  }>
+  dispositions: Array<{
+    id: number
+    at: string
+    shiftId: number
+    cashSessionId: number
+    kind: string
+    amount: number | bigint
+    confirmStatus: string
+    recipientName: string | null
+    confirmedByName: string | null
+    trackingNo: string | null
+    destinationLabel: string | null
+  }>
+}
+
+function custodyOperatorLabel(row: CustodyTimeline['saleOperators'][number]) {
+  if (row.operatorKind === 'CUSTODIAN_SESSION') return `مسئول کشو · ${row.operatorName ?? row.custodianName ?? '—'}`
+  if (row.operatorKind === 'OPERATOR_PIN') return `اپراتور PINدار · ${row.operatorName ?? '—'}`
+  /** Shared manager authentication is a capability, never a claim that a
+   * particular named manager operated POS. */
+  if (row.operatorKind === 'MANAGER_SESSION') return 'نشست مدیر · بدون انتساب شخصی'
+  return 'هویت عملیاتی ثبت‌شده'
+}
+
+function custodyCountKindLabel(kind: string) {
+  return ({
+    OPENING: 'شمارش آغاز',
+    CLOSING: 'شمارش نهایی',
+    HANDOVER_OUT: 'شمارش تحویل‌دهنده',
+    HANDOVER_RECOUNT_DIFFERENCE_PENDING: 'بازشمارشِ اختلافِ فریز‌شده',
+    HANDOVER_CANCELED: 'شاهد لغو تحویل',
+    EMERGENCY_COVER_COUNT: 'شمارش پوشش اضطراری',
+    MASTER_OVERRIDE_COUNT: 'شمارش Master Override',
+    MORNING_WITNESS: 'شمارش شاهد صبح',
+    ARCHIVED_CUSTODIAN_WITNESS: 'شمارش شاهدِ مسئول آرشیوشده'
+  } as Record<string, string>)[kind] ?? `شمارش ثبت‌شده (${kind})`
+}
+
+function custodyResolutionEvidenceLabel(evidence: string) {
+  return ({
+    NONE: 'پروندهٔ بازیابی',
+    MORNING_WITNESS: 'شاهد صبح',
+    CUSTODIAN_ARCHIVED: 'آرشیو مسئول فعال',
+    CUSTODIAN_ARCHIVED_RECOVERED: 'بازیابی مسئول آرشیوشده'
+  } as Record<string, string>)[evidence] ?? `شاهد تعیین‌تکلیف (${evidence})`
+}
+
+function custodyDispositionKindLabel(kind: string) {
+  return ({
+    KEEP_IN_DRAWER: 'باقی‌ماندن در کشو',
+    TO_MANAGER: 'تحویل به مدیر',
+    BANK_OR_SAFE: 'بانک یا گاوصندوق'
+  } as Record<string, string>)[kind] ?? kind
+}
+
+function custodyResolutionStatusLabel(status: string) {
+  return ({ OPEN: 'باز', RESOLVED: 'تعیین‌تکلیف‌شده', ARCHIVE_FREEZE: 'فریز آرشیو', ARCHIVE_ABORTED: 'آرشیو لغوشده' } as Record<string, string>)[status] ?? status
+}
+
+function custodyAttributionLabel(attribution: string) {
+  return ({ PENDING_DECISION: 'در انتظار تصمیم', UNASSIGNED: 'بدون انتساب فردی', CUSTODIAN_ACK: 'پذیرش مسئول', MANAGER_DECISION: 'تصمیم مدیر', DIFFERENCE_UNKNOWN: 'نامشخص' } as Record<string, string>)[attribution] ?? attribution
+}
+
+function custodyDispositionStatusLabel(status: string) {
+  return ({ PENDING: 'در انتظار تأیید', CLAIMED: 'اعلام تحویل', CONFIRMED: 'تأییدشده', REVERSED: 'برگشت‌داده‌شده' } as Record<string, string>)[status] ?? status
+}
+
+function custodyAuthMethodLabel(method: string | null) {
+  return ({ CUSTODY_PIN: 'PIN شخصی', MANAGER_CUSTODY_PIN: 'PIN شخصی مدیر', MANAGER_SHARED_PASSWORD: 'رمز مشترک مدیر', MANAGER_SESSION: 'نشست مدیر' } as Record<string, string>)[method ?? ''] ?? 'روش ثبت‌شده'
+}
 
 /** ممیزی A77-01 — رد «بستن تکراری» از main (هر دو مسیر: بیرون و داخل تراکنش) */
 function isRepeatCloseRejection(message: string): boolean {
@@ -97,10 +244,31 @@ function isRepeatCloseRejection(message: string): boolean {
 
 export default function CashClose() {
   const nav = useNavigate()
+  const { isManager } = useManagerSession()
   const [filters, setFilters] = useState<ReportFilters>(todayFilters())
   const [report, setReport] = useState<SaleReportResult | null>(null)
   const [shift, setShift] = useState<ShiftInfo | null>(null)
   const [sessions, setSessions] = useState<any[]>([])
+  /** Manager-only, read-only custody evidence. This never controls sale/close
+   * actions; if the main manager session ends, the timeline fails closed. */
+  const [custodyTimeline, setCustodyTimeline] = useState<CustodyTimeline | null>(null)
+  /** The manager explicitly selects a bounded read window; this affects only
+   * report data, never live custody status or any financial operation. */
+  const [custodyReportDays, setCustodyReportDays] = useState<1 | 7 | 30 | 90 | 180>(90)
+  /** A manager may explicitly reuse the Jalali range already selected in the
+   * page filter; relative windows remain the default daily-monitoring mode. */
+  const [custodyUseSelectedDateRange, setCustodyUseSelectedDateRange] = useState(false)
+  const [custodyReportSkip, setCustodyReportSkip] = useState(0)
+  const [custodyExportBusy, setCustodyExportBusy] = useState(false)
+  /** The first report page anchors an exact server query interval. Paging to
+   * older evidence must reuse it, otherwise new records could shift offsets. */
+  const custodyReportRangeRef = useRef<{ from: string; to: string } | null>(null)
+  /** Reject late responses from an older page/range selection, so a stale Main
+   * read can never overwrite the manager's newer bounded report view. */
+  const custodyReportRequestRef = useRef(0)
+  /** `null` is intentionally fail-closed while main confirms whether this
+   * drawer is governed by custody. The legacy session picker has no PIN. */
+  const [custodyGoverned, setCustodyGoverned] = useState<boolean | null>(null)
   const [payFilter, setPayFilter] = useState<PayFilter>('ALL')
   const [onlyCurrentShift, setOnlyCurrentShift] = useState(true)
   const [counted, setCounted] = useState<string>('')
@@ -124,6 +292,8 @@ export default function CashClose() {
   const [mvDesc, setMvDesc] = useState('')
   const [mvBusy, setMvBusy] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [printBusy, setPrintBusy] = useState(false)
+  const printBusyRef = useRef(false)
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [confirmClose, setConfirmClose] = useState(false)
@@ -207,6 +377,95 @@ export default function CashClose() {
   }, [filters.fromJalali, filters.toJalali])
   const sessionsPage = (sessions as any).page as { skip: number; take: number; totalCount: number; truncated: boolean } | undefined
   const sessionsWarnings = ((sessions as any).warnings as string[] | undefined) ?? []
+
+  const loadCustodyTimeline = useCallback(async (skip = 0, refreshRange = false) => {
+    const requestId = ++custodyReportRequestRef.current
+    if (!isManager) {
+      custodyReportRangeRef.current = null
+      setCustodyTimeline(null)
+      setCustodyReportSkip(0)
+      return
+    }
+    let range = custodyReportRangeRef.current
+    if (refreshRange || !range) {
+      if (custodyUseSelectedDateRange) {
+        if (!isValidJalaliDate(filters.fromJalali) || !isValidJalaliDate(filters.toJalali)) {
+          custodyReportRangeRef.current = null
+          setCustodyTimeline(null)
+          setCustodyReportSkip(0)
+          setErr('بازهٔ شمسیِ انتخاب‌شده برای گزارش حضانت معتبر نیست.')
+          return
+        }
+        const from = jalaliStartOfDay(filters.fromJalali)
+        const to = jalaliEndOfDay(filters.toJalali)
+        if (to.getTime() < from.getTime()) {
+          custodyReportRangeRef.current = null
+          setCustodyTimeline(null)
+          setCustodyReportSkip(0)
+          setErr('پایان بازهٔ شمسی نمی‌تواند پیش از آغاز آن باشد.')
+          return
+        }
+        range = { from: from.toISOString(), to: to.toISOString() }
+      } else {
+        const to = new Date()
+        const from = new Date(to.getTime() - custodyReportDays * 24 * 60 * 60_000)
+        range = { from: from.toISOString(), to: to.toISOString() }
+      }
+      custodyReportRangeRef.current = range
+    }
+    try {
+      const result = await call<CustodyTimeline>(CH.custodyReport, {
+        ...range,
+        skip,
+        take: custodyReportDays > 90 ? 500 : 150
+      })
+      if (requestId !== custodyReportRequestRef.current) return
+      setCustodyTimeline(result)
+      setCustodyReportSkip(result.coverage?.skip ?? skip)
+    } catch {
+      if (requestId !== custodyReportRequestRef.current) return
+      /** A failed/expired manager session must not leave readable prior report
+       * data on screen. */
+      custodyReportRangeRef.current = null
+      setCustodyTimeline(null)
+      setCustodyReportSkip(0)
+    }
+  }, [isManager, custodyReportDays, custodyUseSelectedDateRange, filters.fromJalali, filters.toJalali])
+  useEffect(() => { void loadCustodyTimeline(0, true) }, [loadCustodyTimeline])
+  const exportCustodyTimeline = async () => {
+    /** Main re-reads and serializes this exact bounded scope. Renderer supplies
+     * no evidence rows, totals, names, notes or export title. */
+    if (!isManager || !custodyTimeline || custodyExportBusy) return
+    const coverage = custodyTimeline.coverage
+    if (!coverage) { setErr('پوشش صفحهٔ گزارش حضانت مشخص نیست؛ ابتدا گزارش را تازه‌سازی کنید.'); return }
+    setCustodyExportBusy(true)
+    try {
+      const result = await call<{ canceled: boolean; path: string | null }>(CH.custodyReportExport, {
+        from: custodyTimeline.from,
+        to: custodyTimeline.to,
+        skip: coverage.skip,
+        take: coverage.take
+      })
+      if (result.canceled) flash('ذخیرهٔ خروجی گزارش حضانت لغو شد.')
+      else flash(`خروجی صفحهٔ گزارش حضانت ساخته شد: ${result.path ?? 'مسیر نامشخص'}`)
+    } catch (error: any) {
+      setErr(error?.message ?? 'ساخت خروجی گزارش حضانت ممکن نشد.')
+    } finally {
+      setCustodyExportBusy(false)
+    }
+  }
+  useEffect(() => {
+    let live = true
+    void call<{ enabled: boolean; governed?: boolean }>(CH.custodyStatus, {})
+      .then((status) => { if (live) setCustodyGoverned(status.governed === true || status.enabled === true) })
+      // Unknown is deliberately not interpreted as legacy permission. A
+      // failed IPC call must never resurrect the old name-only handover form.
+      .catch(() => { if (live) setCustodyGoverned(null) })
+    return () => { live = false }
+  }, [])
+  useEffect(() => {
+    if (custodyGoverned !== false) setSession({ open: false, mode: 'open' })
+  }, [custodyGoverned])
 
   /**
    * پیش‌نمایش شفافِ `expectedCash` *قبل* از زدن دکمه‌ی نهایی. فقط می‌خواند و
@@ -315,6 +574,29 @@ export default function CashClose() {
    * نیستند و اگر این کانال خطا بدهد، فقط همین هشدار دیده نمی‌شود.
    */
   const pending = usePendingRestock()
+  const custodySegments = useMemo(() => {
+    const all = custodyTimeline?.segments ?? []
+    return shift ? all.filter((segment) => segment.shiftId === shift.id) : all.slice(0, 8)
+  }, [custodyTimeline, shift])
+  const custodyHandovers = useMemo(() => {
+    const all = custodyTimeline?.handovers ?? []
+    return shift ? all.filter((handover) => handover.fromShiftId === shift.id || handover.toShiftId === shift.id) : all.slice(0, 8)
+  }, [custodyTimeline, shift])
+  const custodySaleOperators = useMemo(() => {
+    const all = custodyTimeline?.saleOperators ?? []
+    return shift ? all.filter((row) => row.custodyShiftId === shift.id) : all.slice(0, 12)
+  }, [custodyTimeline, shift])
+  /** Terminal reconciliation evidence is read-only. It deliberately uses the
+   * stored count/resolution/disposition rows, never renderer recomputation. */
+  const custodyTerminalCounts = useMemo(() => {
+    /** A newly-opened morning segment must not hide the prior night's terminal
+     * record. Opening count is intentionally omitted here; the report shows
+     * recent terminal/reconciliation evidence across segments. */
+    const all = (custodyTimeline?.counts ?? []).filter((row) => row.kind !== 'OPENING')
+    return all.slice(0, 12)
+  }, [custodyTimeline])
+  const custodyResolutions = useMemo(() => (custodyTimeline?.resolutions ?? []).slice(0, 8), [custodyTimeline])
+  const custodyDispositions = useMemo(() => (custodyTimeline?.dispositions ?? []).slice(0, 12), [custodyTimeline])
 
   /**
    * «شمارش دستی» و «موجودی اول» با تأخیر کوتاه به سرور می‌روند تا مغایرت زنده
@@ -403,6 +685,7 @@ export default function CashClose() {
       setOpeningFloat('')
       await loadShift()
       await load()
+      await loadCustodyTimeline()
       setRepeatRequired(false)
     } catch (e: any) {
       const msg = String(e?.message ?? e)
@@ -432,6 +715,7 @@ export default function CashClose() {
     }
     await loadShift()
     await load()
+    await loadCustodyTimeline()
   }
 
   const rowValues = (r: SaleReportRow) => [
@@ -463,6 +747,9 @@ export default function CashClose() {
     : ''
 
   const printA4 = async () => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       await call(CH.printA4, {
         title: 'گزارش بستن صندوق',
@@ -493,11 +780,17 @@ export default function CashClose() {
       })
       flash('گزارش صندوق برای چاپ A4 فرستاده شد')
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
   const printThermal = async () => {
+    if (printBusyRef.current) return
+    printBusyRef.current = true
+    setPrintBusy(true)
     try {
       await call(CH.printThermalSummary, {
         title: 'بستن صندوق',
@@ -589,7 +882,10 @@ export default function CashClose() {
       })
       flash('گزارش حرارتی صندوق چاپ شد')
     } catch (e: any) {
-      setErr(e.message)
+      if (!isPrintCancelledError(e)) setErr(e.message)
+    } finally {
+      printBusyRef.current = false
+      setPrintBusy(false)
     }
   }
 
@@ -640,22 +936,24 @@ export default function CashClose() {
           <span className="kbd">شیفتی باز نیست</span>
         )}
         <div className="ms-auto flex gap-1 flex-wrap">
-          <button
-            className={`btn ${shift?.staffPending ? 'btn-danger' : ''}`}
-            onClick={() => setSession({ open: true, mode: shift?.staffPending ? 'staff' : 'open' })}
-            disabled={busy}
-            title="نام شیفت پیشنهادی + انتخاب اجباری کارمند همین نشست"
-          >
-            {shift?.staffPending ? 'تعیین کارمند این نشست ⚠' : 'ثبت نشست جدید'}
-          </button>
-          <button
-            className="btn"
-            onClick={() => setSession({ open: true, mode: 'handover' })}
-            disabled={busy}
-            title="کارمند وسط کار عوض شد: نشست فعلی با کارمند خودش بسته می‌ماند و نشست تازه ساخته می‌شود"
-          >
-            تعویض کارمند
-          </button>
+          {custodyGoverned === false ? <>
+            <button
+              className={`btn ${shift?.staffPending ? 'btn-danger' : ''}`}
+              onClick={() => setSession({ open: true, mode: shift?.staffPending ? 'staff' : 'open' })}
+              disabled={busy}
+              title="نام شیفت پیشنهادی + انتخاب اجباری کارمند همین نشست"
+            >
+              {shift?.staffPending ? 'تعیین کارمند این نشست ⚠' : 'ثبت نشست جدید'}
+            </button>
+            <button
+              className="btn"
+              onClick={() => setSession({ open: true, mode: 'handover' })}
+              disabled={busy}
+              title="کارمند وسط کار عوض شد: نشست فعلی با کارمند خودش بسته می‌ماند و نشست تازه ساخته می‌شود"
+            >
+              تعویض کارمند
+            </button>
+          </> : <span className="kbd self-center">{custodyGoverned ? 'تحویل و بستن فقط از کنترل «صندوق» با PIN انجام می‌شود.' : 'در حال بررسی وضعیت حضانت…'}</span>}
           <button className="btn" onClick={() => nav('/sales-reports')}>
             گزارشات فروش <span className="keycap">F9</span>
           </button>
@@ -676,6 +974,42 @@ export default function CashClose() {
           فقط شیفت جاری
         </label>
       </ReportFilterBar>
+
+      {custodyGoverned === true && <div className="rounded border border-sky-300 bg-sky-50 p-3 text-sm leading-6" dir="rtl"><b>حضانت صندوق فعال است.</b> این صفحه تاریخچه و تطبیق را فقط‌خواندنی نشان می‌دهد؛ بستن یا تحویلِ نشست فعال باید از کنترل «صندوق» در نوار بالای برنامه و با رمز شخصی مسئول انجام شود.</div>}
+
+      {isManager && custodyTimeline && (
+        <section className="rounded border border-indigo-200 bg-indigo-50/50 p-3 space-y-3" dir="rtl">
+          <div className="flex flex-wrap gap-2 items-center">
+            <h2 className="font-bold text-indigo-950">خط زمانی حضانت صندوق</h2>
+            <span className="text-xs text-indigo-800">فقط‌خواندنی · نام و الگوی شیفت از snapshot زمان بازشدن نشست خوانده می‌شود.</span>
+            <label className="text-xs flex items-center gap-1">بازهٔ گزارش<select className="input py-0 text-xs" value={custodyReportDays} onChange={(e) => setCustodyReportDays(Number(e.target.value) as 1 | 7 | 30 | 90 | 180)} disabled={busy || custodyUseSelectedDateRange}><option value={1}>۲۴ ساعت اخیر</option><option value={7}>۷ روز</option><option value={30}>۳۰ روز</option><option value={90}>۹۰ روز</option><option value={180}>۱۸۰ روز</option></select></label>
+            <label className="text-xs flex items-center gap-1" title="از و تا تاریخِ فیلتر بالای همین صفحه استفاده می‌شود"><input type="checkbox" checked={custodyUseSelectedDateRange} disabled={busy || !isValidJalaliDate(filters.fromJalali) || !isValidJalaliDate(filters.toJalali) || jalaliEndOfDay(filters.toJalali).getTime() < jalaliStartOfDay(filters.fromJalali).getTime()} onChange={(e) => setCustodyUseSelectedDateRange(e.target.checked)} />بازهٔ شمسیِ فیلتر</label>
+            <button className="btn py-0.5" disabled={busy} onClick={() => void loadCustodyTimeline(0, true)}>تازه‌سازی</button>
+            <button className="btn py-0.5 mr-auto" disabled={busy || custodyExportBusy} onClick={() => void exportCustodyTimeline()}>{custodyExportBusy ? 'در حال ساخت خروجی…' : 'خروجی اکسل همین صفحه'}</button>
+          </div>
+          {custodyTimeline.coverage ? <div className="flex flex-wrap items-center gap-2 text-xs"><span>{custodyUseSelectedDateRange ? `بازهٔ شمسی ${faDigits(filters.fromJalali)} تا ${faDigits(filters.toJalali)}` : 'بازهٔ ثابت گزارش'} · شروع از ردیف {faDigits(custodyReportSkip + 1)}</span><button className="btn py-0.5" disabled={busy || custodyReportSkip <= 0} onClick={() => void loadCustodyTimeline(Math.max(0, custodyReportSkip - custodyTimeline.coverage.take))}>جدیدتر</button><button className="btn py-0.5" disabled={busy || !custodyTimeline.coverage.hasMoreAny} onClick={() => void loadCustodyTimeline(custodyReportSkip + custodyTimeline.coverage.take)}>قدیمی‌تر</button></div> : null}
+          {custodyTimeline.coverage?.hasMoreAny ? <div className="rounded border border-amber-400 bg-amber-50 px-2 py-1 text-xs text-amber-950">در یک یا چند بخش، evidence قدیمی‌تر از این صفحه باقی مانده است. برای همان بازهٔ ثابت، «قدیمی‌تر» را بزنید؛ این صفحه به‌تنهایی تاریخچهٔ کامل نیست.</div> : null}
+          {custodySegments.length ? <div className="grid lg:grid-cols-2 gap-2">
+            {custodySegments.map((segment) => <div key={segment.shiftId} className="rounded border border-indigo-200 bg-white p-2 text-sm leading-6">
+              <div className="font-bold">مسئول: {segment.custodianName ?? '—'} <span className="font-normal text-slate-500">· نشست {faDigits(segment.shiftId)}</span></div>
+              <div>شیفتِ snapshot: <b>{segment.scheduleTitleSnapshot ?? 'بدون برنامه'}</b>{segment.scheduleKind === 'CANONICAL' ? ' · canonical' : segment.scheduleKind === 'LEGACY' ? ' · Legacy' : ''}</div>
+              <div className="text-slate-600">شروع {faDigits(new Date(segment.startedAt).toLocaleString('fa-IR'))}{segment.endedAt ? ` · پایان ${faDigits(new Date(segment.endedAt).toLocaleString('fa-IR'))}` : ' · باز'}</div>
+              {segment.scheduledEndAt ? <div className="text-slate-600">پایان برنامهٔ snapshot: {faDigits(new Date(segment.scheduledEndAt).toLocaleString('fa-IR'))}</div> : null}
+            </div>)}
+          </div> : <p className="text-sm text-slate-600">{shift ? 'برای این نشست، segment حضانت ثبت نشده است.' : 'در بازهٔ اخیر segment حضانتی ثبت نشده است.'}</p>}
+          {custodyHandovers.length ? <div className="border-t border-indigo-200 pt-3"><h3 className="font-bold text-sm mb-2">تحویل‌ها</h3><div className="space-y-1 text-sm">
+            {custodyHandovers.map((handover) => <div key={handover.id} className="rounded bg-white border border-indigo-100 px-2 py-1">تحویل‌دهنده: <b>{handover.fromUser ?? '—'}</b> · گیرندهٔ انتخابی: {handover.selectedRecipient ?? '—'} · دریافت‌کنندهٔ نهایی: <b>{handover.finalCustodian ?? '—'}</b> · {handover.status}</div>)}
+          </div></div> : null}
+          {custodySaleOperators.length ? <div className="border-t border-indigo-200 pt-3"><h3 className="font-bold text-sm mb-1">عملیات POS همان مسئولیت کشو نیست</h3><p className="text-xs text-indigo-800 mb-2">هویت عملیاتی هر فروش جداگانه ثبت می‌شود؛ مسئول مالی/فیزیکی کشو همچنان مسئول همان segment است.</p><div className="space-y-1 text-sm">
+            {custodySaleOperators.map((row) => <div key={row.id} className="rounded bg-white border border-indigo-100 px-2 py-1"><b>{row.receiptNo == null ? `فاکتور ${faDigits(row.invoiceId)}` : `فیش ${faDigits(row.receiptNo)}`}</b> · {custodyOperatorLabel(row)} · مسئول کشو/مالی: <b>{row.custodianName ?? '—'}</b></div>)}
+          </div></div> : null}
+          {(custodyTerminalCounts.length || custodyResolutions.length || custodyDispositions.length) ? <div className="border-t border-indigo-200 pt-3 space-y-3"><div><h3 className="font-bold text-sm">شواهد نهایی و تطبیق</h3><p className="text-xs text-indigo-800">آخرین اسناد پایان/recovery در همهٔ segmentها نمایش داده می‌شود؛ این داده‌ها append-only سرورند، مبلغ موردانتظار هرگز در Renderer محاسبه نمی‌شود و این بخش هیچ عملیات مالی انجام نمی‌دهد.</p></div>
+            {custodyTerminalCounts.length ? <div><h4 className="font-semibold text-sm mb-1">شمارش‌ها</h4><div className="space-y-1 text-sm">{custodyTerminalCounts.map((row) => <div key={row.id} className="rounded bg-white border border-indigo-100 px-2 py-1"><b>{custodyCountKindLabel(row.kind)}</b> · شمارش‌کننده: {row.countedByName ?? '—'} · احراز: {custodyAuthMethodLabel(row.authMethod)} · فیزیکی: <b>{money(row.countedCash)}</b>{row.expectedCash != null ? ` · موردانتظار: ${money(row.expectedCash)}` : ''}{row.differenceCash != null ? ` · اختلاف: ${money(row.differenceCash)}` : ''}{row.note ? <div className="text-slate-600">یادداشت ثبت‌شده: {row.note}</div> : null}</div>)}</div></div> : null}
+            {custodyResolutions.length ? <div><h4 className="font-semibold text-sm mb-1">پرونده‌های بازیابی و تعیین‌تکلیف</h4><div className="space-y-1 text-sm">{custodyResolutions.map((row) => <div key={row.id} className="rounded bg-white border border-indigo-100 px-2 py-1"><b>{custodyResolutionEvidenceLabel(row.evidence)}</b> · وضعیت: {custodyResolutionStatusLabel(row.status)}{row.nightExpectedCash != null ? ` · انتظار شب: ${money(row.nightExpectedCash)}` : ''}{row.provisionalDifference != null ? ` · اختلاف: ${money(row.provisionalDifference)}` : ''}<div className="text-slate-600">انتساب اختلاف: {custodyAttributionLabel(row.differenceAttribution)}{row.attributedToName ? ` · شخص منتسب: ${row.attributedToName}` : ''}{row.decisionByName ? ` · تصمیم‌گیرنده: ${row.decisionByName}` : ''}</div>{row.decisionReason ? <div className="text-slate-600">دلیل ثبت‌شده: {row.decisionReason}</div> : null}</div>)}</div></div> : null}
+            {custodyDispositions.length ? <div><h4 className="font-semibold text-sm mb-1">تعیین‌تکلیف وجه</h4><div className="space-y-1 text-sm">{custodyDispositions.map((row) => <div key={row.id} className="rounded bg-white border border-indigo-100 px-2 py-1"><b>{custodyDispositionKindLabel(row.kind)}</b> · مبلغ: <b>{money(row.amount)}</b> · وضعیت: {custodyDispositionStatusLabel(row.confirmStatus)}{row.recipientName ? ` · گیرنده: ${row.recipientName}` : ''}{row.confirmedByName ? ` · تأییدکننده: ${row.confirmedByName}` : ''}{row.destinationLabel ? ` · مقصد: ${row.destinationLabel}` : ''}{row.trackingNo ? ` · پیگیری: ${row.trackingNo}` : ''}</div>)}</div></div> : null}
+          </div> : null}
+        </section>
+      )}
 
       {expectedWarnings.length > 0 && (
         <div className="rounded border-2 border-amber-500 bg-amber-50 px-3 py-2 text-amber-900 whitespace-pre-line">
@@ -1130,11 +1464,11 @@ export default function CashClose() {
             onChange={(e) => setNote(e.target.value)}
           />
         </label>
-        <button className="btn" onClick={() => void printThermal()} disabled={!report}>
-          چاپ حرارتی
+        <button className="btn" onClick={() => void printThermal()} disabled={!report || printBusy}>
+          {printBusy ? 'در حال چاپ…' : 'چاپ حرارتی'}
         </button>
-        <button className="btn" onClick={() => void printA4()} disabled={!report}>
-          چاپ A4
+        <button className="btn" onClick={() => void printA4()} disabled={!report || printBusy}>
+          {printBusy ? 'در حال چاپ…' : 'چاپ A4'}
         </button>
         <button
           className="btn"
@@ -1153,8 +1487,8 @@ export default function CashClose() {
         <button
           className="btn btn-primary"
           onClick={() => setConfirmClose(true)}
-          disabled={busy || (needsNote && !note.trim())}
-          title={needsNote && !note.trim() ? 'اول دلیل مغایرت را در یادداشت بنویسید' : undefined}
+          disabled={custodyGoverned !== false || busy || (needsNote && !note.trim())}
+          title={custodyGoverned !== false ? custodyGoverned ? 'در حالت حضانت، بستن نهایی فقط با رمز مسئول در کنترل «صندوق» نوار بالا انجام می‌شود.' : 'تا مشخص شدن وضعیت حضانت، بستن قدیمی صندوق برای ایمنی غیرفعال است.' : needsNote && !note.trim() ? 'اول دلیل مغایرت را در یادداشت بنویسید' : undefined}
         >
           بستن صندوق
         </button>
@@ -1289,13 +1623,14 @@ export default function CashClose() {
         </table>
       </div>
 
-      {/* جلسه ۱۹ — فرم نشست (باز کردن نشست / تعویض کارمند / تأیید کارمند) */}
-      <ShiftSessionModal
+      {/* The legacy form cannot be mounted while custody governs (or while its
+          status is unknown): it has a name picker but no PIN/count evidence. */}
+      {custodyGoverned === false ? <ShiftSessionModal
         open={session.open}
         mode={session.mode}
         onClose={() => setSession({ open: false, mode: 'open' })}
         onDone={(s) => void onSessionDone(s)}
-      />
+      /> : null}
 
       {/* مورد ۵ — پنجره‌ی جزئیات همان شیفت (فقط‌خواندنی) */}
       <ShiftDetailModal

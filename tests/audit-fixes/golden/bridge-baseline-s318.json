@@ -1,0 +1,13 @@
+{
+  "note": "نشست ۳۱۸ · فاز ۰ — هش سه برش مبغوه (معادله، HINTS و بلوک ورودی‌های پل+هشدار). تغییر هر یک ⇒ تست fix-s318-0 قرمز.",
+  "sha256": {
+    "equation": "7be68d3766be8504aff8b401537fe9bf45293ebfdb2e7a5b33e2e08df1db4163",
+    "hints": "477d590a2193b32f7ff8b25368d627e3069ff797212814a8daf695e0efa927e9",
+    "bridgeInputBlock": "74e8d584e19e6722a5bca28f1f2ca7a6d8894881a51843543cd87e7231a1e239"
+  },
+  "sliceLens": {
+    "equation": 3582,
+    "hints": 4310,
+    "bridgeInputBlock": 2839
+  }
+}

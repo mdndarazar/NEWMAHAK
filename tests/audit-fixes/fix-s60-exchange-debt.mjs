@@ -26,6 +26,7 @@ const { salesService, saleWhere } = salesMod
 const { salesLedger } = await import('../../src/main/services/SalesLedger.ts')
 const { buildStatements } = await import('../../src/main/services/accountingReport.ts')
 const { RefundMethod } = await import('@shared/enums')
+const { DEFAULT_MANAGER_PASSWORD } = await import('@shared/receipt')
 const { toJalaliDate, jalaliStartOfDay, jalaliEndOfDay } = await import('@shared/jalali')
 
 const db = harnessClient()
@@ -265,7 +266,14 @@ console.log('\n— ۱۰) C6 (بند ۴-۲۲): سند برگشتِ تعویض ح�
   // برگشت ساده همچنان «حذف‌شدنی» است؛ از نشست ۶۴ یعنی ابطال با دلیل (بند ۴-۲۲)
   const inv2 = await twoItemSale(1000)
   const simple = await ret(inv2.id, itemsOf(inv2.id)[0].id, RefundMethod.NONE)
-  const del = await safe('حذف برگشت ساده (رفتار قبلی)', () => salesService.returnDelete({ id: simple.id ?? simple.returnId, userId, reason: 'ثبت اشتباه' }))
+  const del = await safe('ابطال مجاز برگشت ساده', () =>
+    salesService.returnDelete({
+      id: simple.id ?? simple.returnId,
+      userId,
+      reason: 'ثبت اشتباه',
+      panelPassword: DEFAULT_MANAGER_PASSWORD
+    })
+  )
   eq('برگشت ساده باطل شد', del?.voided === true, true)
   last = null
   closed(await report())

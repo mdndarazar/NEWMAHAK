@@ -179,7 +179,9 @@ eq('بدهی فاکتور اصلی ۶۰۰ همه‌جا', await remainingEverywh
   const t = await invariants('ج-۱')
   eq('هیچ بازپرداخت نقدی مابه‌التفاوت (۴-۵)', Number(rowAmt(t, 'exchangeCashRefunds') ?? 0), 0)
 }
-await safe('ابطال گراف تعویض', () => salesService.returnDelete({ id: exC?.returnId, userId, reason: 'تعویض اشتباه' }))
+await safe('ابطال گراف تعویض', () => salesService.returnDelete({
+  id: exC?.returnId, userId, reason: 'تعویض اشتباه', ...GATE
+}))
 eq('بعد از ابطال بدهی ۱٬۰۰۰ همه‌جا', await remainingEverywhere(C.inv.id, yday), [1000, 1000, 1000])
 await invariants('ج-۲')
 
@@ -190,7 +192,9 @@ await safe('برگشت قلم ۴۰۰', () => ret(D.inv.id, D.items[1].id))
 eq('بدهی ۰ همه‌جا', await remainingEverywhere(D.inv.id, yday), [0, 0, 0])
 await throwsWith('برگشت دوباره‌ی همان قلم رد', () => ret(D.inv.id, D.items[0].id), 'برگشت')
 await invariants('د-۱')
-await safe('ابطال برگشت ۶۰۰', () => salesService.returnDelete({ id: d1?.id ?? d1?.returnId, userId, reason: 'برگشت اشتباه' }))
+await safe('ابطال برگشت ۶۰۰', () => salesService.returnDelete({
+  id: d1?.id ?? d1?.returnId, userId, reason: 'برگشت اشتباه', ...GATE
+}))
 eq('بدهی ۶۰۰ همه‌جا', await remainingEverywhere(D.inv.id, yday), [600, 600, 600])
 await invariants('د-۲')
 
