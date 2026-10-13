@@ -565,6 +565,9 @@ model SaleInvoice {
   items    SaleInvoiceItem[]
   payments Payment[]
   returns  SaleReturn[]
+  /// Separate immutable evidence of the POS operator. `userId`/`shiftId` above
+  /// remain the actual drawer-custody financial attribution.
+  custodySaleEvidence CustodySaleEvidence?
 
   @@index([issuedAtJalali])
   @@index([status])
@@ -2108,6 +2111,27 @@ model ShiftPlanStaff {
   @@index([userId])
 }
 
+/// Immutable proof of who operated POS for a custody-governed sale. This is
+/// intentionally not a replacement for SaleInvoice.userId/shiftId: those two
+/// columns remain the physical-drawer custodian and financial attribution.
+model CustodySaleEvidence {
+  id              Int      @id @default(autoincrement())
+  invoiceId       Int      @unique
+  invoice         SaleInvoice @relation(fields: [invoiceId], references: [id])
+  custodyShiftId  Int
+  custodianUserId Int
+  /// CUSTODIAN_SESSION | OPERATOR_PIN | MANAGER_SESSION
+  operatorKind    String
+  /// Null only for an authenticated shared manager session; it must never
+  /// invent a particular manager's user identity from that shared credential.
+  operatorUserId  Int?
+  authMethod      String
+  at              DateTime @default(now())
+
+  @@index([custodyShiftId, at])
+  @@index([operatorUserId, at])
+}
+
 model CustodyState {
   key               String   @id
   state             String   @default("NO_SESSION") // NO_SESSION | ACTIVE | HANDOVER_PENDING
@@ -2127,6 +2151,9 @@ model CustodyShiftMeta {
   planId             Int?
   planTitle          String?
   scheduledEndAt     DateTime?
+  /// Immutable policy captured when this responsibility segment began. Later
+  /// Settings edits plan only future work; they never rewrite live/history.
+  scheduleSnapshotJson String?
   rolloverAt         DateTime
   dayCutoverSnapshot Int      @default(300)
   operationalDay     String

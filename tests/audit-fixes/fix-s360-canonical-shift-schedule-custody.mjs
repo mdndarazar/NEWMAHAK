@@ -2,8 +2,8 @@
  * Shift Settings canonical schedule -> custody:
  * - the schedule is read from shift.config, not silently copied from ShiftPlan;
  * - an authenticated scheduled worker opens an actual drawer session;
- * - per-template mid-day handover defaults closed and, when enabled, carries
- *   the same template identity through the receiving segment.
+ * - per-template mid-day handover defaults closed, and a later Settings
+ *   edit cannot retroactively open a live responsibility segment.
  *
  * node --import ./test/harness/register.mjs tests/audit-fixes/fix-s360-canonical-shift-schedule-custody.mjs
  */
@@ -70,24 +70,16 @@ seed.setting(SETTING_KEYS.shiftConfig, {
   reminderEnabled: true,
   overrunGraceMinutes: 0,
   templates: [{
-    id: 'canonical-s360', name: 'شیفت canonical', startTime: hm(nowMinute - 20), endTime: hm(nowMinute + 80),
+    id: 'canonical-s360', name: 'شیفت canonical جدید', startTime: hm(nowMinute - 20), endTime: hm(nowMinute + 80),
     isActive: true, daysMask: 1 << now.getDay(), staffIds: [giver, receiver], reminderRepeatMin: 15, allowMidDayHandover: true
   }]
 })
-const handover = await custodyService.handoverStart({ password: 'Giver1234!', countedCash: 0, toUserId: receiver, idempotencyKey: 's360-on' })
-const accepted = await custodyService.handoverAccept({ handoverId: handover.id, password: 'Recv1234!', countedCash: 0 })
-const receivingMeta = seed.one('SELECT templateId, planId, scheduledEndAt FROM "CustodyShiftMeta" WHERE shiftId = ?', accepted.shiftId)
-eq('تحویل مجاز با PIN مستقل گیرنده پذیرفته می‌شود', accepted.shiftId > opened.shiftId, true)
-eq('segment گیرنده template identity شیفت قبلی را به ارث می‌برد', receivingMeta?.templateId, 'canonical-s360')
-eq('segment گیرنده ShiftPlan جدید نمی‌سازد', receivingMeta?.planId, null)
-eq('segment گیرنده پایان برنامه را بازطبقه‌بندی نمی‌کند', String(receivingMeta?.scheduledEndAt), String(openingMeta?.scheduledEndAt))
-const timeline = await custodyService.report({ managerUserId: manager, managerPassword: 'مدیر123!' })
-const history = timeline.segments.find((segment) => segment.shiftId === accepted.shiftId)
-eq('تاریخچه custody همان template snapshot را می‌خواند', history?.templateId, 'canonical-s360')
-eq('تاریخچه نام شیفت را از snapshot ذخیره‌شده می‌خواند', history?.scheduleTitleSnapshot, 'شیفت canonical')
-eq('تاریخچه segment گیرنده را با نام واقعی شخص نشان می‌دهد', history?.custodianName, 'تحویل‌گیرنده S360')
-eq('handover history هر دو طرف تحویل را نگه می‌دارد', timeline.handovers[0]?.fromUser, 'تحویل‌دهنده S360')
-eq('handover history دریافت‌کنندهٔ نهایی را نگه می‌دارد', timeline.handovers[0]?.finalCustodian, 'تحویل‌گیرنده S360')
+await rejects('فعال‌کردن بعدی template، segment فعال را بازطبقه‌بندی نمی‌کند', 'MIDDAY_HANDOVER_DISABLED', () => custodyService.handoverStart({ password: 'Giver1234!', countedCash: 0, toUserId: receiver, idempotencyKey: 's360-still-off' }))
+const live = await custodyService.status()
+eq('نام schedule زنده از snapshot اولیه می‌آید، نه rename Settings', live.schedule?.title, 'شیفت canonical')
+eq('اجازهٔ میان‌روز زنده از snapshot اولیه بسته می‌ماند', live.schedule?.allowMidDayHandover, false)
+const openingSnapshot = JSON.parse(seed.one('SELECT scheduleSnapshotJson FROM "CustodyShiftMeta" WHERE shiftId = ?', opened.shiftId)?.scheduleSnapshotJson ?? '{}')
+eq('evidence immutable policy اولیه را نگه می‌دارد', openingSnapshot.allowMidDayHandover, false)
 
 console.log(`\n${bad === 0 ? '✓' : '✗'} ${ok} بررسی موفق · ${bad} ناموفق`)
 process.exitCode = bad ? 1 : 0

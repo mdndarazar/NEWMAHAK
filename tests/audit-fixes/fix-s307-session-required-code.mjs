@@ -32,6 +32,11 @@ const electron = await import('electron')
 const handlers = new Map()
 electron.ipcMain.handle = (ch, fn) => handlers.set(ch, fn)
 
+// IPC handlers are sender-bound. The harness provides the minimal Electron
+// shell, so this test supplies one stable, live window sender explicitly.
+electron.BrowserWindow.fromWebContents = () => ({ isDestroyed: () => false })
+const IPC_EVENT = { sender: { id: 307, isDestroyed: () => false, once: () => {} } }
+
 const { harnessClient } = await import('../../test/harness/stubs/prismaClient.mjs')
 const { makeSeeder } = await import('../../test/harness/seed.mjs')
 const db = harnessClient()
@@ -40,7 +45,7 @@ const { registerIpcHandlers } = await import('../../src/main/ipc/index.ts')
 const { IPC } = await import('@shared/ipc')
 const { jalaliToday, jalaliAddDays, faDigits } = await import('@shared/jalali')
 registerIpcHandlers()
-const ipc = (ch, payload) => handlers.get(ch)(null, payload)
+const ipc = (ch, payload) => handlers.get(ch)(IPC_EVENT, payload)
 
 let ok = 0
 let bad = 0
@@ -51,8 +56,9 @@ const eq = (label, got, want) => (got === want ? (ok++, console.log(`  ✓ ${lab
 {
   const src = readFileSync(resolve('src/main/ipc/index.ts'), 'utf8')
   truthy(
-    'قفل: handler یک‌خطی saleCreate دست‌نخورده است (s140/s151c/نشست۱۸۲)',
-    /handle\(IPC\.saleCreate, async \(p\) => afterSaleThankYou\(salesService\.create\(await withSessionActor\(p \?\? \{\}, 'ثبت فاکتور فروش'\)\)\)\)/.test(src)
+    'قفل: handler saleCreate فقط از actor/fence و evidence امن Main می‌گذرد',
+    /handle\(IPC\.saleCreate, async \(p\) => afterSaleThankYou\(salesService\.create\(await withVerifiedSaleOperator\(p \?\? \{\}\)\)\)\)/.test(src) &&
+      /const financial = await withSessionActor\(raw, 'ثبت فاکتور فروش'\)/.test(src)
   )
   truthy(
     'قفل: withSessionActor خطای وضعیت‌محور با کد SESSION_REQUIRED می‌دهد',

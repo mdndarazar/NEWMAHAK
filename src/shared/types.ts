@@ -53,6 +53,14 @@ export interface CreateSaleInput {
   remoteCustomer?: boolean
   userId?: number | null
   shiftId?: number | null
+  /**
+   * Only an IPC request hint. Main removes these fields, validates the selected
+   * mode, then attaches non-forgeable custody evidence internally. They never
+   * change the financial `userId` or `shiftId` above.
+   */
+  saleOperatorMode?: 'CUSTODIAN' | 'OPERATOR_PIN' | 'MANAGER_SESSION'
+  saleOperatorUserId?: number | null
+  saleOperatorPassword?: string | null
   orderType?: 'INTERNAL' | 'DELIVERY' | 'PHONE' | 'WHOLESALE'
   lines: CartLine[]
   invoiceDiscount?: number

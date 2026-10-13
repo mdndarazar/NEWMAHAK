@@ -306,6 +306,9 @@ export const IPC = {
   custodyPinSet: 'custody:pin:set',
   custodyStaffList: 'custody:staff:list',
   custodyReport: 'custody:report',
+  /** Main-generated export of a bounded manager custody-report page. Renderer
+   * supplies scope only; it never supplies audit rows. */
+  custodyReportExport: 'custody:report:export',
 
   custodyOpen: 'custody:open',
   custodyPlanList: 'custody:plan:list',

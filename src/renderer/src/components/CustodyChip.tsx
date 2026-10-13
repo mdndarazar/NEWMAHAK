@@ -15,7 +15,7 @@ type Status = {
   epoch: number
   custodian: { id: number; name: string | null } | null
   shift: { id: number; name: string; openedAt: string } | null
-  pendingHandover: { id: number; fromUserId: number; selectedRecipientUserId: number; startedAt: string; status?: string; resolutionKind?: string | null; countedAtStart?: number; resolutionReason?: string | null } | null
+  pendingHandover: { id: number; fromUserId: number; selectedRecipientUserId: number; startedAt: string; status?: string; resolutionKind?: string | null; countedAtStart?: number; resolutionReason?: string | null; blindCountedCash?: number | null } | null
   schedule: { planId: number; title: string; scheduledEndAt: string } | null
   schedulingPolicy?: { mode: 'SINGLE_SHIFT' | 'MULTI_SHIFT'; configured: boolean; singleShiftCustodianUserId: number | null }
   reminder: { due: boolean; bucket: number | null; repeatMinutes: number; scheduledEndAt: string | null }
@@ -97,6 +97,12 @@ export function CustodyChip({ showSetup = true, showOperations = true }: { showS
     setNote('')
     setError(null)
   }
+  const normalHandoverDifferencePending = status.state === 'HANDOVER_RECOUNT' && status.pendingHandover?.status === 'PENDING' && status.pendingHandover?.blindCountedCash != null
+  const resumeHandoverDifference = () => {
+    const pending = status.pendingHandover
+    reset('accept')
+    if (pending?.blindCountedCash != null) setCountedCash(String(pending.blindCountedCash))
+  }
   const resumeEmergency = () => {
     const pending = status.pendingHandover
     reset('emergency')
@@ -130,6 +136,9 @@ export function CustodyChip({ showSetup = true, showOperations = true }: { showS
       window.dispatchEvent(new Event('mahak:shift-changed'))
     } catch (e: any) {
       setError(e?.message ?? 'عملیات انجام نشد.')
+      // A failed command can still have durably frozen a blind count. Refresh
+      // the server verdict so the operator sees the only safe next action.
+      await reload()
     } finally {
       setBusy(false)
     }
@@ -138,15 +147,17 @@ export function CustodyChip({ showSetup = true, showOperations = true }: { showS
   const emergencyInProgress = status.state === 'HANDOVER_RECOUNT' && status.pendingHandover?.status === 'EMERGENCY_RECOUNT'
   const masterOverrideInProgress = status.state === 'HANDOVER_RECOUNT' && status.pendingHandover?.status === 'MASTER_OVERRIDE_RECOUNT'
   const title =
-    masterOverrideInProgress
-      ? `شمارش Master Override مدیر ${nameOf(status.pendingHandover?.selectedRecipientUserId)} در حال ثبت است`
-      : emergencyInProgress
-      ? `شمارش پوشش اضطراریِ ${nameOf(status.pendingHandover?.selectedRecipientUserId)} در حال ثبت است`
-      : status.state === 'HANDOVER_PENDING'
-        ? `تحویل در انتظار تأیید ${nameOf(status.pendingHandover?.selectedRecipientUserId)}`
-        : status.state === 'ACTIVE'
-          ? `صندوق: ${status.custodian?.name ?? 'مسئول نامشخص'}`
-          : 'صندوق بدون مسئول فعال'
+    normalHandoverDifferencePending
+      ? `مغایرتِ شمارشِ تحویل برای ${nameOf(status.pendingHandover?.selectedRecipientUserId)} منتظر دلیل است`
+      : masterOverrideInProgress
+        ? `شمارش Master Override مدیر ${nameOf(status.pendingHandover?.selectedRecipientUserId)} در حال ثبت است`
+        : emergencyInProgress
+          ? `شمارش پوشش اضطراریِ ${nameOf(status.pendingHandover?.selectedRecipientUserId)} در حال ثبت است`
+          : status.state === 'HANDOVER_PENDING'
+            ? `تحویل در انتظار تأیید ${nameOf(status.pendingHandover?.selectedRecipientUserId)}`
+            : status.state === 'ACTIVE'
+              ? `صندوق: ${status.custodian?.name ?? 'مسئول نامشخص'}`
+              : 'صندوق بدون مسئول فعال'
 
   return (
     <>
@@ -155,7 +166,7 @@ export function CustodyChip({ showSetup = true, showOperations = true }: { showS
         onClick={() => { setVisible(true); reset() }}
         title="حضانت صندوق: مسئول فعلی، تحویل احرازشده و بستن نهایی"
       >
-        {masterOverrideInProgress ? '⚠ Master Override در حال ثبت' : emergencyInProgress ? '⚠ پوشش اضطراری در حال ثبت' : status.state === 'HANDOVER_PENDING' ? '⚠ تحویل صندوق در انتظار تأیید' : status.state === 'ACTIVE' ? `صندوق · ${status.custodian?.name ?? 'فعال'}` : 'صندوق · نیازمند ورود'}
+        {normalHandoverDifferencePending ? '⚠ اختلاف تحویل نیازمند دلیل' : masterOverrideInProgress ? '⚠ Master Override در حال ثبت' : emergencyInProgress ? '⚠ پوشش اضطراری در حال ثبت' : status.state === 'HANDOVER_PENDING' ? '⚠ تحویل صندوق در انتظار تأیید' : status.state === 'ACTIVE' ? `صندوق · ${status.custodian?.name ?? 'فعال'}` : 'صندوق · نیازمند ورود'}
       </button>
       {visible ? createPortal(
         <div className="fixed inset-0 z-[80] bg-black/55 flex justify-center items-start overflow-auto p-4" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) setVisible(false) }}>
@@ -173,12 +184,13 @@ export function CustodyChip({ showSetup = true, showOperations = true }: { showS
               {status.state === 'HANDOVER_PENDING' ? <div className="grid grid-cols-2 gap-3"><button className="btn-primary py-3" onClick={() => reset('accept')}>تأیید تحویل‌گیرنده</button><button className="btn-secondary py-3" onClick={() => reset('handover')}>لغو با رمز تحویل‌دهنده</button></div> : null}
               {emergencyInProgress ? <div className="p-3 rounded bg-amber-50 text-sm leading-6">شمارش پوشش اضطراری برای <b>{nameOf(status.pendingHandover?.selectedRecipientUserId)}</b> موقتاً صندوق را freeze کرده است. همان کارمند باید با همان PIN، شمارش و دلیل، ثبت را ادامه دهد.<button className="block mt-2 underline font-bold" onClick={resumeEmergency}>ادامهٔ پوشش اضطراری</button></div> : null}
               {masterOverrideInProgress ? <div className="p-3 rounded bg-amber-50 text-sm leading-6">Master Override برای مدیر <b>{nameOf(status.pendingHandover?.selectedRecipientUserId)}</b> موقتاً صندوق را freeze کرده است. همان مدیر با همان رمز مشترک مدیر، شمارش و دلیل باید ثبت را ادامه دهد.<button className="block mt-2 underline font-bold" onClick={resumeMasterOverride}>ادامهٔ Master Override</button></div> : null}
+              {normalHandoverDifferencePending ? <div className="p-3 rounded bg-rose-50 border border-rose-200 text-sm leading-6"><b>اختلاف شمارشِ تحویل فریز شده است.</b> هیچ فروش یا محاسبهٔ تازه‌ای تا تکمیل این مرز مالی انجام نمی‌شود. فقط <b>{nameOf(status.pendingHandover?.selectedRecipientUserId)}</b> می‌تواند با همان شمارش و PIN خود دلیل اختلاف را ثبت کند؛ یا مسئول قبلی با PIN خودش تحویل را لغو کند.<div className="grid grid-cols-2 gap-2 mt-3"><button className="btn-primary" onClick={resumeHandoverDifference}>ثبت دلیل و تکمیل تحویل</button><button className="btn-secondary" onClick={() => reset('handover')}>لغو با PIN تحویل‌دهنده</button></div></div> : null}
               {staff.some((row) => row.isActive && row.hasCustodyPin && row.mustChangePin) ? <button className="mt-3 text-sm underline text-slate-700" onClick={() => reset('changePin')}>تغییر رمز موقت کارکنان</button> : null}
             </> : null}
             {view === 'open' ? <CredentialForm staff={openingEligible} selected={selectedUserId} setSelected={setSelectedUserId} password={password} setPassword={setPassword} amount={countedCash} setAmount={setCountedCash} label="موجودی فیزیکی اول صندوق" submit="باز کردن صندوق" busy={busy} onBack={() => reset()} onSubmit={() => run(async () => { if (!selectedUserId) throw new Error('مسئول صندوق را انتخاب کنید.'); await call(CH.custodyOpen, { userId: selectedUserId, password, countedCash: amount() }) })} /> : null}
             {view === 'changePin' ? <ChangeTemporaryPinForm staff={staff.filter((row) => row.isActive && row.hasCustodyPin && row.mustChangePin)} selected={selectedUserId} setSelected={setSelectedUserId} temporaryPassword={password} setTemporaryPassword={setPassword} newPassword={newPassword} setNewPassword={setNewPassword} repeatNewPassword={repeatNewPassword} setRepeatNewPassword={setRepeatNewPassword} busy={busy} onBack={() => reset()} onSubmit={() => run(async () => { if (!selectedUserId) throw new Error('کارمند دارای رمز موقت را انتخاب کنید.'); if (newPassword !== repeatNewPassword) throw new Error('تکرار رمز جدید یکسان نیست.'); await call(CH.custodyPinSet, { userId: selectedUserId, currentPassword: password, newPassword }) })} /> : null}
-            {view === 'handover' ? status.state === 'HANDOVER_PENDING' ? <PasswordOnly label="برای لغو تحویل، مسئول قبلی رمز خودش را وارد می‌کند" password={password} setPassword={setPassword} busy={busy} onBack={() => reset()} submit="لغو تحویل" onSubmit={() => run(() => call(CH.custodyHandoverCancel, { handoverId: status.pendingHandover?.id, password }))} /> : <CredentialForm staff={eligible.filter((row) => row.id !== status.custodian?.id)} selected={recipientId} setSelected={setRecipientId} password={password} setPassword={setPassword} amount={countedCash} setAmount={setCountedCash} label="شمارش کور پیش از تحویل" submit="شروع تحویل" busy={busy} onBack={() => reset()} selectLabel="تحویل‌گیرنده" onSubmit={() => run(async () => { if (!recipientId) throw new Error('تحویل‌گیرنده را انتخاب کنید.'); await call(CH.custodyHandoverStart, { toUserId: recipientId, password, countedCash: amount(), note: note.trim() || undefined }) })} /> : null}
-            {view === 'accept' ? <PasswordOnly label={`فقط ${nameOf(status.pendingHandover?.selectedRecipientUserId)} با رمز شخصی خود و شمارش مستقل نقد می‌تواند این تحویل را بپذیرد. اگر شمارش با نقد انتظاری اختلاف دارد، دلیل روشن را بنویسید تا اختلاف به نشست مسئول قبلی ثبت شود و شما با شمارش واقعی خودتان شروع کنید.`} password={password} setPassword={setPassword} amount={countedCash} setAmount={setCountedCash} note={note} setNote={setNote} noteLabel="دلیل مغایرت (فقط اگر شمارش با انتظار اختلاف دارد؛ حداقل ۱۰ حرف)" busy={busy} onBack={() => reset()} submit="شمارش و پذیرش تحویل" onSubmit={() => run(() => call(CH.custodyHandoverAccept, { handoverId: status.pendingHandover?.id, password, countedCash: amount(), differenceReason: note.trim() || undefined }))} /> : null}
+            {view === 'handover' ? (status.state === 'HANDOVER_PENDING' || normalHandoverDifferencePending) ? <PasswordOnly label={normalHandoverDifferencePending ? "شمارشِ دارای اختلاف به‌عنوان سند باقی می‌ماند؛ فقط مسئول قبلی با PIN خودش می‌تواند تحویل فریز‌شده را لغو و فروش را به segment قبلی بازگرداند." : "برای لغو تحویل، مسئول قبلی رمز خودش را وارد می‌کند"} password={password} setPassword={setPassword} busy={busy} onBack={() => reset()} submit="لغو تحویل" onSubmit={() => run(() => call(CH.custodyHandoverCancel, { handoverId: status.pendingHandover?.id, password }))} /> : <CredentialForm staff={eligible.filter((row) => row.id !== status.custodian?.id)} selected={recipientId} setSelected={setRecipientId} password={password} setPassword={setPassword} amount={countedCash} setAmount={setCountedCash} label="شمارش کور پیش از تحویل" submit="شروع تحویل" busy={busy} onBack={() => reset()} selectLabel="تحویل‌گیرنده" onSubmit={() => run(async () => { if (!recipientId) throw new Error('تحویل‌گیرنده را انتخاب کنید.'); await call(CH.custodyHandoverStart, { toUserId: recipientId, password, countedCash: amount(), note: note.trim() || undefined }) })} /> : null}
+            {view === 'accept' ? <PasswordOnly label={`فقط ${nameOf(status.pendingHandover?.selectedRecipientUserId)} با رمز شخصی خود و شمارش مستقل نقد می‌تواند این تحویل را بپذیرد. اگر شمارش با نقد انتظاری اختلاف دارد، دلیل روشن را بنویسید تا اختلاف به نشست مسئول قبلی ثبت شود و شما با شمارش واقعی خودتان شروع کنید.`} password={password} setPassword={setPassword} amount={countedCash} setAmount={setCountedCash} note={note} setNote={setNote} noteLabel="دلیل مغایرت (فقط اگر شمارش با انتظار اختلاف دارد؛ حداقل ۱۰ حرف)" busy={busy} onBack={() => reset()} submit={normalHandoverDifferencePending ? 'ثبت دلیل و تکمیل تحویل' : 'شمارش و پذیرش تحویل'} onSubmit={() => run(() => call(CH.custodyHandoverAccept, { handoverId: status.pendingHandover?.id, password, countedCash: amount(), differenceReason: note.trim() || undefined }))} /> : null}
             {view === 'emergency' ? <EmergencyCoverForm staff={eligible.filter((row) => row.id !== status.custodian?.id)} selected={selectedUserId} setSelected={setSelectedUserId} password={password} setPassword={setPassword} amount={countedCash} setAmount={setCountedCash} reason={note} setReason={setNote} busy={busy} inProgress={emergencyInProgress} onBack={() => reset()} onSubmit={() => run(async () => { if (!selectedUserId) throw new Error('کارمند پوشش‌دهنده را انتخاب کنید.'); await call(CH.custodyEmergencyCover, { userId: selectedUserId, password, countedCash: amount(), reason: note.trim() }) })} /> : null}
             {view === 'masterOverride' ? <MasterOverrideForm managers={managers.filter((row) => row.id !== status.custodian?.id)} managerId={managerId} setManagerId={setManagerId} managerPassword={managerPassword} setManagerPassword={setManagerPassword} amount={countedCash} setAmount={setCountedCash} reason={note} setReason={setNote} busy={busy} inProgress={masterOverrideInProgress} onBack={() => reset()} onSubmit={() => run(async () => { if (!managerId) throw new Error('مدیر مسئول Master Override را انتخاب کنید.'); await call(CH.custodyMasterOverride, { managerUserId: managerId, managerPassword, countedCash: amount(), reason: note.trim() }) })} /> : null}
             {view === 'close' ? <PasswordOnly label="شمارش نقدی و رمز مسئول فعلی لازم است. پول می‌تواند در کشو بماند؛ در این نسخه ثبت تحویل به مدیر/بانک از تنظیمات تکمیلی انجام می‌شود." password={password} setPassword={setPassword} amount={countedCash} setAmount={setCountedCash} note={note} setNote={setNote} busy={busy} onBack={() => reset()} submit="ثبت بستن نهایی" onSubmit={() => run(() => call(CH.custodyFinalClose, { password, countedCash: amount(), note: note.trim() || undefined, dispositions: [{ kind: 'KEEP_IN_DRAWER', amount: amount() }] }))} /> : null}

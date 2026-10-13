@@ -4,6 +4,7 @@ import { createCardTransferRequest } from './CardTransferService'
 import { inventoryService } from './InventoryService'
 import { audit, auditOrThrow } from './AuditService'
 import { shiftService } from './ShiftService'
+import { custodyService } from './CustodyService'
 import { generateReturnCode, normalizeReturnCode, returnCodeExpiry, DAY_MS } from './ReturnCodeService'
 import { shapeSaleRow, sumTotals, groupByDayShift, paymentLabels, returnedTotalOf } from './reportShape'
 import { buildStatements, cashMovementTotals } from './accountingReport'
@@ -253,6 +254,53 @@ function normalizeInvoiceIds(ids?: number[] | null): number[] {
 }
 
 type Client = Prisma.TransactionClient | typeof prisma
+
+/** A renderer payload can never create this token. IPC attaches it only after
+ * verifying either the operator's own custody PIN or the bound manager session.
+ * The financial custodian remains `CreateSaleInput.userId` / `shiftId`; this is
+ * strictly separate operational evidence. */
+export type VerifiedCustodySaleOperator = {
+  custodyShiftId: number
+  custodianUserId: number
+  operatorKind: 'CUSTODIAN_SESSION' | 'OPERATOR_PIN' | 'MANAGER_SESSION'
+  operatorUserId: number | null
+  authMethod: 'CUSTODY_SESSION' | 'CUSTODY_PIN' | 'MANAGER_SESSION'
+}
+const VERIFIED_CUSTODY_SALE_OPERATOR = Symbol('verifiedCustodySaleOperator')
+
+export function attachVerifiedCustodySaleOperator<T extends Record<string, any>>(
+  input: T,
+  operator: VerifiedCustodySaleOperator
+): T {
+  const enriched = { ...input }
+  Object.defineProperty(enriched, VERIFIED_CUSTODY_SALE_OPERATOR, {
+    value: Object.freeze({ ...operator }),
+    enumerable: false,
+    configurable: false,
+    writable: false
+  })
+  return enriched
+}
+
+function verifiedCustodySaleOperatorOf(input: unknown): VerifiedCustodySaleOperator | null {
+  const candidate = input && typeof input === 'object' ? (input as any)[VERIFIED_CUSTODY_SALE_OPERATOR] : null
+  if (!candidate || typeof candidate !== 'object') return null
+  const validId = (value: unknown) => Number.isSafeInteger(value) && Number(value) > 0
+  const kinds = new Set(['CUSTODIAN_SESSION', 'OPERATOR_PIN', 'MANAGER_SESSION'])
+  const methods = new Set(['CUSTODY_SESSION', 'CUSTODY_PIN', 'MANAGER_SESSION'])
+  if (!validId(candidate.custodyShiftId) || !validId(candidate.custodianUserId) || !kinds.has(candidate.operatorKind) || !methods.has(candidate.authMethod))
+    return null
+  if (candidate.operatorKind === 'MANAGER_SESSION') {
+    if (candidate.operatorUserId != null || candidate.authMethod !== 'MANAGER_SESSION') return null
+  } else if (!validId(candidate.operatorUserId)) return null
+  return {
+    custodyShiftId: Number(candidate.custodyShiftId),
+    custodianUserId: Number(candidate.custodianUserId),
+    operatorKind: candidate.operatorKind,
+    operatorUserId: candidate.operatorUserId == null ? null : Number(candidate.operatorUserId),
+    authMethod: candidate.authMethod
+  } as VerifiedCustodySaleOperator
+}
 
 /**
  * lookup واریانت‌های سندهای مالی را همیشه به دسته‌های کوچک تقسیم می‌کند.
@@ -3892,6 +3940,12 @@ export const salesService = {
    */
   async create(input: CreateSaleInput) {
     validateSaleInput(input)
+    const verifiedOperator = verifiedCustodySaleOperatorOf(input)
+    /** Do not rely solely on IPC: a future Main-side caller must not turn an
+     * active custody drawer into a no-evidence sale by omitting the fence. */
+    const custodyGoverned = await custodyService.isGoverned()
+    if (custodyGoverned && !verifiedOperator)
+      throw new BusinessError('هویت اپراتور فروش از مسیر امن تأیید نشده است؛ صفحه را تازه کنید و دوباره تلاش کنید.', 'CUSTODY_OPERATOR_EVIDENCE_REQUIRED')
 
     /** گارد افزایشی پرداخت ترکیبی: مسیرهای قدیمی بدون splitPayment دست‌نخورده‌اند. */
     if (input.splitPayment === true) {
@@ -4150,6 +4204,20 @@ export const salesService = {
             `(${shiftId == null ? 'بدون شیفت باز' : 'شماره‌ی داخلی ' + faDigits(shiftId)}) فرق دارد؛ ` +
             'فروش همیشه به شیفت بازِ همین لحظه نسبت داده می‌شود. صفحه را تازه کنید و دوباره ثبت کنید.'
         )
+      /** A custody writer must carry a Main-verified operator record.  Direct
+       * service callers cannot manufacture the non-enumerable verification
+       * token, and renderer fields never reach this point as evidence. */
+      const custodyFence = (input as any).custodyFence
+      if (custodyGoverned && !custodyFence)
+        throw new BusinessError('فروش حضانت‌دار باید با fence همان مسئول فعال ثبت شود؛ صفحه را تازه کنید و دوباره تلاش کنید.', 'CUSTODY_OPERATOR_EVIDENCE_REQUIRED')
+      if (custodyFence && !verifiedOperator)
+        throw new BusinessError('هویت اپراتور فروش از مسیر امن تأیید نشده است؛ صفحه را تازه کنید و دوباره تلاش کنید.', 'CUSTODY_OPERATOR_EVIDENCE_REQUIRED')
+      if (verifiedOperator && (
+        shiftId == null ||
+        Number(input.userId) !== verifiedOperator.custodianUserId ||
+        shiftId !== verifiedOperator.custodyShiftId
+      ))
+        throw new BusinessError('شاهد اپراتور با مسئولیت فعلی صندوق هم‌خوان نیست؛ فروش ثبت نشد.', 'CUSTODY_OPERATOR_STALE')
 
       /**
        * -------------------------------------------------------------------
@@ -4226,6 +4294,19 @@ export const salesService = {
         include: { items: true, payments: { include: { method: true } }, customer: true, shift: true }
       })
 
+      if (verifiedOperator) {
+        await (tx as any).custodySaleEvidence.create({
+          data: {
+            invoiceId: invoice.id,
+            custodyShiftId: verifiedOperator.custodyShiftId,
+            custodianUserId: verifiedOperator.custodianUserId,
+            operatorKind: verifiedOperator.operatorKind,
+            operatorUserId: verifiedOperator.operatorUserId,
+            authMethod: verifiedOperator.authMethod
+          }
+        })
+      }
+
       /** نشست ۱۵۴ (S151-b) — قیمت دستی (کاهش یا افزایش) در AuditLog، داخل همین تراکنش */
       await writeSalePriceOverrideAudit(tx, {
         invoiceId: invoice.id,
@@ -4298,7 +4379,10 @@ export const salesService = {
           grandTotal: t.grandTotal,
           paidTotal: t.paidTotal,
           deductInventory,
-          wholesaleDiscountPercent
+          wholesaleDiscountPercent,
+          custodyOperator: verifiedOperator
+            ? { kind: verifiedOperator.operatorKind, userId: verifiedOperator.operatorUserId, authMethod: verifiedOperator.authMethod }
+            : null
         }),
         note:
           (deductInventory ? 'با کسر از موجودی انبار' : 'بدون کسر از موجودی انبار') +
@@ -4422,6 +4506,11 @@ export const salesService = {
         settled: settledPaidTotal >= t.grandTotal,
         /** نشست ۶۲ — مبلغ اضافه‌ی دریافتی همین فاکتور (۰ = عادی) */
         overpayAmount: saleOverpay,
+        /** Operator evidence is intentionally separate from `userId`: the latter
+         * remains the physical drawer custodian for all financial reports. */
+        custodyOperator: verifiedOperator
+          ? { kind: verifiedOperator.operatorKind, userId: verifiedOperator.operatorUserId, authMethod: verifiedOperator.authMethod }
+          : null,
         /** نشست ۶۲ — مرجع امنِ اعتبار صادرشده از مبلغ اضافه (null = مرحله ۴) */
         overpayCredit: shapeOverpayCreditSafe(overpayCredit)
       }

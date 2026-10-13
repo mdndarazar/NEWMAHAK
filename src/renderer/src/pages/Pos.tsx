@@ -9,6 +9,7 @@ import { useHotkeys } from '../hooks/useHotkeys'
 import { broadcastSettingsChanged, useSettings } from '../hooks/useSettings'
 import { usePanelLock, usePanelOpen } from '../hooks/usePanelLocks'
 import { useAutoCentralWithdraw } from '../hooks/useAutoCentralWithdraw'
+import { useManagerSession } from '../hooks/useManagerSession'
 import AutoCentralPasswordBox from '../components/AutoCentralPasswordBox'
 import PasswordField from '../components/PasswordField'
 import { useCharges } from '../hooks/useCharges'
@@ -54,6 +55,21 @@ interface Method {
   key: string
   label: string
   kind: string
+}
+
+type CustodyOperatorStaff = {
+  id: number
+  name: string
+  role: string
+  isActive: boolean
+  hasCustodyPin: boolean
+  mustChangePin: boolean
+}
+
+type CustodyOperatorStatus = {
+  enabled: boolean
+  governed?: boolean
+  custodian?: { id: number; name: string | null } | null
 }
 
 /**
@@ -167,6 +183,7 @@ interface LastInvoice {
 export default function Pos() {
   const nav = useNavigate()
   const { settings, setSettings } = useSettings()
+  const { isManager } = useManagerSession()
   // عوارض/حق سرویس بر اساس دسته‌بندی کالا — اسکوپ «پنل فروش خرد»
   const charges = useCharges('pos')
   const [lines, setLines] = useState<CartLine[]>([])
@@ -242,6 +259,17 @@ export default function Pos() {
   const [sessionReady, setSessionReady] = useState(false)
   const sessionBlockedRef = useRef(false)
   const [busy, setBusy] = useState(false)
+  /** In custody mode a POS operator is separate evidence from the drawer
+   * custodian. PIN is intentionally cleared after every successful sale. */
+  const [custodyPos, setCustodyPos] = useState<CustodyOperatorStatus | null>(null)
+  const [operatorStaff, setOperatorStaff] = useState<CustodyOperatorStaff[]>([])
+  const [saleOperatorMode, setSaleOperatorMode] = useState<'CUSTODIAN' | 'OPERATOR_PIN' | 'MANAGER_SESSION'>('CUSTODIAN')
+  const [saleOperatorUserId, setSaleOperatorUserId] = useState<number | ''>('')
+  const [saleOperatorPassword, setSaleOperatorPassword] = useState('')
+  const custodyGoverned = custodyPos?.enabled === true || custodyPos?.governed === true
+  useEffect(() => {
+    if (!isManager && saleOperatorMode === 'MANAGER_SESSION') setSaleOperatorMode('CUSTODIAN')
+  }, [isManager, saleOperatorMode])
   const [printing, setPrinting] = useState(false)
   const printingRef = useRef(false)
   const [modalOpen, setModalOpen] = useState(false)
@@ -294,6 +322,19 @@ export default function Pos() {
     call<ShiftInfo | null>(CH.shiftCurrent, {})
       .then(setShift)
       .catch(() => {})
+    void call<CustodyOperatorStatus>(CH.custodyStatus, {})
+      .then(async (status) => {
+        setCustodyPos(status)
+        if (status.enabled || status.governed) {
+          const staff = await call<CustodyOperatorStaff[]>(CH.custodyStaffList, {})
+          setOperatorStaff(staff.filter((row) => row.isActive && row.hasCustodyPin && !row.mustChangePin && (row.role === 'CASHIER' || row.role === 'MANAGER')))
+        }
+      })
+      .catch(() => {
+        // A pre-custody/old database remains on its established POS path.
+        setCustodyPos(null)
+        setOperatorStaff([])
+      })
     searchRef.current?.focus() // فوکوس پیش‌فرض روی فیلد اسکن/جستجو
   }, [])
 
@@ -905,6 +946,10 @@ export default function Pos() {
       if (!isSplit && !method) return setErr('روش پرداخت پیدا نشد')
       if (isSplit && (!cashMethod || !cardMethod)) return setErr('برای پرداخت ترکیبی باید یک روش نقدی و یک روش کارتی فعال باشد.')
       if (isSplit && creditMode) return setErr('پرداخت ترکیبی نقد + کارت با نسیه/پرداخت جزئی هم‌زمان نیست؛ ابتدا مبلغ کامل را تسویه کنید.')
+      if (custodyGoverned && saleOperatorMode === 'OPERATOR_PIN' && (!saleOperatorUserId || !saleOperatorPassword.trim()))
+        return setErr('برای ثبت فروش توسط اپراتور دیگر، نام اپراتور و رمز شخصی حضانت او را وارد کنید.')
+      if (custodyGoverned && saleOperatorMode === 'MANAGER_SESSION' && !isManager)
+        return setErr('برای ثبت فروش با نشست مدیر، ابتدا با رمز مدیر وارد شوید؛ رمز مشترک هرگز به نام یک مدیر مشخص ثبت نمی‌شود.')
       /**
        * بخش ۶ — اگر کد اعتباری تایپ شده ولی هنوز «بررسی» نشده است، *قبل از* ثبت
        * فاکتور بررسی می‌شود. دلیلش مهم است: مبلغ اعتبار باید از نقدِ دریافتی کم
@@ -967,6 +1012,13 @@ export default function Pos() {
         }))
         const basePayload = {
           lines: payloadLines,
+          ...(custodyGoverned
+            ? {
+                saleOperatorMode,
+                saleOperatorUserId: saleOperatorMode === 'OPERATOR_PIN' ? saleOperatorUserId : null,
+                saleOperatorPassword: saleOperatorMode === 'OPERATOR_PIN' ? saleOperatorPassword : null
+              }
+            : {}),
           invoiceDiscount: totals.invoiceDisc,
           serviceCharge: totals.service,
           // بند ۲: مالیات سطح فاکتور همیشه صفر است (روی ردیف‌ها نشسته است)
@@ -1120,6 +1172,8 @@ export default function Pos() {
         setCreditErr(null)
         setCreditMode(false)
         setCreditPaid(0)
+        // PIN is one-sale proof, never a reusable renderer session credential.
+        setSaleOperatorPassword('')
         setCreditDestination(null)
         // مبلغ‌های فاکتور قبلی نباید روی فاکتور بعدی بمانند یا با قابل‌پرداخت جدید مقایسه شوند.
         setSplitPayment(false)
@@ -1867,6 +1921,52 @@ export default function Pos() {
          * تغییر نمی‌دهد.
          */}
         <div className="order-4 bg-white rounded shadow p-3 space-y-2">
+          {custodyGoverned && (
+            <div className="rounded border-2 border-indigo-200 bg-indigo-50 p-2 space-y-2">
+              <div>
+                <b className="text-indigo-950">ثبت‌کنندهٔ POS</b>
+                <div className="kbd leading-5 text-indigo-900">
+                  مسئولیت مالی این فروش همچنان برای کشوی «{custodyPos?.custodian?.name ?? 'مسئول فعال'}» می‌ماند. این انتخاب فقط شاهدِ مستقلِ اپراتور است.
+                </div>
+              </div>
+              <select
+                className="inp bg-white"
+                value={saleOperatorMode}
+                disabled={busy}
+                onChange={(event) => {
+                  const mode = event.target.value as 'CUSTODIAN' | 'OPERATOR_PIN' | 'MANAGER_SESSION'
+                  setSaleOperatorMode(mode)
+                  setSaleOperatorPassword('')
+                }}
+              >
+                <option value="CUSTODIAN">خود مسئول فعلی کشو</option>
+                <option value="OPERATOR_PIN">اپراتور دیگر با رمز شخصی حضانت</option>
+                {isManager && <option value="MANAGER_SESSION">نشست فعال مدیر (بدون انتساب به نام مدیر)</option>}
+              </select>
+              {saleOperatorMode === 'OPERATOR_PIN' && (
+                <div className="grid grid-cols-1 gap-1">
+                  <select
+                    className="inp bg-white"
+                    value={saleOperatorUserId}
+                    disabled={busy}
+                    onChange={(event) => setSaleOperatorUserId(event.target.value ? Number(event.target.value) : '')}
+                  >
+                    <option value="">اپراتور PINدار را انتخاب کنید…</option>
+                    {operatorStaff.map((staff) => <option key={staff.id} value={staff.id}>{staff.name} ({staff.role === 'MANAGER' ? 'مدیر' : 'صندوقدار'})</option>)}
+                  </select>
+                  <PasswordField
+                    value={saleOperatorPassword}
+                    placeholder="رمز شخصی حضانت اپراتور — فقط برای همین فروش"
+                    onChange={(event) => setSaleOperatorPassword(event.target.value)}
+                  />
+                  <div className="kbd text-indigo-900">رمز پس از ثبت موفق پاک می‌شود و هر فروش دوباره PIN مستقل می‌خواهد.</div>
+                </div>
+              )}
+              {saleOperatorMode === 'MANAGER_SESSION' && (
+                <div className="kbd text-indigo-900">نشست مدیر معتبر است؛ سند فقط با برچسب MANAGER_SESSION ثبت می‌شود و نام یک مدیر فرضی نمی‌گیرد.</div>
+              )}
+            </div>
+          )}
           {/**
            * ---------- برداشت خودکار از انبار مرکزی ----------
            * مورد ۴ (نشست نهم): این چک‌باکس هم — دقیقاً مثل «چاپ فاکتور» و «تخفیف» —

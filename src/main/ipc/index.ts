@@ -12,7 +12,7 @@ import { IPC } from '@shared/ipc'
 import { prisma } from '../db/client'
 import { productService } from '../services/ProductService'
 import { wooSyncService } from '../services/WooSyncService'
-import { salesService } from '../services/SalesService'
+import { attachVerifiedCustodySaleOperator, salesService } from '../services/SalesService'
 import { salesLedger } from '../services/SalesLedger'
 import { reportLimitsService } from '../services/reportLimits'
 import { periodLockService } from '../services/PeriodLockService'
@@ -245,6 +245,60 @@ async function withSessionActor<T extends Record<string, any> | null | undefined
  * نمی‌فرستاد و طبق بند ۴-۲ پول «حساب مدیر» به هیچ شیفتی نسبت داده نمی‌شود؛
  * پس تنها کاربردشان جعل نام/شیفت در سابقه بود.
  */
+/**
+ * Sale custody has two distinct identities. The drawer custodian remains the
+ * fenced financial actor (`userId`/`shiftId`); an optional POS operator is
+ * proven separately, so a worker or manager session cannot rewrite financial
+ * accountability merely by selecting a name in the renderer.
+ */
+async function withVerifiedSaleOperator<T extends Record<string, any> | null | undefined>(payload: T): Promise<any> {
+  const raw: any = { ...(payload ?? {}) }
+  const requestedMode = String(raw.saleOperatorMode ?? 'CUSTODIAN').trim().toUpperCase()
+  const requestedUserId = raw.saleOperatorUserId
+  const requestedPassword = raw.saleOperatorPassword
+  delete raw.saleOperatorMode
+  delete raw.saleOperatorUserId
+  delete raw.saleOperatorPassword
+  // A renderer cannot smuggle a prior trusted marker through the generic IPC
+  // payload; only this function holds the module-private symbol used below.
+  delete raw.custodyOperator
+
+  const financial = await withSessionActor(raw, 'ثبت فاکتور فروش')
+  const fence = financial.custodyFence
+  if (!fence) return financial // legacy behavior remains exactly unchanged.
+
+  if (requestedMode === 'CUSTODIAN') {
+    return attachVerifiedCustodySaleOperator(financial, {
+      custodyShiftId: fence.expectedShiftId,
+      custodianUserId: fence.expectedActorUserId,
+      operatorKind: 'CUSTODIAN_SESSION',
+      operatorUserId: fence.expectedActorUserId,
+      authMethod: 'CUSTODY_SESSION'
+    })
+  }
+  if (requestedMode === 'OPERATOR_PIN') {
+    const operator = await custodyService.verifySaleOperator(requestedUserId, requestedPassword)
+    return attachVerifiedCustodySaleOperator(financial, {
+      custodyShiftId: fence.expectedShiftId,
+      custodianUserId: fence.expectedActorUserId,
+      operatorKind: 'OPERATOR_PIN',
+      operatorUserId: operator.userId,
+      authMethod: 'CUSTODY_PIN'
+    })
+  }
+  if (requestedMode === 'MANAGER_SESSION') {
+    assertManagerSession('ثبت فروش با نشست مدیر')
+    return attachVerifiedCustodySaleOperator(financial, {
+      custodyShiftId: fence.expectedShiftId,
+      custodianUserId: fence.expectedActorUserId,
+      operatorKind: 'MANAGER_SESSION',
+      operatorUserId: null,
+      authMethod: 'MANAGER_SESSION'
+    })
+  }
+  throw new BusinessError('روش احراز اپراتور فروش معتبر نیست؛ مسئول کشو، اپراتور PINدار یا نشست فعال مدیر را انتخاب کنید.', 'SALE_OPERATOR_MODE_INVALID')
+}
+
 async function cardTransferActor<T extends Record<string, any> | null | undefined>(
   payload: T,
   operation: string
@@ -563,7 +617,7 @@ export function registerIpcHandlers(): void {
     return invoice
   }
 
-  handle(IPC.saleCreate, async (p) => afterSaleThankYou(salesService.create(await withSessionActor(p ?? {}, 'ثبت فاکتور فروش'))))
+  handle(IPC.saleCreate, async (p) => afterSaleThankYou(salesService.create(await withVerifiedSaleOperator(p ?? {}))))
   handle(IPC.saleUpdate, async (p) => salesService.update(await withSessionActor(p ?? {}, 'ویرایش فاکتور فروش')))
   handle(IPC.saleList, (p) => salesService.list(p ?? {}))
   handle(IPC.saleGet, (p) => salesService.get(p.id))
@@ -701,7 +755,13 @@ export function registerIpcHandlers(): void {
     return cashMovementService.add(await withSessionActor(p ?? {}, 'ثبت گردش نقدی'))
   })
   handle(IPC.cashboxMovementList, (p) => cashMovementService.list(p ?? {}))
-  handle(IPC.cashboxExpected, (p) => cashboxService.expected(p ?? {}))
+  // The expected drawer amount is sensitive and must not be an unauthenticated
+  // oracle. CustodyService only permits the currently active responsibility
+  // segment and hides it throughout a blind handover count.
+  handle(IPC.cashboxExpected, async (p) => {
+    await custodyService.assertExpectedCashRead(p ?? {})
+    return cashboxService.expected(p ?? {})
+  })
   // نشست ۱۷۹ (S179-D2) — مرور خواندنی است و نشست باز نمی‌خواهد؛ ولی actor Audit فقط از نشست باز main
   // (بدون نشست ⇒ null)، و actorId ارسالی رندرر هرگز پذیرفته نمی‌شود. userId payload فیلتر کارمند می‌ماند.
   handle(IPC.saleFraudReview, async (p) => {
@@ -1001,6 +1061,13 @@ export function registerIpcHandlers(): void {
     assertManagerSession('دیدن گزارش کنترل حضانت')
     const { managerSession: _ignored, managerUserId: _managerId, managerPassword: _managerPassword, ...safe } = p ?? {}
     return custodyService.report({ ...safe, managerSession: true })
+  })
+  /** Main creates the export from a new manager-authorized report query. The
+   * renderer can select only the already-bounded page scope, never audit rows. */
+  handle(IPC.custodyReportExport, (p) => {
+    assertManagerSession('خروجی گزارش کنترل حضانت')
+    const { managerSession: _ignored, managerUserId: _managerId, managerPassword: _managerPassword, rows: _rows, headers: _headers, title: _title, ...safe } = p ?? {}
+    return custodyService.exportReport({ ...safe, managerSession: true })
   })
 
   handle(IPC.custodyOpen, (p) => custodyService.open(p ?? {}))
